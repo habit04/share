@@ -1,0 +1,319 @@
+{
+  "format": "jcad-native-hatch-checkpoint-v1",
+  "sourceSha": "2bfe98df5551d3e61b63ac6fe29be59e742b66b1",
+  "worktreeModified": false,
+  "runtimeEquivalentCiSource": "861ba3d9e4d2a8b1183cd232181b2496aaebd09e",
+  "equivalence": "src/electron/scripts/tests trees identical; CI-only macro job timeout20to30minutes; individual deadlines/assertions unchanged",
+  "local": {
+    "regressionTests": 3530,
+    "conditionalSkips": 28,
+    "checks": [
+      {
+        "name": "full-suite",
+        "exitCode": 0,
+        "elapsedMs": 104359,
+        "logSha256": "4b439c5fcc0fc87439e634c9d5071af623bf601a66ca7db01ca4b8b846723a6b"
+      },
+      {
+        "name": "edit-selector-and-native-control",
+        "exitCode": 0,
+        "elapsedMs": 255,
+        "logSha256": "77edf901f9cad868af5e53bd82051bd57773d1349787b477e6dea2357b37b127"
+      },
+      {
+        "name": "types-renderer",
+        "exitCode": 0,
+        "elapsedMs": 7704,
+        "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "types-electron",
+        "exitCode": 0,
+        "elapsedMs": 1207,
+        "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "types-scripts",
+        "exitCode": 0,
+        "elapsedMs": 2999,
+        "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "lint",
+        "exitCode": 0,
+        "elapsedMs": 10134,
+        "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "fixtures",
+        "exitCode": 0,
+        "elapsedMs": 100,
+        "logSha256": "1173eb0df58c30f932b3d2adaa9e67d74fdf10b23507ad30afe3c0b779e17204"
+      },
+      {
+        "name": "workflows",
+        "exitCode": 0,
+        "elapsedMs": 115,
+        "logSha256": "547d9d4727ca172cc277dbaa039cdf54cde726e585333b4710d07693f4e13a19"
+      },
+      {
+        "name": "build-ordinary",
+        "exitCode": 0,
+        "elapsedMs": 11407,
+        "logSha256": "db33d9f1b9da95d934a0f0018a458518b66dd1e23f72f68382e6badbf523ccff"
+      },
+      {
+        "name": "build-experimental",
+        "exitCode": 0,
+        "elapsedMs": 11993,
+        "logSha256": "c597a48d398bd31881aeb09d2f790eee2a8db47032b8a3f4919edebe53422d3a"
+      }
+    ],
+    "nativePreflights": [
+      {
+        "name": "ordinary-runtime-build",
+        "exitCode": 0,
+        "elapsedMs": 2608,
+        "record": {
+          "path": ".codex-local/validation-2bfe98df/ordinary-runtime-build-check.json",
+          "bytes": 337,
+          "sha256": "2cb13ebd47d9ab3be455d8566ad75330a381c622bd888f0a30bc92f37ca79935"
+        },
+        "log": {
+          "path": ".codex-local/validation-2bfe98df/ordinary-runtime-build.log",
+          "bytes": 3734,
+          "sha256": "81396247e4251c4a054967fb4c9a0ea756c6246dad0678cc928f579e33c1e7f5"
+        }
+      },
+      {
+        "name": "experimental-runtime-build",
+        "exitCode": 0,
+        "elapsedMs": 2720,
+        "record": {
+          "path": ".codex-local/validation-2bfe98df/experimental-runtime-build-check.json",
+          "bytes": 345,
+          "sha256": "932cfa95af1e795f00e25c64d570b0abebda8d8889806fec75acdf5766feb501"
+        },
+        "log": {
+          "path": ".codex-local/validation-2bfe98df/experimental-runtime-build.log",
+          "bytes": 3740,
+          "sha256": "cc0a1e60459addb695932e800dea16c545863fee5f4b3f98beddbf3d5766f640"
+        }
+      },
+      {
+        "name": "ordinary-default",
+        "exitCode": 0,
+        "elapsedMs": 3095,
+        "record": {
+          "path": ".codex-local/validation-2bfe98df/ordinary-default-check.json",
+          "bytes": 325,
+          "sha256": "ede12004f51581ba2edf2584b176cf802ab3273e92831b34958e514ae6092219"
+        },
+        "log": {
+          "path": ".codex-local/validation-2bfe98df/ordinary-default.log",
+          "bytes": 73,
+          "sha256": "a87417b2a54cdc440474af3b047f1a340720f944013d180a39f2aafb0937a723"
+        }
+      },
+      {
+        "name": "ordinary-2d",
+        "exitCode": 0,
+        "elapsedMs": 4014,
+        "record": {
+          "path": ".codex-local/validation-2bfe98df/ordinary-2d-check.json",
+          "bytes": 315,
+          "sha256": "46f5153931375878f09a9dc71d178b56fd0687fee29ea126ea300148acbb7293"
+        },
+        "log": {
+          "path": ".codex-local/validation-2bfe98df/ordinary-2d.log",
+          "bytes": 923,
+          "sha256": "4b6bc2f69b3d2ca231925ee03f56fbb0471e6b1ea22efb5bc7e98010888fb94c"
+        }
+      },
+      {
+        "name": "ordinary-diagnostics",
+        "exitCode": 0,
+        "elapsedMs": 3426,
+        "record": {
+          "path": ".codex-local/validation-2bfe98df/ordinary-diagnostics-check.json",
+          "bytes": 333,
+          "sha256": "ee518c9401477859f3a475a4ebaf490bc46ad9389ea727c9e5807133cfe77d28"
+        },
+        "log": {
+          "path": ".codex-local/validation-2bfe98df/ordinary-diagnostics.log",
+          "bytes": 114,
+          "sha256": "c536a574fa07bc97bf2d260bce134ff151935127197ac5e072267080ae5d2ee2"
+        }
+      }
+    ]
+  },
+  "ci": {
+    "originalPush": {
+      "run": 38480318149,
+      "allFiveJobs": "passed"
+    },
+    "originalPr": {
+      "run": 38480321367,
+      "ordinaryJobs": "four passed",
+      "gpu": "cancelled after approximately20minutes with no assertion failure; macro timeout cause inferred from timing"
+    },
+    "replacementPr": {
+      "run": 38482863074,
+      "allFiveJobs": "passed",
+      "attempt": 1
+    },
+    "replacementPush": {
+      "run": 38482856868,
+      "allFiveJobs": "passed",
+      "attempt": 1
+    }
+  },
+  "native": [
+    {
+      "preference": "default",
+      "actualContext": {
+        "state": "ready",
+        "rendered": true,
+        "unmaskedVendor": "Google Inc. (Intel)",
+        "unmaskedRenderer": "ANGLE (Intel, Intel(R) UHD Graphics (0x00004688) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      },
+      "rawDataset": {
+        "bytes": 46386318,
+        "sha256": "c349dfb7288764d44c5e1c5c0511bfef7f4a4c75801ca6704eb9045708ab0bd0"
+      },
+      "comparisons": {
+        "total": 40,
+        "actualGpu": 18,
+        "zeroGL": 22,
+        "rasterMax": 0.000016387776506483602,
+        "coverageMax": 0
+      },
+      "interiorOracles": 10,
+      "editTransitions": 12,
+      "sourceSafetyControls": 21,
+      "saveReopen": {
+        "nativeHatchRecords": 5,
+        "actualIpc": true,
+        "actualAtomicSave": true,
+        "originalWorldFamiliesAndLoopsPreserved": true,
+        "independentPreSaveCanvasRoundTrip": {
+          "imageDifferenceFraction": 0,
+          "twoPixelCoverageMissFraction": 0,
+          "rawDifferentPixels": 0
+        },
+        "dxfSha256": "cbc09233ba9edb74e7facee790c241be77fa65c7045ce77d2e32fc1b7c2b7ec1"
+      },
+      "automaticContextRestoration": {
+        "firstFrame": [
+          true,
+          false,
+          "cold",
+          "full",
+          9240,
+          1,
+          0,
+          0
+        ],
+        "completionMs": 7.1000001430511475,
+        "automaticFrames": 1,
+        "ownerTriggered": true,
+        "documentUnchanged": true,
+        "cameraUnchanged": true,
+        "rendererResourcesReset": false,
+        "after": {
+          "state": "ready",
+          "rendered": true,
+          "unmaskedVendor": "Google Inc. (Intel)",
+          "unmaskedRenderer": "ANGLE (Intel, Intel(R) UHD Graphics (0x00004688) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+        }
+      },
+      "cleanup": {
+        "outcome": "passed",
+        "documentRestored": true,
+        "historyRestored": true,
+        "cameraRestored": true,
+        "savingStateRestored": true,
+        "rendererResourcesReset": false
+      },
+      "ownedElectronAfter": 0,
+      "pageErrors": []
+    },
+    {
+      "preference": "high-performance",
+      "actualContext": {
+        "state": "ready",
+        "rendered": true,
+        "unmaskedVendor": "Google Inc. (NVIDIA)",
+        "unmaskedRenderer": "ANGLE (NVIDIA, NVIDIA RTX A3000 12GB Laptop GPU (0x000024B9) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      },
+      "rawDataset": {
+        "bytes": 46387201,
+        "sha256": "0f52885fbf3554abacc816f3609c70fb084c7945e4af982cc5969366697d6e68"
+      },
+      "comparisons": {
+        "total": 40,
+        "actualGpu": 18,
+        "zeroGL": 22,
+        "rasterMax": 0.000016387776506483602,
+        "coverageMax": 0
+      },
+      "interiorOracles": 10,
+      "editTransitions": 12,
+      "sourceSafetyControls": 21,
+      "saveReopen": {
+        "nativeHatchRecords": 5,
+        "actualIpc": true,
+        "actualAtomicSave": true,
+        "originalWorldFamiliesAndLoopsPreserved": true,
+        "independentPreSaveCanvasRoundTrip": {
+          "imageDifferenceFraction": 0,
+          "twoPixelCoverageMissFraction": 0,
+          "rawDifferentPixels": 0
+        },
+        "dxfSha256": "cbc09233ba9edb74e7facee790c241be77fa65c7045ce77d2e32fc1b7c2b7ec1"
+      },
+      "automaticContextRestoration": {
+        "firstFrame": [
+          true,
+          false,
+          "cold",
+          "full",
+          9240,
+          1,
+          0,
+          0
+        ],
+        "completionMs": 24.90000009536743,
+        "automaticFrames": 1,
+        "ownerTriggered": true,
+        "documentUnchanged": true,
+        "cameraUnchanged": true,
+        "rendererResourcesReset": false,
+        "after": {
+          "state": "ready",
+          "rendered": true,
+          "unmaskedVendor": "Google Inc. (NVIDIA)",
+          "unmaskedRenderer": "ANGLE (NVIDIA, NVIDIA RTX A3000 12GB Laptop GPU (0x000024B9) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+        }
+      },
+      "cleanup": {
+        "outcome": "passed",
+        "documentRestored": true,
+        "historyRestored": true,
+        "cameraRestored": true,
+        "savingStateRestored": true,
+        "rendererResourcesReset": false
+      },
+      "ownedElectronAfter": 0,
+      "pageErrors": []
+    }
+  ],
+  "privateProofSha256": "f63743451a2c85c3fab09c67fa0510f7fc319b9dad678d652a1806f1f3969e20",
+  "limits": [
+    "Focused native correctness, not throughput or desktop presentation performance.",
+    "Authored private DXF and native Canvas reference, not external AutoCAD fixture verification or a new codec claim.",
+    "These two observed adapters do not establish physical AMD coverage.",
+    "Lead-supplied exact-source ordinary/experimental builds are recorded in the hashed validation summary and build logs. Runner artifacts are matched below; artifact hashes alone are not a build-to-source derivation.",
+    "Focused native hatch probes were private at this checkpoint. The following permanent benchmark hook requires fresh caller integration/native/CI validation."
+  ]
+}

@@ -3,21 +3,54 @@ import { entityBounds } from './entities';
 import type { Bounds, Point } from './geometry';
 import { unionBounds } from './geometry';
 import type { DimStyle } from './dimension';
-import { STANDARD_DIMSTYLE } from './dimension';
+import { STANDARD_DIMSTYLE, ordinateDimensionProblem } from './dimension';
 import type { Linetype } from './linetypes';
 import type { UnitSettings } from './units';
 import { DEFAULT_UNITS } from './units';
 // Paper-space layouts (Track E): the layout model and the paper-space entity projection.
 import type { Layout, SpaceRef } from './layouts';
 import { applyPaperEntities, layoutsOf, paperEntities, paperSpaceLayout, sheetBounds, withLayout } from './layouts';
-import { prepareDrawingState as prepareGeometryState } from './geometry-budget';
+import { prepareDrawingState as prepareGeometryState, validateGeometryBudget } from './geometry-budget';
 import { sealImmutableData } from './immutable-data';
+import { textStylesOf, type TextStyle } from '../io/encoding';
+import { textGeometryForStyles, EMPTY_TEXT_STYLES } from '../render/font-metrics';
+import type { TextGeometryContext } from './text-metrics';
 import type { NativeViewCamera } from './named-view';
 import { reconcileCadGraph, validateCadState, type CadGraph, type CadGraphEditIntent } from './cad-graph';
 
-function prepareDrawingState(state: DrawingState, previous?: DrawingState): DrawingState {
+import type { Model3D } from '../model3d/types';
+import { model3dOf, withModel3D } from '../model3d/model';
+import { validateModel3DState } from '../model3d/state-validation';
+
+function validateDrawingProperties(state: DrawingState, previous?: DrawingState): void {
+  validateModel3DState(state);
   validateCadState(state);
+  const unchanged = previous ? new Set([previous.entities, ...Object.values(previous.blocks).map((b) => b.entities), ...(previous.layouts ?? []).map((l) => l.entities)]) : undefined;
+  for (const list of [state.entities, ...Object.values(state.blocks).map((b) => b.entities), ...(state.layouts ?? []).map((l) => l.entities)]) {
+    if (unchanged?.has(list)) continue;
+    for (const entity of list) if (entity.type === 'dimension' && entity.kind === 'ordinate') {
+      const problem = ordinateDimensionProblem(entity);
+      if (problem) throw new Error(problem);
+    }
+  }
+}
+
+/** Pure complete validation for restored states: no history, sealing or UI mutation. */
+export function validateDrawingState(state: DrawingState, previous?: DrawingState): void {
+  // Only construction/transactions may trust unchanged properties of an accepted
+  // predecessor. Public preflight checks every ordinate even with a prior state.
+  validateDrawingProperties(state);
+  validateGeometryBudget(state, previous);
+}
+
+function prepareDrawingState(state: DrawingState, previous?: DrawingState): DrawingState {
+  validateDrawingProperties(state, previous);
   return prepareGeometryState(state, previous);
+}
+
+/** Prepare a complete graph-aware transition before any history, UI or file mutation. */
+export function prepareDrawingTransition(previous: DrawingState, state: DrawingState, intent?: CadGraphEditIntent): DrawingState {
+  return prepareDrawingState(reconcileCadGraph(previous, state, intent), previous);
 }
 
 /** A named view (VIEW command): world centre and view height. */
@@ -92,6 +125,13 @@ export interface DrawingState {
   readonly layouts?: readonly Layout[];
   /** Active space (CTAB / MSPACE): absent = the Model tab. */
   readonly space?: SpaceRef;
+  /**
+   * Experimental 3D solids (src/model3d), kept apart from the 2D `entities` so no 2D code path
+   * sees them; behind the `experimental3d` setting. Undoable like geometry and checked by the
+   * geometry budget. Not written to DXF / DWG yet (saving asks first, see
+   * model3d/save-guard.ts); absent for ordinary drawings and removed again when the last solid goes.
+   */
+  readonly model3d?: Model3D;
 }
 
 export type DocListener = (doc: Drawing) => void;
@@ -135,7 +175,7 @@ export class Drawing {
   /** Current colour for new objects (CECOLOR; Home > Properties colour combo). 'ByLayer' leaves new objects alone. */
   public currentColor: ColorSpec = 'ByLayer';
 
-  constructor(initial?: Partial<DrawingState>) {
+  constructor(initial?: Partial<DrawingState>, private readonly textGeometryProvider: (styles: Readonly<Record<string, TextStyle>>) => TextGeometryContext = textGeometryForStyles) {
     // Every supplied field is kept (header, space, meta, layouts and anything added later);
     // only the four required ones get defaults.
     const { entities, layers, blocks, currentLayer, ...rest } = initial ?? {};
@@ -239,7 +279,9 @@ export class Drawing {
     this.emit();
   }
 
-  readonly lookupBlock: BlockLookup = (name) => this.state.blocks[name];
+  readonly lookupBlock: BlockLookup = Object.defineProperty((name: string) => this.state.blocks[name], 'textGeometry', {
+    get: () => this.textGeometryProvider(this.state.meta?.textStyles ? textStylesOf(this.state) : EMPTY_TEXT_STYLES),
+  });
 
   layer(name: string): Layer | undefined {
     return this.state.layers.find((l) => l.name === name);
@@ -259,9 +301,19 @@ export class Drawing {
     for (const l of this.listeners) l(this);
   }
 
-  /** Apply a state transition as one undoable step. */
+  /** Apply an active-space state transition as one undoable step. */
   transact(fn: (s: DrawingState) => DrawingState, intent?: CadGraphEditIntent): void {
-    const next = prepareDrawingState(reconcileCadGraph(this.state, this.project(fn), intent), this.state);
+    this.commitTransition(this.project(fn), intent);
+  }
+
+  /** Apply a document-wide transition without projecting the active paper layout. */
+  transactDrawing(fn: (s: DrawingState) => DrawingState, intent?: CadGraphEditIntent): void {
+    this.commitTransition(fn(this.state), intent);
+  }
+
+  /** Shared preparation, bounded undo history and dirty notification for both transaction scopes. */
+  private commitTransition(state: DrawingState, intent?: CadGraphEditIntent): void {
+    const next = prepareDrawingTransition(this.state, state, intent);
     if (next === this.state) return;
     this.undoStack.push(this.state);
     if (this.undoStack.length > this.maxUndo) this.undoStack.shift();
@@ -365,20 +417,46 @@ export class Drawing {
    */
   addEntities(entities: readonly Entity[], applyDefaults = true, intent?: CadGraphEditIntent): void {
     if (entities.length === 0) return;
-    const h = this.header;
-    const wantLt = applyDefaults && h.celtype && h.celtype.toUpperCase() !== 'BYLAYER';
-    const wantLw = applyDefaults && h.celweight !== undefined;
-    const wantColor = applyDefaults && this.currentColor !== 'ByLayer';
-    const list = wantLt || wantLw || wantColor
-      ? entities.map((e) => {
-          let out: Entity = e;
-          if (wantLt && e.linetype === undefined) out = { ...out, linetype: h.celtype } as Entity;
-          if (wantLw && e.lineWeight === undefined) out = { ...out, lineWeight: h.celweight } as Entity;
-          if (wantColor && e.color === 'ByLayer') out = { ...out, color: this.currentColor } as Entity;
-          return out;
-        })
-      : entities;
+    const list = applyDefaults ? this.withEntityDefaults(entities) : entities;
     this.transact((s) => ({ ...s, entities: [...s.entities, ...list] }), intent);
+  }
+
+  /**
+   * The defaults `addEntities` gives new objects: the current linetype / lineweight (CELTYPE /
+   * CELWEIGHT) unless an object already carries one, and the current colour (CECOLOR) for objects
+   * created ByLayer. Returns the input array itself when no default applies. Used by edits that add
+   * objects in a larger single step (experimental 3D: COPY / MIRROR of mixed selections).
+   */
+  withEntityDefaults(entities: readonly Entity[]): readonly Entity[] {
+    const h = this.header;
+    const wantLt = h.celtype && h.celtype.toUpperCase() !== 'BYLAYER';
+    const wantLw = h.celweight !== undefined;
+    const wantColor = this.currentColor !== 'ByLayer';
+    if (!(wantLt || wantLw || wantColor)) return entities;
+    return entities.map((e) => {
+      let out: Entity = e;
+      if (wantLt && e.linetype === undefined) out = { ...out, linetype: h.celtype } as Entity;
+      if (wantLw && e.lineWeight === undefined) out = { ...out, lineWeight: h.celweight } as Entity;
+      if (wantColor && e.color === 'ByLayer') out = { ...out, color: this.currentColor } as Entity;
+      return out;
+    });
+  }
+
+  /**
+   * Experimental 3D: change the drawing's 3D model (`DrawingState.model3d`) as one undoable step,
+   * exactly like a 2D edit (new state, drawing marked modified, listeners notified). `fn` gets the
+   * current model (the empty model when the drawing has none) and returns the new one; returning
+   * it unchanged records nothing. `removeEntityIds` removes 2D entities in the same step (EXTRUDE
+   * / REVOLVE with Delete, ERASE of a mixed selection). Budget errors from `prepareDrawingState`
+   * propagate and leave the document unchanged.
+   */
+  updateModel3D(fn: (model: Model3D) => Model3D, removeEntityIds?: Iterable<string>, intent?: CadGraphEditIntent): void {
+    const drop = new Set(removeEntityIds ?? []);
+    this.transact((s) => {
+      const entities = drop.size ? s.entities.filter((e) => !drop.has(e.id)) : s.entities;
+      const base = entities.length === s.entities.length ? s : { ...s, entities };
+      return withModel3D(base, fn(model3dOf(s)));
+    }, intent);
   }
 
   /** Remove some entities and add others in a single undo step. */

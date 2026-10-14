@@ -1,6 +1,7 @@
 import './styles/app.css';
 import './styles/parity.css';
 import { Editor, type FileBridge } from './app/editor';
+import { installGpuPrototype } from './app/gpu-prototype';
 import { Ribbon, ELECTRICAL_TABS } from './ui/ribbon';
 import { CommandLine } from './ui/commandline';
 import { StatusBar } from './ui/statusbar';
@@ -47,19 +48,28 @@ import { renderSettings, clearImageCache } from './render/draw';
 import { bridgeImageLoader } from './render/images';
 import { installOpenProgress, type OpenProgressBridge } from './ui/open-progress';
 import { registerDwgExportCommand } from './app/export-dwg';
+import { fontMetrics } from './render/font-metrics';
+import { installExperimental3d } from './app/experimental-3d';
 
 declare global {
   interface Window {
+    /** Experimental 3D debug handle (src/app/experimental-3d.ts); set only when the flag is on. */
+    jcad3d?: import('./app/experimental-3d').Experimental3d;
     jcad?: {
-      openDxf(): Promise<{ path: string; text: string } | null>;
+      openShxFont?(): Promise<import('./render/shx-fonts').ShxResource | null>;
+      fontMetrics?(request: import('./core/text-metrics').FontMetricsRequest): Promise<import('./core/text-metrics').NativeFontMetrics | null>;
+      pdfFont?(request: import('./core/text-metrics').FontMetricsRequest): Promise<import('./app/pdf-fonts').PdfFontResult>;
+      openDxf(): Promise<{ path: string; identityPath?: string; openedSourceProof?: string; text: string } | null>;
+      releaseOpenedSourceProof?(proof: string): Promise<void>;
       openDrawing(file?: string): Promise<import('./app/editor').OpenResult | null>;
       openProject(file?: string, opts?: { userChosen?: boolean; textOnly?: boolean }): Promise<{ path: string; text: string } | null>;
-      saveText(suggestName: string, text: string, filterName: string, ext: string): Promise<string | null>;
+      saveText(suggestName: string, text: string, filterName: string, ext: string, opts?: { admission?: string }): Promise<string | null>;
       backupFile?(file: string): Promise<import('./app/editor').BackupResult>;
-      plotPdf(dataUrl: string, suggestName: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }): Promise<string | null>;
+      choosePdfPath?(suggestName: string, admission?: string): Promise<string | null>;
+      plotPdf(dataUrl: string, suggestName: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }, opts?: { path?: string; admission?: string }): Promise<string | null>;
       printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }): Promise<boolean>;
       /** Track E: write vector PDF bytes (save-pdf IPC). */
-      savePdf?(bytes: Uint8Array, suggestName: string): Promise<string | null>;
+      savePdf?(bytes: Uint8Array, suggestName: string, opts?: { path?: string; admission?: string }): Promise<string | null>;
       saveDxf(path: string | null, text: string, suggestName: string, opts?: { backup?: boolean }): Promise<string | null>;
       chooseDrawingPath?(suggestName: string): Promise<string | null>;
       dwgExportStatus?(): Promise<{ available: boolean; reason?: string }>;
@@ -338,6 +348,8 @@ function boot(): void {
 
   const canvas = document.getElementById('drawing') as HTMLCanvasElement;
   const canvasWrap = canvas.parentElement as HTMLElement;
+  if (window.jcad?.platform === 'win32' && window.jcad.fontMetrics) fontMetrics.setReader((request) => window.jcad!.fontMetrics!(request));
+  document.fonts?.addEventListener('loadingdone', () => fontMetrics.invalidateFallbacks());
   const editor = new Editor(canvas);
   editor.fileBridge = window.jcad ?? browserFileBridge();
   registerDwgExportCommand(editor);
@@ -508,6 +520,10 @@ function boot(): void {
     symbolBuilder: createSymbolBuilderUi(editor, document.getElementById('symbol-builder')!),
     importReport: (report, fileName) => importReportDialog(report, fileName),
   };
+
+  // Experimental 3D (inert unless Options > Experimental > 3D modelling was on at startup).
+  const experimental3d = installExperimental3d(editor);
+  if (__JCAD_GPU_EXPERIMENTAL__) installGpuPrototype(editor, () => experimental3d?.active ?? false);
 
   // ------------------------------------------------------------ chrome
   buildTitleBar(editor, document.getElementById('titlebar')!, (anchor) => showAppMenu(editor, anchor, { exit: () => (window.jcad?.quit ? window.jcad.quit() : window.close()) }));

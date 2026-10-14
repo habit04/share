@@ -4,6 +4,7 @@
  * writes, CSV export, Save All) report failures the same way: describeFileError's message.
  */
 import { describeFileError } from './file-errors';
+import { isCommittedSaveAdmissionError, UNVERIFIED_COMMITTED_SAVE_WARNING } from './save-admission';
 
 export interface FileErrorContext {
   action: 'save' | 'read';
@@ -19,6 +20,7 @@ export function fileErrorText(err: unknown, ctx: FileErrorContext = { action: 's
  * the Save dialog (the error carries that path; `name` is only the suggested name).
  */
 export function exportErrorText(err: unknown, name: string): string {
+  if (isCommittedSaveAdmissionError(err)) return UNVERIFIED_COMMITTED_SAVE_WARNING;
   const info = describeFileError(err, { action: 'save' });
   return info.path ? info.message : fileErrorText(err, { action: 'save', path: name });
 }
@@ -29,7 +31,7 @@ export function exportErrorText(err: unknown, name: string): string {
  */
 export function exportFailed(log: (text: string) => void, name: string): (err: unknown) => null {
   return (err) => {
-    log(`Export not saved: ${exportErrorText(err, name)}`);
+    log(`${isCommittedSaveAdmissionError(err) ? 'Export verification failed' : 'Export not saved'}: ${exportErrorText(err, name)}`);
     return null;
   };
 }

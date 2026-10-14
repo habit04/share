@@ -45,7 +45,8 @@ jobs:
           name: native-metadata-fixtures
           path: native-metadata-output/
           if-no-files-found: error
-      - run: npm test
+      # Reduce competing geometry/metadata work without changing any test deadline or assertion.
+      - run: npm test -- --maxWorkers=2
         env:
           # tests/perf.test.ts budgets are 3x the development machine; allow shared runners 2x more.
           JCAD_PERF_FACTOR: 2
@@ -161,9 +162,76 @@ jobs:
           JCAD_E2E_OUT: e2e-output
       - name: Secure origin and one-time preference migration (Windows)
         run: npm run e2e:origin
+      - name: Development DWG writer reproduction bundle
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: development-dwg-writer-${{ matrix.os }}
+          path: |
+            release/dwg-writer/JcadDwgWriter.exe
+            release/dwg-writer/JcadDwgWriter-Source.zip
+            release/dwg-writer/ThirdPartyNotices.json
+            release/dwg-writer/integrity.json
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: e2e-electron-${{ matrix.os }}
           path: e2e-output/
+          if-no-files-found: warn
+
+  # This checks the development flag and real WebGL lifecycle separately from the
+  # ordinary Windows build. Runner graphics capabilities are recorded, not treated
+  # as proof of consumer hardware support; timing comparisons have no speed gate.
+  gpu-experimental:
+    runs-on: windows-latest
+    # Includes setup/build, the native benchmark, recovery and unavailable-device checks.
+    # Individual accuracy, performance and render deadlines remain unchanged.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - run: node node_modules/electron/install.js
+      - run: npm run build
+      - name: Ordinary build keeps Canvas and diagnostics remain usable
+        run: |
+          node scripts/e2e-gpu-default.mjs
+          node scripts/e2e-gpu-diagnostics.mjs
+      - name: Integrated 2D compatibility, real saving and backups
+        run: node scripts/e2e-2d-batch.mjs
+      - run: npm run build:gpu
+      - name: Unavailable WebGL keeps complete Canvas drawings and DXF persistence
+        run: node scripts/e2e-gpu-unavailable.mjs
+      - name: Private GPU-process failure, Canvas recovery and DXF persistence
+        run: node scripts/e2e-gpu-process.mjs --cached-scene
+      - name: Experimental geometry, pan cache, fallback and context restoration
+        run: |
+          node --test scripts/gpu-edit-candidate.test.mjs scripts/gpu-fallback-restoration.test.mjs scripts/gpu-benchmark-fallback.test.mjs scripts/gpu-benchmark-admission.test.mjs scripts/gpu-hatch-cleanup.test.mjs scripts/gpu-dimension-cleanup.test.mjs
+          npm run bench:gpu
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpu-experimental-${{ github.sha }}
+          path: e2e-output/
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integrated-2d-${{ github.sha }}
+          path: |
+            .codex-local/e2e-2d-batch-*/result.json
+            .codex-local/e2e-2d-batch-*/*.png
+            .codex-local/e2e-2d-batch-*/electron.log
+          include-hidden-files: true
           if-no-files-found: warn

@@ -1,0 +1,706 @@
+{
+  "schemaVersion": 1,
+  "status": "Supporting correctness evidence; both aggregate audit outcomes remain INCONCLUSIVE",
+  "purpose": "Preserve producer-bound passed gates and inconclusive native references separately; no performance or production acceptance claim.",
+  "producer": {
+    "compiledSourceSha": "344ec1a11f6d8897e9b8ae1098081b4fd3793bf9",
+    "capturedCurrentSourceShaDpr": "344ec1a11f6d8897e9b8ae1098081b4fd3793bf9",
+    "capturedCurrentSourceShaArc": "344ec1a11f6d8897e9b8ae1098081b4fd3793bf9",
+    "capturedWorktreeModifiedDpr": false,
+    "capturedWorktreeModifiedArc": false,
+    "bindingPath": ".codex-local/validation-344ec1a1/native-accuracy-binding.json",
+    "bindingSha256": "1cef83141adb565c386a93ed689c3970c5f85f727d360e0d19a51b44ad0da5d5",
+    "buildCheckPath": ".codex-local/validation-344ec1a1/experimental-runtime-build-check.json",
+    "buildCheckSha256": "6528dd8c372b5c89ed95bdececa61409fbcefc04466278a5059059651e4f5e25",
+    "buildLogPath": ".codex-local/validation-344ec1a1/experimental-runtime-build.log",
+    "buildLogSha256": "72568c82e6fab1a4f69a6b496a235a681ec31cc1eb93bcb06c2abb35818df8ff",
+    "buildName": "experimental-runtime-build",
+    "recordedBuildExitCode": 0,
+    "distAssets": [
+      {
+        "path": "dist/assets/dimstyle-DPYdesCR.js",
+        "sha256": "18a5da168a43a57ccb44b15445a215eb460b033760c38482f895ca0f5effcd21"
+      },
+      {
+        "path": "dist/assets/index-C9onWPdN.css",
+        "sha256": "984a7fda7d369e83d4828acfd5b7a26d6cd7c48b11f09430d5fe37b1023d113b"
+      },
+      {
+        "path": "dist/assets/index-CV01Sc0F.js",
+        "sha256": "e651d0d68ec4b144b05db17039a6f12c6edaa20d1c0d6c7184b453dd968fa33a"
+      },
+      {
+        "path": "dist/favicon.svg",
+        "sha256": "098625acd0c7b338f10b5df66d837a78731c39448407c9a0b1e5e18ccbe3b8ef"
+      },
+      {
+        "path": "dist/index.html",
+        "sha256": "c3e40e3c4b2d8f08911dac3f34c0d0a6aedfa9006749395129dc10e6d7c40526"
+      }
+    ],
+    "allFiveAssetDigestsMatchedBeforeAndAfterDpr": true,
+    "allFiveAssetDigestsMatchedBeforeAndAfterArc": true,
+    "cleanExactSourceAndManifestBindingGate": "PASS"
+  },
+  "environment": {
+    "platform": "win32",
+    "windows": "10.0.26200",
+    "runtimeVersions": {
+      "electron": "44.7.0",
+      "chromium": "152.0.7977.130",
+      "node": "24.21.0"
+    },
+    "activeAdapter": {
+      "name": "Intel(R) UHD Graphics",
+      "vendorId": "0x8086",
+      "deviceId": "0x4688",
+      "active": true,
+      "driverVendor": "Intel",
+      "driverVersion": "32.0.101.7088"
+    },
+    "actualPrototypeGlVendor": "Google Inc. (Intel)",
+    "actualPrototypeGlRenderer": "ANGLE (Intel, Intel(R) UHD Graphics (0x00004688) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "hardwareAcceleration": true,
+    "privateProfileIdentityVerifiedDpr": true,
+    "privateProfileIdentityVerifiedArc": true,
+    "privateAppsClosedAfterAudits": true,
+    "note": "Only this Intel adapter/runtime was exercised. Inactive NVIDIA adapter presence is not NVIDIA coverage. Profile paths, process identifiers and user directory names are redacted."
+  },
+  "dprAudit": {
+    "evidence": ".codex-local/rounded-dpr-producer-native-GgujJi/result.json",
+    "evidenceSha256": "68718c961c14465a5104c765583042bed6d2dbf2f9364862a49f38184e261113",
+    "log": ".codex-local/validation-344ec1a1/rounded-dpr-producer-native.log",
+    "helper": ".codex-local/rounded-dpr-producer-native-audit.mjs",
+    "overallOutcome": "inconclusive",
+    "pageErrors": [],
+    "scope": "Synthetic logicalCSS1218x551, viewport DPR1.2/1.25, actual window.devicePixelRatio1. No Windows scale change or desktop-presentation claim.",
+    "basePlaneIsolation": "Only private unconditional UCS-icon callback suppressed. Document geometry painters and production source unchanged. Editing-overlay pixels are outside this full-plane probe.",
+    "fullBackingChecks": [
+      {
+        "syntheticDpr": 1.2,
+        "nativeFloatDpr": 1.2000000476837158,
+        "scene": "background-only",
+        "entities": 0,
+        "actualBacking": [
+          1462,
+          661
+        ],
+        "nativeRgbaSha256": "d38ffc5c326a119407c353c83e93e302c0891362503aa44ff83a60a5344e6d17",
+        "gpuRgbaSha256": "d38ffc5c326a119407c353c83e93e302c0891362503aa44ff83a60a5344e6d17",
+        "nativeVsGpuRawRgba": {
+          "rawDifferentPixels": 0,
+          "rawDifferentChannels": 0
+        }
+      },
+      {
+        "syntheticDpr": 1.2,
+        "nativeFloatDpr": 1.2000000476837158,
+        "scene": "cached-lines",
+        "entities": 251,
+        "actualBacking": [
+          1462,
+          661
+        ],
+        "nativeRgbaSha256": "ac7e11605af4e6ba90fe9c38b2bf6ee2fcd9bd639ab08234a8943257b36e33d3",
+        "gpuRgbaSha256": "61519f79a1d81aa5f72779a8c5b8530cad95ffa0bdaff57ed70cf4f12dc61ee2",
+        "nativeVsGpuRawRgba": {
+          "rawDifferentPixels": 2529,
+          "rawDifferentChannels": 7153
+        }
+      },
+      {
+        "syntheticDpr": 1.25,
+        "nativeFloatDpr": 1.25,
+        "scene": "background-only",
+        "entities": 0,
+        "actualBacking": [
+          1523,
+          689
+        ],
+        "nativeRgbaSha256": "3a8f95ce33884287f04f4b010555f15204fa23d939c9f80d59a6e43abcf24a9d",
+        "gpuRgbaSha256": "3a8f95ce33884287f04f4b010555f15204fa23d939c9f80d59a6e43abcf24a9d",
+        "nativeVsGpuRawRgba": {
+          "rawDifferentPixels": 0,
+          "rawDifferentChannels": 0
+        }
+      },
+      {
+        "syntheticDpr": 1.25,
+        "nativeFloatDpr": 1.25,
+        "scene": "cached-lines",
+        "entities": 251,
+        "actualBacking": [
+          1523,
+          689
+        ],
+        "nativeRgbaSha256": "e137742b3a3bfeefb047e589b7d97458b7863c6d67a3d1e7a89cbb03bf4b5798",
+        "gpuRgbaSha256": "21dcf52877757c7d7df42c676bc39daa2931f91e46f37c25608d12ccb16f9d8d",
+        "nativeVsGpuRawRgba": {
+          "rawDifferentPixels": 2160,
+          "rawDifferentChannels": 3520
+        }
+      }
+    ],
+    "originalGeometry": "Near-right-edge ordinary LINE at worldx599, y-100..100, center0, scale1, twist0, green#44bb55; widths1,2.5,16CSS;48x48 physical ROI.",
+    "geometryObservations": [
+      {
+        "syntheticDpr": 1.25,
+        "widthCss": 1,
+        "exactNativeRepeatStable": true,
+        "measuredGpuMinusNativeWeightedCentroidPhysicalPixels": -0.10109289617480499,
+        "nativeConsistency": [
+          {
+            "rawPixels": 0,
+            "rawChannels": 0,
+            "pixelmatchPixels": 0
+          },
+          {
+            "rawPixels": 0,
+            "rawChannels": 0,
+            "pixelmatchPixels": 0
+          },
+          {
+            "rawPixels": 0,
+            "rawChannels": 0,
+            "pixelmatchPixels": 0
+          }
+        ],
+        "nativeRepeat": {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        },
+        "nativeVsPhysicalReference": {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        },
+        "nativeVsGpu": {
+          "rawPixels": 96,
+          "rawChannels": 288,
+          "pixelmatchPixels": 0
+        }
+      },
+      {
+        "syntheticDpr": 1.25,
+        "widthCss": 2.5,
+        "exactNativeRepeatStable": true,
+        "measuredGpuMinusNativeWeightedCentroidPhysicalPixels": 0,
+        "nativeConsistency": [
+          {
+            "rawPixels": 0,
+            "rawChannels": 0,
+            "pixelmatchPixels": 0
+          },
+          {
+            "rawPixels": 0,
+            "rawChannels": 0,
+            "pixelmatchPixels": 0
+          },
+          {
+            "rawPixels": 0,
+            "rawChannels": 0,
+            "pixelmatchPixels": 0
+          }
+        ],
+        "nativeRepeat": {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        },
+        "nativeVsPhysicalReference": {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        },
+        "nativeVsGpu": {
+          "rawPixels": 96,
+          "rawChannels": 288,
+          "pixelmatchPixels": 0
+        }
+      },
+      {
+        "syntheticDpr": 1.25,
+        "widthCss": 16,
+        "exactNativeRepeatStable": true,
+        "measuredGpuMinusNativeWeightedCentroidPhysicalPixels": 0,
+        "nativeConsistency": [
+          {
+            "rawPixels": 0,
+            "rawChannels": 0,
+            "pixelmatchPixels": 0
+          },
+          {
+            "rawPixels": 0,
+            "rawChannels": 0,
+            "pixelmatchPixels": 0
+          },
+          {
+            "rawPixels": 0,
+            "rawChannels": 0,
+            "pixelmatchPixels": 0
+          }
+        ],
+        "nativeRepeat": {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        },
+        "nativeVsPhysicalReference": {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        },
+        "nativeVsGpu": {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        }
+      },
+      {
+        "syntheticDpr": 1.2,
+        "widthCss": 1,
+        "exactNativeRepeatStable": false,
+        "measuredGpuMinusNativeWeightedCentroidPhysicalPixels": null,
+        "nativeConsistency": [
+          {
+            "rawPixels": 48,
+            "rawChannels": 48,
+            "pixelmatchPixels": 0
+          },
+          {
+            "rawPixels": 0,
+            "rawChannels": 0,
+            "pixelmatchPixels": 0
+          },
+          {
+            "rawPixels": 0,
+            "rawChannels": 0,
+            "pixelmatchPixels": 0
+          }
+        ],
+        "nativeRepeat": {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        },
+        "nativeVsPhysicalReference": {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        },
+        "nativeVsGpu": {
+          "rawPixels": 48,
+          "rawChannels": 144,
+          "pixelmatchPixels": 0
+        }
+      },
+      {
+        "syntheticDpr": 1.2,
+        "widthCss": 2.5,
+        "exactNativeRepeatStable": true,
+        "measuredGpuMinusNativeWeightedCentroidPhysicalPixels": -0.09772727272729753,
+        "nativeConsistency": [
+          {
+            "rawPixels": 0,
+            "rawChannels": 0,
+            "pixelmatchPixels": 0
+          },
+          {
+            "rawPixels": 0,
+            "rawChannels": 0,
+            "pixelmatchPixels": 0
+          },
+          {
+            "rawPixels": 0,
+            "rawChannels": 0,
+            "pixelmatchPixels": 0
+          }
+        ],
+        "nativeRepeat": {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        },
+        "nativeVsPhysicalReference": {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        },
+        "nativeVsGpu": {
+          "rawPixels": 96,
+          "rawChannels": 288,
+          "pixelmatchPixels": 0
+        }
+      },
+      {
+        "syntheticDpr": 1.2,
+        "widthCss": 16,
+        "exactNativeRepeatStable": true,
+        "measuredGpuMinusNativeWeightedCentroidPhysicalPixels": 0.02797805230488848,
+        "nativeConsistency": [
+          {
+            "rawPixels": 0,
+            "rawChannels": 0,
+            "pixelmatchPixels": 0
+          },
+          {
+            "rawPixels": 0,
+            "rawChannels": 0,
+            "pixelmatchPixels": 0
+          },
+          {
+            "rawPixels": 0,
+            "rawChannels": 0,
+            "pixelmatchPixels": 0
+          }
+        ],
+        "nativeRepeat": {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        },
+        "nativeVsPhysicalReference": {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        },
+        "nativeVsGpu": {
+          "rawPixels": 48,
+          "rawChannels": 144,
+          "pixelmatchPixels": 0
+        }
+      }
+    ],
+    "inconclusive": {
+      "case": "DPR1.2 / width1CSS",
+      "observedNativeFirstToSecond": {
+        "rawPixels": 48,
+        "rawChannels": 48,
+        "pixelmatchPixels": 0,
+        "changedChannel": "R",
+        "before": 40,
+        "after": 39,
+        "physicalX": 1450,
+        "physicalYRange": [
+          307,
+          354
+        ]
+      },
+      "nativeSecondToThirdAndThirdToFourthExact": true,
+      "nativePostIndependentReferenceRedrawExact": true,
+      "settledNativeEqualsIndependentFloatDprPhysicalReferenceExact": true,
+      "gpuVsSettledNative": {
+        "rawPixels": 48,
+        "rawChannels": 144,
+        "pixelmatchPixels": 0
+      },
+      "centroidClaimWithheld": true
+    },
+    "strictReadOnlyInterpretation": "The first native drift occurs in the native-only capture loop before this case enters GPU mode. It demonstrates native-reference instability under the current harness/readback conditions, not a GPU-caused drift. The backend/readback cause is unproved. Later settled reference agreement does not erase the observed drift or certify the thin-line GPU result.",
+    "rasterScope": "Cached foreground Canvas-vs-GPU fullRGBA differences2529pixels(DPR1.2)/2160pixels(DPR1.25) are recorded, not asserted exact. Strict cache gates compare Canvas cache/cold/restore; strict cross-renderer fullRGBA equality covers background-only scenes. Pixelmatch/centroid observations do not establish a universal quarter-physical-pixel bound.",
+    "strictFullBackingGatesAllFourCases": {
+      "nativeConsecutiveFullRgbaExact": "PASS",
+      "gpuConsecutiveFullRgbaExact": "PASS",
+      "allNativeAndGpuBackingPixelsOpaque": "PASS",
+      "allMainCanvasBackingPixelsZeroAfterGpu": "PASS",
+      "documentAndCameraUnchanged": "PASS",
+      "actualCanvasGpuFramebufferDimensionsMatch": "PASS",
+      "losslessPngMatchesRawRgbaHash": "PASS"
+    },
+    "strictScopedFullBackingGates": {
+      "backgroundOnlyBothDpr": "PASS: every pixel exactbackground RGB33,40,48 alpha255 and crossrenderer fullRGBA equality",
+      "cached251LinesBothDpr": "PASS: exactstate bitmap/cold RGBA, actual backing, identity3arg drawImage, two fullRGBA restores after GPUclear",
+      "allSixGeometryCasesEdgeRois": "PASS: lastphysicalcolumn/row native/GPU RGBA exact, each renderer repeat exact",
+      "allSixGeometryCases": "PASS: actual rendered completed GPU owner, source/camera unchanged, opaque usable ROI and zeroeditingoverlay ROI"
+    },
+    "sharedGeometryMetadata": {
+      "logicalCss": [
+        1218,
+        551
+      ],
+      "actualWindowDpr": 1,
+      "viewCenter": [
+        0,
+        0
+      ],
+      "scale": 1,
+      "twist": 0,
+      "nativeLineCssX": 1208,
+      "nativeLineCssY": [
+        375.5,
+        175.5
+      ],
+      "color": "#44bb55",
+      "cap": "butt",
+      "join": "miter",
+      "initialUploadedBytesAllCases": 168,
+      "gpuRoiCachedRedrawBytesAllCases": 0,
+      "shaderMapping": "u_view logical1218x551,u_backing actualrounded dimensions,u_nativeDPR recordedFloatDPR,u_pan0,u_zoom1",
+      "independentNativePhysicalX": {
+        "dpr1_2": 1449.6000576019287,
+        "dpr1_25": 1510
+      },
+      "historicalOldGpuX": {
+        "dpr1_2": 1449.9967159277503,
+        "dpr1_25": 1510.495894909688
+      },
+      "historicalMappingNotCurrentProducerPrediction": true
+    }
+  },
+  "arcFallbackAudit": {
+    "evidence": ".codex-local/direct-arc-producer-fallback-QNDbsR/result.json",
+    "evidenceSha256": "9e157b3849782f9968ec655be4ee60c309548094022bae3c2c10f3cc0418ed01",
+    "log": ".codex-local/validation-344ec1a1/direct-arc-producer-fallback.log",
+    "helper": ".codex-local/direct-arc-producer-fallback-audit.mjs",
+    "overallOutcome": "inconclusive",
+    "pageErrors": [],
+    "originalAliasPair": "Worldcenter(-40000000,0) vs(-40000000.75,0), radius40000000, start0/end2e-6, view1216x552/DPR1/twist0/scale1/center0, widths16and2.5CSS; inputs preserved.",
+    "fullCanvasScope": "Ordinary UCS editing overlay retained; full-canvas foreground summaries are not counts of ARC geometry alone. Independent native LINE ROI proves usable Canvas.",
+    "observations": [
+      {
+        "worldCenterX": -40000000,
+        "widthCss": 16,
+        "referenceDriftObserved": true,
+        "stablePairEnds": [
+          2,
+          4
+        ],
+        "selectedStablePairEnd": 4,
+        "uniqueReferenceRgbaHashes": [
+          "57457ae0b5ea9de9d50cb883be477f7610095b30d3d95a2d7b6fd1b76d6d85cb",
+          "ff8f2b55d7aefb6bbfc239aaaf4090dea4350615192c262d03e5a56858427af1"
+        ],
+        "referenceConsecutiveComparisons": [
+          null,
+          {
+            "rawDifferentPixels": 0,
+            "rawDifferentChannels": 0
+          },
+          {
+            "rawDifferentPixels": 1228,
+            "rawDifferentChannels": 3611
+          },
+          {
+            "rawDifferentPixels": 0,
+            "rawDifferentChannels": 0
+          }
+        ],
+        "fallbackRgbaSha256": "ff8f2b55d7aefb6bbfc239aaaf4090dea4350615192c262d03e5a56858427af1",
+        "bothFallbackVsStableReference": [
+          {
+            "rawDifferentPixels": 0,
+            "rawDifferentChannels": 0
+          },
+          {
+            "rawDifferentPixels": 0,
+            "rawDifferentChannels": 0
+          }
+        ],
+        "independentLineRoiForegroundPixels": 384,
+        "actualNativeArcCenterX": -39999392
+      },
+      {
+        "worldCenterX": -40000000.75,
+        "widthCss": 16,
+        "referenceDriftObserved": false,
+        "stablePairEnds": [
+          2,
+          3,
+          4
+        ],
+        "selectedStablePairEnd": 4,
+        "uniqueReferenceRgbaHashes": [
+          "ff8f2b55d7aefb6bbfc239aaaf4090dea4350615192c262d03e5a56858427af1"
+        ],
+        "referenceConsecutiveComparisons": [
+          null,
+          {
+            "rawDifferentPixels": 0,
+            "rawDifferentChannels": 0
+          },
+          {
+            "rawDifferentPixels": 0,
+            "rawDifferentChannels": 0
+          },
+          {
+            "rawDifferentPixels": 0,
+            "rawDifferentChannels": 0
+          }
+        ],
+        "fallbackRgbaSha256": "ff8f2b55d7aefb6bbfc239aaaf4090dea4350615192c262d03e5a56858427af1",
+        "bothFallbackVsStableReference": [
+          {
+            "rawDifferentPixels": 0,
+            "rawDifferentChannels": 0
+          },
+          {
+            "rawDifferentPixels": 0,
+            "rawDifferentChannels": 0
+          }
+        ],
+        "independentLineRoiForegroundPixels": 384,
+        "actualNativeArcCenterX": -39999392.75
+      },
+      {
+        "worldCenterX": -40000000,
+        "widthCss": 2.5,
+        "referenceDriftObserved": false,
+        "stablePairEnds": [
+          2,
+          3,
+          4
+        ],
+        "selectedStablePairEnd": 4,
+        "uniqueReferenceRgbaHashes": [
+          "ff8f2b55d7aefb6bbfc239aaaf4090dea4350615192c262d03e5a56858427af1"
+        ],
+        "referenceConsecutiveComparisons": [
+          null,
+          {
+            "rawDifferentPixels": 0,
+            "rawDifferentChannels": 0
+          },
+          {
+            "rawDifferentPixels": 0,
+            "rawDifferentChannels": 0
+          },
+          {
+            "rawDifferentPixels": 0,
+            "rawDifferentChannels": 0
+          }
+        ],
+        "fallbackRgbaSha256": "ff8f2b55d7aefb6bbfc239aaaf4090dea4350615192c262d03e5a56858427af1",
+        "bothFallbackVsStableReference": [
+          {
+            "rawDifferentPixels": 0,
+            "rawDifferentChannels": 0
+          },
+          {
+            "rawDifferentPixels": 0,
+            "rawDifferentChannels": 0
+          }
+        ],
+        "independentLineRoiForegroundPixels": 96,
+        "actualNativeArcCenterX": -39999392
+      },
+      {
+        "worldCenterX": -40000000.75,
+        "widthCss": 2.5,
+        "referenceDriftObserved": false,
+        "stablePairEnds": [
+          2,
+          3,
+          4
+        ],
+        "selectedStablePairEnd": 4,
+        "uniqueReferenceRgbaHashes": [
+          "ff8f2b55d7aefb6bbfc239aaaf4090dea4350615192c262d03e5a56858427af1"
+        ],
+        "referenceConsecutiveComparisons": [
+          null,
+          {
+            "rawDifferentPixels": 0,
+            "rawDifferentChannels": 0
+          },
+          {
+            "rawDifferentPixels": 0,
+            "rawDifferentChannels": 0
+          },
+          {
+            "rawDifferentPixels": 0,
+            "rawDifferentChannels": 0
+          }
+        ],
+        "fallbackRgbaSha256": "ff8f2b55d7aefb6bbfc239aaaf4090dea4350615192c262d03e5a56858427af1",
+        "bothFallbackVsStableReference": [
+          {
+            "rawDifferentPixels": 0,
+            "rawDifferentChannels": 0
+          },
+          {
+            "rawDifferentPixels": 0,
+            "rawDifferentChannels": 0
+          }
+        ],
+        "independentLineRoiForegroundPixels": 96,
+        "actualNativeArcCenterX": -39999392.75
+      }
+    ],
+    "inconclusive": {
+      "case": "centerX-40000000 / width16CSS",
+      "nativeFirstAndSecondRgbaSha256": "57457ae0b5ea9de9d50cb883be477f7610095b30d3d95a2d7b6fd1b76d6d85cb",
+      "nativeSecondToThird": {
+        "rawDifferentPixels": 1228,
+        "rawDifferentChannels": 3611
+      },
+      "nativeThirdAndFourthRgbaSha256": "ff8f2b55d7aefb6bbfc239aaaf4090dea4350615192c262d03e5a56858427af1",
+      "bothFallbackFramesEqualLatestStablePairExact": true,
+      "otherThreeCasesAllFourNativeCapturesExact": true,
+      "note": "All four strict complete-Canvas fallback assertions passed; one observed native reference transition keeps the overall audit inconclusive. No rerun substituted for original captures."
+    },
+    "provenScope": "Original unsafe parameter-alias inputs are refused before GL work, and complete opaque Canvas fallback matches the latest consecutive stable native reference. This is no new ARC GPU admission or native angle/conic/backend accuracy proof.",
+    "strictCapturedGatesAllFourCases": {
+      "exactSignedParameterRefusal": "PASS",
+      "renderedFalseZeroBytesZeroUploadCalls": "PASS",
+      "instrumentedNoBufferDataNoBufferSubDataNoClearNoDrawArrays": "PASS",
+      "gpuOverlayInlineAndComputedHidden": "PASS",
+      "twoConsecutiveReferenceFullRgbaWithinFourCaptures": "PASS",
+      "bothFallbackFullRgbaEqualSelectedStableReference": "PASS",
+      "allFullBackingPixelsOpaque": "PASS",
+      "healthyPrivateGpuContextAndUsableCanvasLineControl": "PASS",
+      "exactOriginalPainterArgumentsAndPairFloatAliases": "PASS",
+      "sourceDocumentCameraAndBackingUnchanged": "PASS",
+      "losslessPngMatchesRawRgbaHash": "PASS"
+    },
+    "sharedCapturedMetadata": {
+      "actualLogicalCssAndBacking": [
+        1216,
+        552
+      ],
+      "actualWindowAndViewportDpr": 1,
+      "refusalReason": "Unsupported Canvas stroke construction: native float curve parameters exceed precision budget",
+      "actualGlCallsAllCases": {
+        "bufferData": 0,
+        "bufferSubData": 0,
+        "clear": 0,
+        "drawArrays": 0
+      },
+      "nativeTupleDerivedFromRecordedArgumentsAllCases": [
+        -39999392,
+        276,
+        40000000,
+        0,
+        -0.0000019999999949504854,
+        true
+      ],
+      "floatTupleNotNativeStorageIntrospection": true,
+      "nativeContextLostAllCases": false
+    }
+  },
+  "explicitLimits": [
+    "No timing or performance claim; no benchmark samples taken by these accuracy helpers.",
+    "Synthetic fractional DPR is not actual Windows desktop scale or actualwindow.devicePixelRatio.",
+    "One Intel/ANGLE D3D11 runtime does not establish other adapter, driver, renderer backend or Windows hardware coverage.",
+    "Float tuples are calculated from actual recorded Canvas painter arguments using pinned casts, not native internal storage introspection.",
+    "Center/radius/oval parameter guard and observed safe fallback do not prove native angle/libm/conic behavior or universal Canvas raster accuracy.",
+    "Every observed native-reference drift remains INCONCLUSIVE; later stable pairs and tolerated pixelmatch differences are not substitutes for exact-repeat claims."
+  ],
+  "preservation": {
+    "originalsRetained": true,
+    "originalRawArraysAndPngsRetainedInEvidenceFolders": true,
+    "old9dfAssetsAndEvidenceUnchanged": true,
+    "oldAssets": ".codex-local/validation-9df70df0/compiled-dist-for-audits",
+    "oldDprEvidence": ".codex-local/rounded-dpr-native-mhbi77/result.json",
+    "oldArcEvidence": ".codex-local/direct-arc-alias-native-1wVHqB/result.json",
+    "trackedFilesEditedForThisSummary": false,
+    "newNativeLaunchesForThisSummary": 0,
+    "newTestsOrBuildsForThisSummary": 0
+  },
+  "exportProvenance": {
+    "producerSourceSha": "344ec1a11f6d8897e9b8ae1098081b4fd3793bf9",
+    "privateHostPathsOmitted": true,
+    "originalCapturesPreservedPrivately": true,
+    "numericMeasurementsRetained": true
+  }
+}

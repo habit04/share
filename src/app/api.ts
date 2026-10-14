@@ -274,10 +274,11 @@ function logText(msg: unknown): string {
 // ------------------------------------------------------------------ per-editor hub (events, transactions, registry)
 
 type Listener = (payload?: unknown) => void;
+type OwnedListener = { fn: Listener; owner: string; active: () => boolean };
 
 interface Hub {
   editor: Editor;
-  listeners: Map<ApiEvent, Set<{ fn: Listener; owner: string }>>;
+  listeners: Map<ApiEvent, Set<OwnedListener>>;
   pending: DrawingState | null;
   /** Command definitions registered through the API, with the owning plugin. */
   owned: Map<CommandDef, string>;
@@ -287,10 +288,16 @@ interface Hub {
 
 const hubs = new WeakMap<Editor, Hub>();
 
+/** Plugin code may throw arbitrary values, including hostile conversion hooks. */
+export function pluginErrorMessage(err: unknown): string {
+  try { return String(err instanceof Error ? err.message : err); }
+  catch { return 'Plugin error could not be displayed.'; }
+}
+
 function reportError(editor: Editor, owner: string, err: unknown, where: string): void {
-  const msg = err instanceof Error ? err.message : String(err);
-  editor.log(`[${owner}] ${where}: ${msg}`);
-  if (typeof console !== 'undefined') console.error(`[jcad plugin ${owner}] ${where}`, err);
+  const msg = pluginErrorMessage(err);
+  try { editor.log(`[${owner}] ${where}: ${msg}`); } catch { /* Error reporting must not interrupt API cleanup. */ }
+  try { if (typeof console !== 'undefined') console.error(`[jcad plugin ${owner}] ${where}`, err); } catch { /* Best-effort diagnostics. */ }
 }
 
 function hubOf(editor: Editor): Hub {
@@ -300,11 +307,12 @@ function hubOf(editor: Editor): Hub {
   hubs.set(editor, hub);
   const emit = (ev: ApiEvent, payload?: unknown) => {
     for (const l of [...(hub.listeners.get(ev) ?? [])]) {
+      if (!l.active()) continue;
       try {
         const r = l.fn(payload) as unknown;
-        if (r && typeof (r as Promise<unknown>).then === 'function') (r as Promise<unknown>).catch((err) => hub.log(l.owner, err, `${ev} listener`));
+        if (r && typeof (r as Promise<unknown>).then === 'function') (r as Promise<unknown>).catch((err) => { if (l.active()) hub.log(l.owner, err, `${ev} listener`); });
       } catch (err) {
-        hub.log(l.owner, err, `${ev} listener`);
+        if (l.active()) hub.log(l.owner, err, `${ev} listener`);
       }
     }
   };
@@ -396,7 +404,8 @@ function pluginStore(owner: string): { read(): Record<string, unknown>; write(v:
 
 const hasDom = () => typeof document !== 'undefined' && typeof document.createElement === 'function';
 
-function openDialog(editor: Editor, options: string | DialogOptions): Promise<string | null> {
+function openDialog(editor: Editor, options: string | DialogOptions, signal?: AbortSignal): Promise<string | null> {
+  if (signal?.aborted) return Promise.resolve(null);
   const o: DialogOptions = typeof options === 'string' ? { html: options } : options;
   if (!hasDom()) {
     editor.log(o.text ?? (o.html ?? '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim());
@@ -408,9 +417,12 @@ function openDialog(editor: Editor, options: string | DialogOptions): Promise<st
     const close = (result: string | null = null) => {
       if (done) return;
       done = true;
+      signal?.removeEventListener('abort', abort);
       m.close();
       resolve(result);
     };
+    const abort = () => close(null);
+    signal?.addEventListener('abort', abort, { once: true });
     m.onClose(() => close(null));
     if (o.html !== undefined) m.body.innerHTML = o.html;
     else {
@@ -429,26 +441,36 @@ function openDialog(editor: Editor, options: string | DialogOptions): Promise<st
 }
 
 /** Native file picker (works in the browser and in Electron's renderer). */
-export function pickTextFile(accept: string, maximum = MAX_DRAWING_FILE_BYTES): Promise<{ name: string; text: string } | null> {
-  if (!hasDom()) return Promise.resolve(null);
+export function pickTextFile(accept: string, maximum = MAX_DRAWING_FILE_BYTES, signal?: AbortSignal): Promise<{ name: string; text: string } | null> {
+  if (signal?.aborted || !hasDom()) return Promise.resolve(null);
   return new Promise((resolve, reject) => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = accept;
     input.style.display = 'none';
+    let done = false;
+    const finish = (result: { name: string; text: string } | null, error?: unknown) => {
+      if (done) return;
+      done = true;
+      signal?.removeEventListener('abort', abort);
+      input.remove();
+      if (error !== undefined) reject(error); else resolve(result);
+    };
+    const abort = () => finish(null);
+    signal?.addEventListener('abort', abort, { once: true });
     input.addEventListener('change', () => {
+      if (done) return;
       const f = input.files?.[0];
       input.remove();
-      if (!f) return resolve(null);
-      try { ensureFileLimit(f, maximum); } catch (error) { reject(error); return; }
+      if (!f) return finish(null);
+      try { ensureFileLimit(f, maximum); } catch (error) { finish(null, error); return; }
       void f.text().then(
-        (text) => resolve({ name: f.name, text }),
-        () => resolve(null),
+        (text) => finish({ name: f.name, text }),
+        () => finish(null),
       );
     });
     input.addEventListener('cancel', () => {
-      input.remove();
-      resolve(null);
+      finish(null);
     });
     document.body.appendChild(input);
     input.click();
@@ -469,40 +491,76 @@ export interface ApiHandle {
  */
 export function createApi(editor: Editor, owner: string): ApiHandle {
   const hub = hubOf(editor);
-  const doc = () => editor.doc;
-  const state = () => hub.pending ?? editor.doc.snapshot;
+  const doc = () => { guard(); return editor.doc; };
+  const state = () => { guard(); return hub.pending ?? editor.doc.snapshot; };
   const mutate = (fn: (s: DrawingState) => DrawingState, intent?: CadGraphEditIntent) => {
+    guard();
     if (hub.pending) hub.pending = reconcileCadGraph(hub.pending, fn(hub.pending), intent);
     else editor.doc.transact(fn, intent);
   };
   const myCommands = new Set<CommandDef>();
-  const myListeners: Array<{ ev: ApiEvent; entry: { fn: Listener; owner: string } }> = [];
+  const myListeners: Array<{ ev: ApiEvent; entry: OwnedListener }> = [];
   const unloaders: Array<() => void> = [];
   let disposed = false;
+  let disposing = false;
+  const pending = new Set<() => void>();
   const guard = () => {
     if (disposed) throw new Error(`Plugin "${owner}" has been unloaded.`);
   };
 
+  /** Cancel API-owned work promptly; suppress results from external work that
+   * cannot be stopped (such as an already-open native save dialog). */
+  function revocable<T>(work: (signal: AbortSignal) => Promise<T>, cancelValue: T): Promise<T> {
+    guard();
+    return new Promise<T>((resolve, reject) => {
+      const controller = new AbortController();
+      let settled = false;
+      const finish = (value: T, rejected = false, error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        pending.delete(cancel);
+        if (rejected) reject(error); else resolve(value);
+      };
+      const cancel = () => { finish(cancelValue); controller.abort(); };
+      pending.add(cancel);
+      try {
+        Promise.resolve(work(controller.signal)).then(
+          (value) => finish(disposed ? cancelValue : value),
+          (error: unknown) => finish(cancelValue, !disposed, error),
+        );
+      } catch (error) { finish(cancelValue, true, error); }
+    });
+  }
+
   /** Run a prompt as a tiny generator tool; resolves `cancelValue` on Esc or when another command starts. */
   function promptTool<T>(name: string, body: (ctx: ToolContext) => Step<T>, cancelValue: T): Promise<T> {
-    guard();
-    return new Promise<T>((resolve) => {
+    return revocable((signal) => new Promise<T>((resolve) => {
       let settled = false;
+      let context: ToolContext | null = null;
       const settle = (v: T) => {
         if (settled) return;
         settled = true;
+        signal.removeEventListener('abort', cancel);
         resolve(v);
       };
-      editor.startTool(
-        scriptTool(name, function* (ctx) {
-          try {
-            settle(yield* body(ctx));
-          } finally {
-            settle(cancelValue);
-          }
-        }),
-      );
-    });
+      const tool = scriptTool(name, function* (ctx) {
+        context = ctx;
+        try {
+          settle(yield* body(ctx));
+        } finally {
+          settle(cancelValue);
+        }
+      });
+      const cancel = () => {
+        settle(cancelValue);
+        if (editor.tool === tool && context) {
+          tool.onCancel(context);
+          if (editor.tool === tool) editor.finishTool();
+        }
+      };
+      signal.addEventListener('abort', cancel, { once: true });
+      editor.startTool(tool);
+    }), cancelValue);
   }
 
   const commands: JcadApi['commands'] = {
@@ -522,11 +580,12 @@ export function createApi(editor: Editor, owner: string): ApiHandle {
         description: String(cmd.description ?? `${name} (plugin ${owner})`),
         startsTool: false,
         run: (_ed, arg) => {
+          if (disposed) return;
           try {
             const r = cmd.run(api, arg) as unknown;
-            if (r && typeof (r as Promise<unknown>).then === 'function') (r as Promise<unknown>).catch((err) => hub.log(owner, err, `command ${name}`));
+            if (r && typeof (r as Promise<unknown>).then === 'function') (r as Promise<unknown>).catch((err) => { if (!disposed) hub.log(owner, err, `command ${name}`); });
           } catch (err) {
-            hub.log(owner, err, `command ${name}`);
+            if (!disposed) hub.log(owner, err, `command ${name}`);
           }
         },
       };
@@ -547,6 +606,7 @@ export function createApi(editor: Editor, owner: string): ApiHandle {
       }
     },
     list() {
+      guard();
       const seen = new Set<CommandDef>();
       const out: CommandInfo[] = [];
       for (const d of editor.commands.values()) {
@@ -565,7 +625,7 @@ export function createApi(editor: Editor, owner: string): ApiHandle {
   }
 
   const documentApi: JcadApi['document'] = {
-    info: () => frozenCopy({ fileName: editor.fileName(), filePath: doc().filePath, dirty: doc().dirty }),
+    info: () => { guard(); return frozenCopy({ fileName: editor.fileName(), filePath: doc().filePath, dirty: doc().dirty }); },
     entities(filter) {
       const list = state().entities.filter((e) => (!filter?.type || e.type === filter.type) && (!filter?.layer || e.layer === filter.layer));
       return Object.freeze(list.map((e) => frozenCopy(e)));
@@ -574,7 +634,7 @@ export function createApi(editor: Editor, owner: string): ApiHandle {
       const e = state().entities.find((x) => x.id === id);
       return e ? frozenCopy(e) : null;
     },
-    selection: () => [...editor.selection],
+    selection: () => { guard(); return [...editor.selection]; },
     select(ids) {
       guard();
       const have = new Set(state().entities.map((e) => e.id));
@@ -628,12 +688,24 @@ export function createApi(editor: Editor, owner: string): ApiHandle {
     transact<T>(fn: () => T): T {
       guard();
       if (typeof fn !== 'function') throw new TypeError('transact needs a function.');
-      if (hub.pending) return fn(); // nested: part of the outer step
+      const execute = () => {
+        const result = fn();
+        guard();
+        const asynchronous = result && typeof (result as unknown as Promise<unknown>).then === 'function';
+        // Inspecting an arbitrary return value can itself execute plugin code.
+        guard();
+        if (asynchronous) throw new Error('transact callbacks must be synchronous (one undo step); await prompts before calling transact.');
+        return result;
+      };
+      if (hub.pending) {
+        const before = hub.pending;
+        try { return execute(); }
+        catch (err) { hub.pending = before; throw err; }
+      }
       hub.pending = editor.doc.snapshot;
       let result: T;
       try {
-        result = fn();
-        if (result && typeof (result as unknown as Promise<unknown>).then === 'function') throw new Error('transact callbacks must be synchronous (one undo step); await prompts before calling transact.');
+        result = execute();
       } catch (err) {
         hub.pending = null;
         throw err;
@@ -683,18 +755,18 @@ export function createApi(editor: Editor, owner: string): ApiHandle {
   };
 
   const ui: JcadApi['ui'] = {
-    log: (msg) => editor.log(logText(msg)),
+    log: (msg) => { guard(); editor.log(logText(msg)); },
     prompt: (text, dflt) => promptTool('PROMPT', () => textStep(`${text}${dflt !== undefined ? ` <${dflt}>` : ''}`.trim(), dflt ?? '', true), null as string | null),
     pick: {
       point: (prompt = 'Specify point:') => promptTool('GETPOINT', (ctx) => pointStep(ctx, prompt), null as Point | null),
       entities: (prompt = 'Select objects:') => promptTool('SELECT', (ctx) => selectStep(ctx, prompt, false), [] as string[]),
     },
-    alert: (msg, title) => openDialog(editor, { title: title ?? owner, text: String(msg) }).then(() => undefined),
-    confirm: (msg, title) => {
+    alert: (msg, title) => revocable((signal) => openDialog(editor, { title: title ?? owner, text: String(msg) }, signal).then(() => undefined), undefined),
+    confirm: (msg, title) => revocable((signal) => {
       if (!hasDom()) return (editor.ui?.confirm(title ?? owner, String(msg)) ?? Promise.resolve(false)).then(Boolean);
-      return openDialog(editor, { title: title ?? owner, text: String(msg), buttons: ['Yes', 'No'] }).then((r) => r === 'Yes');
-    },
-    openDialog: (options) => openDialog(editor, options),
+      return openDialog(editor, { title: title ?? owner, text: String(msg), buttons: ['Yes', 'No'] }, signal).then((r) => r === 'Yes');
+    }, false),
+    openDialog: (options) => revocable((signal) => openDialog(editor, options, signal), null),
   };
 
   const events: JcadApi['events'] = {
@@ -702,7 +774,7 @@ export function createApi(editor: Editor, owner: string): ApiHandle {
       guard();
       if (!API_EVENTS.includes(ev)) throw new TypeError(`Unknown event "${String(ev)}". Events: ${API_EVENTS.join(', ')}.`);
       if (typeof fn !== 'function') throw new TypeError('events.on needs a listener function.');
-      const entry = { fn, owner };
+      const entry = { fn, owner, active: () => !disposed };
       let set = hub.listeners.get(ev);
       if (!set) hub.listeners.set(ev, (set = new Set()));
       set.add(entry);
@@ -710,20 +782,22 @@ export function createApi(editor: Editor, owner: string): ApiHandle {
       return () => events.off(ev, fn);
     },
     off(ev, fn) {
-      const set = hub.listeners.get(ev);
-      if (!set) return;
-      for (const entry of set)
-        if (entry.fn === fn && entry.owner === owner) {
-          set.delete(entry);
-          const i = myListeners.findIndex((l) => l.entry === entry);
-          if (i >= 0) myListeners.splice(i, 1);
+      // Cleanup handles remain harmless after disposal and never remove a newer
+      // handle's listener, even when it has the same owner and callback.
+      for (let i = myListeners.length - 1; i >= 0; i--) {
+        const listener = myListeners[i]!;
+        if (listener.ev === ev && listener.entry.fn === fn) {
+          hub.listeners.get(ev)?.delete(listener.entry);
+          myListeners.splice(i, 1);
         }
+      }
     },
   };
 
   const store = pluginStore(owner);
   const settings: JcadApi['settings'] = {
     get(key) {
+      guard();
       const k = String(key);
       if (k.startsWith('plugin:')) return store.read()[k.slice(7)];
       if (!READABLE_SETTINGS.includes(k)) throw new Error(`Setting "${k}" is not available to plugins. Use "plugin:<name>" keys for your own settings.`);
@@ -748,11 +822,11 @@ export function createApi(editor: Editor, owner: string): ApiHandle {
       editor.notify('snap');
       editor.render();
     },
-    keys: () => [...READABLE_SETTINGS],
+    keys: () => { guard(); return [...READABLE_SETTINGS]; },
   };
 
   const files: JcadApi['files'] = {
-    readText: (accept = '.txt,.csv,.json,.js,.scr,.dxf') => pickTextFile(accept),
+    readText: (accept = '.txt,.csv,.json,.js,.scr,.dxf') => revocable((signal) => pickTextFile(accept, MAX_DRAWING_FILE_BYTES, signal), null),
     async saveText(name, text, filterName = 'Text') {
       guard();
       const ext = /\.([A-Za-z0-9]+)$/.exec(name)?.[1] ?? 'txt';
@@ -761,15 +835,15 @@ export function createApi(editor: Editor, owner: string): ApiHandle {
         editor.log('Saving files is not available here.');
         return null;
       }
-      return bridge.saveText(name, String(text), filterName, ext);
+      return revocable(() => bridge.saveText!(name, String(text), filterName, ext), null);
     },
   };
 
   const geometry: JcadApi['geometry'] = {
-    distance: (a, b) => g.dist(a, b),
-    angle: (a, b) => g.angleOf(a, b),
-    polar: (p, a, d) => g.polar(p, a, d),
-    midpoint: (a, b) => g.mid(a, b),
+    distance: (a, b) => { guard(); return g.dist(a, b); },
+    angle: (a, b) => { guard(); return g.angleOf(a, b); },
+    polar: (p, a, d) => { guard(); return g.polar(p, a, d); },
+    midpoint: (a, b) => { guard(); return g.mid(a, b); },
     bounds(items) {
       const s = state();
       let b: Bounds | null = null;
@@ -779,8 +853,8 @@ export function createApi(editor: Editor, owner: string): ApiHandle {
       }
       return b;
     },
-    rad: (d) => g.rad(d),
-    deg: (r) => g.deg(r),
+    rad: (d) => { guard(); return g.rad(d); },
+    deg: (r) => { guard(); return g.deg(r); },
   };
 
   const api: JcadApi = Object.freeze({
@@ -789,6 +863,8 @@ export function createApi(editor: Editor, owner: string): ApiHandle {
     plugin: Object.freeze({
       name: owner,
       onUnload(fn: () => void) {
+        guard();
+        if (disposing) throw new Error(`Plugin "${owner}" is being unloaded.`);
         if (typeof fn === 'function') unloaders.push(fn);
       },
     }),
@@ -805,17 +881,25 @@ export function createApi(editor: Editor, owner: string): ApiHandle {
   return {
     api,
     dispose() {
-      if (disposed) return;
-      for (const fn of unloaders.splice(0)) {
-        try {
-          fn();
-        } catch (err) {
-          hub.log(owner, err, 'unload');
+      if (disposed || disposing) return;
+      disposing = true;
+      try {
+        for (const fn of unloaders.splice(0)) {
+          try {
+            const result = fn() as unknown;
+            // Hooks retain the synchronous API contract; a returned promise
+            // cannot extend that lifetime or raise a late unhandled rejection.
+            if (result && typeof (result as Promise<unknown>).then === 'function') Promise.resolve(result).catch(() => {});
+          } catch (err) {
+            hub.log(owner, err, 'unload');
+          }
         }
+      } finally {
+        disposed = true;
+        for (const cancel of [...pending]) { try { cancel(); } catch (err) { hub.log(owner, err, 'cancel'); } }
+        for (const def of [...myCommands]) unregister(def);
+        for (const { ev, entry } of myListeners.splice(0)) hub.listeners.get(ev)?.delete(entry);
       }
-      for (const def of [...myCommands]) unregister(def);
-      for (const { ev, entry } of myListeners.splice(0)) hub.listeners.get(ev)?.delete(entry);
-      disposed = true;
     },
   };
 }

@@ -21,8 +21,10 @@ export function readTextPlacement(o: Obj, verticalCode = 73): TextPlacement & { 
     align: h === 1 || h === 4 ? 'center' : h === 2 ? 'right' : 'left',
     ...(h !== 0 || v !== 0 ? { justification: textJustification(h, v) } : {}),
     ...(second ? { alignmentPoint: second } : {}),
-    ...(wf !== 1 ? { widthFactor: wf } : {}),
-    ...(oblique !== 0 ? { oblique } : {}),
+    // Native omission means entity defaults, even when STYLE has different creation defaults.
+    // DXFOUT commonly removes explicit 1/0; importing must not reapply STYLE width/slant.
+    widthFactor: wf,
+    oblique,
     ...(style && !/^standard$/i.test(style) ? { style } : {}),
   };
 }

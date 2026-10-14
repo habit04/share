@@ -234,19 +234,20 @@ const metadataRenderer = [
   "    const saved = ed.doc.snapshot; need(await ed.openFile(config.output) && ed.doc.snapshot !== saved && ed.doc.filePath === config.output && !ed.doc.dirty, 'Save As did not freshly reopen');",
   "    let state = capture(); validate(state, 2); same(metadataSignature(state), config.signature, 'Save As metadata persistence');",
   "    const report = ed.doc.snapshot.meta?.importReport, reportCounts = Object.values(report?.counts || {});",
-  "    need(report?.format === 'DWG' && report.sourcePath === config.output && !report.recovered && reportCounts.every(count => Object.values(count).every(value => Number.isInteger(value) && value >= 0)) && reportCounts.reduce((sum, count) => sum + (count.dropped || 0) + (count.simplified || 0), 0) === 0 && reportCounts.reduce((sum, count) => sum + (count.unsupported || 0), 0) === 1 && report.counts.LAYOUT?.unsupported === 1, 'unexpected metadata Save import report');",
+  "    need(report?.format === 'DWG' && report.sourcePath === config.output && !report.recovered && report.omitted === 0 && reportCounts.every(count => Object.values(count).every(value => Number.isInteger(value) && value >= 0)) && reportCounts.reduce((sum, count) => sum + (count.dropped || 0) + (count.simplified || 0), 0) === 0 && report.counts.LAYOUT?.kept === 1 && (report.counts.LAYOUT?.unsupported || 0) === 0, 'unexpected metadata Save import report or lost native page settings');",
+  "    const expectedConsent = reportCounts.reduce((sum, count) => sum + (count.unsupported || 0), 0) > 0;",
   "    const saveAsAnnotationSettings = state.annotationSettings;",
   "    const peer = ed.doc.entities.find(entity => entity.type === 'line' && entity.a.x === 130 && entity.a.y === 210); need(peer, 'copied edit target missing');",
   "    ed.doc.replaceEntities([{ ...peer, b: { ...peer.b, x: peer.b.x + 1 } }]);",
   "    const signature = metadataSignature(capture()), saving = ed.doc.snapshot, session = ed.sessions.activeId;",
   "    let consent = false;",
   "    const warning = config.outputName + ' contains properties JCad cannot read (see the import report). Saving the current drawing cannot restore them and may remove them from the original file. Use Save As to keep the original. Save over it anyway?\\n\\nYes saves over it; No opens Save As.';",
-  "    ed.ui.confirm = async (title, message) => { need(title === 'Save over the original file?' && message === warning && ed.doc.filePath === config.output && ed.doc.snapshot === saving && ed.doc.snapshot.meta?.importReport === report && ed.sessions.activeId === session && !consent, 'unexpected metadata source-consent dialog'); consent = true; return true; };",
-  "    need(await ed.saveFile(false) && consent && ed.doc.filePath === config.output && !ed.doc.dirty, 'normal DWG Save failed or required consent missing');",
+  "    ed.ui.confirm = async (title, message) => { need(expectedConsent && title === 'Save over the original file?' && message === warning && ed.doc.filePath === config.output && ed.doc.snapshot === saving && ed.doc.snapshot.meta?.importReport === report && ed.sessions.activeId === session && !consent, 'unexpected metadata source-consent dialog'); consent = true; return true; };",
+  "    need(await ed.saveFile(false) && consent === expectedConsent && ed.doc.filePath === config.output && !ed.doc.dirty, 'normal DWG Save failed or actual source-loss eligibility did not match consent');",
   "    const before = ed.doc.snapshot; need(await ed.openFile(config.output) && ed.doc.snapshot !== before && !ed.doc.dirty, 'normal DWG Save did not freshly reopen');",
   "    state = capture(); const counts = validate(state, 2); same(metadataSignature(state), signature, 'normal Save metadata persistence');",
   "    need(state.entities.some(entity => entity.type === 'line' && entity.a.x === 130 && entity.a.y === 210 && entity.b.x === 136), 'normal Save geometry edit did not persist');",
-  "    return { counts, signature: metadataSignature(state), annotationSettings: { saveAsReopened: saveAsAnnotationSettings, saveReopened: state.annotationSettings }, saveAsReopened: true, saveReopened: true, connectedReferences: true, opaqueLiteralPreserved: true, sourceLossConsent: consent };",
+  "    return { counts, signature: metadataSignature(state), annotationSettings: { saveAsReopened: saveAsAnnotationSettings, saveReopened: state.annotationSettings }, saveAsReopened: true, saveReopened: true, connectedReferences: true, opaqueLiteralPreserved: true, sourceLossConsent: consent, sourceLossConsentRequired: expectedConsent, sourceLossEligibilityVerified: true };",
   "  } finally { ed.hooks.importReport = previousReport; ed.ui.confirm = previousConfirm; ed.hooks.saveError = previousError; }",
   "}",
   ""
@@ -261,16 +262,15 @@ function metadataBytes(profile, file) {
 }
 
 
-// The fixed generated sheet has two layouts and two viewports. Its actual native
-// readback reports only the three known reader limitations, with no object loss.
+// The fixed generated sheet retains both physical page setups. Any other
+// unreadable property remains an actual source-bound loss-consent condition.
 function normalSaveImportReportExpected(report, sourcePath) {
   /** @type {Array<Record<string, number>>} */
   const counts = Object.values(report?.counts || {});
   return report?.format === 'DWG' && report.sourcePath === sourcePath && !report.recovered && report.omitted === 0
     && counts.every(count => count && typeof count === 'object' && Object.values(count).every(value => Number.isInteger(value) && value >= 0))
     && counts.reduce((sum, count) => sum + (count.dropped || 0) + (count.simplified || 0), 0) === 0
-    && counts.reduce((sum, count) => sum + (count.unsupported || 0), 0) === 3
-    && report.counts.LAYOUT?.unsupported === 2 && report.counts.VIEWPORT?.unsupported === 1;
+    && report.counts.LAYOUT?.kept === 2 && (report.counts.LAYOUT?.unsupported || 0) === 0;
 }
 
 /** @param {import('./context.cjs').MainContext} ctx */
@@ -294,6 +294,10 @@ async function runShippingDwgProbe(ctx, testBuild) {
   }):[];
   const target = path.join(profile, 'shipping-export.dwg');
   const original = Buffer.from('previous fixed DWG probe destination'); fs.writeFileSync(target, original, { flag: 'wx' });
+  const refusalTarget = path.join(profile, 'shipping-refusal-control.dwg');
+  const refusalOriginal = Buffer.from('previous fixed closed refusal destination'), refusalBackup = Buffer.from('previous fixed closed refusal backup');
+  fs.writeFileSync(refusalTarget, refusalOriginal, { flag: 'wx' });
+  fs.writeFileSync(refusalTarget + '.bak', refusalBackup, { flag: 'wx' });
   const saveTarget = path.join(profile, 'shipping-normal-save.dwg');
   fs.writeFileSync(saveTarget, 'previous fixed DWG Save As destination', { flag: 'wx' });
   const dxfTarget = path.join(profile, 'shipping-rotated-layout.dxf');
@@ -335,7 +339,7 @@ async function runShippingDwgProbe(ctx, testBuild) {
   `;
   const previousDialog = dialog.showSaveDialog;
   const previousOpenDialog = dialog.showOpenDialog;
-  let exportPicks = 0, savePicks = 0, dxfPicks = 0, metadataPicks = 0, metadataOpenPicks = 0;
+  let exportPicks = 0, refusalPicks = 0, savePicks = 0, dxfPicks = 0, metadataPicks = 0, metadataOpenPicks = 0;
   let metadataTarget = null;
   let metadataOpenTarget = null;
   let metadataMode = false;
@@ -355,6 +359,7 @@ async function runShippingDwgProbe(ctx, testBuild) {
     const picked = /** @type {Electron.SaveDialogOptions} */ (options || _window);
     if(metadataMode && !(metadataTarget && picked?.title==='Save Drawing As' && picked.filters?.some(filter=>filter.extensions.includes('dwg')) && picked.filters.some(filter=>filter.extensions.includes('dxf')))) throw new Error('Unexpected native picker during fixed metadata probe.');
     if (picked?.title === 'Export DWG Copy') {
+      if (picked.defaultPath === 'shipping-refusal-control.dwg') { refusalPicks += 1; return { canceled: false, filePath: refusalTarget }; }
       exportPicks += 1;
       return { canceled: false, filePath: target };
     }
@@ -373,7 +378,7 @@ async function runShippingDwgProbe(ctx, testBuild) {
   dialog.showOpenDialog = fixedOpenDialog;
   try {
     const result = await win.webContents.executeJavaScript(`(async () => {
-      const fixture = ${JSON.stringify(fixture)}, target = ${JSON.stringify(target)}, saveTarget = ${JSON.stringify(saveTarget)}, dxfTarget = ${JSON.stringify(dxfTarget)};
+      const fixture = ${JSON.stringify(fixture)}, target = ${JSON.stringify(target)}, refusalTarget = ${JSON.stringify(refusalTarget)}, saveTarget = ${JSON.stringify(saveTarget)}, dxfTarget = ${JSON.stringify(dxfTarget)};
       ${rotationChecks}
       const until = Date.now() + 30000;
       while (!window.editor || !window.jcad || !window.editor.doc.filePath || !window.editor.doc.entities.length) {
@@ -404,8 +409,14 @@ async function runShippingDwgProbe(ctx, testBuild) {
       if (!insert || insert.columns!==3 || insert.rows!==2 || insert.columnSpacing!==7 || insert.rowSpacing!==11 || insert.attributes.TAG1!=='QF1' || Math.abs(insert.scale-2)>1e-8 || Math.abs(insert.scaleY-3)>1e-8) throw new Error('Native DWG array/attribute data changed');
       if (!width || width.widths?.length!==3 || Math.abs(width.widths[0].start-0.5)>1e-8 || Math.abs(width.widths[0].end-2)>1e-8 || Math.abs(width.widths[1].end-0.75)>1e-8 || width.transparency!==96) throw new Error('Native DWG widths/RGB/transparency changed');
       const exportedCount=ed.doc.entities.length;
+      const validRefusalControl = '0\\nSECTION\\n2\\nHEADER\\n9\\n$ACADVER\\n1\\nAC1032\\n0\\nENDSEC\\n0\\nSECTION\\n2\\nENTITIES\\n0\\nENDSEC\\n0\\nEOF\\n';
+      let protectedError=''; try { await window.jcad.exportDwg(target,validRefusalControl); } catch(error) { protectedError=String(error?.message || error); }
+      if (!protectedError.includes('ERR_OPENED_SOURCE_PROOF')) throw new Error('An opened original accepted a raw export without its source proof: '+protectedError);
+      if (await window.jcad.chooseDwgPath('shipping-refusal-control.dwg')!==refusalTarget) throw new Error('Closed refusal control did not use its native picker grant');
       for (const text of ['not DXF','0\\nSECTION\\n2\\nHEADER\\n9\\n$ACADVER\\n1\\nAC1032\\n0\\nENDSEC\\n0\\nSECTION\\n2\\nENTITIES\\n0\\n3DSOLID\\n5\\n101\\n100\\nAcDbEntity\\n8\\n0\\n100\\nAcDbModelerGeometry\\n70\\n1\\n1\\nunsupported ACIS\\n0\\nENDSEC\\n0\\nEOF\\n']) {
-        let refused=false; try { await window.jcad.exportDwg(target,text); } catch { refused=true; } if (!refused) throw new Error('Malformed/unsupported DWG export was accepted');
+        let message=''; try { await window.jcad.exportDwg(refusalTarget,text); } catch(error) { message=String(error?.message || error); }
+        const expected=text==='not DXF'?'DWG export requires a complete DXF drawing.':'DWG export cannot preserve retained 3D/ACIS objects';
+        if (!message.includes(expected)) throw new Error('Closed malformed/unsupported content control did not reach its exact converter refusal: '+message);
       }
       const originalSession=ed.sessions.all.find(s=>s.id===session); if (!originalSession || originalSession.state!==snapshot || originalSession.filePath!==binding || !originalSession.dirty) throw new Error('Working document was not preserved after reopen');
       const savingState=ed.doc.snapshot, savingSession=ed.sessions.activeId;
@@ -421,9 +432,10 @@ async function runShippingDwgProbe(ctx, testBuild) {
       } finally { ed.hooks.drawingSaved=savedHook; }
       assertRotatedViewports(ed,'DWG Save As');
       const info=await window.jcad.appInfo();
-      return {version:info.version,packaged:info.packaged,writer:true,reopened:true,entities:exportedCount,arrays:true,attributes:true,widths:true,appearance:true,workingPreserved:true,rejectedContent:true,saveAsDwg:true};
+      return {version:info.version,packaged:info.packaged,writer:true,reopened:true,entities:exportedCount,arrays:true,attributes:true,widths:true,appearance:true,workingPreserved:true,rejectedContent:true,openedSourceRefused:true,saveAsDwg:true};
     })()`);
     if (fs.readFileSync(target).subarray(0, 6).toString('ascii') !== 'AC1032' || !fs.readFileSync(`${target}.bak`).equals(original)) throw new Error('Portable DWG output or exact atomic backup is missing.');
+    if (refusalPicks !== 1 || !fs.readFileSync(refusalTarget).equals(refusalOriginal) || !fs.readFileSync(refusalTarget + '.bak').equals(refusalBackup)) throw new Error('Closed content refusals changed the destination or its exact prior backup.');
     const beforeSave = fs.readFileSync(saveTarget);
     if (beforeSave.subarray(0, 6).toString('ascii') !== 'AC1032' || exportPicks !== 1 || savePicks !== 1 || dxfPicks !== 1) throw new Error('DWG/DXF Save As did not use their native drawing pickers.');
     const normalSave = await win.webContents.executeJavaScript(`(async () => {
@@ -434,7 +446,8 @@ async function runShippingDwgProbe(ctx, testBuild) {
       if (!await ed.openFile(saveTarget) || ed.doc.snapshot===savedAsState || ed.doc.filePath!==saveTarget || ed.doc.dirty) throw new Error('DWG Save As did not freshly reopen');
       assertRotatedCanvas(ed,'Reopened DWG Save As');
       const report=ed.doc.snapshot.meta?.importReport;
-      if (!(${normalSaveImportReportExpected.toString()})(report,saveTarget)) throw new Error('Unexpected import report for the fixed normal DWG Save');
+      if (!(${normalSaveImportReportExpected.toString()})(report,saveTarget)) throw new Error('Unexpected import report or lost native page settings for the fixed normal DWG Save');
+      const normalSaveLossConsentRequired=Object.values(report.counts).reduce((sum,count)=>sum+(count.unsupported || 0),0)>0;
       ed.doc.addEntities([{id:'normal-save-line',type:'line',layer:'0',color:'ByLayer',a:{x:73,y:29},b:{x:79,y:31}}]);
       const savingState=ed.doc.snapshot, savingSession=ed.sessions.activeId, savingRevision=ed.doc.revision;
       const savedHook=ed.hooks.drawingSaved; if (typeof savedHook!=='function') throw new Error('Drawing recovery save hook is missing');
@@ -443,7 +456,7 @@ async function runShippingDwgProbe(ctx, testBuild) {
       const expectedLossWarning=${JSON.stringify('shipping-normal-save.dwg contains properties JCad cannot read (see the import report). Saving the current drawing cannot restore them and may remove them from the original file. Use Save As to keep the original. Save over it anyway?\n\nYes saves over it; No opens Save As.')};
       let notified=false, normalSaveLossConsent=false;
       ed.ui.confirm=async(title,message)=>{
-        if (title!=='Save over the original file?' || message!==expectedLossWarning || ed.doc.filePath!==saveTarget || ed.sessions.activeId!==savingSession || ed.doc.snapshot!==savingState || ed.doc.revision!==savingRevision || ed.doc.snapshot.meta?.importReport!==report || normalSaveLossConsent) throw new Error('Unexpected loss dialog during fixed private-profile DWG Save: '+JSON.stringify({title,message,pathMatches:ed.doc.filePath===saveTarget,sessionMatches:ed.sessions.activeId===savingSession,stateMatches:ed.doc.snapshot===savingState,revisionMatches:ed.doc.revision===savingRevision,reportMatches:ed.doc.snapshot.meta?.importReport===report,alreadyConsented:normalSaveLossConsent}));
+        if (!normalSaveLossConsentRequired || title!=='Save over the original file?' || message!==expectedLossWarning || ed.doc.filePath!==saveTarget || ed.sessions.activeId!==savingSession || ed.doc.snapshot!==savingState || ed.doc.revision!==savingRevision || ed.doc.snapshot.meta?.importReport!==report || normalSaveLossConsent) throw new Error('Unexpected loss dialog during fixed private-profile DWG Save: '+JSON.stringify({title,message,pathMatches:ed.doc.filePath===saveTarget,sessionMatches:ed.sessions.activeId===savingSession,stateMatches:ed.doc.snapshot===savingState,revisionMatches:ed.doc.revision===savingRevision,reportMatches:ed.doc.snapshot.meta?.importReport===report,alreadyConsented:normalSaveLossConsent}));
         normalSaveLossConsent=true;
         return true;
       };
@@ -454,7 +467,7 @@ async function runShippingDwgProbe(ctx, testBuild) {
         notified=true; savedHook(id,state,file);
       };
       try {
-        if (!await ed.saveFile(false) || !normalSaveLossConsent || ed.doc.filePath!==saveTarget || ed.doc.dirty || ed.sessions.current.filePath!==saveTarget || ed.sessions.current.dirty || !notified) throw new Error('Normal DWG Save did not finish cleanly, confirm reader limitations and notify recovery');
+        if (!await ed.saveFile(false) || normalSaveLossConsent!==normalSaveLossConsentRequired || ed.doc.filePath!==saveTarget || ed.doc.dirty || ed.sessions.current.filePath!==saveTarget || ed.sessions.current.dirty || !notified) throw new Error('Normal DWG Save did not finish cleanly, match actual source-loss consent and notify recovery');
       } finally { ed.hooks.drawingSaved=savedHook; ed.ui.confirm=savedConfirm; ed.hooks.saveError=savedSaveError; }
       const beforeReload=ed.doc.snapshot;
       if (!await ed.openFile(saveTarget) || ed.doc.snapshot===beforeReload || ed.doc.filePath!==saveTarget || ed.doc.dirty) throw new Error('Normally saved DWG did not freshly reopen through isolated reader');
@@ -466,7 +479,7 @@ async function runShippingDwgProbe(ctx, testBuild) {
       if (ed.doc.entities.length!==5) throw new Error('Normal DWG Save changed the entity count');
       // Finish cleanly after checking dirty state; these are exclusively smoke documents.
       for (const current of ed.sessions.all) current.dirty=false; ed.doc.dirty=false;
-      return {saveDwg:true,viewportRotation:true,normalSaveLossConsent};
+      return {saveDwg:true,viewportRotation:true,normalSaveLossConsent,normalSaveLossConsentRequired,normalSaveLossEligibilityVerified:true};
     })()`);
     if (savePicks !== 1 || !fs.readFileSync(`${saveTarget}.bak`).equals(beforeSave) || fs.readFileSync(saveTarget).equals(beforeSave) || fs.readFileSync(saveTarget).subarray(0, 6).toString('ascii') !== 'AC1032') throw new Error('Normal DWG Save did not keep the exact prior bytes as its backup.');
     /** @type {{schemaVersion:number,fixtures:Array<Record<string,unknown>>}} */
@@ -482,7 +495,7 @@ async function runShippingDwgProbe(ctx, testBuild) {
       const reopened=await win.webContents.executeJavaScript('('+metadataRenderer+')('+JSON.stringify({...pin,stage:'save',signature:prepared.signature})+')');
       const after=metadataBytes(profile,pin.output),backup=metadataBytes(profile,pin.output+'.bak'),original=metadataBytes(profile,pin.input);
       if(after.subarray(0,6).toString('ascii')!=='AC1032'||!backup.equals(before)||after.equals(before)||digest(original)!==pin.sha256) throw new Error('Metadata normal Save, exact prior backup or unchanged source proof failed.');
-      metadataEvidence.fixtures.push({name:pin.name,sourceSha256:pin.sha256,sourceBytes:pin.sourceBytes,entities:prepared.initial.entities,fields:prepared.initial.fields,views:prepared.initial.views,copiedEntities:prepared.counts.entities,copiedFields:prepared.counts.fields,finalEntities:reopened.counts.entities,finalFields:reopened.counts.fields,sourceUnchanged:true,saveAsBackup:true,saveBackup:true,saveAsReopened:reopened.saveAsReopened,saveReopened:reopened.saveReopened,connectedReferences:reopened.connectedReferences,opaqueLiteralPreserved:reopened.opaqueLiteralPreserved,atomicDeleteRefused:prepared.atomicDeleteRefused,sourceLossConsent:reopened.sourceLossConsent,annotationSettings:{edited:prepared.signature.annotationSettings,...reopened.annotationSettings},metadataSnapshot:reopened.signature,saveAsSha256:digest(before),outputSha256:digest(after),backupSha256:digest(backup)});
+      metadataEvidence.fixtures.push({name:pin.name,sourceSha256:pin.sha256,sourceBytes:pin.sourceBytes,entities:prepared.initial.entities,fields:prepared.initial.fields,views:prepared.initial.views,copiedEntities:prepared.counts.entities,copiedFields:prepared.counts.fields,finalEntities:reopened.counts.entities,finalFields:reopened.counts.fields,sourceUnchanged:true,saveAsBackup:true,saveBackup:true,saveAsReopened:reopened.saveAsReopened,saveReopened:reopened.saveReopened,connectedReferences:reopened.connectedReferences,opaqueLiteralPreserved:reopened.opaqueLiteralPreserved,atomicDeleteRefused:prepared.atomicDeleteRefused,sourceLossConsent:reopened.sourceLossConsent,sourceLossConsentRequired:reopened.sourceLossConsentRequired,sourceLossEligibilityVerified:reopened.sourceLossEligibilityVerified,annotationSettings:{edited:prepared.signature.annotationSettings,...reopened.annotationSettings},metadataSnapshot:reopened.signature,saveAsSha256:digest(before),outputSha256:digest(after),backupSha256:digest(backup)});
     }
     if(metadataPicks!==metadataInputs.length||metadataOpenPicks!==metadataInputs.length) throw new Error('Metadata probe did not use one native Open and Save As picker for every fixed fixture.');
     const metadataResult=metadataRequired?{metadataNamedViews:true,metadataFields:true,metadataXRecords:true,metadataReferences:true,metadataConnectedCopy:true,metadataSaveReopen:true,metadataDeleteRefused:true,metadataAnnotationSettings:true,metadataEvidence}:{};

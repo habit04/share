@@ -1,0 +1,374 @@
+{
+  "format": "jcad-permanent-native-hatch-checkpoint-v1",
+  "sourceSha": "86e40da5a69f72444361794ac081f87db23b224d",
+  "worktreeModified": false,
+  "localChecks": {
+    "regressionTests": 3530,
+    "conditionalSkips": 28,
+    "requiredChecks": 10,
+    "allPassed": true,
+    "nodeHarnessTests": 61,
+    "mockOnlyCleanupTests": 17,
+    "nativePreflightChecks": 5
+  },
+  "ci": {
+    "eventHead": "86e40da5a69f72444361794ac081f87db23b224d",
+    "pinnedBase": "4762534751977c72de57f5e39b543a5bd8595765",
+    "pullRequestMergeProducer": "3b8694c0e0af5d1c0df76c6a9bac0c6dbe235ddd",
+    "runs": [
+      {
+        "event": "pull_request",
+        "eventHead": "86e40da5a69f72444361794ac081f87db23b224d",
+        "producerCheckout": "3b8694c0e0af5d1c0df76c6a9bac0c6dbe235ddd",
+        "pinnedBase": "4762534751977c72de57f5e39b543a5bd8595765",
+        "runId": 38486017546,
+        "url": "https://github.com/habit04/share/actions/runs/38486017546",
+        "attempt": 1,
+        "conclusion": "success",
+        "jobs": [
+          {
+            "name": "gpu-experimental",
+            "jobId": 115599741856,
+            "conclusion": "success"
+          },
+          {
+            "name": "test (24)",
+            "jobId": 115599742024,
+            "conclusion": "success"
+          },
+          {
+            "name": "e2e-electron (windows-latest)",
+            "jobId": 115599742104,
+            "conclusion": "success"
+          },
+          {
+            "name": "test (22)",
+            "jobId": 115599742131,
+            "conclusion": "success"
+          },
+          {
+            "name": "ui",
+            "jobId": 115599742142,
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "event": "push",
+        "eventHead": "86e40da5a69f72444361794ac081f87db23b224d",
+        "producerCheckout": "86e40da5a69f72444361794ac081f87db23b224d",
+        "pinnedBase": null,
+        "runId": 38486013180,
+        "url": "https://github.com/habit04/share/actions/runs/38486013180",
+        "attempt": 1,
+        "conclusion": "success",
+        "jobs": [
+          {
+            "name": "ui",
+            "jobId": 115599726583,
+            "conclusion": "success"
+          },
+          {
+            "name": "test (24)",
+            "jobId": 115599726769,
+            "conclusion": "success"
+          },
+          {
+            "name": "e2e-electron (windows-latest)",
+            "jobId": 115599726798,
+            "conclusion": "success"
+          },
+          {
+            "name": "test (22)",
+            "jobId": 115599726855,
+            "conclusion": "success"
+          },
+          {
+            "name": "gpu-experimental",
+            "jobId": 115599726952,
+            "conclusion": "success"
+          }
+        ]
+      }
+    ],
+    "gpuLogs": [
+      {
+        "event": "pull_request",
+        "jobId": 115599741856,
+        "sha256": "b418844645fe1bb5ba8c301468a877ea366e7b9bc6d0de4540ffb2e298849800",
+        "bytes": 115212,
+        "producerCheckout": "3b8694c0e0af5d1c0df76c6a9bac0c6dbe235ddd",
+        "successMarker": "GPU renderer Windows prototype checks passed.",
+        "assertionOrErrorMarkersPresent": false
+      },
+      {
+        "event": "push",
+        "jobId": 115599726952,
+        "sha256": "599c26ed3f41279b3474eaf9e1ea2e6affb3728850bcbb93485782c8d2035e18",
+        "bytes": 115195,
+        "producerCheckout": "86e40da5a69f72444361794ac081f87db23b224d",
+        "successMarker": "GPU renderer Windows prototype checks passed.",
+        "assertionOrErrorMarkersPresent": false
+      }
+    ],
+    "immutableProofSha256": "bd758571c63ca53a7657b1e159ef9362ca0d7b89105cff7369df13a6ac3651f6"
+  },
+  "native": [
+    {
+      "preference": "default",
+      "dataset": {
+        "bytes": 156765155,
+        "sha256": "1f9b62868c3c961c704251954f9ca6d42ebddfbba4f6b8e02364bdd34d99b3bd"
+      },
+      "adapters": [
+        {
+          "name": "Intel(R) UHD Graphics",
+          "vendorId": "0x8086",
+          "deviceId": "0x4688",
+          "active": true,
+          "driverVendor": "Intel",
+          "driverVersion": "32.0.101.7088"
+        },
+        {
+          "name": "NVIDIA RTX A3000 12GB Laptop GPU",
+          "vendorId": "0x10de",
+          "deviceId": "0x24b9",
+          "active": false,
+          "driverVendor": "Unknown",
+          "driverVersion": "32.0.15.9671"
+        },
+        {
+          "name": "Microsoft Basic Render Driver",
+          "vendorId": "0x1414",
+          "deviceId": "0x008c",
+          "active": false,
+          "driverVendor": "Unknown",
+          "driverVersion": "10.0.26100.9549"
+        }
+      ],
+      "actualHatchContext": {
+        "state": "ready",
+        "rendered": true,
+        "unmaskedVendor": "Google Inc. (Intel)",
+        "unmaskedRenderer": "ANGLE (Intel, Intel(R) UHD Graphics (0x00004688) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      },
+      "originalWorkloads": 32,
+      "hatch": {
+        "outcome": "passed",
+        "bodyOutcome": "passed",
+        "comparisons": 40,
+        "actualGpu": 18,
+        "zeroGL": 22,
+        "maximumRasterFraction": 0.000016387776506483602,
+        "maximumCoverageMiss": 0,
+        "interiors": 10,
+        "edits": 12,
+        "controls": 21,
+        "saveReopen": {
+          "nativeRecords": 5,
+          "actualIpc": true,
+          "actualAtomicSave": true,
+          "canvasRoundTrip": {
+            "imageDifferenceFraction": 0,
+            "twoPixelCoverageMissFraction": 0,
+            "rawDifferentPixels": 0
+          }
+        },
+        "contextRecovery": {
+          "firstFrame": {
+            "rendered": true,
+            "preparationMs": 0.7000000476837158,
+            "submissionMs": 2.4000000953674316,
+            "cacheLookupMs": 0,
+            "geometryPreparationMs": 0.5999999046325684,
+            "partialPreparationMs": 0,
+            "preparedEntities": 7,
+            "reusedEntities": 0,
+            "editMemoHit": false,
+            "editHistoryBytes": 0,
+            "editHistoryEntries": 0,
+            "initializationMs": 2,
+            "uploadMs": 0.09999990463256836,
+            "uploadCalls": 1,
+            "uploadKind": "full",
+            "subrangeUploadMs": 0,
+            "subrangeUploadCalls": 0,
+            "subrangeUploadBytes": 0,
+            "drawSubmissionMs": 0.3000001907348633,
+            "geometryVertices": 330,
+            "cacheMinRatio": 0.8,
+            "cacheMaxRatio": 4,
+            "cacheHit": false,
+            "cacheReason": "cold",
+            "bytes": 9240
+          },
+          "automaticFrames": 1,
+          "after": {
+            "state": "ready",
+            "rendered": true,
+            "unmaskedVendor": "Google Inc. (Intel)",
+            "unmaskedRenderer": "ANGLE (Intel, Intel(R) UHD Graphics (0x00004688) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+          },
+          "documentUnchanged": true,
+          "cameraUnchanged": true
+        },
+        "cleanup": {
+          "outcome": "passed",
+          "documentRestored": true,
+          "historyRestored": true,
+          "cameraRestored": true,
+          "savingStateRestored": true,
+          "rendererResourcesReset": false
+        }
+      }
+    },
+    {
+      "preference": "high-performance",
+      "dataset": {
+        "bytes": 156749716,
+        "sha256": "de08d2ca661ad49e5a9b3497a1fa215b4b44c6ec34b73ad4a057afa077bcde68"
+      },
+      "adapters": [
+        {
+          "name": "Intel(R) UHD Graphics",
+          "vendorId": "0x8086",
+          "deviceId": "0x4688",
+          "active": false,
+          "driverVendor": "NVIDIA",
+          "driverVersion": "32.0.101.7088"
+        },
+        {
+          "name": "NVIDIA RTX A3000 12GB Laptop GPU",
+          "vendorId": "0x10de",
+          "deviceId": "0x24b9",
+          "active": true,
+          "driverVendor": "Unknown",
+          "driverVersion": "32.0.15.9671"
+        },
+        {
+          "name": "Microsoft Basic Render Driver",
+          "vendorId": "0x1414",
+          "deviceId": "0x008c",
+          "active": false,
+          "driverVendor": "Unknown",
+          "driverVersion": "10.0.26100.9549"
+        }
+      ],
+      "actualHatchContext": {
+        "state": "ready",
+        "rendered": true,
+        "unmaskedVendor": "Google Inc. (NVIDIA)",
+        "unmaskedRenderer": "ANGLE (NVIDIA, NVIDIA RTX A3000 12GB Laptop GPU (0x000024B9) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      },
+      "originalWorkloads": 32,
+      "hatch": {
+        "outcome": "passed",
+        "bodyOutcome": "passed",
+        "comparisons": 40,
+        "actualGpu": 18,
+        "zeroGL": 22,
+        "maximumRasterFraction": 0.000016387776506483602,
+        "maximumCoverageMiss": 0,
+        "interiors": 10,
+        "edits": 12,
+        "controls": 21,
+        "saveReopen": {
+          "nativeRecords": 5,
+          "actualIpc": true,
+          "actualAtomicSave": true,
+          "canvasRoundTrip": {
+            "imageDifferenceFraction": 0,
+            "twoPixelCoverageMissFraction": 0,
+            "rawDifferentPixels": 0
+          }
+        },
+        "contextRecovery": {
+          "firstFrame": {
+            "rendered": true,
+            "preparationMs": 0.6000001430511475,
+            "submissionMs": 2,
+            "cacheLookupMs": 0,
+            "geometryPreparationMs": 0.6000001430511475,
+            "partialPreparationMs": 0,
+            "preparedEntities": 7,
+            "reusedEntities": 0,
+            "editMemoHit": false,
+            "editHistoryBytes": 0,
+            "editHistoryEntries": 0,
+            "initializationMs": 1.7999999523162842,
+            "uploadMs": 0,
+            "uploadCalls": 1,
+            "uploadKind": "full",
+            "subrangeUploadMs": 0,
+            "subrangeUploadCalls": 0,
+            "subrangeUploadBytes": 0,
+            "drawSubmissionMs": 0.20000004768371582,
+            "geometryVertices": 330,
+            "cacheMinRatio": 0.8,
+            "cacheMaxRatio": 4,
+            "cacheHit": false,
+            "cacheReason": "cold",
+            "bytes": 9240
+          },
+          "automaticFrames": 1,
+          "after": {
+            "state": "ready",
+            "rendered": true,
+            "unmaskedVendor": "Google Inc. (NVIDIA)",
+            "unmaskedRenderer": "ANGLE (NVIDIA, NVIDIA RTX A3000 12GB Laptop GPU (0x000024B9) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+          },
+          "documentUnchanged": true,
+          "cameraUnchanged": true
+        },
+        "cleanup": {
+          "outcome": "passed",
+          "documentRestored": true,
+          "historyRestored": true,
+          "cameraRestored": true,
+          "savingStateRestored": true,
+          "rendererResourcesReset": false
+        }
+      }
+    }
+  ],
+  "buildBinding": {
+    "sourceSha": "86e40da5a69f72444361794ac081f87db23b224d",
+    "summarySha256": "7763cce24b18defe6a8867a7970118477dfb99e776b2c93529f78537ff95cafc",
+    "experimentalBuildLogSha256": "cc0a1e60459addb695932e800dea16c545863fee5f4b3f98beddbf3d5766f640",
+    "assets": [
+      {
+        "path": "dist/assets/dimstyle-CnU6i6SO.js",
+        "bytes": 18539,
+        "sha256": "325f5eae8e6880d176c83d7f2c95b2cf1ebbf4faa3fbc1aa78823e6e1747b0f7"
+      },
+      {
+        "path": "dist/assets/index-C9onWPdN.css",
+        "bytes": 41910,
+        "sha256": "984a7fda7d369e83d4828acfd5b7a26d6cd7c48b11f09430d5fe37b1023d113b"
+      },
+      {
+        "path": "dist/assets/index-GbMjqcCw.js",
+        "bytes": 1476296,
+        "sha256": "9a3c7925370b0ee5b995aca659483c9f4e3393c738db0c4fb9bf572f5a6db81c"
+      },
+      {
+        "path": "dist/favicon.svg",
+        "bytes": 15929,
+        "sha256": "098625acd0c7b338f10b5df66d837a78731c39448407c9a0b1e5e18ccbe3b8ef"
+      },
+      {
+        "path": "dist/index.html",
+        "bytes": 691,
+        "sha256": "20d27fef946449d651b4eb2f7f0d090ca29235b1b4cb345feefc605bd9f74650"
+      }
+    ],
+    "allFiveAssetsUnchangedAfterBothRuns": true
+  },
+  "ownedElectronAfterBoth": 0,
+  "limits": [
+    "Authored fixture and edited private DXF evidence against the existing Canvas renderer; no external CAD or installer acceptance.",
+    "Only the recorded Intel and NVIDIA contexts are established. Physical AMD and other drivers remain open.",
+    "Hatch probes are untimed correctness checks. Original workload timing retains its existing scope; no general responsiveness gain is claimed.",
+    "Later source changes require fresh integration checks. Dimensions and broader production gates remain incomplete."
+  ]
+}

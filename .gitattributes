@@ -1,4 +1,7 @@
 # Hashbangs must remain at byte zero after Vite/Vitest transform on Windows.
 *.mjs text eol=lf
-# Preserve the independently checked native layout fixture bytes on Windows.
+# Preserve independently checked native layout fixture bytes on Windows.
 native/dwg-writer/tests/fixtures/autocad-multilayout-app.dxf -text
+native/dwg-writer/tests/fixtures/legacy-minsert.dxf -text
+# The original MPL crate preimage is an authenticated source-patch fixture.
+tests/fixtures/acadrust-0.6.4-dwg-writer.rs -text

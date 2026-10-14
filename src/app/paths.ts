@@ -5,8 +5,8 @@
  *  - separators: a Windows-style path (drive letter, UNC share, or the app runs on Windows)
  *    uses backslashes; a POSIX path keeps forward slashes;
  *  - "." and ".." segments are resolved and repeated separators collapsed;
- *  - Unicode NFC (macOS hands out decomposed names, typed names are composed);
- *  - comparison is case-insensitive for Windows paths and case-sensitive elsewhere;
+ *  - Unicode NFC for POSIX paths; Windows preserves distinct composed/decomposed filenames;
+ *  - Windows lexical comparison folds ASCII only; native aliases require host evidence;
  *  - project-relative entries resolve against the folder of the project file, and are
  *    stored with forward slashes so a project opens on any system.
  *
@@ -51,9 +51,10 @@ interface Parsed {
   windows: boolean;
 }
 
-function parse(input: string): Parsed {
-  const p = input.normalize('NFC');
-  const windows = isWindowsPath(p);
+function parse(input: string, windows = isWindowsPath(input)): Parsed {
+  // NTFS can store both "Jos\u00e9.dxf" and "Jose\u0301.dxf" in the same folder. Normalising
+  // their Unicode spelling would redirect a project reference or save to a different file.
+  const p = windows ? input : input.normalize('NFC');
   let rest = p;
   let root = '';
   if (windows) {
@@ -94,22 +95,115 @@ function format(p: Parsed): string {
   return p.root + body;
 }
 
-/** Normalised form of a path: one separator style, no "." / ".." / repeated separators, NFC. */
+/** Normalised separators / dot segments, preserving Windows filenames' Unicode spelling. */
 export function normalizePath(p: string): string {
   if (!p) return p;
   return format(parse(p));
 }
 
-/** Identity key: the normalised path, lower-cased for Windows paths. */
+/** Lexical key only: Unicode Windows aliases cannot be inferred from JavaScript casing. */
 export function pathKey(p: string): string {
   const n = normalizePath(p);
-  return isWindowsPath(n) ? n.toLowerCase() : n;
+  return isWindowsPath(n) ? n.replace(/[A-Z]/g, (letter) => letter.toLowerCase()) : n;
 }
+
+export const MAX_WINDOWS_PATH_IDENTITIES = 2048;
+const MAX_IDENTITY_CHARACTERS = 4 * 1024 * 1024;
+const windowsIdentities = new Map<string, string>();
+let identityCharacters = 0;
+
+/** Runtime evidence from an authorized host open/bind; never drawing/project data. */
+export function registerWindowsPathIdentity(logical: string, canonical: string): void {
+  registerWindowsPathIdentities([{ logical, canonical }]);
+}
+
+/** Publish a complete native manifest together; a rejected pair cannot leave partial aliases. */
+export function registerWindowsPathIdentities(pairs: readonly { logical: string; canonical: string }[]): void {
+  if (!Array.isArray(pairs) || pairs.length > MAX_WINDOWS_PATH_IDENTITIES) throw new Error('Invalid native Windows path identity manifest.');
+  // Snapshot caller-owned fields before inspecting the registry. Publication itself never
+  // invokes caller code or awaits, so another open cannot consume capacity halfway through.
+  const captured = pairs.map(pair => {
+    if (!pair || typeof pair !== 'object') throw new Error('Invalid native Windows path identity.');
+    const { logical, canonical } = pair;
+    for (const value of [logical, canonical]) if (typeof value !== 'string' || !isWindowsPath(value) || !isAbsolutePath(value) || value.length > 4096 || /[\u0000-\u001f\u007f]/.test(value)) throw new Error('Invalid native Windows path identity.');
+    return { source: normalizePath(logical), target: normalizePath(canonical) };
+  });
+  const candidates = new Map<string, string>();
+  for (const { source, target } of captured) for (const key of new Set([source, target])) {
+    const proposed = candidates.get(key);
+    if (proposed !== undefined && proposed !== target) throw Object.assign(new Error('This file path now resolves to another native file. Choose its actual folder or reopen the drawing before saving.'), { code: 'ERR_PATH_IDENTITY_CHANGED' });
+    candidates.set(key, target);
+  }
+  for (const [key, target] of candidates) {
+    const previous = windowsIdentities.get(key);
+    if (previous !== undefined && previous !== target) throw Object.assign(new Error('This file path now resolves to another native file. Choose its actual folder or reopen the drawing before saving.'), { code: 'ERR_PATH_IDENTITY_CHANGED' });
+  }
+  const additions = [...candidates].filter(([key]) => !windowsIdentities.has(key)), characters = additions.reduce((sum, [key, target]) => sum + key.length + target.length, 0);
+  if (windowsIdentities.size + additions.length > MAX_WINDOWS_PATH_IDENTITIES || identityCharacters + characters > MAX_IDENTITY_CHARACTERS) throw Object.assign(new Error('Native file identity history is full. Finish pending saves and restart the app before opening more files.'), { code: 'ERR_PATH_IDENTITY_CAPACITY' });
+  for (const [key, target] of additions) windowsIdentities.set(key, target);
+  identityCharacters += characters;
+}
+
+/** Queue identity prefers exact native stored spelling, including case-sensitive directories. */
+export function pathIdentityKey(p: string): string {
+  const native = windowsIdentities.get(normalizePath(p));
+  return native === undefined ? `lexical:${pathKey(p)}` : `native:${native}`;
+}
+
+/** Tests only; production identities have no eviction that could weaken active source warnings. */
+export function resetWindowsPathIdentitiesForTests(): void { windowsIdentities.clear(); identityCharacters = 0; }
 
 /** Do two paths name the same file? (null / empty never matches.) */
 export function samePath(a: string | null | undefined, b: string | null | undefined): boolean {
   if (!a || !b) return false;
+  const nativeA = windowsIdentities.get(normalizePath(a)), nativeB = windowsIdentities.get(normalizePath(b));
+  if (nativeA !== undefined && nativeB !== undefined) return nativeA === nativeB;
   return pathKey(a) === pathKey(b);
+}
+
+/** Reuse pure normalization within one synchronous scan; aliases and platform reads stay live. */
+export function createPathComparator(): typeof samePath {
+  const MAX_INTERPRETATIONS = 1024, MAX_CHARACTERS = 4 * 1024 * 1024;
+  type Normalized = { value: string; folded?: string; cached: boolean };
+  type Interpretations = { windows?: Normalized; posix?: Normalized };
+  const cache = new Map<string, Interpretations>();
+  let interpretations = 0, characters = 0;
+  const normalized = (path: string): Normalized => {
+    // Observe the current interpretation even on a hit. Passing it into parse
+    // avoids observing a platform getter twice for one normalization.
+    const windows = isWindowsPath(path), slot = windows ? 'windows' : 'posix';
+    const known = cache.get(path), hit = known?.[slot];
+    if (hit) return hit;
+    const entry: Normalized = { value: format(parse(path, windows)), cached: false };
+    // Charge raw and normalized strings conservatively, even if the engine
+    // shares their storage. Excess interpretations still compare uncached.
+    const size = path.length + entry.value.length;
+    if (interpretations < MAX_INTERPRETATIONS && characters + size <= MAX_CHARACTERS) {
+      const values = known ?? {};
+      values[slot] = entry; cache.set(path, values); entry.cached = true;
+      interpretations++; characters += size;
+    }
+    return entry;
+  };
+  const lexical = (path: string): string => {
+    const entry = normalized(path);
+    // Keep pathKey's second, fresh interpretation of the normalized spelling.
+    if (!isWindowsPath(entry.value)) return entry.value;
+    if (entry.folded !== undefined) return entry.folded;
+    const folded = entry.value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+    if (entry.cached && characters + folded.length <= MAX_CHARACTERS) {
+      entry.folded = folded; characters += folded.length;
+    }
+    return folded;
+  };
+  return (a, b) => {
+    if (!a || !b) return false;
+    // Do not cache native evidence: a host bind/open can publish an alias
+    // between comparisons, including after the strings were already cached.
+    const nativeA = windowsIdentities.get(normalized(a).value), nativeB = windowsIdentities.get(normalized(b).value);
+    if (nativeA !== undefined && nativeB !== undefined) return nativeA === nativeB;
+    return lexical(a) === lexical(b);
+  };
 }
 
 /** Last path component ("a.dxf" for "C:\x\a.dxf" and "/x/a.dxf"). */
@@ -155,7 +249,7 @@ export function relativePath(dir: string, target: string): string {
   const d = parse(dir);
   const t = parse(target);
   if (!d.root || !t.root || d.windows !== t.windows) return normalizePath(target);
-  const fold = (s: string) => (d.windows ? s.toLowerCase() : s);
+  const fold = (s: string) => (d.windows ? s.replace(/[A-Z]/g, (letter) => letter.toLowerCase()) : s);
   if (fold(d.root) !== fold(t.root)) return normalizePath(target);
   let i = 0;
   while (i < d.segments.length && i < t.segments.length && fold(d.segments[i]!) === fold(t.segments[i]!)) i += 1;
@@ -190,7 +284,8 @@ export function rebaseProjectEntry(file: string, oldProjectFile: string | null |
 
 /** Short names for a list of paths: the file name, plus parent folders only where names collide. */
 export function shortNames(paths: ReadonlyArray<string | null>, fallback: ReadonlyArray<string> = []): string[] {
-  // Names come from the normalised (NFC) path: "José.dxf" typed and "Jose\u0301.dxf" from macOS look alike.
+  // Preserve the actual filename, but compare displayed labels in NFC: distinct Windows
+  // "Jos\u00e9.dxf" and "Jose\u0301.dxf" look alike and still need disambiguating.
   const norm = paths.map((p) => (p ? normalizePath(p) : null));
   const names = norm.map((p, i) => (p ? fileBaseName(p) : (fallback[i] ?? '')));
   const parts = norm.map((p) => (p ? p.split(/[\\/]/).filter(Boolean) : []));
@@ -207,7 +302,7 @@ export function shortNames(paths: ReadonlyArray<string | null>, fallback: Readon
   };
   const maxDepth = Math.max(0, ...parts.map((s) => s.length));
   for (let depth = 1; depth <= maxDepth; depth += 1) {
-    const groups = clashes((s) => s.toLowerCase());
+    const groups = clashes((s) => s.normalize('NFC').toLowerCase());
     if (groups.length === 0) break;
     for (const idx of groups) {
       for (const i of idx) {
@@ -218,6 +313,11 @@ export function shortNames(paths: ReadonlyArray<string | null>, fallback: Readon
     }
   }
   // Still alike with every folder shown ("/srv/share/a.dxf" and "\\srv\share\a.dxf"): the full path.
-  for (const idx of clashes((s) => s)) for (const i of idx) out[i] = norm[i]!;
+  for (const idx of clashes((s) => s.normalize('NFC'))) for (const i of idx) out[i] = norm[i]!;
+  // Even the full paths can look identical for separate Windows Unicode spellings. A list
+  // suffix distinguishes those labels without rewriting the paths used to open/save them.
+  for (const idx of clashes((s) => s.normalize('NFC'))) {
+    idx.forEach((i, order) => { out[i] = `${out[i]} (${order + 1})`; });
+  }
   return out;
 }

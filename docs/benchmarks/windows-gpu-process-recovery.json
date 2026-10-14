@@ -1,0 +1,298 @@
+{
+  "sourceSha": "0f9ce3c8c3374790432ad24d7e733fbbd3635d71",
+  "worktreeModified": false,
+  "platform": "win32",
+  "arch": "x64",
+  "outcome": "passed",
+  "scope": {
+    "privateProfileVerified": true,
+    "mainPid": 58288,
+    "versions": {
+      "node": "24.21.0",
+      "acorn": "8.18.0",
+      "ada": "4.0.0",
+      "amaro": "1.1.11",
+      "ares": "1.34.8",
+      "brotli": "1.2.0",
+      "cldr": "48.0",
+      "icu": "78.2",
+      "llhttp": "9.4.3",
+      "merve": "1.2.2",
+      "modules": "149",
+      "napi": "10",
+      "nbytes": "0.1.4",
+      "ncrypto": "0.0.1",
+      "nghttp2": "1.70.0",
+      "nghttp3": "",
+      "ngtcp2": "",
+      "openssl": "0.0.0",
+      "simdjson": "4.6.7",
+      "simdutf": "7.7.0",
+      "sqlite": "3.53.4",
+      "tz": "2026d",
+      "undici": "7.29.1",
+      "unicode": "17.0",
+      "uv": "1.52.1",
+      "uvwasi": "0.0.23",
+      "v8": "15.2.124.28-electron.0",
+      "zlib": "1.3.2.1-motley",
+      "zstd": "1.6.0",
+      "electron": "44.7.0",
+      "chrome": "152.0.7977.130"
+    }
+  },
+  "termination": {
+    "pid": 57632,
+    "creationTime": 1791863552567.529,
+    "mainPid": 58288,
+    "signal": "SIGKILL",
+    "at": 1791863553735,
+    "ownership": "private app.getAppMetrics()",
+    "freshIdentityVerified": true
+  },
+  "nativeEvents": [
+    {
+      "type": "GPU",
+      "reason": "killed",
+      "exitCode": 1,
+      "at": 1791863554105
+    }
+  ],
+  "observation": {
+    "contextEvents": [
+      {
+        "type": "lost",
+        "at": 1356.2000000476837
+      },
+      {
+        "type": "restored",
+        "at": 2391.7999999523163
+      }
+    ],
+    "canvasEvents": [
+      {
+        "type": "contextlost",
+        "at": 1379
+      },
+      {
+        "type": "contextrestored",
+        "at": 1887.2999999523163
+      }
+    ],
+    "fallback": [
+      {
+        "source": "loss-observer",
+        "at": 1366.2999999523163,
+        "rendered": false,
+        "device": "lost",
+        "gpuCanvasHidden": true,
+        "reason": "WebGL2 device is lost",
+        "samePixels": false,
+        "differentChannels": 2684680,
+        "nontransparentPixels": 0,
+        "canvasContextLost": true,
+        "width": 1216,
+        "height": 552,
+        "referenceWidth": 1216,
+        "referenceHeight": 552,
+        "input": {
+          "width": 1216,
+          "height": 552,
+          "dpr": 1,
+          "scale": 95.17241379310344,
+          "twist": 0,
+          "background": "#212830",
+          "center": {
+            "x": 3.5,
+            "y": 2.5
+          },
+          "hover": null,
+          "selection": []
+        },
+        "documentUnchanged": true
+      },
+      {
+        "source": "automatic-redraw",
+        "at": 1916.7999999523163,
+        "rendered": false,
+        "device": "lost",
+        "gpuCanvasHidden": true,
+        "reason": "WebGL2 device is lost",
+        "samePixels": false,
+        "differentChannels": 632,
+        "nontransparentPixels": 671232,
+        "canvasContextLost": false,
+        "width": 1216,
+        "height": 552,
+        "referenceWidth": 1216,
+        "referenceHeight": 552,
+        "input": {
+          "width": 1216,
+          "height": 552,
+          "dpr": 1,
+          "scale": 95.17241379310344,
+          "twist": 0,
+          "background": "#212830",
+          "center": {
+            "x": 3.5,
+            "y": 2.5
+          },
+          "hover": null,
+          "selection": []
+        },
+        "documentUnchanged": true,
+        "imageFile": "automatic-canvas-fallback-1.png"
+      }
+    ],
+    "canvasRestoration": [
+      {
+        "source": "canvas-restore-observer",
+        "at": 1943.7999999523163,
+        "rendered": false,
+        "device": "lost",
+        "gpuCanvasHidden": true,
+        "reason": "WebGL2 device is lost",
+        "samePixels": false,
+        "differentChannels": 632,
+        "nontransparentPixels": 671232,
+        "canvasContextLost": false,
+        "width": 1216,
+        "height": 552,
+        "referenceWidth": 1216,
+        "referenceHeight": 552,
+        "input": {
+          "width": 1216,
+          "height": 552,
+          "dpr": 1,
+          "scale": 95.17241379310344,
+          "twist": 0,
+          "background": "#212830",
+          "center": {
+            "x": 3.5,
+            "y": 2.5
+          },
+          "hover": null,
+          "selection": []
+        },
+        "image": null,
+        "documentUnchanged": true
+      }
+    ],
+    "documentUnchanged": true
+  },
+  "restoration": {
+    "observed": true,
+    "automaticOnly": true,
+    "status": {
+      "mode": "gpu",
+      "rendered": true,
+      "preparationMs": 0.8000001907348633,
+      "submissionMs": 7.099999904632568,
+      "bytes": 21240,
+      "device": "ready",
+      "capabilities": {
+        "state": "ready",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "renderer": "WebKit WebGL",
+        "maxTextureSize": 16384,
+        "maxViewportDims": [
+          32767,
+          32767
+        ],
+        "antialias": true,
+        "stencil": true,
+        "timerQuery": true
+      },
+      "demo": null
+    }
+  },
+  "checks": [
+    "Native GPU-process failure observed",
+    "Document unchanged by native failure",
+    "Automatic whole-view Canvas fallback while WebGL remains lost; opacity and bounded raster/coverage comparison passed",
+    "Automatic WebGL2 restoration rendered and completed a frame",
+    "Ordinary LINE added one entity",
+    "Private DXF Save As and reopen retained entities and line endpoints"
+  ],
+  "limitations": [
+    "One Windows runtime and one app-owned GPU-process termination; no hardware coverage matrix.",
+    "No driver reset, persistent GPU disablement, adapter switch, or hardware-acceleration setting changes.",
+    "Canvas 2D may itself use Chromium GPU acceleration; Canvas fallback does not prove CPU-only drawing.",
+    "Renderer restart, application restart, and forced WebGL restoration are not used to claim native recovery."
+  ],
+  "before": {
+    "mode": "gpu",
+    "rendered": true,
+    "preparationMs": 4.599999904632568,
+    "submissionMs": 15.700000047683716,
+    "bytes": 21240,
+    "device": "ready",
+    "capabilities": {
+      "state": "ready",
+      "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+      "renderer": "WebKit WebGL",
+      "maxTextureSize": 16384,
+      "maxViewportDims": [
+        32767,
+        32767
+      ],
+      "antialias": true,
+      "stencil": true,
+      "timerQuery": true
+    },
+    "demo": null
+  },
+  "referenceInput": {
+    "width": 1216,
+    "height": 552,
+    "dpr": 1,
+    "scale": 95.17241379310344,
+    "twist": 0,
+    "background": "#212830",
+    "center": {
+      "x": 3.5,
+      "y": 2.5
+    },
+    "hover": null,
+    "selection": []
+  },
+  "canvasRecoveryPath": "lost-then-restored",
+  "automaticFallbackComparisons": [
+    {
+      "source": "automatic-redraw",
+      "at": 1916.7999999523163,
+      "canvasLossObserved": true,
+      "fallbackAnchorAt": 1887.2999999523163,
+      "canvasRestoredAt": 1887.2999999523163,
+      "webglLostAt": 1356.2000000476837,
+      "webglRestoredAt": 2391.7999999523163,
+      "device": "lost",
+      "rawDifferentChannels": 632,
+      "exactPixels": false,
+      "imageDifferenceFraction": 0,
+      "twoPixelCoverageMissFraction": 0,
+      "referenceForegroundPixels": 4214,
+      "recoveredForegroundPixels": 4214,
+      "fullyOpaque": true,
+      "image": "automatic-canvas-fallback-1.png",
+      "thresholds": {
+        "pixelmatch": 0.15,
+        "imageDifferenceFraction": 0.005,
+        "twoPixelCoverageMissFraction": 0.005
+      }
+    }
+  ],
+  "afterMetrics": [
+    {
+      "pid": 25724,
+      "creationTime": 1791863554122.259,
+      "type": "GPU"
+    }
+  ],
+  "persistence": {
+    "expectedCount": 5,
+    "reopenedCount": 5,
+    "completeDxf": true
+  },
+  "pageErrors": []
+}

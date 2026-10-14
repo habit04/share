@@ -1,8 +1,9 @@
 import type { Point, Bounds } from './geometry';
 import * as g from './geometry';
 import { strokeTextWidth } from '../render/hershey';
-import { dimensionGeometry, type DimensionEntity } from './dimension';
-import { mtextLayoutFull, type MTextEntity, type MTextAttachment, type MTextColumns, type MTextBackground } from './mtext';
+import { dimensionGeometry, dimensionTextPoint, type DimensionEntity } from './dimension';
+import { mtextLayoutFull, type MTextEntity, type MTextAttachment, type MTextColumns, type MTextBackground, type MTextStyle, type Measure, type InkMeasure } from './mtext';
+import { metricTextPlacement, type TextGeometryContext } from './text-metrics';
 import { interpolateFitPoints, isValidNurbs, nurbsPoints, type NurbsCurve } from './spline';
 import { findPattern, loopPolygon, patternSegments, pointInLoops, worldPatternLines, type HatchLoop, type WorldPatternLine } from './hatch';
 import { tableGeometry, type TableEntity } from './table';
@@ -13,11 +14,13 @@ import { mtextBackgroundPolygons, hasMTextFill, hasMTextFrame, entityMTextBackgr
 import { polylineWidthGeometry, polylineWidthFrame, transformWidthFrame, polylineFramePoint, polylineFrameSource, polylineWidthProblem, moveWidthFrameGrip } from './polyline-widths';
 import { appearanceProperties, inheritedTransparency, resolveAlpha, type TransparencySpec } from './appearance';
 import { insertArrayCount, insertArrayInstances, MAX_INSERT_ARRAY_INSTANCES } from './insert-array';
+import { hasHatchGradient, hatchGradientDataProblem, hatchGradientFrame, hatchGradientFrameProblem, transformHatchGradientFrame, type HatchGradient, type HatchGradientFrame } from './hatch-gradient';
 
 export type { DimensionEntity, DimStyle, DimKind } from './dimension';
 export type { MTextEntity, MTextAttachment } from './mtext';
 export type { TableEntity, TableCell } from './table';
 export type { HatchLoop, WorldPatternLine } from './hatch';
+export type { HatchGradient, HatchGradientColor, HatchGradientFrame } from './hatch-gradient';
 
 /**
  * AutoCAD Color Index (1..255). 'ByLayer' (DXF 256) inherits the colour of the object's layer;
@@ -235,6 +238,10 @@ export interface HatchEntity extends EntityBase {
   /** 0 user defined, 1 predefined, 2 custom (DXF 76). */
   readonly patternType?: number;
   readonly double?: boolean;
+  /** Native gradient descriptor, retained separately from the hatch pattern. */
+  readonly gradient?: HatchGradient;
+  /** Affine display frame after a block transform; native block definitions remain unchanged. */
+  readonly gradientFrame?: HatchGradientFrame;
 }
 
 /** LEADER / MLEADER: a leader line with arrowhead, optional landing and attached text. */
@@ -368,7 +375,7 @@ export function newId(): string {
   return `e${Date.now().toString(36)}${idCounter.toString(36)}`;
 }
 
-export type BlockLookup = (name: string) => BlockDef | undefined;
+export type BlockLookup = ((name: string) => BlockDef | undefined) & { readonly textGeometry?: TextGeometryContext };
 
 /** Length of the infinite part of XLINE/RAY used for hit testing and bounds (world units). */
 export const INFINITE_LENGTH = 1e4;
@@ -401,7 +408,25 @@ export function textWidth(text: string, height: number): number {
 }
 
 /** Placed text's oriented quadrilateral, including alignment and oblique shear. */
-export function textCorners(t: TextEntity): Point[] {
+export function textCorners(t: TextEntity, context?: TextGeometryContext): Point[] {
+  const appearance = context?.resolve(t);
+  // SHX/unknown fonts keep the existing stroke geometry and explicit entity appearance.
+  if (context && (appearance?.kind === 'canvas' || appearance?.kind === 'stroke' && appearance.shxResourceId && context.shxRun?.(t.text, t.height, appearance)?.ok)) {
+    const placed = metricTextPlacement(t, context);
+    t = placed.text;
+    const { metrics } = placed;
+    const widthFactor = t.widthFactor ?? 1;
+    const emptyInk = metrics.left === 0 && metrics.right === 0 && metrics.ascent === 0 && metrics.descent === 0;
+    const left = (placed.offset + (emptyInk ? 0 : metrics.left)) * widthFactor;
+    const right = (placed.offset + (emptyInk ? metrics.advance : metrics.right)) * widthFactor;
+    const ascent = emptyInk ? t.height : metrics.ascent, descent = emptyInk ? 0 : metrics.descent;
+    return [
+      { x: left, y: -descent },
+      { x: right, y: -descent },
+      { x: right, y: ascent },
+      { x: left, y: ascent },
+    ].map((c) => g.add(t.position, g.rotate({ x: c.x + c.y * Math.tan(t.oblique ?? 0), y: c.y }, t.rotation)));
+  }
   t = placedText(t, textWidth);
   const w = textWidth(t.text, t.height) * (t.widthFactor ?? 1);
   const ox = t.align === 'center' ? -w / 2 : t.align === 'right' ? -w : 0;
@@ -413,8 +438,8 @@ export function textCorners(t: TextEntity): Point[] {
   ].map((c) => g.add(t.position, g.rotate({ x: c.x + c.y * Math.tan(t.oblique ?? 0), y: c.y }, t.rotation)));
 }
 
-export function textBounds(t: TextEntity): Bounds {
-  return g.boundsOfPoints(textCorners(t))!;
+export function textBounds(t: TextEntity, context?: TextGeometryContext): Bounds {
+  return g.boundsOfPoints(textCorners(t, context))!;
 }
 
 // ------------------------------------------------------------------ polyline arcs (bulges)
@@ -562,21 +587,70 @@ function rayEndpoints(e: XlineEntity | RayEntity): [Point, Point] {
 
 // ------------------------------------------------------------------ dimension / mtext component geometry
 
-const dimCache = new WeakMap<DimensionEntity, Entity[]>();
+interface GeneratedParts {
+  readonly contextKey?: object;
+  readonly parts: Entity[];
+}
+const dimCache = new WeakMap<DimensionEntity, GeneratedParts>();
+function dimensionMeasure(d: DimensionEntity, context?: TextGeometryContext) {
+  // The dimension's style object is a DIMSTYLE; only DIMTXSTY names the emitted font.
+  const appearance = context?.resolve({ style: d.style.textStyle });
+  return context && (appearance?.kind === 'canvas' || appearance?.kind === 'stroke' && appearance.shxResourceId)
+    ? (text: string, height: number) => {
+      const metric = context.measure(text, height, appearance);
+      // Native ordinate text placement uses the visible span; the font's trailing advance
+      // would move the label away from its leader (notably for ordinary SHX numerals).
+      return ((d.kind === 'ordinate' ? metric.right : Math.max(metric.advance, metric.right)) - Math.min(0, metric.left)) * appearance.widthFactor;
+    }
+    : textWidth;
+}
+
 /** Primitive entities (lines, arrow solids, text) that draw a dimension. Cached per entity. */
-export function dimensionParts(d: DimensionEntity): Entity[] {
+export function dimensionParts(d: DimensionEntity, context?: TextGeometryContext): Entity[] {
   const hit = dimCache.get(d);
-  if (hit) return hit;
-  const parts = dimensionGeometry(d, textWidth) as Entity[];
-  dimCache.set(d, parts);
+  if (hit && hit.contextKey === context?.cacheKey) return hit.parts;
+  const parts = dimensionGeometry(d, dimensionMeasure(d, context)) as Entity[];
+  dimCache.set(d, { contextKey: context?.cacheKey, parts });
   return parts;
 }
 
-const mtextCache = new WeakMap<MTextEntity, { texts: TextEntity[]; lines: LineEntity[]; masks: Point[][] }>();
-function mtextRendered(m: MTextEntity): { texts: TextEntity[]; lines: LineEntity[]; masks: Point[][] } {
+interface MTextRendered {
+  readonly contextKey?: object;
+  texts: TextEntity[];
+  lines: LineEntity[];
+  masks: Point[][];
+}
+const mtextCache = new WeakMap<MTextEntity, MTextRendered>();
+function mtextRendered(m: MTextEntity, context?: TextGeometryContext): MTextRendered {
   const hit = mtextCache.get(m);
-  if (hit) return hit;
-  const lay = mtextLayoutFull(m, textWidth);
+  if (hit && hit.contextKey === context?.cacheKey) return hit;
+  const runAppearance = (run?: MTextStyle) => {
+    const runWidth = run?.widthFactor ?? 1;
+    return context?.resolve({
+      ...(m.style ? { style: m.style } : {}),
+      ...(run && Math.abs(runWidth - 1) > 1e-9 ? { widthFactor: runWidth } : {}),
+      ...(run && (run.oblique || run.italic) ? { oblique: run.oblique || g.rad(15) } : {}),
+      ...(run?.bold ? { bold: true } : {}),
+    });
+  };
+  const measure: Measure = context ? (text, height, run) => {
+    const runWidth = run?.widthFactor ?? 1, appearance = runAppearance(run)!;
+    if (appearance.kind === 'stroke' && !appearance.shxResourceId) return textWidth(text, height);
+    // Layout applies the run's width factor outside the measurement callback. Return the
+    // inherited/effective width divided by that factor so it is applied exactly once.
+    return context.measure(text, height, appearance).advance * appearance.widthFactor / runWidth;
+  } : textWidth;
+  const baseAppearance = runAppearance();
+  const ink: InkMeasure | undefined = context && (baseAppearance?.kind === 'canvas' || baseAppearance?.kind === 'stroke' && baseAppearance.shxResourceId) ? (text, height, run) => {
+    if (!text.trim()) return null;
+    const appearance = runAppearance(run)!;
+    if (appearance.kind === 'stroke' && !appearance.shxResourceId) return null;
+    const metric = context.measure(text, height, appearance), slant = Math.tan(appearance.oblique);
+    if (metric.left === 0 && metric.right === 0 && metric.ascent === 0 && metric.descent === 0) return null;
+    const x0 = -metric.descent * slant, x1 = metric.ascent * slant;
+    return { left: metric.left * appearance.widthFactor + Math.min(x0, x1), right: metric.right * appearance.widthFactor + Math.max(x0, x1), ascent: metric.ascent, descent: metric.descent };
+  } : undefined;
+  const lay = mtextLayoutFull(m, measure, ink);
   const lines: LineEntity[] = lay.strokes.map((st, i) => ({
     ...appearanceProperties(m),
     id: `${m.id}:s${i}`,
@@ -588,21 +662,22 @@ function mtextRendered(m: MTextEntity): { texts: TextEntity[]; lines: LineEntity
     a: st.a,
     b: st.b,
   }));
-  const entry = { texts: lay.texts, lines, masks: mtextBackgroundPolygons(m, textWidth, lay) };
+  const entry = { contextKey: context?.cacheKey, texts: lay.texts, lines,
+    masks: mtextBackgroundPolygons(m, measure, lay, context ? (text) => textCorners(text, context) : undefined) };
   mtextCache.set(m, entry);
   return entry;
 }
 /** Single-line text pieces that render an MTEXT (word wrapped, format codes applied). Cached per entity. */
-export function mtextParts(m: MTextEntity): TextEntity[] {
-  return mtextRendered(m).texts;
+export function mtextParts(m: MTextEntity, context?: TextGeometryContext): TextEntity[] {
+  return mtextRendered(m, context).texts;
 }
 
-export function mtextMasks(m: MTextEntity): readonly (readonly Point[])[] {
-  return mtextRendered(m).masks;
+export function mtextMasks(m: MTextEntity, context?: TextGeometryContext): readonly (readonly Point[])[] {
+  return mtextRendered(m, context).masks;
 }
 /** Underline / overline / strike-through / fraction-bar strokes of a formatted MTEXT. */
-export function mtextDecorations(m: MTextEntity): LineEntity[] {
-  return mtextRendered(m).lines;
+export function mtextDecorations(m: MTextEntity, context?: TextGeometryContext): LineEntity[] {
+  return mtextRendered(m, context).lines;
 }
 
 // ------------------------------------------------------------------ spline
@@ -643,7 +718,7 @@ export function splineThroughPoints(base: EntityBase, fit: readonly Point[], clo
 
 /** World line families of a hatch's pattern ([] for SOLID). */
 export function hatchPatternLines(h: HatchEntity): WorldPatternLine[] {
-  if (h.solid) return [];
+  if (h.solid || hasHatchGradient(h)) return [];
   // Lines from the file win (double hatches, custom and non-matching definitions).
   if (h.patternLines?.length) return [...h.patternLines];
   const pat = findPattern(h.pattern);
@@ -664,7 +739,7 @@ export function hatchGeometry(h: HatchEntity): HatchGeometry {
   const hit = hatchCache.get(h);
   if (hit) return hit;
   const polys = h.loops.map((l) => loopPolygon(l)).filter((p) => p.length >= 3);
-  const pat = h.solid ? { segments: [], dense: false } : patternSegments(polys, hatchPatternLines(h));
+  const pat = h.solid || hasHatchGradient(h) ? { segments: [], dense: false } : patternSegments(polys, hatchPatternLines(h));
   const geom = { polys, segments: pat.segments, dense: pat.dense };
   hatchCache.set(h, geom);
   return geom;
@@ -687,11 +762,11 @@ export function leaderTextAttachment(e: LeaderEntity): MTextAttachment {
   return last && e.textPosition && e.textPosition.x < last.x ? 3 : 1;
 }
 
-const leaderCache = new WeakMap<LeaderEntity, Entity[]>();
+const leaderCache = new WeakMap<LeaderEntity, GeneratedParts>();
 /** Leader line(s), arrowhead(s) and the attached MTEXT. Cached per entity. */
-export function leaderParts(e: LeaderEntity): Entity[] {
+export function leaderParts(e: LeaderEntity, context?: TextGeometryContext): Entity[] {
   const hit = leaderCache.get(e);
-  if (hit) return hit;
+  if (hit && hit.contextKey === context?.cacheKey) return hit.parts;
   const style = { layer: e.layer, color: e.color, ...appearanceProperties(e), linetype: e.linetype, lineWeight: e.lineWeight };
   const out: Entity[] = [];
   const paths: Point[][] = [leaderPath(e), ...(e.extraPaths ?? []).map((p) => [...p])];
@@ -735,22 +810,22 @@ export function leaderParts(e: LeaderEntity): Entity[] {
       ...(e.textColumns ? { columns: e.textColumns } : {}),
     });
   }
-  leaderCache.set(e, out);
+  leaderCache.set(e, { contextKey: context?.cacheKey, parts: out });
   return out;
 }
 
 // ------------------------------------------------------------------ table
 
-const tableCache = new WeakMap<TableEntity, Entity[]>();
+const tableCache = new WeakMap<TableEntity, GeneratedParts>();
 /** Border lines and cell MTEXTs of a table. Cached per entity. */
-export function tableParts(t: TableEntity): Entity[] {
+export function tableParts(t: TableEntity, context?: TextGeometryContext): Entity[] {
   const hit = tableCache.get(t);
-  if (hit) return hit;
+  if (hit && hit.contextKey === context?.cacheKey) return hit.parts;
   const geo = tableGeometry(t);
   const style = { layer: t.layer, color: t.color, ...appearanceProperties(t), linetype: t.linetype, lineWeight: t.lineWeight };
   const out: Entity[] = geo.lines.map(([a, b], i) => ({ ...style, id: `${t.id}:b${i}`, type: 'line' as const, a, b }));
   out.push(...geo.texts);
-  tableCache.set(t, out);
+  tableCache.set(t, { contextKey: context?.cacheKey, parts: out });
   return out;
 }
 
@@ -835,6 +910,8 @@ interface Affine {
   kx: number;
   ky: number;
   mirrored: boolean;
+  /** A block's gradient is evaluated in definition coordinates before its insert transform. */
+  gradientInBlock?: boolean;
 }
 
 type Compound = SplineEntity | HatchEntity | LeaderEntity | TableEntity | ImageEntity;
@@ -866,12 +943,17 @@ function affineCompound(e: Compound, A: Affine): Entity {
         if (!conformal && l.bulges?.some((b) => Math.abs(b) > 1e-12)) return { points: loopPolygon(l).map(A.tf) };
         return { points: l.points.map(A.tf), ...(l.bulges ? { bulges: A.mirrored ? l.bulges.map((b) => -b) : l.bulges } : {}) };
       });
+      const gradientConformal = Math.abs(A.kx) === Math.abs(A.ky);
+      const frame = e.gradientFrame ?? (A.gradientInBlock || !gradientConformal ? hatchGradientFrame(e) : null);
       return {
         ...e,
         loops,
         angle: normAngle(e.angle + A.rotation),
         scale: e.scale * k,
         origin: A.tf(e.origin ?? { x: 0, y: 0 }),
+        // Native direct ROTATE/MIRROR/SCALE keep the gradient's world angle; block display instead
+        // carries its definition-space frame through the insert transform.
+        ...(frame ? { gradientFrame: transformHatchGradientFrame(frame, A.tf) } : {}),
         ...(e.patternLines ? { patternLines: e.patternLines.map((l) => ({ angle: dirAngle(l.angle), base: A.tf(l.base), offset: A.vec(l.offset), dashes: l.dashes.map((d) => d * k) })) } : {}),
       };
     }
@@ -931,7 +1013,7 @@ function affineCompound(e: Compound, A: Affine): Entity {
 }
 
 /** EXPLODE for the entity types that break into simpler ones; null when the type does not explode here. */
-export function explodeCompound(e: Entity): Entity[] | null {
+export function explodeCompound(e: Entity, context?: TextGeometryContext): Entity[] | null {
   const fresh = <T extends Entity>(x: T): T => ({ ...x, id: newId() });
   switch (e.type) {
     case 'spline': {
@@ -942,15 +1024,17 @@ export function explodeCompound(e: Entity): Entity[] | null {
       return [{ ...style, id: newId(), type: 'polyline', points: closed ? pts.slice(0, -1) : pts, closed }];
     }
     case 'hatch': {
+      // Ordinary lines/fills cannot retain an active or inactive native gradient descriptor.
+      if (e.gradient !== undefined) return null;
       const geo = hatchGeometry(e);
       const style = { layer: e.layer, color: e.color, ...appearanceProperties(e), linetype: e.linetype, lineWeight: e.lineWeight };
       if (e.solid) return geo.polys.map((points) => ({ ...style, id: newId(), type: 'polyline' as const, points, closed: true, filled: true }));
       return geo.segments.filter(([a, b]) => !g.eq(a, b, 1e-12)).map(([a, b]) => ({ ...style, id: newId(), type: 'line' as const, a, b }));
     }
     case 'leader':
-      return leaderParts(e).map(fresh);
+      return leaderParts(e, context).map(fresh);
     case 'table':
-      return tableParts(e).map(fresh);
+      return tableParts(e, context).map(fresh);
     default:
       return null;
   }
@@ -1010,6 +1094,7 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
   const uniform = Math.abs(sx - sy) < 1e-12;
   const k = Math.sqrt(Math.abs(sx * sy));
   const vec = (v: Point): Point => g.rotate({ x: v.x * sx * (mirror ? -1 : 1), y: v.y * sy }, rotation);
+  const directionAngle = (angle: number): number => { const v = vec({ x: Math.cos(angle), y: Math.sin(angle) }); return normAngle(Math.atan2(v.y, v.x)); };
   // Angle of a block-space direction after the transform (mirror flips it, then rotation adds).
   const ang = (t: number): number => normAngle((mirror ? Math.PI - t : t) + rotation);
   switch (e.type) {
@@ -1048,6 +1133,7 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
     case 'ray':
       return { ...e, base: tf(e.base), direction: vec(e.direction) };
     case 'dimension':
+      if (e.kind === 'ordinate' && !uniform) throw new Error('Nonuniform ordinate block transforms require primitive expansion.');
       return {
         ...e,
         p1: tf(e.p1),
@@ -1055,15 +1141,18 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
         linePoint: tf(e.linePoint),
         center: e.center ? tf(e.center) : e.center,
         textPosition: e.textPosition ? tf(e.textPosition) : e.textPosition,
-        rotation: e.kind === 'linear' ? ang(e.rotation) : e.rotation + rotation,
-        style: k === 1 ? e.style : { ...e.style, scale: e.style.scale * k },
+        rotation: e.kind === 'ordinate' ? e.rotation : e.kind === 'linear' ? ang(e.rotation) : e.rotation + rotation,
+        ...(e.kind === 'ordinate' ? { ordinateRotation: directionAngle(e.ordinateRotation ?? 0),
+          ...(e.textRotation !== undefined ? { textRotation: directionAngle(e.textRotation) } : {}) } : {}),
+        style: e.kind === 'ordinate' || k === 1 ? e.style : { ...e.style, scale: e.style.scale * k },
+        ...(e.kind !== 'ordinate' && k !== 1 && e.styleOverrides !== undefined ? { styleOverrides: { ...e.styleOverrides, DIMSCALE: e.style.scale * k } } : {}),
       };
     case 'spline':
     case 'hatch':
     case 'leader':
     case 'table':
     case 'image':
-      return affineCompound(e, { tf, vec, rotation, kx: sx, ky: sy, mirrored: mirror });
+      return affineCompound(e, { tf, vec, rotation, kx: sx, ky: sy, mirrored: mirror, gradientInBlock: true });
   }
 }
 
@@ -1095,6 +1184,16 @@ export function entityGeometryWork(entity: Entity): number {
     case 'hatch':
       for (const loop of entity.loops) work += loop.points.length * (loop.bulges?.some((value) => Math.abs(value) > 1e-12) ? 32 : 1);
       for (const line of entity.patternLines ?? []) work += 1 + line.dashes.length;
+      if (entity.gradient) {
+        const invalid = hatchGradientDataProblem(entity.gradient);
+        if (invalid) throw new GeometryBudgetError(invalid);
+        work += entity.gradient.name.length + entity.gradient.colors.length * 3;
+      }
+      if (entity.gradientFrame) {
+        const invalid = hatchGradientFrameProblem(entity.gradientFrame);
+        if (invalid || !entity.gradient) throw new GeometryBudgetError(invalid ?? 'gradient hatch frame requires a native gradient descriptor');
+        work += 6;
+      }
       break;
     case 'leader':
       work += entity.vertices.length + (entity.text?.length ?? 0) + (entity.raw?.length ?? 0) + (entity.textColumns?.heights.length ?? 0);
@@ -1170,8 +1269,12 @@ interface ExpansionBudget {
   truncated: boolean;
   /** A block inserts itself (directly or through others): the repeated reference was skipped. */
   cyclic: boolean;
+  /** Primitive annotation positions were measured in the current font/style context. */
+  contextGeometry: boolean;
+  /** Optional plot-only resolver of an insertion's unplotted physical lineweight. */
+  readonly resolveLineweight?: (entity: EntityBase) => number;
 }
-const newBudget = (maxObjects = MAX_INSERT_EXPANSION): ExpansionBudget => ({ remaining: MAX_BLOCK_EXPANSION_WORK, left: maxObjects, visits: maxObjects, chain: [], deps: new Map(), truncated: false, cyclic: false });
+const newBudget = (maxObjects = MAX_INSERT_EXPANSION, resolveLineweight?: (entity: EntityBase) => number): ExpansionBudget => ({ remaining: MAX_BLOCK_EXPANSION_WORK, left: maxObjects, visits: maxObjects, chain: [], deps: new Map(), truncated: false, cyclic: false, contextGeometry: false, resolveLineweight });
 
 function spendExpansion(budget: ExpansionBudget, work = 1): void {
   budget.remaining -= work;
@@ -1180,6 +1283,7 @@ function spendExpansion(budget: ExpansionBudget, work = 1): void {
 
 interface InsertCache {
   block: BlockDef;
+  readonly contextKey?: object;
   /**
    * The definitions the expansion used, nested ones included (and names that were missing): the
    * entry is stale as soon as one of them resolves differently (a nested block redefined, removed,
@@ -1190,6 +1294,7 @@ interface InsertCache {
   bounds: Bounds | null;
   /** The expansion was cut short (the cap, or a block that inserts itself). */
   limited: boolean;
+  readonly contextGeometry: boolean;
 }
 /** Only accepted immutable inserts and definitions qualify for identity caching. */
 const insertCache = new WeakMap<InsertEntity, InsertCache>();
@@ -1199,13 +1304,24 @@ function cachedInsert(ins: InsertEntity, lookup: BlockLookup): InsertCache | nul
   if (!block) return null;
   const immutable = isImmutableData(ins);
   const hit = immutable ? insertCache.get(ins) : undefined;
-  if (hit && hit.block === block && depsCurrent(hit.deps, lookup)) return hit;
+  if (hit && hit.block === block && depsCurrent(hit.deps, lookup)) {
+    if (hit.contextKey === lookup.textGeometry?.cacheKey) return hit;
+    if (!hit.contextGeometry) {
+      // Retained source entities only need new bounds; flattened annotations also need
+      // their measured text/leader positions rebuilt with the new context below.
+      let bounds: Bounds | null = null;
+      for (const sub of hit.exploded) bounds = g.unionBounds(bounds, entityBounds(sub, lookup));
+      const refreshed = { ...hit, contextKey: lookup.textGeometry?.cacheKey, bounds: bounds ?? g.boundsOfPoints([ins.position]) };
+      insertCache.set(ins, refreshed);
+      return refreshed;
+    }
+  }
   const budget = newBudget();
   const exploded: Entity[] = [];
   explodeInto(exploded, ins, lookup, 0, budget);
   let bounds: Bounds | null = null;
   for (const sub of exploded) bounds = g.unionBounds(bounds, entityBounds(sub, lookup));
-  const entry = { block, deps: budget.deps, exploded, bounds: bounds ?? g.boundsOfPoints([ins.position]), limited: budget.truncated || budget.cyclic };
+  const entry = { block, contextKey: lookup.textGeometry?.cacheKey, deps: budget.deps, exploded, bounds: bounds ?? g.boundsOfPoints([ins.position]), limited: budget.truncated || budget.cyclic, contextGeometry: budget.contextGeometry };
   if (immutable && [...budget.deps.values()].every((definition) => !definition || isImmutableData(definition))) insertCache.set(ins, entry);
   return entry;
 }
@@ -1238,9 +1354,11 @@ export function explodeInsert(ins: InsertEntity, lookup: BlockLookup, depth = 0)
 /**
  * Expand an insert (uncached) into at most `maxObjects` objects and tell whether it was cut short
  * (`truncated`: the limit; `cyclic`: a block inserts itself, its repeated reference skipped).
+ * A plot may supply a source-width resolver to retain nested ByBlock physical widths without
+ * changing the default expansion or its public caches. Plot table overrides happen afterwards.
  */
-export function expandInsert(ins: InsertEntity, lookup: BlockLookup, maxObjects = MAX_INSERT_EXPANSION): { entities: Entity[]; truncated: boolean; cyclic: boolean } {
-  const budget = newBudget(maxObjects);
+export function expandInsert(ins: InsertEntity, lookup: BlockLookup, maxObjects = MAX_INSERT_EXPANSION, resolveLineweight?: (entity: EntityBase) => number): { entities: Entity[]; truncated: boolean; cyclic: boolean } {
+  const budget = newBudget(maxObjects, resolveLineweight);
   const entities: Entity[] = [];
   explodeInto(entities, ins, lookup, 0, budget);
   return { entities, truncated: budget.truncated, cyclic: budget.cyclic };
@@ -1313,7 +1431,10 @@ function explodeSingleInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup
       break;
     }
     budget.left -= 1;
-    out.push(attributeText(ins, block, a, value));
+    const text = attributeText(ins, block, a, value);
+    const inheritedWeight = text.lineWeight === -2 ? budget.resolveLineweight?.(ins) : undefined;
+    if (inheritedWeight !== undefined && (!Number.isFinite(inheritedWeight) || inheritedWeight < 0)) throw new Error('Plot lineweight resolver must return finite nonnegative millimetres.');
+    out.push(inheritedWeight === undefined ? text : { ...text, lineWeight: inheritedWeight });
   }
   budget.chain.pop();
 }
@@ -1443,8 +1564,11 @@ export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation
         linePoint: tf(e.linePoint),
         center: e.center ? tf(e.center) : e.center,
         textPosition: e.textPosition ? tf(e.textPosition) : e.textPosition,
-        rotation: e.rotation + rotation,
-        style: k === 1 ? e.style : { ...e.style, scale: e.style.scale * k },
+        rotation: e.kind === 'ordinate' ? e.rotation : e.rotation + rotation,
+        // Native ordinate SCALE regenerates the measurement without scaling its style
+        // sizes, including automatic DIMSCALE=0. INSERT display scales local primitives.
+        style: e.kind === 'ordinate' || k === 1 ? e.style : { ...e.style, scale: e.style.scale * k },
+        ...(e.kind !== 'ordinate' && k !== 1 && e.styleOverrides !== undefined ? { styleOverrides: { ...e.styleOverrides, DIMSCALE: e.style.scale * k } } : {}),
       };
     case 'spline':
     case 'hatch':
@@ -1516,7 +1640,9 @@ function transformInto(out: Entity[], e: Entity, tf: (p: Point) => Point, ins: I
   const lay = e.layer === '0' ? ins.layer : e.layer;
   const lt = e.linetype && e.linetype.toUpperCase() === 'BYBLOCK' ? ins.linetype : e.linetype;
   const { trueColor: _t, colorLayer: _c, colorName: _n, transparency: _a, transparencyLayer: _al, ...plain } = e;
-  const styled = { ...plain, layer: lay, ...inheritedColor(e, ins), ...inheritedTransparency(e, ins), linetype: lt } as Entity;
+  const inheritedWeight = e.lineWeight === -2 ? budget.resolveLineweight?.(ins) : undefined;
+  if (inheritedWeight !== undefined && (!Number.isFinite(inheritedWeight) || inheritedWeight < 0)) throw new Error('Plot lineweight resolver must return finite nonnegative millimetres.');
+  const styled = { ...plain, layer: lay, ...inheritedColor(e, ins), ...inheritedTransparency(e, ins), linetype: lt, ...(inheritedWeight === undefined ? {} : { lineWeight: inheritedWeight }) } as Entity;
   if (e.type === 'leader' && e.textAppearance) {
     const annotation: EntityBase = { id: e.id, layer: e.textLayer ?? e.layer, color: e.textAppearance.color ?? 'ByLayer', ...e.textAppearance };
     Object.assign(styled, { textAppearance: { ...e.textAppearance, ...inheritedColor(annotation, ins), ...inheritedTransparency(annotation, ins) } });
@@ -1527,16 +1653,40 @@ function transformInto(out: Entity[], e: Entity, tf: (p: Point) => Point, ins: I
     Object.assign(styled, styled.type === 'leader' ? { textBackground: { ...bg, ...inherited } } : { background: { ...bg, ...inherited } });
   }
   if (styled.type === 'leader' && styled.textLayer === '0') Object.assign(styled, { textLayer: ins.layer });
+  if ((!similar || Math.abs(ins.scale) !== 1) && styled.type === 'dimension' && styled.kind === 'ordinate') {
+    // A scaled native reference displays its original local label, whereas native
+    // EXPLODE regenerates a new measurement. Preserve display as bounded primitives;
+    // the editable source dimension remains in the saved block definition.
+    budget.contextGeometry = true;
+    for (const part of dimensionParts(styled, lookup.textGeometry)) {
+      if (budget.left <= 0) { budget.truncated = true; break; }
+      budget.left -= 1;
+      out.push(blockTransform(part, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror)));
+    }
+    return;
+  }
   if (!similar && styled.type === 'insert') {
     // Applying anisotropic scale after a rotated nested INSERT produces shear. Combining
     // its rotation/scales as scalar INSERT fields would lose that affine geometry. Expand
     // in the nested reference's own coordinates, then apply this ancestor to its primitives.
     const children: Entity[] = [];
     explodeInto(children, styled, lookup, depth, budget);
-    for (const child of children) out.push(blockTransform(child, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror)));
+    for (const child of children) {
+      if (child.type === 'dimension' && child.kind === 'ordinate') {
+        budget.contextGeometry = true;
+        for (const part of dimensionParts(child, lookup.textGeometry)) {
+          if (budget.left <= 0) { budget.truncated = true; break; }
+          budget.left -= 1;
+          out.push(blockTransform(part, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror)));
+        }
+      } else out.push(blockTransform(child, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror)));
+    }
     return;
   }
-  const moved = similar ? similarityTransform(styled, tf, ins.rotation, ins.scale) : blockTransform(styled, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror));
+  // Direct similarity commands keep a native gradient world-aligned. Even a uniform
+  // INSERT evaluates its gradient in definition space before applying the reference.
+  const directSimilarity = similar && !(styled.type === 'hatch' && styled.gradient !== undefined) && !(styled.type === 'dimension' && styled.kind === 'ordinate');
+  const moved = directSimilarity ? similarityTransform(styled, tf, ins.rotation, ins.scale) : blockTransform(styled, tf, ins.rotation, ins.scale, ins.scaleY ?? ins.scale, Boolean(ins.mirror));
   if (moved.type === 'insert') {
     explodeInto(out, moved, lookup, depth, budget);
     return;
@@ -1568,7 +1718,7 @@ export function entityBounds(e: Entity, lookup: BlockLookup): Bounds | null {
       return { min: { x: b.min.x - h, y: b.min.y - h }, max: { x: b.max.x + h, y: b.max.y + h } };
     }
     case 'text':
-      return textBounds(e);
+      return textBounds(e, lookup.textGeometry);
     case 'insert':
       return cachedInsert(e, lookup)?.bounds ?? g.boundsOfPoints([e.position]);
     case 'ellipse':
@@ -1580,14 +1730,14 @@ export function entityBounds(e: Entity, lookup: BlockLookup): Bounds | null {
       return g.boundsOfPoints(rayEndpoints(e));
     case 'mtext': {
       let b: Bounds | null = null;
-      for (const t of mtextParts(e)) b = g.unionBounds(b, textBounds(t));
-      for (const l of mtextDecorations(e)) b = g.unionBounds(b, g.boundsOfPoints([l.a, l.b]));
-      for (const mask of mtextMasks(e)) b = g.unionBounds(b, g.boundsOfPoints(mask));
+      for (const t of mtextParts(e, lookup.textGeometry)) b = g.unionBounds(b, textBounds(t, lookup.textGeometry));
+      for (const l of mtextDecorations(e, lookup.textGeometry)) b = g.unionBounds(b, g.boundsOfPoints([l.a, l.b]));
+      for (const mask of mtextMasks(e, lookup.textGeometry)) b = g.unionBounds(b, g.boundsOfPoints(mask));
       return b ?? { min: e.position, max: e.position };
     }
     case 'dimension': {
       let b: Bounds | null = null;
-      for (const p of dimensionParts(e)) b = g.unionBounds(b, entityBounds(p, lookup));
+      for (const p of dimensionParts(e, lookup.textGeometry)) b = g.unionBounds(b, entityBounds(p, lookup));
       return b ?? g.boundsOfPoints([e.p1, e.p2]);
     }
     case 'spline':
@@ -1601,15 +1751,15 @@ export function entityBounds(e: Entity, lookup: BlockLookup): Bounds | null {
     case 'table':
     case 'image': {
       let b: Bounds | null = null;
-      for (const p of compoundParts(e)) b = g.unionBounds(b, entityBounds(p, lookup));
+      for (const p of compoundParts(e, lookup.textGeometry)) b = g.unionBounds(b, entityBounds(p, lookup));
       return b;
     }
   }
 }
 
 /** Primitive parts of a leader, table or image (for bounds, hit testing, snapping, drawing). */
-export function compoundParts(e: LeaderEntity | TableEntity | ImageEntity): Entity[] {
-  return e.type === 'leader' ? leaderParts(e) : e.type === 'table' ? tableParts(e) : imageParts(e);
+export function compoundParts(e: LeaderEntity | TableEntity | ImageEntity, context?: TextGeometryContext): Entity[] {
+  return e.type === 'leader' ? leaderParts(e, context) : e.type === 'table' ? tableParts(e, context) : imageParts(e);
 }
 
 /** Distance from point to entity outline (world units). */
@@ -1646,7 +1796,7 @@ export function distanceToEntity(p: Point, e: Entity, lookup: BlockLookup): numb
       return Math.max(0, best - (e.width ?? 0) / 2);
     }
     case 'text': {
-      const corners = textCorners(e);
+      const corners = textCorners(e, lookup.textGeometry);
       if (pointInPolygon(p, corners)) return 0;
       return Math.min(...corners.map((a, i) => g.distToSegment(p, a, corners[(i + 1) % corners.length]!)));
     }
@@ -1670,17 +1820,17 @@ export function distanceToEntity(p: Point, e: Entity, lookup: BlockLookup): numb
     }
     case 'mtext': {
       let best = Infinity;
-      for (const mask of mtextMasks(e)) {
+      for (const mask of mtextMasks(e, lookup.textGeometry)) {
         if (hasMTextFill(e) && pointInPolygon(p, mask)) return 0;
         for (let i = 0; i < mask.length; i++) best = Math.min(best, g.distToSegment(p, mask[i]!, mask[(i + 1) % mask.length]!));
       }
-      for (const t of mtextParts(e)) best = Math.min(best, distanceToEntity(p, t, lookup));
-      for (const l of mtextDecorations(e)) best = Math.min(best, g.distToSegment(p, l.a, l.b));
+      for (const t of mtextParts(e, lookup.textGeometry)) best = Math.min(best, distanceToEntity(p, t, lookup));
+      for (const l of mtextDecorations(e, lookup.textGeometry)) best = Math.min(best, g.distToSegment(p, l.a, l.b));
       return best;
     }
     case 'dimension': {
       let best = Infinity;
-      for (const part of dimensionParts(e)) best = Math.min(best, distanceToEntity(p, part, lookup));
+      for (const part of dimensionParts(e, lookup.textGeometry)) best = Math.min(best, distanceToEntity(p, part, lookup));
       return best;
     }
     case 'spline': {
@@ -1691,7 +1841,7 @@ export function distanceToEntity(p: Point, e: Entity, lookup: BlockLookup): numb
     }
     case 'hatch': {
       const geo = hatchGeometry(e);
-      if ((e.solid || geo.dense) && pointInLoops(p, geo.polys)) return 0;
+      if ((e.solid || hasHatchGradient(e) || geo.dense) && pointInLoops(p, geo.polys)) return 0;
       let best = Infinity;
       for (const poly of geo.polys) for (let i = 0; i < poly.length; i += 1) best = Math.min(best, g.distToSegment(p, poly[i]!, poly[(i + 1) % poly.length]!));
       for (const [a, b] of geo.segments) best = Math.min(best, g.distToSegment(p, a, b));
@@ -1702,7 +1852,7 @@ export function distanceToEntity(p: Point, e: Entity, lookup: BlockLookup): numb
     case 'image': {
       if (e.type === 'image' && pointInPolygon(p, imageBoundary(e))) return 0;
       let best = Infinity;
-      for (const part of compoundParts(e)) best = Math.min(best, distanceToEntity(p, part, lookup));
+      for (const part of compoundParts(e, lookup.textGeometry)) best = Math.min(best, distanceToEntity(p, part, lookup));
       return best;
     }
   }
@@ -1797,7 +1947,7 @@ export function mirrorEntityAcross(e: Entity, a: Point, b: Point): Entity {
 }
 
 /** Grip points (AutoCAD-style) for an entity. */
-export function gripPoints(e: Entity): Point[] {
+export function gripPoints(e: Entity, context?: TextGeometryContext): Point[] {
   switch (e.type) {
     case 'line':
       return [e.a, g.mid(e.a, e.b), e.b];
@@ -1830,7 +1980,8 @@ export function gripPoints(e: Entity): Point[] {
     case 'mtext':
       return [e.position];
     case 'dimension': {
-      const textPos = dimensionParts(e).find((p): p is TextEntity => p.type === 'text')?.position ?? e.linePoint;
+      const textPos = e.kind === 'ordinate' ? e.textPosition ?? dimensionTextPoint(e, dimensionMeasure(e, context))
+        : dimensionParts(e, context).find((p): p is TextEntity => p.type === 'text')?.position ?? e.linePoint;
       return e.kind === 'angular' && e.center ? [e.p1, e.p2, e.linePoint, e.center, textPos] : [e.p1, e.p2, e.linePoint, textPos];
     }
     case 'spline':
@@ -1855,7 +2006,8 @@ export function gripPoints(e: Entity): Point[] {
 /** Move grip `index` of an entity to `p` (AutoCAD grip stretch semantics). */
 export function moveGrip(e: Entity, index: number, p: Point): Entity | null {
   // Layout viewport frames (core/layouts.ts ViewportFrame) stretch as rectangles: the opposite corner stays.
-  if (e.type === 'polyline' && (e as { vport?: unknown }).vport && e.points.length === 4 && index >= 0 && index < 4) {
+  const viewportFrame = (e as { vport?: { clipBoundary?: unknown; clipOn?: boolean } }).vport;
+  if (e.type === 'polyline' && viewportFrame && (!viewportFrame.clipBoundary || viewportFrame.clipOn === false) && e.points.length === 4 && index >= 0 && index < 4) {
     const o = e.points[(index + 2) % 4]!;
     const lo = { x: Math.min(o.x, p.x), y: Math.min(o.y, p.y) };
     const hi = { x: Math.max(o.x, p.x), y: Math.max(o.y, p.y) };
@@ -2007,7 +2159,7 @@ export function snapCandidates(e: Entity, lookup: BlockLookup): SnapCandidate[] 
       return [{ point: e.position, kind: 'insertion' }];
     case 'dimension': {
       const out: SnapCandidate[] = [];
-      for (const part of dimensionParts(e)) {
+      for (const part of dimensionParts(e, lookup.textGeometry)) {
         if (part.type === 'line') out.push({ point: part.a, kind: 'endpoint' }, { point: part.b, kind: 'endpoint' });
         else if (part.type === 'text') out.push({ point: part.position, kind: 'insertion' });
       }
@@ -2031,7 +2183,7 @@ export function snapCandidates(e: Entity, lookup: BlockLookup): SnapCandidate[] 
     }
     case 'table': {
       const out: SnapCandidate[] = [{ point: e.position, kind: 'insertion' }];
-      for (const part of tableParts(e)) if (part.type === 'line') out.push({ point: part.a, kind: 'endpoint' }, { point: part.b, kind: 'endpoint' });
+      for (const part of tableParts(e, lookup.textGeometry)) if (part.type === 'line') out.push({ point: part.a, kind: 'endpoint' }, { point: part.b, kind: 'endpoint' });
       return out;
     }
     case 'image':
@@ -2071,10 +2223,10 @@ export function entitySegments(e: Entity, lookup: BlockLookup): Array<[Point, Po
     case 'ray':
       return [rayEndpoints(e)];
     case 'mtext':
-      return hasMTextFrame(e) ? mtextMasks(e).flatMap((mask) => mask.map((p, i): [Point, Point] => [p, mask[(i + 1) % mask.length]!])) : [];
+      return hasMTextFrame(e) ? mtextMasks(e, lookup.textGeometry).flatMap((mask) => mask.map((p, i): [Point, Point] => [p, mask[(i + 1) % mask.length]!])) : [];
     case 'dimension': {
       const out: Array<[Point, Point]> = [];
-      for (const part of dimensionParts(e)) out.push(...entitySegments(part, lookup));
+      for (const part of dimensionParts(e, lookup.textGeometry)) out.push(...entitySegments(part, lookup));
       return out;
     }
     case 'spline':
@@ -2088,7 +2240,7 @@ export function entitySegments(e: Entity, lookup: BlockLookup): Array<[Point, Po
     case 'table':
     case 'image': {
       const out: Array<[Point, Point]> = [];
-      for (const part of compoundParts(e)) out.push(...entitySegments(part, lookup));
+      for (const part of compoundParts(e, lookup.textGeometry)) out.push(...entitySegments(part, lookup));
       return out;
     }
   }

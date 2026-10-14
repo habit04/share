@@ -7,6 +7,7 @@ import type { SnapResult, TrackPath } from '../core/snap';
 import { drawEntity, renderSettings, annotationDisplay, colorDisplay, lineweightDisplay, type Transform } from './draw';
 import { cannoscaleValue } from '../core/layouts';
 import { setTextStyles } from './hershey';
+import { fontMetrics } from './font-metrics';
 import { textStylesOf } from '../io/encoding';
 import { warmSpatialIndex } from '../core/spatial-index';
 
@@ -84,6 +85,8 @@ export interface ViewSettings {
 export class Viewport {
   readonly canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
+  /** Experimental development seam: true means the sibling GPU canvas painted the whole base scene. */
+  experimentalSceneRenderer: ((view: Viewport, overlay: ViewportOverlay) => boolean) | null = null;
   /** px per world unit */
   scale = 80;
   /** world coordinate at canvas centre */
@@ -111,17 +114,20 @@ export class Viewport {
   /** Show the paper-space (triangle) UCS icon. */
   paperUcsIcon = false;
   private raf = 0;
+  private disposed = false;
   private lastOverlay: ViewportOverlay | null = null;
   private dprQuery: { mq: MediaQueryList; handler: () => void } | null = null;
   /** Called after a devicePixelRatio change (window moved to another monitor, browser zoom) resized the canvas. */
   onDprChange: ((dpr: number) => void) | null = null;
 
-  private baseScene: { state: Drawing['snapshot']; key: string; canvas: HTMLCanvasElement } | null = null;
+  private baseScene: { state: Drawing['snapshot']; key: string; canvas: HTMLCanvasElement; metricKey?: object; onContextChange: () => void } | null = null;
+  private readonly disposeFontListener: () => void;
   private imageState: Drawing['snapshot'] | null = null;
   private sceneHasImages = false;
   private warmTimer: ReturnType<typeof setTimeout> | null = null;
   private warmedEntities: Drawing['entities'] | null = null;
   private warmedBlocks: Drawing['blocks'] | null = null;
+  private warmedMetricKey?: object;
 
   private sceneKey(ov: ViewportOverlay): string | null {
     if (this.layoutPainter || this.underlay || this.doc.entities.length < 200 || this.canvas.width * this.canvas.height > 16_000_000) return null;
@@ -134,7 +140,7 @@ export class Viewport {
     if (this.sceneHasImages) return null;
     // Set order is stable during cursor motion; a different order only causes a safe cache miss.
     // Avoid sorting large selections on every frame, while still detecting in-place Set edits.
-    return JSON.stringify([this.width, this.height, this.dpr, this.scale, this.center.x, this.center.y, this.twist, this.settings, lineweightDisplay, [...ov.selection], ov.hover]);
+    return JSON.stringify([this.width, this.height, this.canvas.width, this.canvas.height, this.dpr, this.scale, this.center.x, this.center.y, this.twist, this.settings, lineweightDisplay, [...ov.selection], ov.hover]);
   }
 
   private rememberScene(key: string): void {
@@ -142,16 +148,47 @@ export class Viewport {
     if (!canvas) return;
     canvas.width = this.canvas.width; canvas.height = this.canvas.height;
     const context = canvas.getContext('2d');
-    if (!context) return;
-    context.drawImage(this.canvas, 0, 0);
-    this.baseScene = { state: this.doc.snapshot, key, canvas };
+    if (!context || context.isContextLost?.()) { this.discardScene(); return; }
+    try {
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.drawImage(this.canvas, 0, 0);
+    }
+    catch { this.discardScene(); return; } // A bitmap cache must never prevent the main view from drawing.
+    const onContextChange = this.baseScene?.onContextChange ?? (() => {
+      if (this.disposed || this.baseScene?.canvas !== canvas) return;
+      this.contextRestored();
+    });
+    if (!this.baseScene) {
+      // The saved bitmap can lose its context independently of the main Canvas.
+      canvas.addEventListener?.('contextlost', onContextChange);
+      canvas.addEventListener?.('contextrestored', onContextChange);
+    }
+    this.baseScene = { state: this.doc.snapshot, key, canvas, metricKey: this.doc.lookupBlock.textGeometry?.cacheKey, onContextChange };
   }
 
+  private discardScene(): void {
+    const scene = this.baseScene;
+    this.baseScene = null;
+    if (scene) {
+      scene.canvas.removeEventListener?.('contextlost', scene.onContextChange);
+      scene.canvas.removeEventListener?.('contextrestored', scene.onContextChange);
+      scene.canvas.width = 1; scene.canvas.height = 1;
+    }
+  }
+
+  private readonly contextRestored = (): void => {
+    if (this.disposed) return;
+    // A GPU-process failure can erase both Canvas bitmaps. Never reuse the saved scene.
+    this.discardScene();
+    if (this.lastOverlay) this.requestRender(this.lastOverlay);
+  };
+
   private queueSpatialWarmup(): void {
-    if (this.warmTimer || this.warmedEntities === this.doc.entities && this.warmedBlocks === this.doc.blocks) return;
+    if (this.warmTimer || this.warmedEntities === this.doc.entities && this.warmedBlocks === this.doc.blocks && this.warmedMetricKey === this.doc.lookupBlock.textGeometry?.cacheKey) return;
     this.warmTimer = setTimeout(() => {
       this.warmTimer = null;
       this.warmedEntities = this.doc.entities; this.warmedBlocks = this.doc.blocks;
+      this.warmedMetricKey = this.doc.lookupBlock.textGeometry?.cacheKey;
       warmSpatialIndex(this.doc.entities, this.doc.lookupBlock);
     }, 50);
   }
@@ -161,6 +198,12 @@ export class Viewport {
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('2D canvas unsupported');
     this.ctx = ctx;
+    this.disposeFontListener = fontMetrics.subscribe(() => {
+      if (this.disposed) return;
+      this.discardScene(); this.warmedEntities = null;
+      if (this.lastOverlay) this.requestRender(this.lastOverlay);
+    });
+    canvas.addEventListener?.('contextrestored', this.contextRestored);
     this.watchDevicePixelRatio();
   }
 
@@ -195,14 +238,16 @@ export class Viewport {
     this.dprQuery = { mq, handler };
   }
 
-  /** Stop listening for devicePixelRatio changes (a viewport that is thrown away). */
+  /** Stop context/DPR listeners and queued work for a viewport that is thrown away. */
   dispose(): void {
+    this.disposed = true;
+    this.disposeFontListener();
+    this.canvas.removeEventListener?.('contextrestored', this.contextRestored);
     if (this.dprQuery) this.dprQuery.mq.removeEventListener('change', this.dprQuery.handler);
     this.dprQuery = null;
     if (this.warmTimer) clearTimeout(this.warmTimer);
     this.warmTimer = null;
-    if (this.baseScene) { this.baseScene.canvas.width = 1; this.baseScene.canvas.height = 1; }
-    this.baseScene = null;
+    this.discardScene();
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
   }
@@ -304,22 +349,43 @@ export class Viewport {
     });
   }
 
+  /** Synchronous redraw of the most recent overlay for development comparisons. */
+  renderCurrent(): void {
+    if (this.raf) { cancelAnimationFrame(this.raf); this.raf = 0; }
+    if (this.lastOverlay) this.render(this.lastOverlay);
+  }
+
   render(ov: ViewportOverlay): void {
     const { ctx } = this;
     this.lastOverlay = ov;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    const key = this.sceneKey(ov);
-    const cached = key && this.baseScene?.state === this.doc.snapshot && this.baseScene.key === key ? this.baseScene : null;
+    const gpuScene = this.experimentalSceneRenderer?.(this, ov) ?? false;
+    const key = gpuScene ? null : this.sceneKey(ov);
+    const cached = key && this.baseScene?.state === this.doc.snapshot && this.baseScene.key === key && this.baseScene.metricKey === this.doc.lookupBlock.textGeometry?.cacheKey ? this.baseScene : null;
     if (!cached) {
-      ctx.fillStyle = this.settings.background;
-      ctx.fillRect(0, 0, this.width, this.height);
+      // Rounded backing dimensions can include a fraction of an extra CSS pixel.
+      // Fill/clear whole physical pixels, then keep geometry on the original DPR.
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      try {
+        if (gpuScene) ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        else {
+          ctx.fillStyle = this.settings.background;
+          ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        }
+      } finally { ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); }
       if (this.settings.gridVisible && !this.layoutPainter) this.drawGrid();
       if (this.underlay) {
         ctx.save();
         this.underlay(ctx, this);
         ctx.restore();
       }
-    } else ctx.drawImage(cached.canvas, 0, 0, this.width, this.height);
+    } else {
+      // Saved scenes already have the exact physical backing size. A CSS-sized
+      // destination would resample them when logical size * DPR is fractional.
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      try { ctx.drawImage(cached.canvas, 0, 0); }
+      finally { ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); }
+    }
 
     const header = this.doc.header;
     renderSettings.ltscale = header.ltscale;
@@ -345,7 +411,7 @@ export class Viewport {
         this.layoutPainter(ctx, this, ov);
         ctx.restore();
       }
-      for (const e of this.layoutPainter ? [] : this.doc.entities) {
+      for (const e of this.layoutPainter || gpuScene ? [] : this.doc.entities) {
         if (hidden.has(e.layer)) continue;
         const selected = ov.selection.has(e.id);
         const hovered = ov.hover === e.id && !selected;
@@ -372,7 +438,7 @@ export class Viewport {
     if (ov.selection.size > 0 && ov.selection.size <= 400) {
       for (const e of this.doc.entities) {
         if (!ov.selection.has(e.id)) continue;
-        for (const gp of gripPoints(e)) this.drawGrip(this.toScreen(gp), cursorScreen);
+        for (const gp of gripPoints(e, this.doc.lookupBlock.textGeometry)) this.drawGrip(this.toScreen(gp), cursorScreen);
       }
     }
 

@@ -35,25 +35,41 @@ contextBridge.exposeInMainWorld('jcad', {
   openDrawing: (file) => ipcRenderer.invoke('open-drawing', file),
   // Project access is authorized in the main process; opts.textOnly reads JSON without granting its entries.
   openProject: (file, opts) => ipcRenderer.invoke('open-project', file, opts && typeof opts === 'object' ? { userChosen: opts.userChosen === true, textOnly: opts.textOnly === true } : undefined),
-  saveText: (suggestName, text, filterName, ext) => ipcRenderer.invoke('save-text', suggestName, text, filterName, ext),
+  saveText: (suggestName, text, filterName, ext, opts) => ipcRenderer.invoke('save-text', suggestName, text, filterName, ext, opts && typeof opts === 'object' ? { admission: opts.admission } : undefined),
   // Project Save As: pick the destination first (the renderer rebases relative paths), then write it.
   chooseProjectPath: (suggestName) => ipcRenderer.invoke('choose-project-path', String(suggestName || '')),
-  saveProject: (file, text) => ipcRenderer.invoke('save-project', file, text),
-  backupFile: (file) => ipcRenderer.invoke('backup-file', file),
-  plotPdf: (dataUrl, suggestName, landscape, sheet) => ipcRenderer.invoke('plot-pdf', dataUrl, suggestName, landscape, sheet),
+  saveProject: (file, text, admission) => ipcRenderer.invoke('save-project', file, text, admission),
+  backupFile: (file, opts) => ipcRenderer.invoke('backup-file', file, opts && typeof opts === 'object' ? { admission: opts.admission } : undefined),
+  choosePdfPath: (suggestName, admission) => ipcRenderer.invoke('choose-pdf-path', suggestName, admission),
+  plotPdf: (dataUrl, suggestName, landscape, sheet, opts) => ipcRenderer.invoke('plot-pdf', dataUrl, suggestName, landscape, sheet, opts),
   printDrawing: (dataUrl, title, landscape, sheet) => ipcRenderer.invoke('print-drawing', dataUrl, title, landscape, sheet),
   // Vector PLOT: the renderer's PDF bytes, saved through a Save dialog in the main process.
-  savePdf: (bytes, suggestName) => ipcRenderer.invoke('save-pdf', bytes, suggestName),
+  savePdf: (bytes, suggestName, opts) => ipcRenderer.invoke('save-pdf', bytes, suggestName, opts),
   // opts.backup === false: no <name>.bak copy (a project-wide command made its own, or the user declined one)
-  saveDxf: (path, text, suggestName, opts) => ipcRenderer.invoke('save-dxf', path, text, suggestName, opts && opts.backup === false ? { backup: false } : undefined),
+  saveDxf: (path, text, suggestName, opts) => ipcRenderer.invoke('save-dxf', path, text, suggestName, opts && typeof opts === 'object' ? { ...(opts.backup === false ? { backup: false } : {}), ...(opts.admission !== undefined ? { admission: opts.admission } : {}) } : undefined),
   // Drawing Save As: pick the format and destination before writing in save-queue order.
   chooseDrawingPath: (suggestName, format) => ipcRenderer.invoke('choose-drawing-path', String(suggestName || ''), format),
   // Windows portable DWG saving and separate DWG copies.
   ...(process.platform === 'win32' ? {
+    issueSaveAdmission: (kind) => ipcRenderer.invoke('issue-save-admission', kind),
+    bindSaveAdmission: (ticket, kind, path, source) => ipcRenderer.invoke('bind-save-admission', ticket, kind, path, source),
+    releaseOpenedSourceProof: (proof) => ipcRenderer.invoke('release-opened-source-proof', proof),
+    cancelSaveAdmission: (ticket, kind) => ipcRenderer.invoke('cancel-save-admission', ticket, kind),
+    resolvePathIdentity: (path) => ipcRenderer.invoke('resolve-path-identity', path),
+    saveAdmissionResult: (ticket) => ipcRenderer.invoke('save-admission-result', ticket),
+    issueProjectSaveBatch: () => ipcRenderer.invoke('issue-project-save-batch'),
+    bindProjectSaveBatch: (batch, paths) => ipcRenderer.invoke('bind-project-save-batch', batch, paths),
+    openProjectSaveBatchDrawing: (batch, childTicket) => ipcRenderer.invoke('open-project-save-batch-drawing', batch, childTicket),
+    sealProjectSaveBatch: (batch, children) => ipcRenderer.invoke('seal-project-save-batch', batch, children),
+    beginProjectSaveBatchCommit: (batch, children) => ipcRenderer.invoke('begin-project-save-batch-commit', batch, children),
+    cancelProjectSaveBatch: (batch) => ipcRenderer.invoke('cancel-project-save-batch', batch),
+    fontMetrics: (request) => ipcRenderer.invoke('font-metrics', request),
+    pdfFont: (request) => ipcRenderer.invoke('pdf-font', request),
+    openShxFont: () => ipcRenderer.invoke('open-shx-font'),
     dwgExportStatus: () => ipcRenderer.invoke('dwg-export-status'),
-    saveDwg: (path, text) => ipcRenderer.invoke('save-dwg', path, text),
+    saveDwg: (path, text, admission) => ipcRenderer.invoke('save-dwg', path, text, admission),
     chooseDwgPath: (suggestName) => ipcRenderer.invoke('choose-dwg-path', String(suggestName || '')),
-    exportDwg: (path, text) => ipcRenderer.invoke('export-dwg', path, text),
+    exportDwg: (path, text, admission) => ipcRenderer.invoke('export-dwg', path, text, admission),
   } : {}),
   // Progress of a large DWG read (the main process parses it in a worker thread) and its Cancel button
   onOpenProgress: (cb) => {
@@ -113,6 +129,7 @@ contextBridge.exposeInMainWorld('jcad', {
   },
   // Updates (GitHub Releases)
   appInfo: () => ipcRenderer.invoke('app-info'),
+  gpuDiagnostics: () => ipcRenderer.invoke('gpu-diagnostics'),
   /** Open a link in the system browser; only this project's GitHub pages are allowed. */
   openExternal: (url) => ipcRenderer.invoke('open-external', String(url)),
   checkForUpdates: () => ipcRenderer.invoke('check-updates'),

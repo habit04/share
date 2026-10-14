@@ -9,6 +9,7 @@ const { atomicWriteFile } = require('../atomic-write.cjs');
 const { createAutosaveStore, safeAutosaveName } = require('../autosave-store.cjs');
 const { stateDir, autosaveDir, enqueueWrite } = require('./app-data.cjs');
 const { readLimitedFile, validateTextSize } = require('../resource-limits.cjs');
+const { isPluginFolderName, readPluginManifest, readPluginSource } = require('../plugin-files.cjs');
 
 /** @typedef {import('./context.cjs').MainContext} MainContext */
 
@@ -53,18 +54,6 @@ function registerStoreIpc(ctx) {
   // One folder per plugin: plugins/<name>/plugin.json + the main .js it names (docs/PLUGIN-API.md).
   // The main process only lists and reads the files; the renderer asks the user and runs the code.
   const pluginsDir = () => path.join(stateDir(), 'plugins');
-  const PLUGIN_FOLDER_RE = /^[A-Za-z0-9._-]{1,64}$/;
-  const PLUGIN_MAIN_RE = /^[A-Za-z0-9._-]+\.js$/;
-  const MAX_PLUGIN_MANIFEST = 64 * 1024;
-  const MAX_PLUGIN_CODE = 2 * 1024 * 1024;
-  function safePluginFolder(name) {
-    if (typeof name !== 'string' || name === '.' || name === '..' || !PLUGIN_FOLDER_RE.test(name)) throw new Error('Invalid plugin folder name');
-    return name;
-  }
-  /** A plugin file of at most `max` bytes, read through one handle (electron/resource-limits.cjs). */
-  async function readLimited(file, max) {
-    return /** @type {string} */ (await readLimitedFile(fs, file, max, 'utf8'));
-  }
   /** The folder is created on first use so users can find it (PLUGINS prints it). */
   ipcMain.handle('plugins-dir', async () => {
     await fs.mkdir(pluginsDir(), { recursive: true });
@@ -81,10 +70,10 @@ function registerStoreIpc(ctx) {
     }
     const out = [];
     for (const d of dirents) {
-      if (!d.isDirectory() || !PLUGIN_FOLDER_RE.test(d.name) || d.name === '.' || d.name === '..') continue;
+      if (!d.isDirectory() || !isPluginFolderName(d.name)) continue;
       try {
-        const manifest = await pathPolicy.insideRoot(pluginsDir(), path.join(pluginsDir(), d.name, 'plugin.json'), 'plugins-list');
-        out.push({ folder: d.name, manifest: await readLimited(manifest, MAX_PLUGIN_MANIFEST) });
+        const manifest = await readPluginManifest(pluginsDir(), d.name, { checkPath: (file) => pathPolicy.insideRoot(pluginsDir(), file, 'plugins-list') });
+        out.push({ folder: d.name, manifest });
       } catch (err) {
         out.push({ folder: d.name, manifest: null, error: err && err.code === 'ENOENT' ? 'no plugin.json' : String((err && err.message) || err) });
       }
@@ -92,29 +81,7 @@ function registerStoreIpc(ctx) {
     return out.sort((a, b) => a.folder.localeCompare(b.folder));
   });
   /** { manifest, code, path } of one plugin folder, or null when it does not exist. */
-  ipcMain.handle('plugins-read', async (_ev, folder) => {
-    const dir = path.join(pluginsDir(), safePluginFolder(folder));
-    let manifest;
-    try {
-      // A plugin folder (or its files) may not be a link to somewhere outside the plugins folder.
-      await pathPolicy.insideRoot(pluginsDir(), path.join(dir, 'plugin.json'), 'plugins-read');
-      manifest = await readLimited(path.join(dir, 'plugin.json'), MAX_PLUGIN_MANIFEST);
-    } catch (err) {
-      if (err && err.code === 'ENOENT') return null;
-      throw err;
-    }
-    let main = 'main.js';
-    try {
-      const m = JSON.parse(manifest);
-      if (m && m.main !== undefined) main = String(m.main);
-    } catch {
-      /* the renderer reports the bad JSON */
-    }
-    if (!PLUGIN_MAIN_RE.test(main)) throw new Error('plugin.json "main" must be a .js file in the plugin folder');
-    const file = path.join(dir, main);
-    await pathPolicy.insideRoot(pluginsDir(), file, 'plugins-read');
-    return { manifest, code: await readLimited(file, MAX_PLUGIN_CODE), path: file };
-  });
+  ipcMain.handle('plugins-read', (_ev, folder) => readPluginSource(pluginsDir(), folder, { checkPath: (file) => pathPolicy.insideRoot(pluginsDir(), file, 'plugins-read') }));
 
   // ------------------------------------------------------------------ catalog packs (app data folder / packs)
   // Signed manufacturer catalogs (*.jcadpack.json, see docs/CATALOG-PACKS.md). The renderer verifies the

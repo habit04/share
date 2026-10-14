@@ -1,5 +1,6 @@
 import type { Editor } from '../app/editor';
 import type { AutosaveEntry, AutosaveStore, Autosaver } from '../app/autosave';
+import { omitted3dText } from '../app/autosave';
 import { RecoveryActions } from '../app/recovery-actions';
 import { describeFileError } from '../app/file-errors';
 import { withDwgRecoveryWarning } from '../io/import-report';
@@ -47,6 +48,8 @@ export async function recoveryDialog(editor: Editor, store: AutosaveStore, autos
       const session = editor.sessions.all[idx];
       if (session) autosaver?.adopt(session.id, e.name);
       editor.log(`Recovered ${e.title} from autosave (${state.entities.length} entities). Use SAVE to keep it; the backup is kept until then.`);
+      const missing3d = omitted3dText(e);
+      if (missing3d) editor.log(missing3d);
       editor.showImportReport(false);
     },
   });
@@ -64,7 +67,7 @@ export async function recoveryDialog(editor: Editor, store: AutosaveStore, autos
       row.className = 'recovery-row';
       row.dataset.name = e.name;
       const err = actions.errors.get(e.name);
-      row.innerHTML = `<span>${icon('recover')}</span><span><b>${esc(e.title)}</b><br><span class="when">${esc(e.originalPath ?? '(never saved)')} — autosaved ${new Date(e.savedAt).toLocaleString()}</span>${err ? `<br><span class="recovery-error" role="alert">${esc(err)}</span>` : ''}</span>`;
+      row.innerHTML = `<span>${icon('recover')}</span><span><b>${esc(e.title)}</b><br><span class="when">${esc(e.originalPath ?? '(never saved)')} — autosaved ${new Date(e.savedAt).toLocaleString()}</span>${omitted3dText(e) ? `<br><span class="when">${esc(omitted3dText(e)!)}</span>` : ''}${err ? `<br><span class="recovery-error" role="alert">${esc(err)}</span>` : ''}</span>`;
       const open = button('Open');
       const discard = button('Discard');
       open.disabled = actions.busy;

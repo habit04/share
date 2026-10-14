@@ -5,7 +5,7 @@
 import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity, LineEntity, ArcEntity, PolylineEntity } from '../core/entities';
-import { newId, translateEntity, rotateEntity, scaleEntityBy, arcEndpoints, bulgeFromSweep, polylineLength, entityBounds, polylineSegments, splineThroughPoints, explodeCompound } from '../core/entities';
+import { newId, translateEntity, rotateEntity, scaleEntityBy, arcEndpoints, bulgeFromSweep, polylineLength, entityBounds, polylineSegments, splineThroughPoints, explodeCompound, explodeInsert } from '../core/entities';
 import { selectByBox } from '../core/selection';
 import type { Tool, ToolContext } from './types';
 import { scriptTool, point, pointOrKeyword, number, keyword, select, dflt, type Step } from './script';
@@ -882,7 +882,7 @@ export function matchProperties(source: Entity, target: Entity): Entity {
   if (source.type === 'mtext' && out.type === 'mtext') out = { ...out, height: source.height, lineSpacing: source.lineSpacing };
   if (source.type === 'text' && out.type === 'mtext') out = { ...out, height: source.height };
   if (source.type === 'mtext' && out.type === 'text') out = { ...out, height: source.height };
-  if (source.type === 'dimension' && out.type === 'dimension') out = { ...out, style: source.style };
+  if (source.type === 'dimension' && out.type === 'dimension') out = { ...out, style: source.style, styleOverrides: source.styleOverrides };
   if (source.type === 'polyline' && out.type === 'polyline') out = { ...out, width: source.width };
   return out;
 }
@@ -920,10 +920,19 @@ export class DraftingExplodeTool extends ExplodeTool {
     const removed: string[] = [];
     const handled = new Set<string>();
     let xrefs = 0;
+    let gradients = 0;
+    const retained = new Set<string>();
     for (const e of targets) {
       if (e.type === 'insert' && ctx.doc.lookupBlock(e.block)?.xref) {
         xrefs += 1;
         handled.add(e.id);
+        continue;
+      }
+      if ((e.type === 'hatch' && e.gradient !== undefined)
+        || (e.type === 'insert' && explodeInsert(e, ctx.doc.lookupBlock).some((part) => part.type === 'hatch' && part.gradient && part.gradient.kind !== 0))) {
+        gradients += 1;
+        handled.add(e.id);
+        retained.add(e.id);
         continue;
       }
       const parts = explodeCompound(e);
@@ -933,19 +942,27 @@ export class DraftingExplodeTool extends ExplodeTool {
       handled.add(e.id);
     }
     if (xrefs) ctx.log(`${xrefs} was an external reference and could not be exploded.`);
+    if (gradients) ctx.log(`${gradients} object(s) with gradients retained: EXPLODE cannot preserve their fill settings.`);
     if (removed.length) {
       ctx.doc.replaceWith(removed, out);
       ctx.log(`${removed.length} object(s) exploded.`);
     }
     const rest = this.ids.filter((id) => !handled.has(id));
     if (rest.length === 0) {
-      if (!removed.length && !xrefs) ctx.log('Nothing to explode.');
-      ctx.selection = new Set(out.map((x) => x.id));
+      if (!removed.length && !xrefs && !gradients) ctx.log('Nothing to explode.');
+      ctx.selection = new Set([...retained, ...out.map((x) => x.id)]);
       ctx.finish();
       return;
     }
     this.ids = rest;
     ctx.selection = new Set(rest);
-    super.begin(ctx);
+    if (retained.size) {
+      // Merge protected objects before the basic tool's finish notification, so the
+      // editor renders the same selection that the command leaves in the document.
+      const delegate = Object.create(ctx) as ToolContext;
+      Object.defineProperty(delegate, 'selection', { get: () => ctx.selection, set: (value: Set<string>) => { ctx.selection = value; } });
+      delegate.finish = () => { ctx.selection = new Set([...retained, ...out.map((e) => e.id), ...ctx.selection]); ctx.finish(); };
+      super.begin(delegate);
+    } else super.begin(ctx);
   }
 }

@@ -6,6 +6,7 @@ import { saveSettings } from '../app/settings';
 // Track E: layouts plot their page setup; vector PDF output and plot styles.
 import { activeLayout, layoutsOf, paperLabel, sheetInches } from '../core/layouts';
 import { PLOT_STYLE_LABELS, pageSetupDialog } from './layouts';
+import { plotStylePicker } from './plot-style-picker';
 
 export interface PlotChoice {
   options: PlotOptions;
@@ -90,13 +91,22 @@ export function plotDialog(editor: Editor, mode: 'pdf' | 'print'): Promise<PlotC
         ]),
       );
     }
+    let styleLoading = false;
     const screenRow = dlgRow('Screening (%)', numberInput(opts.screening ?? 50, 5, 100, 5, (v) => (opts.screening = v)));
     screenRow.style.display = opts.style === 'screening' ? '' : 'none';
+    const builtInStyle = selectInput(PLOT_STYLE_LABELS, opts.style!, (v) => ((opts.style = v as PlotOptions['style']), (screenRow.style.display = v === 'screening' ? '' : 'none')));
+    const picker = plotStylePicker((selection) => {
+      opts.styleTable = selection?.table; opts.styleTableName = selection?.name; opts.namedStyle = selection?.namedStyle;
+      builtInStyle.disabled = !!selection;
+      screenRow.style.display = !selection && opts.style === 'screening' ? '' : 'none';
+    }, (busy) => { styleLoading = busy; pdf.disabled = print.disabled = !b || busy; });
+    m.onClose(() => picker.dispose());
     m.body.append(
       dlgGroup('Output', [
         dlgRow('PDF output', selectInput([['vector', 'Vector (recommended)'], ['raster', 'Raster image']], opts.output!, (v) => (opts.output = v as PlotOptions['output']))),
         dlgRow('What to plot', selectInput([['current', layout ? `Current layout (${layout.name})` : 'Model tab'], ['layouts', 'All layouts (one page each)']], opts.what!, (v) => ((opts.what = v as PlotOptions['what']), refresh()))),
-        dlgRow('Plot style table', selectInput(PLOT_STYLE_LABELS, opts.style!, (v) => ((opts.style = v as PlotOptions['style']), (screenRow.style.display = v === 'screening' ? '' : 'none')))),
+        dlgRow('Built-in plot mode', builtInStyle),
+        picker.element,
         screenRow,
         dlgCheck('Plot object lineweights', opts.lineweights !== false, (v) => (opts.lineweights = v)),
         dlgCheck('Plot with plot styles', opts.usePlotStyles !== false, (v) => (opts.usePlotStyles = v)),
@@ -109,6 +119,7 @@ export function plotDialog(editor: Editor, mode: 'pdf' | 'print'): Promise<PlotC
     m.body.appendChild(note);
     refresh();
     const choose = (action: 'pdf' | 'print') => {
+      if (styleLoading) return;
       editor.settings = { ...editor.settings, plotPaper: opts.paper, plotOrientation: opts.orientation, plotScale: opts.scale, plotMargin: opts.margin };
       saveSettings(editor.settings);
       finish({ options: opts, action });

@@ -120,7 +120,9 @@ test('native candidate upload is gated by exact color and MINSERT acceptance', (
   assert.match(workflow, /r2018-portable-appearance\.dwg.*r2018-native-shipping\.dwg.*appearance-report\.json/);
 });
 
-test('metadata candidate provenance requires the independent native oracle before packaging', () => {
+test('metadata provenance requires the independent native oracle before writing accepted evidence', () => {
+  // Development adopts completed source/bundle evidence, not release workflow
+  // changes. The existing color/MINSERT and compiler workflow checks stay intact.
   const workflow = readFileSync(new URL('../../.github/workflows/native-dwg-background.yml', import.meta.url), 'utf8');
   assert.match(workflow, /timeout 90s node scripts\/native-dwg-build\/validate-metadata-fixture\.mjs/);
   assert.ok(workflow.indexOf('Exact native VIEW FIELD and typed metadata oracle gate') > workflow.indexOf('Exact native color reference and MINSERT attribute gate'));
@@ -130,9 +132,10 @@ test('metadata candidate provenance requires the independent native oracle befor
   assert.match(provenance, /validateMetadataReport\(metadata, metadataExpected, metadataOriginalDxf, nativeDateOracle\)/);
   assert.match(provenance, /metadata\.factorySha256, fixture\.factorySha256/);
   assert.match(provenance, /metadata\.wasmSha256, fixture\.wasmSha256/);
+  assert.ok(provenance.indexOf('validateMetadataReport(metadata, metadataExpected, metadataOriginalDxf, nativeDateOracle)') < provenance.lastIndexOf('writeFile('));
 });
 
-test('normal CI checks the accepted native bytes against all three independent metadata fixtures', () => {
+test('accepted-runtime validator requires all three independent metadata fixtures without rebuilding', () => {
   const workflow = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
   assert.match(workflow, /name: Accepted native reader matches all three independent metadata fixtures\r?\n {8}if: matrix\.node == 24\r?\n {8}run: \|/);
   assert.match(workflow, /node --test scripts\/native-dwg-build\/tooling\.test\.mjs scripts\/native-dwg-build\/metadata-tools\.test\.mjs/);

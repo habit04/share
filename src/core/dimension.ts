@@ -13,12 +13,12 @@
  */
 import type { Point } from './geometry';
 import * as g from './geometry';
-import type { EntityBase, LineEntity, PolylineEntity, TextEntity, ArcEntity, CircleEntity, ColorSpec } from './entities';
+import type { Entity, EntityBase, BlockDef, LineEntity, PolylineEntity, TextEntity, ArcEntity, CircleEntity, ColorSpec } from './entities';
 import { appearanceProperties } from './appearance';
 import type { DrawingState } from './document';
 import { formatLength, formatAngle, cadPrecision, type LinearUnits } from './units';
 
-export type DimKind = 'linear' | 'aligned' | 'radius' | 'diameter' | 'angular';
+export type DimKind = 'linear' | 'aligned' | 'radius' | 'diameter' | 'angular' | 'ordinate';
 
 /** Arrowhead shapes (DIMBLK / DIMBLK1 / DIMBLK2). */
 export type DimArrow = 'closed-filled' | 'closed-blank' | 'closed' | 'open' | 'oblique' | 'arch-tick' | 'dot' | 'dot-small' | 'dot-blank' | 'none';
@@ -249,6 +249,7 @@ export interface DimensionEntity extends EntityBase {
    * linear/aligned: extension line origins.
    * radius/diameter: p1 = centre, p2 = a point on the circle (sets the direction).
    * angular: points on the two legs.
+   * ordinate: p1 = datum origin, p2 = measured feature (native groups 10 and 13).
    */
   readonly p1: Point;
   readonly p2: Point;
@@ -256,10 +257,16 @@ export interface DimensionEntity extends EntityBase {
    * linear/aligned: a point on the dimension line.
    * radius/diameter: where the text goes (inside or outside the circle).
    * angular: a point on the dimension arc.
+   * ordinate: leader endpoint (native group 14).
    */
   readonly linePoint: Point;
   /** linear only: direction of the dimension line (0 horizontal, π/2 vertical). */
   readonly rotation: number;
+  /** Ordinate coordinate to measure in its datum frame. */
+  readonly ordinateAxis?: 'x' | 'y';
+  /** Ordinate datum's world angle, radians. Native group 51 stores its negative in degrees.
+   * Direct ROTATE/MIRROR keep this frame; block references compose it with their transform. */
+  readonly ordinateRotation?: number;
   /** angular: the vertex. */
   readonly center?: Point;
   /** Text override: undefined/'' = measurement, '<>' inserts the measurement, ' ' suppresses. */
@@ -271,10 +278,37 @@ export interface DimensionEntity extends EntityBase {
   /** DIMEDIT Oblique: absolute angle of the extension lines of a linear/aligned dimension (radians). DXF group 52. */
   readonly oblique?: number;
   readonly style: DimStyle;
+  /** Supported per-entity DIM* override values, including values equal to the named style.
+   * Absent on legacy drawings, whose overrides are inferred from effective style differences.
+   * TOLERANCE / ALTPLACEMENT identify the supported JCAD_DIMSTYLE extension fields.
+   * Text-style handles are resolved to names; native flag values remain distinct even when
+   * the effective style maps more than one flag combination to the same display mode.
+   */
+  readonly styleOverrides?: Readonly<Record<string, number | string>>;
 }
 
 export type DimPart = LineEntity | PolylineEntity | TextEntity | ArcEntity | CircleEntity;
 export type Measure = (text: string, height: number) => number;
+
+/** Refuse invalid new ordinate data before rendering or writing a different native dimension. */
+export function ordinateDimensionProblem(d: DimensionEntity): string | null {
+  if (d.kind !== 'ordinate') return null;
+  if (d.ordinateAxis !== 'x' && d.ordinateAxis !== 'y') return 'Ordinate dimensions require an x or y datum axis.';
+  for (const point of [d.p1, d.p2, d.linePoint, ...(d.textPosition ? [d.textPosition] : [])]) {
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return 'Ordinate dimension points must be finite XY coordinates.';
+  }
+  if (!Number.isFinite(d.ordinateRotation ?? 0) || !Number.isFinite(d.textRotation ?? 0)) return 'Ordinate dimension angles must be finite.';
+  const feature = g.sub(d.p2, d.p1), leader = g.sub(d.linePoint, d.p2);
+  const angle = (d.ordinateRotation ?? 0) + (d.ordinateAxis === 'y' ? Math.PI / 2 : 0);
+  if (![feature.x, feature.y, leader.x, leader.y, g.dot(feature, { x: Math.cos(angle), y: Math.sin(angle) })].every(Number.isFinite)) return 'Ordinate dimension coordinates exceed the finite geometry range.';
+  const style = resolveDimStyle(d.style);
+  if ([...Object.values(d.style), ...Object.values(d.styleOverrides ?? {})].some((value) => typeof value === 'number' && !Number.isFinite(value))) return 'Ordinate dimension style values must be finite.';
+  for (const value of [style.textHeight, style.arrowSize, style.extOffset, style.textGap, style.scale]) {
+    if (!Number.isFinite(value) || value < 0) return 'Ordinate dimension sizes must be finite and nonnegative.';
+  }
+  if (![style.textHeight, style.arrowSize, style.extOffset, style.textGap].every((value) => Number.isFinite(value * (style.scale || 1)))) return 'Ordinate dimension scaled sizes exceed the finite geometry range.';
+  return null;
+}
 
 /** Measured value of a dimension in drawing units (radians for angular). */
 export function dimensionMeasurement(d: DimensionEntity): number {
@@ -289,6 +323,12 @@ export function dimensionMeasurement(d: DimensionEntity): number {
       return g.dist(d.p1, d.p2);
     case 'diameter':
       return 2 * g.dist(d.p1, d.p2);
+    case 'ordinate': {
+      const problem = ordinateDimensionProblem(d);
+      if (problem) throw new Error(problem);
+      const frame = (d.ordinateRotation ?? 0) + (d.ordinateAxis === 'y' ? Math.PI / 2 : 0);
+      return Math.abs(g.dot(g.sub(d.p2, d.p1), { x: Math.cos(frame), y: Math.sin(frame) }));
+    }
     case 'angular': {
       if (!d.center) return 0;
       const [s, e] = angularSweep(d);
@@ -414,13 +454,13 @@ export function dimensionText(d: DimensionEntity): string {
   return out;
 }
 
-/** Start/end angles (CCW) of the arc of an angular dimension, chosen so the arc passes by linePoint. */
-function angularSweep(d: DimensionEntity): [number, number] {
+/** Start/end angles (CCW) and whether the first defining leg starts the selected arc. */
+function angularSweep(d: DimensionEntity): [number, number, boolean] {
   const c = d.center!;
   const a1 = g.angleOf(c, d.p1);
   const a2 = g.angleOf(c, d.p2);
   const ap = g.angleOf(c, d.linePoint);
-  return g.angleInSweep(ap, a1, a2) ? [a1, a2] : [a2, a1];
+  return g.angleInSweep(ap, a1, a2) ? [a1, a2, true] : [a2, a1, false];
 }
 
 // ------------------------------------------------------------------ geometry
@@ -593,8 +633,8 @@ function extents(b: Block, rot: number, lineAngle: number): { along: number; acr
   return { along: cs * b.w + sn * b.h, across: sn * b.w + cs * b.h };
 }
 
-/** Draw the parameter interval [t0, t1] of the line a + dir·t minus the `cuts`. */
-function segments(c: Ctx, a: Point, dir: Point, t0: number, t1: number, cuts: Array<[number, number]>): void {
+/** Remaining portions of a bounded parameter interval after subtracting `cuts`. */
+function intervalPieces(t0: number, t1: number, cuts: Array<[number, number]>): Array<[number, number]> {
   let pieces: Array<[number, number]> = [[t0, t1]];
   for (const [lo, hi] of cuts) {
     const next: Array<[number, number]> = [];
@@ -607,7 +647,12 @@ function segments(c: Ctx, a: Point, dir: Point, t0: number, t1: number, cuts: Ar
     }
     pieces = next;
   }
-  for (const [s, e] of pieces) if (e - s > 1e-9) line(c, g.add(a, g.scale(dir, s)), g.add(a, g.scale(dir, e)));
+  return pieces.filter(([s, e]) => e - s > 1e-9);
+}
+
+/** Draw the parameter interval [t0, t1] of the line a + dir·t minus the `cuts`. */
+function segments(c: Ctx, a: Point, dir: Point, t0: number, t1: number, cuts: Array<[number, number]>): void {
+  for (const [s, e] of intervalPieces(t0, t1, cuts)) line(c, g.add(a, g.scale(dir, s)), g.add(a, g.scale(dir, e)));
 }
 
 type Placement = { textInside: boolean; arrowsInside: boolean };
@@ -795,7 +840,7 @@ function angularParts(c: Ctx): void {
   const center = d.center;
   const r = g.dist(d.linePoint, center);
   if (r < 1e-12) return;
-  const [a1, a2] = angularSweep(d);
+  const [a1, a2, firstAtStart] = angularSweep(d);
   const sweep = g.normAngle(a2 - a1) || 2 * Math.PI;
   const exo = s.extOffset * k;
   const exe = s.extExtend * k;
@@ -822,30 +867,80 @@ function angularParts(c: Ctx): void {
     if (ea - sa < 1e-6) return;
     c.out.push({ ...base(c, ''), id: arcId(), type: 'arc', center, radius: r, startAngle: sa, endAngle: ea });
   };
-  const b1 = arrowBackoff(s.arrow, asz) / r;
-  const b2 = arrowBackoff(s.arrow2, asz) / r;
+  // Choosing the other arc reverses its geometric order, but style options still belong
+  // to the original first/second defining legs (DIMBLK1/2 and DIMSD1/2).
+  const startWhich = firstAtStart ? 1 : 2;
+  const endWhich = firstAtStart ? 2 : 1;
+  const startSuppressed = firstAtStart ? s.suppressDimLine1 : s.suppressDimLine2;
+  const endSuppressed = firstAtStart ? s.suppressDimLine2 : s.suppressDimLine1;
+  const b1 = arrowBackoff(firstAtStart ? s.arrow : s.arrow2, asz) / r;
+  const b2 = arrowBackoff(firstAtStart ? s.arrow2 : s.arrow, asz) / r;
   const half = (block.w / 2 + gap) / r; // half chord angle of the text gap
   const tA = g.angleOf(center, textCenter);
   const onArc = Math.abs(g.dist(textCenter, center) - r) < h && g.angleInSweep(tA, a1, a2);
-  const s0 = a1 + b1;
-  const s1 = a1 + sweep - b2;
-  if (onArc && 2 * half < sweep) {
-    const rel = g.normAngle(tA - a1);
-    pushArc(s0, a1 + rel - half);
-    pushArc(a1 + rel + half, s1);
-  } else pushArc(s0, s1);
+  const rel = onArc ? Math.min(sweep, g.normAngle(tA - a1)) : sweep / 2;
+  const cuts: Array<[number, number]> = [];
+  if (onArc && 2 * half < sweep) cuts.push([rel - half, rel + half]);
+  if (startSuppressed) cuts.push([-Infinity, rel]);
+  if (endSuppressed) cuts.push([rel, Infinity]);
+  // Intersect text gaps and suppression with the drawable arc, including blank-arrow
+  // backoffs; a gap next to an endpoint must not extend the remaining arc under its arrow.
+  for (const [sa, ea] of intervalPieces(b1, sweep - b2, cuts)) pushArc(a1 + sa, a1 + ea);
   const arcLen = r * sweep;
   const startTan = { x: -Math.sin(a1), y: Math.cos(a1) };
   const endTan = { x: -Math.sin(a2), y: Math.cos(a2) };
   const p1 = g.polar(center, a1, r);
   const p2 = g.polar(center, a2, r);
   if (arcLen >= 2 * asz) {
-    arrow(c, 1, p1, g.scale(startTan, -1));
-    arrow(c, 2, p2, endTan);
+    if (!startSuppressed) arrow(c, startWhich, p1, g.scale(startTan, -1));
+    if (!endSuppressed) arrow(c, endWhich, p2, endTan);
   } else {
-    arrow(c, 1, p1, startTan);
-    arrow(c, 2, p2, g.scale(endTan, -1));
+    if (!startSuppressed) arrow(c, startWhich, p1, startTan);
+    if (!endSuppressed) arrow(c, endWhich, p2, g.scale(endTan, -1));
   }
+}
+
+/** Native ordinate leaders have no dimension arrows; DIMASZ controls their dogleg lengths. */
+function ordinateParts(c: Ctx): void {
+  const { d, s, k } = c;
+  const problem = ordinateDimensionProblem(d);
+  if (problem) throw new Error(problem);
+  const frame = d.ordinateRotation ?? 0;
+  const leaderAngle = frame + (d.ordinateAxis === 'x' ? Math.PI / 2 : 0);
+  const unit = { x: Math.cos(leaderAngle), y: Math.sin(leaderAngle) };
+  const across = { x: -unit.y, y: unit.x };
+  const delta = g.sub(d.linePoint, d.p2);
+  const along = g.dot(delta, unit);
+  const sign = along > 1e-9 ? 1 : -1;
+  const dir = g.scale(unit, sign);
+  const block = measureBlock(c);
+  if (![block.w, block.h].every(Number.isFinite)) throw new Error('Ordinate text layout exceeds the finite geometry range.');
+  const rotation = d.textRotation ?? leaderAngle;
+  const gap = s.textGap * k;
+  // Native explicit text rotation overrides DIMTAD for ordinate dimensions.
+  const centered = d.textRotation !== undefined || s.textVertical === 'centered';
+  const relative = rotation - leaderAngle;
+  // Intersection of the leader's ray with the padded text rectangle. Projection of the
+  // rectangle's bounding box gives a different native position for manually rotated text.
+  const halfAlong = Math.abs(Math.cos(relative)) > 1e-12 ? (block.w / 2 + gap) / Math.abs(Math.cos(relative)) : Infinity;
+  const halfAcross = Math.abs(Math.sin(relative)) > 1e-12 ? (block.h / 2 + gap) / Math.abs(Math.sin(relative)) : Infinity;
+  const offset = block.w || block.h ? Math.min(halfAlong, halfAcross) : 0;
+  const normal = { x: -Math.sin(rotation), y: Math.cos(rotation) };
+  const side = s.textVertical === 'below' ? -1 : 1;
+  const center = d.textPosition ?? g.add(g.add(d.linePoint, g.scale(dir, offset)), centered ? { x: 0, y: 0 } : g.scale(normal, side * (block.h / 2 + gap)));
+  c.textCenter = center;
+  let end = d.linePoint;
+  if (!centered && (block.w || block.h)) end = g.add(d.linePoint, g.scale(dir, offset + block.w / 2));
+  const start = g.add(d.p2, g.scale(dir, s.extOffset * k));
+  const finite = (points: readonly Point[]) => { if (!points.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y))) throw new Error('Ordinate layout exceeds the finite geometry range.'); };
+  finite([center, start, end]);
+  if (Math.abs(g.dot(delta, across)) > 1e-9) {
+    const a = g.add(d.p2, g.scale(dir, Math.max(Math.abs(along) - 4 * s.arrowSize * k, 2 * s.arrowSize * k)));
+    const b = g.sub(d.linePoint, g.scale(dir, 2 * s.arrowSize * k));
+    finite([a, b]);
+    line(c, start, a, 'ext'); line(c, a, b, 'ext'); line(c, b, end, 'ext');
+  } else line(c, start, end, 'ext');
+  drawBlock(c, block, center, rotation);
 }
 
 function run(d: DimensionEntity, measure: Measure): Ctx {
@@ -862,6 +957,9 @@ function run(d: DimensionEntity, measure: Measure): Ctx {
       break;
     case 'angular':
       angularParts(c);
+      break;
+    case 'ordinate':
+      ordinateParts(c);
       break;
   }
   return c;
@@ -909,19 +1007,78 @@ function storedStyles(state: DrawingState): Record<string, DimStyle> {
   return raw && typeof raw === 'object' ? { ...(raw as Record<string, DimStyle>) } : {};
 }
 
+/** Stored dimensions, including unused block definitions; repeated INSERTs do not duplicate usage. */
+function* drawingDimensions(state: DrawingState): Iterable<DimensionEntity> {
+  const lists = [state.entities, ...Object.values(state.blocks).map((b) => b.entities), ...(state.layouts ?? []).map((l) => l.entities)];
+  for (const entities of lists) for (const e of entities) if (e.type === 'dimension') yield e;
+}
+
+/** Retain differences from the previous named style while replacing inherited values. */
+function redefinedDimStyle(replacement: DimStyle, overrides: Readonly<Record<string, number | string>>): DimStyle {
+  const pairs: Array<[number, number | string]> = [];
+  for (const [name, value] of Object.entries(overrides)) {
+    const code = dimStyleOverrideCode(name);
+    if (code !== undefined && code !== 340) pairs.push([code, value]);
+  }
+  let style = pairs.length ? dimStyleFromRecordPairs(replacement.name, pairs, replacement) : replacement;
+  for (const [name, value] of Object.entries(overrides)) {
+    if (name === 'DIMTXSTY' || name === 'DIMBLK1' || name === 'DIMBLK2') style = withDimVar(style, name, value);
+    else if (name === 'TOLERANCE') style = { ...style, tolerance: value as DimTolerance };
+    else if (name === 'ALTPLACEMENT') style = { ...style, altPlacement: value as 'after' | 'below' };
+  }
+  return style;
+}
+
 /**
  * Save (or redefine) a named style. Dimensions that use a style of that name are
- * updated too, as AutoCAD does when a style is modified; pass `updateDimensions = false` to keep them.
+ * updated throughout model space, blocks and layouts, preserving their value overrides.
+ * Pass `updateDimensions = false` to change only the named record. Use Drawing.transactDrawing
+ * for this document-wide operation while a paper layout is active.
  */
 export function withDimStyle(state: DrawingState, style: DimStyle, updateDimensions = true): DrawingState {
   const styles = storedStyles(state);
+  const key = style.name.toUpperCase();
+  // The current header can contain temporary DIM* overrides. Prefer the actual named
+  // record, including the built-in Standard base when it has not been stored explicitly.
+  const inherited = Object.values(styles).find((s) => s && typeof s.name === 'string' && s.name.toUpperCase() === key)
+    ?? (key === 'STANDARD' ? STANDARD_DIMSTYLE : state.header?.dimStyle.name.toUpperCase() === key ? state.header.dimStyle : undefined);
+  // If the previous named record is unavailable, differences from the new record remain
+  // overrides: registering a missing style must not erase the dimension's existing appearance.
+  const previous = inherited ?? style;
   for (const k of Object.keys(styles)) if (k.toUpperCase() === style.name.toUpperCase()) delete styles[k];
   styles[style.name] = style;
-  const key = style.name.toUpperCase();
-  const entities = updateDimensions
-    ? state.entities.map((e) => (e.type === 'dimension' && e.style.name.toUpperCase() === key && e.style !== style ? { ...e, style } : e))
-    : state.entities;
-  return { ...state, entities, meta: { ...(state.meta ?? {}), [DIMSTYLES_META_KEY]: styles } };
+  const update = (list: readonly Entity[]): readonly Entity[] => {
+    let changed = false;
+    const entities = list.map((e) => {
+      if (e.type !== 'dimension' || e.style.name.toUpperCase() !== key) return e;
+      changed = true;
+      const overrides = dimensionStyleOverrides(e.style, previous, e.styleOverrides);
+      return { ...e, style: redefinedDimStyle(style, overrides), styleOverrides: overrides };
+    });
+    return changed ? entities : list;
+  };
+  const entities = updateDimensions ? update(state.entities) : state.entities;
+  let blocks: Record<string, BlockDef> | undefined;
+  let layouts = state.layouts;
+  if (updateDimensions) {
+    for (const [name, block] of Object.entries(state.blocks)) {
+      const entities = update(block.entities);
+      if (entities === block.entities) continue;
+      blocks ??= { ...state.blocks };
+      blocks[name] = { ...block, entities };
+    }
+    if (layouts) {
+      let changed = false;
+      const mapped = layouts.map((layout) => {
+        const entities = update(layout.entities);
+        if (entities === layout.entities) return layout;
+        changed = true;
+        return { ...layout, entities };
+      });
+      if (changed) layouts = mapped;
+    }
+  }
+  return { ...state, entities, blocks: blocks ?? state.blocks, ...(layouts !== state.layouts ? { layouts } : {}), meta: { ...(state.meta ?? {}), [DIMSTYLES_META_KEY]: styles } };
 }
 
 /** Remove a named style (Standard, the current style and styles in use cannot be deleted; returns the state unchanged). */
@@ -938,10 +1095,12 @@ export function withoutDimStyle(state: DrawingState, name: string): DrawingState
   return changed ? { ...state, meta: { ...(state.meta ?? {}), [DIMSTYLES_META_KEY]: styles } } : state;
 }
 
-/** Number of dimensions drawn with the named style. */
+/** Number of stored dimensions using the named style, including blocks and paper layouts. */
 export function dimStyleUsage(state: DrawingState, name: string): number {
   const key = name.toUpperCase();
-  return state.entities.filter((e) => e.type === 'dimension' && e.style.name.toUpperCase() === key).length;
+  let count = 0;
+  for (const dimension of drawingDimensions(state)) if (dimension.style.name.toUpperCase() === key) count += 1;
+  return count;
 }
 
 // ------------------------------------------------------------------ DIM* variables
@@ -1047,6 +1206,54 @@ export const DIM_VARIABLES: readonly DimVar[] = [
   { name: 'DIMBLK1', key: 'arrow', headerCode: 1, description: 'First arrow block', kind: 'string' },
   { name: 'DIMBLK2', key: 'arrow2', headerCode: 1, description: 'Second arrow block', kind: 'string' },
 ];
+
+/** Supported ACAD DSTYLE codes; object handles are resolved by the DXF codec, never retained here. */
+const DERIVED_OVERRIDE_CODES: Readonly<Record<string, number>> = { DIMTOL: 71, DIMLIM: 72, DIMTIH: 73, DIMTOH: 74, DIMZIN: 78, DIMTXSTY: 340 };
+
+export function dimStyleOverrideCode(name: string): number | undefined {
+  return (Object.hasOwn(DERIVED_OVERRIDE_CODES, name) ? DERIVED_OVERRIDE_CODES[name] : undefined)
+    ?? DIM_VARIABLES.find((v) => v.name === name)?.code;
+}
+
+/** Supported native variable corresponding to a DSTYLE code, or undefined for unmodeled data. */
+export function dimStyleOverrideName(code: number): string | undefined {
+  return Object.entries(DERIVED_OVERRIDE_CODES).find(([, value]) => value === code)?.[0]
+    ?? DIM_VARIABLES.find((v) => v.code === code)?.name;
+}
+
+/** Retain known native values; detect ordinary immutable style edits against their replayed values. */
+export function dimensionStyleOverrides(effective: DimStyle, inherited: DimStyle, known?: Readonly<Record<string, number | string>>): Record<string, number | string> {
+  const supported = (name: string) => dimStyleOverrideCode(name) !== undefined || ['DIMBLK1', 'DIMBLK2', 'TOLERANCE', 'ALTPLACEMENT'].includes(name);
+  if (known !== undefined) {
+    const overrides = Object.fromEntries(Object.entries(known).filter(([name, value]) => supported(name) && (typeof value === 'string' || Number.isFinite(value))));
+    const expected = resolveDimStyle(redefinedDimStyle(inherited, overrides));
+    const current = resolveDimStyle(effective);
+    for (const variable of DIM_VARIABLES) {
+      if (supported(variable.name) && current[variable.key as keyof ResolvedDimStyle] !== expected[variable.key as keyof ResolvedDimStyle]) overrides[variable.name] = dimVarValue(effective, variable.name);
+    }
+    // These native flag groups share one display property. A direct property edit must
+    // replace every alias, while an unchanged normalized mode keeps its original native flags.
+    if (current.textAlign !== expected.textAlign) {
+      overrides.DIMTIH = dimVarValue(effective, 'DIMTIH');
+      overrides.DIMTOH = dimVarValue(effective, 'DIMTOH');
+    }
+    if (current.tolerance !== expected.tolerance) {
+      delete overrides.TOLERANCE;
+      overrides.DIMTOL = dimVarValue(effective, 'DIMTOL');
+      overrides.DIMLIM = dimVarValue(effective, 'DIMLIM');
+      if (current.tolerance === 'basic' || expected.tolerance === 'basic') overrides.TOLERANCE = current.tolerance;
+    }
+    if (current.suppressLeadingZeros !== expected.suppressLeadingZeros || current.suppressTrailingZeros !== expected.suppressTrailingZeros) overrides.DIMZIN = dimVarValue(effective, 'DIMZIN');
+    if (current.altPlacement !== expected.altPlacement) overrides.ALTPLACEMENT = current.altPlacement;
+    return overrides;
+  }
+  const overrides: Record<string, number | string> = {};
+  for (const change of diffDimStyles(effective, inherited)) if (supported(change.name)) overrides[change.name] = change.a;
+  const current = resolveDimStyle(effective), previous = resolveDimStyle(inherited);
+  if (current.tolerance !== previous.tolerance && (current.tolerance === 'basic' || previous.tolerance === 'basic')) overrides.TOLERANCE = current.tolerance;
+  if (current.altPlacement !== previous.altPlacement) overrides.ALTPLACEMENT = current.altPlacement;
+  return overrides;
+}
 
 /** DIMBLK block name for an arrow type ('' = closed filled). */
 export function arrowBlockName(a: DimArrow): string {

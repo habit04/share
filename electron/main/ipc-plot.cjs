@@ -3,7 +3,8 @@
  * PDF the renderer built (save-pdf) and the system print dialog (print-drawing).
  */
 const { BrowserWindow, dialog } = require('electron');
-const { writeUserFile } = require('./app-data.cjs');
+const { writeUserFile, enqueueWrite } = require('./app-data.cjs');
+const { createAtomicWriter } = require('../atomic-write.cjs');
 const { secureContents } = require('./window.cjs');
 const { validatePaperDimensions } = require('../resource-limits.cjs');
 
@@ -11,21 +12,74 @@ const { validatePaperDimensions } = require('../resource-limits.cjs');
 
 /** @param {MainContext} ctx */
 function registerPlotIpc(ctx) {
-  const { ipcMain, senderWindow } = ctx;
-  /** Plot: the renderer sends a PNG data URL of the sheet; we print it to PDF via a hidden window. */
-  ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape, sheet) => {
-    const win = senderWindow(ev);
-    if (typeof dataUrl !== 'string' || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) throw new Error('Invalid image');
-    validatePaperDimensions(sheet); // before the dialog: at most 200 inches a side (E-18)
+  const { ipcMain, senderWindow, registry, pathPolicy, saveOrder } = ctx;
+  const cancelled = () => Object.assign(new Error('ERR_SAVE_CANCELLED: the original exporting document is no longer active.'), { code: 'ERR_SAVE_CANCELLED' });
+  function exportOptions(opts) {
+    if (opts === undefined) return {};
+    if (!opts || typeof opts !== 'object' || Array.isArray(opts) || opts.path !== undefined && typeof opts.path !== 'string' || opts.admission !== undefined && typeof opts.admission !== 'string') throw new Error('Invalid PDF admission options');
+    if (opts.path !== undefined && (!opts.path || !opts.admission || !saveOrder)) throw new Error('A bound Windows PDF admission is required.');
+    return opts;
+  }
+  async function pickPdf(ev, win, suggestName, captured) {
     const res = await dialog.showSaveDialog(win, {
-      title: 'Plot to PDF',
-      defaultPath: String(suggestName || 'Drawing1.pdf'),
+      title: 'Plot to PDF', defaultPath: String(suggestName || 'Drawing1.pdf'),
       filters: [{ name: 'PDF', extensions: ['pdf'] }],
     });
     if (res.canceled || !res.filePath) return null;
-    const hidden = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true } });
-    secureContents(hidden.webContents);
+    if (captured) saveOrder?.assertPicked(ev, 'pdf-export', captured);
+    registry?.grant(res.filePath);
+    return res.filePath;
+  }
+  // The early renderer ticket stays unbound until it receives this native choice.
+  ipcMain.handle('choose-pdf-path', async (ev, suggestName, admission) => {
+    const win = senderWindow(ev), captured = saveOrder?.capturePicked(ev, 'pdf-export', admission);
+    try { return await pickPdf(ev, win, suggestName, captured); }
+    finally { saveOrder?.discard(captured); }
+  });
+  async function selectedPdf(ev, win, suggestName, options, captured) {
+    if (options.path !== undefined) {
+      const file = pathPolicy?.writable(options.path, 'save-pdf', /./);
+      if (!file || !saveOrder || !captured) throw new Error('The PDF destination is not authorized.');
+      saveOrder.assertBound(ev, 'pdf-export', file, captured);
+      return file;
+    }
+    const file = await pickPdf(ev, win, suggestName, captured);
+    if (file && saveOrder && captured) await saveOrder.bindPicked(ev, 'pdf-export', file, captured);
+    return file;
+  }
+  /** Keep conversion inside the owner/order operation; every replacement is guarded. */
+  async function producePdf(ev, file, captured, producer) {
+    if (!saveOrder) { await writeUserFile(file, await producer()); return file; }
+    return saveOrder.run(ev, 'pdf-export', file, captured, async (scope) => {
+      const pdf = await producer(scope.signal);
+      if (scope.signal.aborted) throw cancelled();
+      return scope.commit(pdf, (snapshot, target) => enqueueWrite(target.destinationPath, async (key) => {
+        if (!(snapshot instanceof Uint8Array) || snapshot.byteLength < 8 || Buffer.from(snapshot.subarray(0, 5)).toString('latin1') !== '%PDF-') throw new Error('Invalid PDF payload');
+        const writer = createAtomicWriter(undefined, { hooks: { beforeAttempt: target.guard } });
+        await writer.atomicWriteFile(target.destinationPath, snapshot, { backup: false, root: target.root, expectedDestination: key });
+        await target.markCommitted();
+        return { path: target.logicalPath, identityPath: target.canonicalPath };
+      }));
+    });
+  }
+  /** Plot: the renderer sends a PNG data URL of the sheet; we print it to PDF via a hidden window. */
+  ipcMain.handle('plot-pdf', async (ev, dataUrl, suggestName, landscape, sheet, opts) => {
+    const win = senderWindow(ev);
+    if (typeof dataUrl !== 'string' || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) throw new Error('Invalid image');
+    validatePaperDimensions(sheet); // before the dialog: at most 200 inches a side (E-18)
+    const options = exportOptions(opts);
+    const captured = options.path !== undefined ? saveOrder?.capture(ev, 'pdf-export', options.admission) : saveOrder?.capturePicked(ev, 'pdf-export', options.admission);
     try {
+      const file = await selectedPdf(ev, win, suggestName, options, captured);
+      if (!file) return null;
+      return await producePdf(ev, file, captured, async (signal) => {
+      if (signal?.aborted) throw cancelled();
+      const hidden = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true } });
+      const destroy = () => { if (!hidden.isDestroyed?.()) hidden.destroy(); };
+      const aborted = () => destroy();
+      signal?.addEventListener('abort', aborted, { once: true });
+      try {
+      secureContents(hidden.webContents);
       // Keep the navigation URL tiny and inject the (possibly multi-megabyte) image afterwards.
       const html = '<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#fff;height:100%}img{width:100%;height:100%;object-fit:contain;display:block}@page{margin:0}</style></head><body><img id="p"></body></html>';
       await hidden.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
@@ -37,26 +91,27 @@ function registerPlotIpc(ctx) {
         landscape: Boolean(landscape),
         pageSize: pdfPageSize(sheet, landscape),
       });
-      await writeUserFile(res.filePath, pdf);
-      return res.filePath;
+      if (signal?.aborted) throw cancelled();
+      return pdf;
+      } finally { signal?.removeEventListener('abort', aborted); destroy(); }
+      });
     } finally {
-      hidden.destroy();
+      saveOrder?.discard(captured);
     }
   });
 
   // Track E: vector PLOT output. The renderer builds the PDF (src/io/pdf-vector.ts); this only asks where to save it.
-  ipcMain.handle('save-pdf', async (ev, bytes, suggestName) => {
+  ipcMain.handle('save-pdf', async (ev, bytes, suggestName, opts) => {
     const win = senderWindow(ev);
     if (!(bytes instanceof Uint8Array) || bytes.length < 8 || bytes.length > 512 * 1024 * 1024) throw new Error('Invalid PDF payload');
     if (Buffer.from(bytes.subarray(0, 5)).toString('latin1') !== '%PDF-') throw new Error('Invalid PDF payload');
-    const res = await dialog.showSaveDialog(win, {
-      title: 'Plot to PDF',
-      defaultPath: String(suggestName || 'Drawing1.pdf'),
-      filters: [{ name: 'PDF', extensions: ['pdf'] }],
-    });
-    if (res.canceled || !res.filePath) return null;
-    await writeUserFile(res.filePath, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
-    return res.filePath;
+    const options = exportOptions(opts);
+    const captured = options.path !== undefined ? saveOrder?.capture(ev, 'pdf-export', options.admission) : saveOrder?.capturePicked(ev, 'pdf-export', options.admission);
+    try {
+      const file = await selectedPdf(ev, win, suggestName, options, captured);
+      if (!file) return null;
+      return await producePdf(ev, file, captured, async () => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+    } finally { saveOrder?.discard(captured); }
   });
 
   const NAMED_PAGES = new Set(['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'Legal', 'Letter', 'Tabloid', 'Ledger']);

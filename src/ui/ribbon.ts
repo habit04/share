@@ -1,7 +1,7 @@
 import type { Editor } from '../app/editor';
 import { icon } from './icons';
 
-interface RibbonButton {
+export interface RibbonButton {
   label: string;
   icon: string;
   command: string;
@@ -9,7 +9,7 @@ interface RibbonButton {
   tooltip?: string;
 }
 
-interface RibbonPanel {
+export interface RibbonPanel {
   title: string;
   buttons: RibbonButton[];
   /** Small buttons are stacked 3 per column. */
@@ -17,7 +17,7 @@ interface RibbonPanel {
   launcher?: { command: string; tooltip: string };
 }
 
-interface RibbonTab {
+export interface RibbonTab {
   name: string;
   panels: RibbonPanel[];
 }

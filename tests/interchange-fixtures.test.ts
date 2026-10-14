@@ -192,9 +192,9 @@ describe('r2000-layouts-titleblock.dxf: layouts, paper-space viewports, title bl
  * Survives: the current style from $DIMSTYLE + header $DIM*; named styles with their DIM* values,
  * arrowheads named by DIMBLK / DIMBLK1 / DIMBLK2 handles (DIMSAH), tolerances, DIM colours; the
  * arrowhead blocks; linear (with DIMTEDIT 53 and DIMEDIT 52), aligned, radius, diameter (text
- * override, moved text), angular 2-line and 3-point with their definition points and styles;
+ * override, moved text), angular 2-line and 3-point, and XY ordinate with their definition points and styles;
  * DIMDSEP, DIMTXSTY, DIMLWD / DIMLWE, DIMTZIN and per-dimension DSTYLE overrides.
- * Lost (matrix): ordinate dimensions (dropped, reported); arrowheads written in JCAD_DIMSTYLE
+ * Lost (matrix): arrowheads written in JCAD_DIMSTYLE
  * XDATA rather than as handles; 2-line angular written as 3-point; other XDATA (ACAD_DSTYLE_*).
  */
 describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with their *D blocks (AC1032)', () => {
@@ -244,7 +244,7 @@ describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with thei
       expect(textStylesOf(s).ISOCP).toMatchObject({ font: 'isocp.shx' });
     });
 
-    it('eight dimensions with their kinds and styles (the ordinate one is not read)', () => {
+    it('nine dimensions with their kinds and styles, including the native X ordinate', () => {
       expect(dims.map((d) => [d.kind, d.style.name, d.layer])).toEqual([
         ['linear', 'ISO-25', 'DIMS'],
         ['linear', 'ARCH-TICK', 'DIMS'],
@@ -253,6 +253,7 @@ describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with thei
         ['diameter', 'MECH-TOL', 'DIMS'],
         ['angular', 'ISO-25', 'DIMS'],
         ['angular', 'MECH-TOL', 'DIMS'],
+        ['ordinate', 'ISO-25', 'DIMS'],
         ['linear', 'ISO-25', 'DIMS'],
       ]);
       // Styles are resolved by name: the dimension carries the named record, not the header copy.
@@ -320,18 +321,27 @@ describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with thei
     });
 
     it('the dimension carrying DSTYLE overrides keeps its geometry and its named style', () => {
-      const d = dims[7]!;
+      const d = dims[8]!;
       closePt(d.p1, 0, 120);
       closePt(d.p2, 60, 120);
       closePt(d.linePoint, 60, 130);
       expect(d.style.name).toBe('ISO-25');
     });
+
+    it('the ordinate keeps native group 10 datum, group 13 feature, group 14 endpoint and X coordinate', () => {
+      const d = dims[7]!;
+      expect(d.kind).toBe('ordinate'); expect(d.ordinateAxis).toBe('x'); close(d.ordinateRotation, 0);
+      closePt(d.p1, 0, 0); closePt(d.p2, 100, 60); closePt(d.linePoint, 100, 80);
+      close(dimensionMeasurement(d), 100); expect(dimensionText(d)).toBe('100'); expect(d.textPosition).toBeUndefined();
+    });
   });
 
-  it('lost as the matrix says: the ordinate dimension is dropped and listed in the import report', () => {
-    const report = importReportOf(f.imported)!;
-    expect(report.items.filter((i) => i.action === 'dropped').map((i) => [i.type, i.action, i.handle])).toEqual([['DIMENSION', 'dropped', '127']]);
-    expect(f.written).not.toContain('AcDbOrdinateDimension');
+  it('writes the ordinate with its native subclass and flags without adding a dropped-object report', () => {
+    for (const [, s] of both(f)) expect(importReportOf(s)?.items.filter((i) => i.action === 'dropped') ?? []).toEqual([]);
+    const [rec] = records(f.written, 'DIMENSION').filter((r) => r.some(([c, v]) => c === 100 && v === 'AcDbOrdinateDimension'));
+    expect(rec).toBeDefined(); expect(Number(group(rec, 70))).toBe(102);
+    expect([10, 20, 13, 23, 14, 24, 42].map((code) => Number(group(rec, code)))).toEqual([0, 0, 100, 60, 100, 80, 100]);
+    expect(Number(group(rec, 51)) % 360).toBe(0);
     expect(importReportOf(f.roundTripped)?.items.every((i) => i.action === 'unsupported' || i.action === 'kept')).toBe(true);
   });
 
@@ -379,7 +389,7 @@ describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with thei
     }
   });
   it('the last linear dimension applies its DSTYLE overrides (ACAD XDATA: DIMTXT 5, DIMDEC 0) and keeps them on save', () => {
-    for (const [, s] of both(f)) expect(ofType<DimensionEntity>(s.entities, 'dimension')[7]!.style).toMatchObject({ name: 'ISO-25', textHeight: 5, decimals: 0 });
+    for (const [, s] of both(f)) expect(ofType<DimensionEntity>(s.entities, 'dimension')[8]!.style).toMatchObject({ name: 'ISO-25', textHeight: 5, decimals: 0 });
     const dims = records(f.written, 'DIMENSION');
     expect(dims.filter((r) => r.some(([c, v]) => c === 1000 && v === 'DSTYLE'))).toHaveLength(1);
   });
@@ -750,9 +760,9 @@ describe('r2000-hatch-curves.dxf: HATCH (ANSI31 with bulges, SOLID with island),
 /*
  * Survives: layer and entity true colours (420) with their ACI, layer lineweights, entity
  * lineweights (explicit, ByBlock -2; ByLayer -1 as inherit), linetype scale, layer linetypes,
- * off / frozen / locked / no-plot; complex linetypes as their dash patterns; SOLID hatch colour.
+ * off / frozen / locked / no-plot; complex linetype definitions and STYLE links; SOLID hatch colour.
  * Survives: colour-book names (430) and transparency (440, layer AcCmTransparency XDATA).
- * Lost (matrix): text and shapes embedded in complex linetypes ("only the dashes are" drawn and written).
+ * Display limit: embedded text/shapes remain a reported dash-only fallback.
  */
 describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency, lineweights, complex linetypes (AC1032)', () => {
   const f = fixture('r2018-truecolor-linetypes.dxf');
@@ -770,11 +780,15 @@ describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency
       expect(s.header?.ltscale).toBe(2);
     });
 
-    it('complex linetypes keep their dashes; the text and shape elements read as gaps', () => {
-      expect(s.header?.linetypes).toEqual([
+    it('complex linetypes keep their native descriptors while displaying the dash fallback', () => {
+      expect(s.header?.linetypes).toMatchObject([
         { name: 'GAS_LINE', description: 'Gas line ----GAS----GAS----GAS----GAS----GAS----GAS--', pattern: [12.7, -5.08, -6.35] },
         { name: 'FENCELINE1', description: 'Fenceline circle ----0-----0----0-----0----0-----0--', pattern: [6.35, -2.54, -2.54, 25.4] },
       ]);
+      expect(s.header!.linetypes[0]!.complex!.elements[1]).toMatchObject({ flags: 2, shapeNumber: 0,
+        scale: 2.54, rotation: 0, offsetX: -2.54, offsetY: -1.27, text: 'GAS', style: { kind: 'text', name: 'Standard' } });
+      expect(s.header!.linetypes[1]!.complex!.elements[1]).toMatchObject({ flags: 4, shapeNumber: 133,
+        scale: 2.54, rotation: 0, offsetX: -2.54, offsetY: 0, style: { kind: 'shape' } });
       // The STYLE record of the shape file (flag 1) is not a text style.
       expect(Object.keys(textStylesOf(s))).toEqual(['Standard']);
       expect(textStylesOf(s).Standard).toMatchObject({ font: 'arial.ttf', family: 'Arial' });
@@ -801,7 +815,7 @@ describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency
     });
   });
 
-  it('writes native color-book identity and opacity while complex linetype text/shapes remain unsupported', () => {
+  it('writes color-book identity, opacity and native complex linetype resources', () => {
     const identity = 'PANTONE+ Solid Coated$PANTONE 355 C';
     expect(group(records(f.written, 'TEXT')[0], 430)).toBe(identity);
     expect(group(records(f.written, 'LAYER').find((r) => group(r, 2) === 'BOOK'), 430)).toBe(identity);
@@ -816,8 +830,10 @@ describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency
     }
     const gas = records(f.written, 'LTYPE').find((r) => group(r, 2) === 'GAS_LINE')!;
     expect(gas.filter(([c]) => c === 49).map(([, v]) => Number(v))).toEqual([12.7, -5.08, -6.35]);
-    expect(gas).toContainEqual([9, 'GAS']);
-    expect(gas.filter(([c]) => c === 74).some(([, v]) => (Number(v) & 2) !== 0)).toBe(true);
+    expect(group(gas, 9)).toBe('GAS');
+    expect(gas.filter(([c]) => c === 74).map(([, v]) => Number(v))).toEqual([0, 2, 0]);
+    const styleHandle = group(gas, 340);
+    expect(group(records(f.written, 'STYLE').find((record) => group(record, 5) === styleHandle), 2)).toBe('Standard');
     expect(f.written).toContain('ltypeshp.shx');
   });
 

@@ -1,7 +1,8 @@
-/** DWG saves and export copies require native path authority and preserve atomic backups. */
+/** DWG IPC/converter protocol; native Windows identities on Windows, scoped host doubles elsewhere. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'node:module';
-import { readFileSync } from 'node:fs';
+import { readFileSync, type BigIntStats } from 'node:fs';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -32,6 +33,105 @@ const roots: string[] = [];
 const DXF = '0\r\nSECTION\r\n2\r\nHEADER\r\n0\r\nENDSEC\r\n0\r\nEOF\r\n';
 const OUTPUT = Buffer.concat([Buffer.from('AC1032'), Buffer.alloc(130)]);
 
+/**
+ * The IPC source advertises Windows to exercise its DWG channels on every CI host.
+ * POSIX temporary paths are not native Windows paths. This local adapter supplies
+ * host path syntax while retaining real held-FD bytes, versions and confinement;
+ * it is protocol coverage, not a simulation/certification of Windows filesystem rules.
+ * The real Windows helper/source-proof suites remain the native authority gate.
+ */
+function protocolHostModules() {
+  const native = sourceRequire('../windows-path-identity.cjs');
+  type Version = { dev: string; ino: string; size: string; mtimeNs: string; ctimeNs: string; sha256?: string };
+  type Pin = { logicalPath: string; destinationPath: string; canonicalPath: string; canonicalParent: string; parentExists: boolean; parentIdentity: Version; queueKey: string; targetKey: string; exists: boolean; fileVersion: Version | null; root?: string; canonicalRoot?: string; rootIdentity?: Version; hashContent?: boolean; contentLimit?: number };
+  type Guard = { signal?: AbortSignal; metadataOnly?: boolean; preserveLeaf?: boolean; preserveVersion?: boolean; maxBytes?: number };
+  const fail = (code: string) => Object.assign(new Error(code), { code });
+  const absolute = (value: unknown) => {
+    if (typeof value !== 'string' || !path.isAbsolute(value) || value.length > native.MAX_PATH_LENGTH || /[\u0000-\u001f\u007f]/.test(value)) throw fail('ERR_WINDOWS_PATH');
+    return path.resolve(value);
+  };
+  const version = (stat: BigIntStats): Version => ({ dev: String(stat.dev), ino: String(stat.ino), size: String(stat.size), mtimeNs: String(stat.mtimeNs), ctimeNs: String(stat.ctimeNs) });
+  const statKey = (value: Version) => native.fileVersionKey({ ...value, sha256: undefined });
+  const sameIdentity = (a: Version, b: Version) => a.dev === b.dev && a.ino === b.ino;
+  const inside = (root: string, file: string) => file === root || file.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
+  const abort = (signal?: AbortSignal) => { if (signal?.aborted) throw fail('ERR_SAVE_CANCELLED'); };
+  async function digest(value: string, opts: { signal?: AbortSignal; maxBytes?: number; expectedCanonicalPath?: string; expectedVersion?: Version } = {}) {
+    const file = absolute(value), canonicalPath = await fs.realpath(file); abort(opts.signal);
+    if (opts.expectedCanonicalPath !== undefined && canonicalPath !== opts.expectedCanonicalPath) throw fail('ERR_WINDOWS_PATH_CHANGED');
+    const handle = await fs.open(file, 'r');
+    let evidence!: Version, bytes!: Buffer;
+    const check = async () => {
+      abort(opts.signal);
+      if (await fs.realpath(file) !== canonicalPath || statKey(version(await fs.stat(file, { bigint: true }))) !== statKey(evidence)) throw fail('ERR_WINDOWS_PATH_CHANGED');
+    };
+    try {
+      const stat = await handle.stat({ bigint: true }); evidence = version(stat);
+      if (!stat.isFile() || stat.size > BigInt(opts.maxBytes ?? native.MAX_CONTENT_BYTES)) throw fail('ERR_WINDOWS_CONTENT_LIMIT');
+      if (opts.expectedVersion && statKey(evidence) !== statKey(opts.expectedVersion)) throw fail('ERR_WINDOWS_PATH_CHANGED');
+      await check(); bytes = await handle.readFile(); abort(opts.signal);
+      if (BigInt(bytes.byteLength) !== stat.size || statKey(version(await handle.stat({ bigint: true }))) !== statKey(evidence)) throw fail('ERR_WINDOWS_PATH_CHANGED');
+      await check();
+    } finally { await handle.close(); }
+    await check();
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    if (opts.expectedVersion?.sha256 !== undefined && sha256 !== opts.expectedVersion.sha256) throw fail('ERR_WINDOWS_PATH_CHANGED');
+    return { sha256, bytes: bytes.byteLength, canonicalPath, version: evidence };
+  }
+  const identity = {
+    ...native, absoluteWindowsPath: absolute, coherentFileDigest: digest,
+    createWindowsPathIdentity() {
+      const pins = new WeakSet<Pin>();
+      const seal = (pin: Pin) => { Object.freeze(pin); pins.add(pin); return pin; };
+      const captureWriteTarget = async (value: string, rootValue?: string): Promise<Pin> => {
+        const logicalPath = absolute(value), canonicalParent = await fs.realpath(path.dirname(logicalPath)), parent = await fs.stat(canonicalParent, { bigint: true });
+        const root = rootValue === undefined ? undefined : absolute(rootValue), canonicalRoot = root === undefined ? undefined : await fs.realpath(root);
+        if (canonicalRoot && !inside(canonicalRoot, canonicalParent)) throw fail('ELOOP');
+        let stat: BigIntStats | null;
+        try { stat = await fs.lstat(logicalPath, { bigint: true }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; stat = null; }
+        if (stat && (!stat.isFile() || stat.isSymbolicLink())) throw fail('ELOOP');
+        const canonicalPath = path.join(canonicalParent, path.basename(logicalPath));
+        return seal({ logicalPath, destinationPath: canonicalPath, canonicalPath, canonicalParent, parentExists: parent.isDirectory(), parentIdentity: version(parent), queueKey: canonicalParent, targetKey: canonicalPath, exists: stat !== null, fileVersion: stat ? Object.freeze(version(stat)) : null,
+          ...(root && canonicalRoot ? { root, canonicalRoot, rootIdentity: version(await fs.stat(canonicalRoot, { bigint: true })) } : {}) });
+      };
+      const revalidate = async (pin: Pin, opts: Guard = {}): Promise<Pin> => {
+        if (!pins.has(pin)) throw fail('ERR_WINDOWS_IDENTITY'); abort(opts.signal);
+        let fresh = await captureWriteTarget(pin.logicalPath, pin.root);
+        if (fresh.canonicalParent !== pin.canonicalParent || !sameIdentity(fresh.parentIdentity, pin.parentIdentity) || fresh.canonicalRoot !== pin.canonicalRoot || pin.rootIdentity && (!fresh.rootIdentity || !sameIdentity(fresh.rootIdentity, pin.rootIdentity)) || opts.preserveLeaf && fresh.canonicalPath !== pin.canonicalPath) throw fail('ERR_WINDOWS_PATH_CHANGED');
+        if (pin.hashContent && !opts.metadataOnly) {
+          const contentLimit = pin.contentLimit ?? native.MAX_CONTENT_BYTES;
+          const content = fresh.exists ? await digest(fresh.logicalPath, { signal: opts.signal, maxBytes: contentLimit, expectedCanonicalPath: fresh.canonicalPath, expectedVersion: fresh.fileVersion! }) : null;
+          fresh = seal({ ...fresh, hashContent: true, contentLimit, fileVersion: content ? Object.freeze({ ...content.version, sha256: content.sha256 }) : null });
+        }
+        if (opts.preserveVersion && native.fileVersionKey(fresh.fileVersion) !== native.fileVersionKey(pin.fileVersion)) throw fail('ERR_WINDOWS_PATH_CHANGED');
+        abort(opts.signal); return fresh;
+      };
+      const captureContentTarget = async (pin: Pin, opts: Guard = {}) => {
+        const contentLimit = opts.maxBytes ?? native.MAX_CONTENT_BYTES;
+        if (contentLimit !== native.MAX_CONTENT_BYTES && contentLimit !== native.MAX_PDF_CONTENT_BYTES) throw fail('ERR_WINDOWS_CONTENT_LIMIT');
+        const fresh = await revalidate(pin, { ...opts, metadataOnly: true, preserveLeaf: true, preserveVersion: true });
+        const content = fresh.exists ? await digest(fresh.logicalPath, { signal: opts.signal, maxBytes: contentLimit, expectedCanonicalPath: fresh.canonicalPath, expectedVersion: fresh.fileVersion! }) : null;
+        return seal({ ...fresh, hashContent: true, contentLimit, fileVersion: content ? Object.freeze({ ...content.version, sha256: content.sha256 }) : null });
+      };
+      return { captureWriteTarget, captureContentTarget, revalidate };
+    },
+  };
+  // Actual order/registry code runs in an isolated loader: no require cache or global
+  // process/path mutation can leak this host adapter into any native test or product.
+  const scoped = new Set(['save-order.cjs', 'opened-source-proofs.cjs', 'save-admissions.cjs']);
+  const cache = new Map<string, { exports: any }>();
+  const load = (file: string): any => {
+    const existing = cache.get(file); if (existing) return existing.exports;
+    const localRequire = createRequire(file), module = { exports: {} }; cache.set(file, module);
+    new Function('require', 'module', readFileSync(file, 'utf8'))((name: string) => {
+      if (name.endsWith('windows-path-identity.cjs')) return identity;
+      const resolved = localRequire.resolve(name);
+      return scoped.has(path.basename(resolved)) ? load(resolved) : localRequire(name);
+    }, module);
+    return module.exports;
+  };
+  return { identity, saveOrder: load(sourceRequire.resolve('./save-order.cjs')) };
+}
+
 afterEach(async () => {
   for (const root of roots.splice(0)) {
     expect(path.dirname(path.resolve(root))).toBe(path.resolve(tmpdir()));
@@ -40,7 +140,7 @@ afterEach(async () => {
   }
 });
 
-async function setup(platform: NodeJS.Platform = 'win32') {
+async function setup(platform: NodeJS.Platform = 'win32', protocolDouble = process.platform !== 'win32') {
   const root = await fs.mkdtemp(path.join(tmpdir(), 'jcad-portable-dwg-ipc-'));
   roots.push(root);
   const target = path.join(root, 'drawing.dwg');
@@ -48,7 +148,7 @@ async function setup(platform: NodeJS.Platform = 'win32') {
   const reject = vi.fn();
   const pathPolicy = createPathPolicy({ isKnownPath: (p: string) => registry.isKnown(p), isWritablePath: (p: string) => registry.isWritable(p), knownPaths: () => registry.paths(), log: { reject } });
   const rememberImages = vi.spyOn(pathPolicy, 'rememberImages');
-  const webContents = new EventEmitter();
+  const webContents = Object.assign(new EventEmitter(), { isDestroyed: () => false });
   const win = Object.assign(new EventEmitter(), { webContents });
   const status = vi.fn(async () => ({ available: true, reason: undefined as string | undefined }));
   const exportCall = vi.fn(async (file: string, _text: string, commit: (file: string, bytes: Buffer, check: () => Promise<void>) => Promise<void>, signal: AbortSignal) => {
@@ -66,12 +166,15 @@ async function setup(platform: NodeJS.Platform = 'win32') {
   const writerFactory = vi.fn((fileSystem?: typeof fs, options?: { hooks: { beforeRename(): Promise<void> } }) => atomic.createAtomicWriter(fileSystem, options));
   const enqueueWrite = atomic.createCanonicalWriteQueue();
   const module = { exports: {} as { registerDrawingIpc(ctx: unknown, opts: unknown): void } };
+  const protocol = platform === 'win32' && protocolDouble ? protocolHostModules() : undefined;
   new Function('require', 'module', 'process', source)((name: string) => {
     if (name === 'electron') return { dialog: { showSaveDialog, showOpenDialog, showMessageBox } };
     if (name === '../portable-dwg.cjs') return { createPortableDwgExporter: () => ({ status, export: exportCall }) };
     if (name === '../atomic-write.cjs') return { ...atomic, createAtomicWriter: writerFactory };
     if (name === './app-data.cjs') return { writeUserFile, enqueueWrite };
     if (name === './dwg.cjs') return { decodeDxf: vi.fn(), readDwgWithProgress };
+    if (protocol && name === './save-order.cjs') return protocol.saveOrder;
+    if (protocol && name === '../windows-path-identity.cjs') return protocol.identity;
     return sourceRequire(name);
   }, module, { platform });
   module.exports.registerDrawingIpc({ ipcMain: { handle: (name: string, fn: Handler) => handlers.set(name, fn) }, rejections: { reject }, registry, pathPolicy, senderWindow: () => win }, { takeHandedOverProject: () => false });
@@ -80,6 +183,18 @@ async function setup(platform: NodeJS.Platform = 'win32') {
 }
 
 describe('portable DWG IPC', () => {
+  it('does not authorize an unchosen Unicode-equivalent Windows export destination', async () => {
+    const f = await setup('win32');
+    const chosen = path.join(f.root, 'Jos\u00e9.dwg');
+    const unchosen = path.join(f.root, 'Jose\u0301.dwg');
+    f.showSaveDialog.mockResolvedValue({ canceled: false, filePath: chosen });
+    await f.invoke('choose-dwg-path');
+    // Existing working-file authority is independent of the Export Copy picker.
+    f.registry.grant(unchosen);
+    await expect(f.invoke('export-dwg', unchosen, DXF)).rejects.toThrow(/Save dialog first/);
+    expect(f.exportCall).not.toHaveBeenCalled();
+    expect(await f.invoke('export-dwg', chosen, DXF)).toBe(chosen);
+  });
   it('uses a dedicated native picker and publishes portable availability', async () => {
     const f = await setup();
     expect(await f.invoke('dwg-export-status')).toEqual({ available: true, reason: undefined });
@@ -102,11 +217,12 @@ describe('portable DWG IPC', () => {
     expect(await f.invoke('export-dwg', f.target, DXF)).toBe(f.target);
     expect(await fs.readFile(f.target)).toEqual(OUTPUT);
     expect(await fs.readFile(`${f.target}.bak`, 'utf8')).toBe('original DWG bytes');
-    expect(f.writerFactory).toHaveBeenCalledWith(undefined, expect.objectContaining({ hooks: { beforeRename: expect.any(Function) } }));
+    expect(f.writerFactory).toHaveBeenCalledWith(undefined, expect.objectContaining({ hooks: { beforeAttempt: expect.any(Function) } }));
     expect(f.rememberImages).toHaveBeenCalledWith(f.target, dxfImageNames(DXF));
-    expect(f.win.listenerCount('closed')).toBe(0);
-    expect(f.win.webContents.listenerCount('destroyed')).toBe(0);
-    expect(f.win.webContents.listenerCount('render-process-gone')).toBe(0);
+    // One owner-lifetime watcher remains; individual saves do not accumulate listeners.
+    expect(f.win.listenerCount('closed')).toBe(1);
+    expect(f.win.webContents.listenerCount('destroyed')).toBe(1);
+    expect(f.win.webContents.listenerCount('render-process-gone')).toBe(1);
   });
 
   it.each(['export-dwg', 'save-dwg'])('%s cancels when the caller closes, keeping the original and clearing listeners', async (channel) => {
@@ -253,15 +369,31 @@ describe('portable DWG IPC', () => {
     expect(f.exportCall).not.toHaveBeenCalled();
   });
 
-  it('saves a DWG opened through the native dialog using the verified writer and an atomic backup', async () => {
-    const f = await setup();
+  const openedProofHosts: [string, boolean][] = process.platform === 'win32' ? [['native Windows host', false], ['scoped protocol host double', true]] : [['scoped POSIX protocol host double', true]];
+  it.each(openedProofHosts)('saves a chosen DWG through its completed-open proof, mock conversion and an atomic backup (%s)', async (_host, protocolDouble) => {
+    const f = await setup('win32', protocolDouble);
     await fs.writeFile(f.target, 'original');
-    expect(await f.invoke('open-drawing')).toEqual({ path: f.target, kind: 'dwg', payload: { imageDefs: [] }, version: 'AC1032' });
-    expect(await f.invoke('save-dwg', f.target, DXF)).toBe(f.target);
+    const opened = await f.invoke('open-drawing') as { openedSourceProof: string };
+    expect(opened).toEqual({ path: f.target, identityPath: await fs.realpath(f.target), openedSourceProof: expect.stringMatching(/^[a-f0-9]{48}$/), kind: 'dwg', payload: { imageDefs: [] }, version: 'AC1032' });
+    const ticket = await f.invoke('issue-save-admission', 'drawing');
+    await f.invoke('bind-save-admission', ticket, 'drawing', f.target, { proof: opened.openedSourceProof, path: f.target, mode: 'in-place' });
+    expect(await f.invoke('save-dwg', f.target, DXF, ticket)).toBe(f.target);
+    const receipt = await f.invoke('save-admission-result', ticket) as { openedSourceProof: string };
+    expect(receipt).toEqual({ path: f.target, identityPath: await fs.realpath(f.target), openedSourceProof: expect.stringMatching(/^[a-f0-9]{48}$/) });
+    expect(receipt.openedSourceProof).not.toBe(opened.openedSourceProof);
     expect(await fs.readFile(f.target)).toEqual(OUTPUT);
     expect(await fs.readFile(`${f.target}.bak`, 'utf8')).toBe('original');
     await expect(f.invoke('export-dwg', f.target, DXF)).rejects.toThrow(/Save dialog first/);
     expect(f.exportCall).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(openedProofHosts)('refuses a changed opened DWG before conversion or backup without inferring a fresh baseline (%s)', async (_host, protocolDouble) => {
+    const f = await setup('win32', protocolDouble); await fs.writeFile(f.target, 'original'); await fs.writeFile(`${f.target}.bak`, 'KEEP');
+    const opened = await f.invoke('open-drawing') as { openedSourceProof: string }; await fs.writeFile(f.target, 'outside');
+    const ticket = await f.invoke('issue-save-admission', 'drawing');
+    await expect(f.invoke('bind-save-admission', ticket, 'drawing', f.target, { proof: opened.openedSourceProof, path: f.target, mode: 'in-place' })).rejects.toThrow(/ERR_OPENED_SOURCE_CHANGED/);
+    await expect(f.invoke('save-dwg', f.target, DXF)).rejects.toThrow(/ERR_OPENED_SOURCE_PROOF/);
+    expect(f.exportCall).not.toHaveBeenCalled(); expect(await fs.readFile(f.target, 'utf8')).toBe('outside'); expect(await fs.readFile(`${f.target}.bak`, 'utf8')).toBe('KEEP');
   });
 
   it('refuses unknown, read-only, wrong-format and invalid DWG Save requests without launching a writer', async () => {

@@ -3,18 +3,36 @@
  * startup. The store is the Electron app-data folder (IPC) or localStorage in the browser.
  */
 import type { DrawingState } from '../core/document';
-import { writeDxf } from '../io/dxf';
 import { withoutUnusedLibraryBlocks } from '../electrical/library';
 import { sessionTitle } from './sessions';
+import { recoveryDxf } from '../model3d/save-guard';
 
 export interface AutosaveMeta {
   /** Path of the drawing being edited, or null for an untitled drawing. */
   originalPath: string | null;
   title: string;
   savedAt: number;
+  /**
+   * Experimental 3D objects the DXF recovery copy does not hold (absent = none). The copy normally
+   * holds every solid and dimension; only when they would make a file JCad
+   * cannot reopen (DXF_READ_LIMITS) is the copy written without them, and this records how many,
+   * so the Drawing Recovery Manager says what is missing. Milestone-1 builds wrote it for every
+   * solid (electron/autosave-store.cjs validates it).
+   */
+  omitted3d?: number;
 }
 export interface AutosaveEntry extends AutosaveMeta {
   name: string;
+}
+
+/**
+ * What the Drawing Recovery Manager says about 3D objects missing from a backup (its row and the
+ * log after Open), or null when the backup holds everything.
+ */
+export function omitted3dText(meta: Pick<AutosaveMeta, 'omitted3d'>): string | null {
+  const n = meta.omitted3d ?? 0;
+  if (!(n > 0)) return null;
+  return `This backup does not contain ${n === 1 ? '1 3D object' : `${n} 3D objects`}: ${n === 1 ? 'it was' : 'they were'} too large for a recovery file JCad can reopen.`;
 }
 export interface AutosaveStore {
   write(name: string, text: string, meta: AutosaveMeta): Promise<void>;
@@ -227,9 +245,16 @@ export class Autosaver {
     let n = 0;
     for (const job of jobs) {
       try {
-        const text = writeDxf(withoutUnusedLibraryBlocks(job.state));
-        await this.store.write(job.name, text, { originalPath: job.originalPath, title: job.title, savedAt: job.savedAt });
-        this.backedUp.set(job.id, job.state);
+        // Recovery copies are DXF, which holds the experimental 3D solids (state.model3d) as
+        // polyface meshes with JCAD_3D data. An incomplete fallback may create a first backup,
+        // but must never replace a previously written or adopted recovery copy.
+        const { text, omitted3d } = recoveryDxf(withoutUnusedLibraryBlocks(job.state));
+        if (omitted3d > 0 && this.names.has(job.id)) throw new Error(`Recovery was not updated: ${omitted3d} 3D ${omitted3d === 1 ? 'object does' : 'objects do'} not fit the reopenable copy. The previous recovery copy is kept.`);
+        const meta: AutosaveMeta = { originalPath: job.originalPath, title: job.title, savedAt: job.savedAt, ...(omitted3d > 0 ? { omitted3d } : {}) };
+        await this.store.write(job.name, text, meta);
+        // Only a complete copy proves this immutable revision is backed up. A first partial
+        // copy retains its omission metadata and stays eligible for a complete later revision.
+        if (omitted3d === 0) this.backedUp.set(job.id, job.state);
         this.names.set(job.id, job.name);
         n += 1;
       } catch (err) {

@@ -14,6 +14,7 @@ import { writeLeader, writeImage, writeTableInsert, writeMText, writeDimension }
 import type { AttributeDefExt } from '../../electrical/symbol-builder-core';
 import { attdefFlags } from '../../electrical/symbol-builder-core';
 import { insertArrayProblem } from '../../core/insert-array';
+import { hatchGradientDataProblem, hatchGradientExportProblem } from '../../core/hatch-gradient';
 
 function writePolyline(w: Writer, e: PolylineEntity, owner: string): void {
   if (e.filled && e.closed && (e.points.length === 3 || e.points.length === 4)) {
@@ -97,6 +98,12 @@ function writeSpline(w: Writer, e: SplineEntity, owner: string): void {
 }
 
 function writeHatch(w: Writer, e: HatchEntity, owner: string): void {
+  if (e.gradient) {
+    const problem = hatchGradientDataProblem(e.gradient);
+    if (problem) throw new Error(`Cannot preserve hatch gradient in DXF: ${problem}`);
+    const exportProblem = hatchGradientExportProblem(e);
+    if (exportProblem) throw new Error(exportProblem);
+  }
   writeEntityCommon(w, e, owner, 'HATCH', 'AcDbHatch');
   w.pair(10, 0);
   w.pair(20, 0);
@@ -143,6 +150,22 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string): void {
     }
   }
   w.pair(98, 0);
+  if (e.gradient) {
+    const gradient = e.gradient;
+    w.pair(450, gradient.kind ?? 1);
+    w.pair(451, gradient.reserved ?? 0);
+    w.pair(460, gradient.angle);
+    w.pair(461, gradient.shift);
+    w.pair(452, gradient.colorMode ?? (gradient.singleColor ? 1 : 0));
+    w.pair(462, gradient.tint);
+    w.pair(453, gradient.colorCount ?? gradient.colors.length);
+    for (const color of gradient.colors) {
+      w.pair(463, color.position);
+      if (color.color !== undefined) w.pair(63, color.color);
+      if (color.trueColor !== undefined) w.pair(421, color.trueColor);
+    }
+    w.pair(470, gradient.name);
+  }
 }
 
 export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonly<Record<string, BlockDef>>, dimBlocks?: Map<string, string>, extras?: WriteExtras): void {
@@ -193,9 +216,7 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
     case 'text': {
       writeEntityCommon(w, e, owner, 'TEXT', 'AcDbText');
       writeTextLike(w, e.position, e.height, e.field && !e.field.native && e.field.value === e.text ? e.field.code : e.text, e.rotation, e.align, e);
-      if (textStyleOf(e)) w.pair(7, textStyleOf(e)!);
-      if (e.widthFactor !== undefined && Math.abs(e.widthFactor - 1) > 1e-12) w.pair(41, e.widthFactor);
-      if (e.oblique) w.pair(51, g.deg(e.oblique));
+      writeTextStyle(w, { ...e, style: textStyleOf(e) });
       w.pair(100, 'AcDbText');
       if (e.justification?.vertical) w.pair(73, e.justification.vertical);
       break;

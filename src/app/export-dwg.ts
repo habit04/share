@@ -8,8 +8,11 @@ import { countOf, importReportOf, saveOverwriteWarning } from '../io/import-repo
 import { samePath } from './paths';
 import { captureRevision, saveQueue } from './savequeue';
 import { describeFileError } from './file-errors';
+import { dwgCompatibilityProblem } from './dwg-compatibility';
 import type { Editor, FileBridge } from './editor';
 import type { DrawingState } from '../core/document';
+import { SaveAdmission, isStaleSaveAdmission, unverifiedImportSource, UNVERIFIED_SOURCE_WARNING } from './save-admission';
+import { model3dDwgRefusal } from '../model3d/save-guard';
 
 type DwgExportBridge = FileBridge & Required<Pick<FileBridge, 'dwgExportStatus' | 'chooseDwgPath' | 'exportDwg'>>;
 
@@ -49,6 +52,13 @@ export async function exportDwgCopy(ed: Editor): Promise<boolean> {
   // is open must never authorize writing another drawing over the selected destination.
   const session = ed.sessions.current;
   const state = ed.doc.snapshot;
+  let admission = new SaveAdmission(bridge, 'export-copy');
+  const compatibilityProblem = dwgCompatibilityProblem(state);
+  if (compatibilityProblem) {
+    await admission.close();
+    ed.log(`DWG export refused: ${compatibilityProblem} The working drawing and its recovery copy are kept.`);
+    return false;
+  }
   const sessionRevision = session.revision;
   const generation = session.contentGeneration;
   const revision = captureRevision();
@@ -60,7 +70,16 @@ export async function exportDwgCopy(ed: Editor): Promise<boolean> {
     return false;
   };
   let target: string | null = null;
+  // A DWG copy cannot hold the experimental 3D solids (the portable writer would drop them), so
+  // the export is refused, never written without them: same policy as a DWG Save.
+  const refusal = model3dDwgRefusal(state);
   try {
+    await admission.ready;
+    if (refusal) {
+      ed.lastFileError = refusal;
+      ed.log(`DWG export canceled: ${refusal}.`);
+      return false;
+    }
     const status = await bridge.dwgExportStatus();
     if (!unchanged()) return changed();
     if (!status.available) {
@@ -71,7 +90,8 @@ export async function exportDwgCopy(ed: Editor): Promise<boolean> {
       target = await bridge.chooseDwgPath(suggest);
       if (!target) return false;
       if (!unchanged()) return changed();
-      const warning = overwriteWarning(state, target);
+      await admission.bind(target);
+      const warning = await unverifiedImportSource(bridge, state) ? UNVERIFIED_SOURCE_WARNING : overwriteWarning(state, target);
       if (!warning) break;
       // Ask every time the original is selected; no previous SAVE acknowledgment authorizes
       // a DWG export to replace a source file with content the importer could not keep.
@@ -82,13 +102,15 @@ export async function exportDwgCopy(ed: Editor): Promise<boolean> {
       const approved = await ed.ui.confirm('Replace the original DWG?', `${warning}\n\nYes replaces it with the exported copy; No chooses another destination. DWG export cannot recover content already lost during import.`);
       if (!unchanged()) return changed();
       if (approved) break;
+      await admission.close(); admission = new SaveAdmission(bridge, 'export-copy'); await admission.ready;
     }
     const text = writeDxf(withoutUnusedLibraryBlocks(state));
-    const sourceOverwrite = !!overwriteWarning(state, target);
-    const result = await saveQueue.run(target, revision, () => {
+    const sourceOverwrite = await unverifiedImportSource(bridge, state) || !!overwriteWarning(state, target);
+    const result = await saveQueue.run(target, revision, async () => {
       if (!sessionExists() || (sourceOverwrite && !unchanged())) return Promise.resolve(null);
       ed.log('Exporting a DWG copy. Save the working drawing separately to keep edits and recovery records current.');
-      return bridge.exportDwg(target!, text);
+      const saved = admission.ticket ? await bridge.exportDwg(target!, text, admission.ticket) : await bridge.exportDwg(target!, text);
+      await admission.confirmSaved(saved); return saved;
     });
     if (result.status === 'stale') {
       ed.log(`DWG export skipped: a newer drawing revision was already written to ${target}.`);
@@ -102,8 +124,9 @@ export async function exportDwgCopy(ed: Editor): Promise<boolean> {
     ed.log(`Exported DWG copy: ${result.value}${suffix}. Save the working drawing separately to keep edits.`);
     return true;
   } catch (err) {
+    if (isStaleSaveAdmission(err)) { ed.log('DWG export skipped: a newer drawing revision reached the destination.'); return false; }
     const info = describeFileError(err, { action: 'save', path: target });
     ed.log(`DWG export failed: ${info.message} The working drawing and its recovery copy are kept.`);
     return false;
-  }
+  } finally { await admission.close(); }
 }

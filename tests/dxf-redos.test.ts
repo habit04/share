@@ -141,7 +141,7 @@ describe('on every committed DXF fixture the linear scanners give what the expre
   it.each(fixtures)('%s', (file) => {
     const text = decodeDxfBytes(readFileSync(join(root, file))).text;
     const lines = text.split(/\r\n|\r|\n/);
-    // Tokenizer: each value as the old /\s+$/ trim left it (text chunks 1 / 3 / 304 untrimmed).
+    // Tokenizer: trailing trim stays linear; literal text chunks and LTYPE text retain spaces.
     let pairs: ReturnType<typeof tokenize> = [];
     try {
       pairs = tokenize(text, true);
@@ -153,9 +153,12 @@ describe('on every committed DXF fixture the linear scanners give what the expre
     if (!file.includes('/broken/')) expect(fromFile.length).toBeGreaterThan(0);
     // The two trims agree on every line, also of files the tokenizer refuses.
     for (const line of lines) expect(line.trimEnd()).toBe(line.replace(/\s+$/, ''));
+    let recordKind = '';
     for (const p of fromFile) {
       const raw = lines[p.line!]!;
-      expect(p.value, `${file}:${p.line! + 1}`).toBe(p.code === 1 || p.code === 3 || p.code === 304 ? raw : raw.replace(/\s+$/, ''));
+      if (p.code === 0) recordKind = raw.trim();
+      const literal = p.code === 1 || p.code === 3 || p.code === 304 || (p.code === 9 && recordKind === 'LTYPE');
+      expect(p.value, `${file}:${p.line! + 1}`).toBe(literal ? raw : raw.replace(/\s+$/, ''));
     }
     // Field expressions: every line and the whole text (expressions may span chunks), and the
     // "name \f "format"" split of every expression found.

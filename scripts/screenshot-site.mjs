@@ -127,6 +127,7 @@ async function closeImportReport() {
 await app.goto(`${base}/app/?web&norecover`);
 await app.waitForTimeout(500);
 check((await app.locator('.web-banner').count()) === 1, 'browser edition shows the banner');
+const importHistoryStart = await app.evaluate(() => window.editor.history.length);
 const t0 = Date.now();
 const n = await openFixture('example_2000.dwg');
 check(n > 0, `browser edition opened fixtures/example_2000.dwg: ${n} entities in ${Date.now() - t0} ms`);
@@ -134,14 +135,21 @@ check(n > 0, `browser edition opened fixtures/example_2000.dwg: ${n} entities in
 // so the drawing screenshot and the later banner click are not covered by its backdrop.
 check((await app.locator('.import-report-dialog').count()) === 1, 'Import Report dialog shown for the DWG');
 const reportCounts = await app.locator('.import-report-dialog .import-report-counts li').allTextContents();
-check(reportCounts.some((line) => /^DICTIONARY:\s+\d+ dropped/.test(line)), 'DWG report warns that dictionary metadata is dropped');
-check(reportCounts.some((line) => /^DIMENSION:\s+3 dropped$/.test(line)), 'DWG report lists the three unsupported dimensions that were dropped');
-check(reportCounts.some((line) => /^DIMSTYLE:.*\d+ simplified/.test(line)), 'DWG report lists unsupported dimension-style settings');
 const reportDetails = await app.locator('.import-report-dialog .import-report-row').allTextContents();
+const dimensionKinds = await app.evaluate(() => window.editor.doc.entities.filter((e) => e.type === 'dimension').map((e) => e.kind).sort());
+const ordinateDetails = ['420', '430', '453'].map((handle) => `DIMENSION dropped (handle ${handle}, layer "Tavolo 3", model space): this dimension type is not supported (ordinate dimensions, or unreadable definition points)`);
+check(reportCounts.some((line) => /^DICTIONARY:\s+\d+ dropped/.test(line)), 'DWG report warns that dictionary metadata is dropped');
+check(reportCounts.includes('DIMENSION: 3 dropped') && JSON.stringify(dimensionKinds) === JSON.stringify(['aligned', 'angular', 'linear', 'linear', 'linear', 'linear']) &&
+  JSON.stringify(reportDetails.filter((line) => /^DIMENSION /.test(line)).sort()) === JSON.stringify(ordinateDetails.sort()),
+  'DWG report identifies all three dropped native ordinates and keeps all six supported native dimensions');
+check(reportCounts.some((line) => /^DIMSTYLE:.*\d+ simplified/.test(line)), 'DWG report lists unsupported dimension-style settings');
 check(reportDetails.some((line) => /^XDATA unsupported.*cannot be guaranteed on DXF save/.test(line)), 'DWG report explains the reader cannot guarantee application metadata on DXF save');
 await closeImportReport();
-const importHistory = await app.locator('#command-window').textContent();
-check(/DICTIONARY:\s+\d+ dropped/.test(importHistory) && /DIMENSION:\s+3 dropped/.test(importHistory) && /DIMSTYLE:.*\d+ simplified/.test(importHistory), 'DWG warning summaries remain in command history after the report closes');
+const importHistory = await app.evaluate((start) => window.editor.history.slice(start), importHistoryStart);
+check(['DICTIONARY', 'DIMENSION', 'DIMSTYLE'].every((type) => {
+  const summary = reportCounts.find((line) => line.startsWith(type + ':'));
+  return summary !== undefined && importHistory.some((line) => line.trim() === summary);
+}), 'Exact per-type DWG warning summaries remain in command history after the report closes');
 await app.evaluate(() => window.editor.zoomExtents());
 await app.mouse.move(800, 480);
 await app.waitForTimeout(200);

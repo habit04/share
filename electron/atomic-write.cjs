@@ -80,14 +80,17 @@ function fileError(err, file, op) {
 }
 
 /**
- * Identity of a resolved path for the containment test: case-folded where the file system usually
- * is case-insensitive (Windows, macOS), Unicode NFC.
+ * Queue spelling for a resolved destination. Windows existing leaves use native stored spelling;
+ * only ASCII folds here, since JavaScript Unicode folding merges distinct NTFS names.
+ * Missing non-ASCII aliases still require main-owned save admissions before slow producers.
  * @param {string} p
  * @param {string} platform
  */
 function foldPath(p, platform) {
-  const r = path.resolve(p).normalize('NFC');
-  return platform === 'win32' || platform === 'darwin' ? r.toLowerCase() : r;
+  const resolved = path.resolve(p);
+  const r = platform === 'win32' ? resolved : resolved.normalize('NFC');
+  if (platform === 'win32') return r.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+  return platform === 'darwin' ? r.toLowerCase() : r;
 }
 
 /**
@@ -97,6 +100,11 @@ function foldPath(p, platform) {
  * @param {string} [platform]
  */
 function isInsideFolder(dir, child, platform = process.platform) {
+  if (platform === 'win32') {
+    // Both arguments have native realpath spelling. path.relative also folds Unicode.
+    const root = path.resolve(dir), target = path.resolve(child);
+    return target === root || target.startsWith(root.endsWith(path.sep) ? root : `${root}${path.sep}`);
+  }
   const rel = path.relative(foldPath(dir, platform), foldPath(child, platform));
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }
@@ -205,11 +213,14 @@ function createAtomicWriter(fs = fsp, options = {}) {
   }
 
   /** Rename with retries for sharing violations; never truncate the destination. */
-  async function replace(tmp, dest, check) {
+  async function replace(tmp, dest, check, beforeAttempt, beforePathCheck) {
     let lastErr = null;
     for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+      // A refused admission is not a sharing violation. Retry only an OS rename failure.
+      if (beforePathCheck) await beforePathCheck(tmp, dest);
+      if (check) await check(tmp);
+      if (beforeAttempt) await beforeAttempt(tmp, dest);
       try {
-        if (check) await check(tmp);
         await fs.rename(tmp, dest);
         return 'rename';
       } catch (err) {
@@ -248,20 +259,58 @@ function createAtomicWriter(fs = fsp, options = {}) {
    * then wrote to the path as given; refusing would make every save on such a drive fail, so the
    * links are resolved one component at a time instead (lstat + readlink), and the checks hold.
    */
-  async function realpathOrNull(p) {
+  async function realpathInfoOrNull(p) {
     try {
-      return await fs.realpath(p);
+      return { actual: await fs.realpath(p), native: true };
     } catch (err) {
       const code = err && err.code;
       if (code === 'ENOENT' || code === 'ENOTDIR') return null;
       if (!realpathFallback || code === 'ELOOP') throw err;
       try {
-        return await realpathFallback(p);
+        return { actual: await realpathFallback(p), native: false };
       } catch (again) {
         if (again && (again.code === 'ENOENT' || again.code === 'ENOTDIR')) return null;
         throw err;
       }
     }
+  }
+
+  async function realpathOrNull(p) { return (await realpathInfoOrNull(p))?.actual ?? null; }
+
+  // Node's link-by-link Windows fallback preserves requested casing. Check actual directory
+  // identities rather than guessing a Unicode case table when native realpath is unavailable.
+  async function fallbackInside(root, child) {
+    const identity = await fs.stat(root, { bigint: true });
+    if (!identity.isDirectory() || typeof identity.ino !== 'bigint' || identity.ino === 0n) return false;
+    let folder = child;
+    for (let depth = 0; depth < 128; depth++) {
+      const stat = await fs.stat(folder, { bigint: true });
+      if (stat.isDirectory() && stat.dev === identity.dev && stat.ino === identity.ino) return true;
+      const parent = path.dirname(folder);
+      if (parent === folder) return false;
+      folder = parent;
+    }
+    return false;
+  }
+
+  async function fallbackStoredLeaf(folder, requested) {
+    const leaf = path.basename(requested), expected = await fs.lstat(requested, { bigint: true });
+    if (typeof expected.ino !== 'bigint' || expected.ino === 0n) throw linkError(requested);
+    /** @type {string | null} */ let match = null;
+    let ambiguous = false, count = 0;
+    const entries = await fs.opendir(folder);
+    for await (const entry of entries) {
+      if (++count > 65536) throw linkError(requested);
+      // An exact entry is unambiguous even if another name is a hard link to it.
+      if (entry.name === leaf) return path.join(folder, leaf);
+      if (!entry.isFile()) continue;
+      const candidate = path.join(folder, entry.name), stat = await fs.lstat(candidate, { bigint: true });
+      if (stat.isFile() && stat.dev === expected.dev && stat.ino === expected.ino) {
+        if (match) ambiguous = true; else match = candidate;
+      }
+    }
+    if (!match || ambiguous) throw linkError(requested);
+    return match;
   }
 
   /**
@@ -273,15 +322,26 @@ function createAtomicWriter(fs = fsp, options = {}) {
    * @returns {Promise<{ dest: string, dir: string | null }>}  dir: the pinned folder (null when missing)
    */
   async function confinedTarget(file, root) {
-    const realDir = await realpathOrNull(path.dirname(file));
+    const dirInfo = await realpathInfoOrNull(path.dirname(file));
+    const realDir = dirInfo?.actual ?? null;
     if (realDir === null) return { dest: file, dir: null };
     if (root) {
-      const realRoot = (await realpathOrNull(root)) ?? path.resolve(root);
-      if (!isInsideFolder(realRoot, realDir, platform)) throw linkError(file);
+      const rootInfo = await realpathInfoOrNull(root);
+      const realRoot = rootInfo?.actual ?? path.resolve(root);
+      if (!isInsideFolder(realRoot, realDir, platform) &&
+          !(platform === 'win32' && (!dirInfo?.native || rootInfo && !rootInfo.native) && await fallbackInside(realRoot, realDir))) throw linkError(file);
     }
-    const dest = path.join(realDir, path.basename(file));
+    let dest = path.join(realDir, path.basename(file));
     const st = await lstatOrNull(dest);
     if (st && st.isSymbolicLink()) throw linkError(file);
+    if (platform === 'win32' && st && st.isFile()) {
+      // Rename through a differently cased alias changes the stored leaf and splits subsequent
+      // queue/backup identities. Preserve the native existing leaf, including Unicode aliases.
+      const existingInfo = await realpathInfoOrNull(dest);
+      const existing = existingInfo?.native ? existingInfo.actual : await fallbackStoredLeaf(realDir, dest);
+      if (!existing || path.dirname(existing) !== realDir) throw linkError(file);
+      dest = existing;
+    }
     return { dest, dir: realDir };
   }
 
@@ -344,7 +404,7 @@ function createAtomicWriter(fs = fsp, options = {}) {
    * use. Linked destinations and changed folders fail without a direct copy. Errors name
    * `src` or `dest`.
    */
-  async function copyThroughTemp(src, from, dest, check) {
+  async function copyThroughTemp(src, from, dest, check, beforeRename) {
     const tmp = tempNameFor(dest);
     let exists = false;
     try {
@@ -362,7 +422,7 @@ function createAtomicWriter(fs = fsp, options = {}) {
       } finally {
         await fh.close();
       }
-      await replace(tmp, dest, check);
+      await replace(tmp, dest, check, beforeRename);
       await syncDir(path.dirname(dest));
       return dest;
     } catch (err) {
@@ -378,7 +438,7 @@ function createAtomicWriter(fs = fsp, options = {}) {
    * from elsewhere into the folder or write outside it.
    * @param {string} src
    * @param {string} dest
-   * @param {{ root?: string }} [opts]
+   * @param {{ root?: string, beforeRename?: () => Promise<void> }} [opts]
    */
   async function copyFileAtomic(src, dest, opts = {}) {
     let source;
@@ -390,7 +450,7 @@ function createAtomicWriter(fs = fsp, options = {}) {
     try {
       const target = await guardPath(dest, opts.root);
       const check = async (tmp) => { await source.check(); await target.check(tmp); };
-      return await copyThroughTemp(src, source.dest, target.dest, check);
+      return await copyThroughTemp(src, source.dest, target.dest, check, opts.beforeRename);
     } catch (err) {
       throw fileError(err, dest, 'copy');
     }
@@ -400,6 +460,7 @@ function createAtomicWriter(fs = fsp, options = {}) {
    * Write `data` (string or bytes) to `file` crash-safely.
    * opts.backup: keep the previous content as `<file>.bak` (one generation).
    * opts.encoding: string encoding (default utf8).
+   * opts.beforeBackupRename: trusted host guard repeated before replacing the automatic backup.
    * opts.root: a folder the file's resolved folder must be inside (a project's folder); see the
    *   module comment (E-5). A destination that is a symbolic link is refused with ELOOP.
    * Resolves { path (the file written, in its resolved folder), backup (path or null), method ('rename') }.
@@ -433,9 +494,9 @@ function createAtomicWriter(fs = fsp, options = {}) {
         // Keep the permission bits of the file being replaced (the temp file got the umask default).
         await fs.chmod(tmp, before.mode & 0o7777).catch(() => {});
       }
-      if (before && opts.backup) backup = await copyFileAtomic(dest, `${dest}.bak`, opts);
-      if (hooks.beforeRename) await hooks.beforeRename(tmp, dest);
-      const method = await replace(tmp, dest, check);
+      if (before && opts.backup) backup = await copyFileAtomic(dest, `${dest}.bak`, { root: opts.root, beforeRename: opts.beforeBackupRename });
+      // Sharing retries must repeat the admission/version check. Keep cleanup separate.
+      const method = await replace(tmp, dest, check, hooks.beforeAttempt, hooks.beforeRename);
       tmpCreated.yes = false;
       await syncDir(path.dirname(dest));
       return { path: dest, backup, method };

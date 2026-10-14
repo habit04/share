@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -27,8 +26,23 @@ const host = require('../electron/portable-dwg.cjs') as {
   verifyPortableMetadata(text: string, metadata: NativeMetadata): Promise<unknown>;
 };
 const { runBoundedWriter } = require('../electron/portable-dwg-process.cjs') as { runBoundedWriter: Run };
+type AdmissionScope = { signal: AbortSignal; commit(data: Uint8Array, writer: (data: Uint8Array, context: unknown) => Promise<unknown>): Promise<unknown> };
+type AdmissionHost = {
+  issue(owner: object, kind: 'drawing'): string;
+  bind(ticket: string, owner: object, kind: 'drawing', file: string, lifecycle: { onVerifiedCommit(evidence: object): void; onFinish(): void }): Promise<unknown>;
+  run(ticket: string, owner: object, kind: 'drawing', file: string, operation: (scope: AdmissionScope) => Promise<unknown>): Promise<unknown>;
+  cancel(ticket: string, owner: object, kind: 'drawing'): void;
+  dispose(): Promise<void>;
+  stats(): { pending: number; ledger: number; queues: number; queuedBytes: number; metadataActive: number };
+};
+const { createSaveAdmissions } = require('../electron/save-admissions.cjs') as {
+  createSaveAdmissions(options: { identity: unknown; authorize(): { allowed: boolean; root: string }; maxPending?: number }): AdmissionHost;
+};
+const { createWindowsPathIdentity } = require('../electron/windows-path-identity.cjs') as { createWindowsPathIdentity(): unknown };
 
+const privateRoot = path.resolve('.codex-local/portable-dwg-host-tests');
 const roots: string[] = [];
+const admissions: AdmissionHost[] = [];
 const DXF = '0\r\nSECTION\r\n2\r\nHEADER\r\n0\r\nENDSEC\r\n0\r\nEOF\r\n';
 const OUTPUT = Buffer.concat([Buffer.from('AC1032'), Buffer.alloc(130, 1)]);
 const nativeMetadata = (dxf = DXF, patch: Partial<NativeMetadata> = {}): NativeMetadata => ({ schemaVersion: 1, dxf, objects: [], readError: 0, writeError: 0, complete: true, notes: [], ...patch });
@@ -37,16 +51,18 @@ const report = (patch: Record<string, unknown> = {}) => Buffer.from(JSON.stringi
 
 afterEach(async () => {
   vi.useRealTimers();
+  await Promise.all(admissions.splice(0).map(admission => admission.dispose()));
   for (const root of roots.splice(0)) {
     // Recursively remove only fresh test directories directly inside the known temporary root.
-    expect(path.dirname(path.resolve(root))).toBe(path.resolve(tmpdir()));
+    expect(path.dirname(path.resolve(root))).toBe(privateRoot);
     expect(path.basename(root)).toMatch(/^jcad-portable-dwg-test-/);
     await fs.rm(root, { recursive: true, force: true });
   }
 });
 
 async function fixture() {
-  const root = await fs.mkdtemp(path.join(tmpdir(), 'jcad-portable-dwg-test-'));
+  await fs.mkdir(privateRoot, { recursive: true });
+  const root = await fs.mkdtemp(path.join(privateRoot, 'jcad-portable-dwg-test-'));
   roots.push(root);
   const directory = path.join(root, 'helper');
   await fs.mkdir(directory);
@@ -291,6 +307,66 @@ describe('portable DWG helper integrity and protocol', () => {
 });
 
 describe('portable DWG export destination and admission', () => {
+  // The conversion/readback double does not certify native DWG output. Identity,
+  // authorization, held-FD hashes and admission lifecycle are the real host code.
+  it.runIf(process.platform === 'win32')('does not enter the admitted writer or advance a proof when metadata postflight fails', async () => {
+    const f = await fixture(), owner = {}, verified = vi.fn(), finished = vi.fn();
+    await fs.writeFile(f.target, 'original drawing'); await fs.writeFile(`${f.target}.bak`, 'previous backup');
+    const admission = createSaveAdmissions({ identity: createWindowsPathIdentity(), authorize: () => ({ allowed: true, root: f.root }) }); admissions.push(admission);
+    const ticket = admission.issue(owner, 'drawing');
+    await admission.bind(ticket, owner, 'drawing', f.target, { onVerifiedCommit: verified, onFinish: finished });
+    const run: Run = async (_exe, _args, opts) => {
+      await fs.writeFile(path.join(opts.cwd!, 'output.dwg'), OUTPUT);
+      await fs.writeFile(path.join(opts.cwd!, 'report.json'), report()); return 'helper fixture';
+    };
+    const exporter = host.createPortableDwgExporter({ platform: 'win32', convert: (text, options) => host.convertDxfToDwg(text, {
+      ...options, locations: f.locations, temporaryRoot: f.root, run, readMetadata: async () => nativeMetadata(DXF, { complete: false }),
+    }) });
+    const writer = vi.fn(async () => undefined), commit = vi.fn();
+    await expect(admission.run(ticket, owner, 'drawing', f.target, scope => exporter.export(f.target, DXF, async (_file, bytes) => {
+      commit(); await scope.commit(bytes, writer);
+    }, scope.signal))).rejects.toMatchObject({ committed: false });
+    expect(commit).not.toHaveBeenCalled(); expect(writer).not.toHaveBeenCalled(); expect(verified).not.toHaveBeenCalled(); expect(finished).toHaveBeenCalledOnce();
+    expect(admission.stats()).toMatchObject({ pending: 0, ledger: 0, queues: 0, queuedBytes: 0, metadataActive: 0 });
+    expect(await fs.readFile(f.target, 'utf8')).toBe('original drawing'); expect(await fs.readFile(`${f.target}.bak`, 'utf8')).toBe('previous backup');
+    expect((await fs.readdir(f.root)).filter(name => name.startsWith('jcad-dwg-'))).toEqual([]);
+  });
+
+  it.runIf(process.platform === 'win32')('retains admission capacity until canceled independent readback and private cleanup have joined', async () => {
+    const f = await fixture(), owner = {}, verified = vi.fn(), finished = vi.fn();
+    await fs.writeFile(f.target, 'original drawing'); await fs.writeFile(`${f.target}.bak`, 'previous backup');
+    const admission = createSaveAdmissions({ identity: createWindowsPathIdentity(), authorize: () => ({ allowed: true, root: f.root }), maxPending: 1 }); admissions.push(admission);
+    const ticket = admission.issue(owner, 'drawing');
+    await admission.bind(ticket, owner, 'drawing', f.target, { onVerifiedCommit: verified, onFinish: finished });
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+    const run: Run = async (_exe, _args, opts) => {
+      await fs.writeFile(path.join(opts.cwd!, 'output.dwg'), OUTPUT);
+      await fs.writeFile(path.join(opts.cwd!, 'report.json'), report()); return 'helper fixture';
+    };
+    const exporter = host.createPortableDwgExporter({ platform: 'win32', convert: (text, options) => host.convertDxfToDwg(text, {
+      ...options, locations: f.locations, temporaryRoot: f.root, run,
+      readMetadata: async (_bytes, signal) => { enter(); await gate; expect(signal?.aborted).toBe(true); return nativeMetadata(); },
+    }) });
+    const writer = vi.fn(async () => undefined), commit = vi.fn();
+    const task = admission.run(ticket, owner, 'drawing', f.target, scope => exporter.export(f.target, DXF, async (_file, bytes) => {
+      commit(); await scope.commit(bytes, writer);
+    }, scope.signal));
+    const failed = task.then(() => undefined, error => error);
+    let disposed = false;
+    try {
+      await entered; admission.cancel(ticket, owner, 'drawing');
+      expect(admission.stats().pending).toBe(1); expect(() => admission.issue(owner, 'drawing')).toThrow(/Too many/);
+      const disposing = admission.dispose().then(() => { disposed = true; }); await Promise.resolve(); expect(disposed).toBe(false);
+      expect(finished).not.toHaveBeenCalled(); expect(commit).not.toHaveBeenCalled();
+      release(); expect(await failed).toMatchObject({ committed: false }); await disposing;
+      expect(disposed).toBe(true); expect(finished).toHaveBeenCalledOnce(); expect(verified).not.toHaveBeenCalled(); expect(writer).not.toHaveBeenCalled(); expect(commit).not.toHaveBeenCalled();
+      expect(admission.stats()).toMatchObject({ pending: 0, ledger: 0, queues: 0, queuedBytes: 0, metadataActive: 0 });
+      expect(await fs.readFile(f.target, 'utf8')).toBe('original drawing'); expect(await fs.readFile(`${f.target}.bak`, 'utf8')).toBe('previous backup');
+      expect((await fs.readdir(f.root)).filter(name => name.startsWith('jcad-dwg-'))).toEqual([]);
+    } finally { release(); await failed; await admission.dispose(); }
+  });
+
   it('refuses a verified helper output when the separate reader finds a changed header before committing', async () => {
     const f = await fixture();
     await fs.writeFile(f.target, 'original drawing');

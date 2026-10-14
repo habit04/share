@@ -5,7 +5,7 @@
  * older snapshot can never overwrite a newer one (a slow Save finishing after a later Save, or
  * a project-wide command writing a file the user saved from a tab meanwhile).
  */
-import { pathKey } from './paths';
+import { pathIdentityKey } from './paths';
 
 let revisionCounter = 0;
 
@@ -25,12 +25,12 @@ export class SaveQueue {
 
   /** Revision of the last completed write to `path` (0 = none). */
   lastCompleted(path: string): number {
-    return this.completed.get(pathKey(path)) ?? 0;
+    return this.completed.get(pathIdentityKey(path)) ?? 0;
   }
 
   /** Record a write that went through another route (Save As picked this path in the dialog). */
   markCompleted(path: string, revision: number): void {
-    const k = pathKey(path);
+    const k = pathIdentityKey(path);
     this.completed.set(k, Math.max(this.completed.get(k) ?? 0, revision));
   }
 
@@ -41,7 +41,7 @@ export class SaveQueue {
    * that path, not `path`, is recorded as completed.
    */
   run<T>(path: string, revision: number, write: () => Promise<T>): Promise<QueuedResult<T>> {
-    const k = pathKey(path);
+    const k = pathIdentityKey(path);
     const prev = this.tails.get(k) ?? Promise.resolve();
     const job = prev.then(
       () => this.exec(k, path, revision, write),

@@ -439,11 +439,17 @@ export class LayoutController {
       this.ed.log(`Invalid layout name "${n}".`);
       return null;
     }
+    const copiedEntities = new Map<Entity, Entity>();
+    const copyEntity = <T extends Entity>(entity: T): T => {
+      let copy = copiedEntities.get(entity);
+      if (!copy) { copy = { ...entity, id: newId() } as T; copiedEntities.set(entity, copy); }
+      return copy as T;
+    };
     const copy: Layout = {
       ...src,
       name: n,
-      entities: src.entities.map((e) => ({ ...e, id: newId() }) as Entity),
-      viewports: src.viewports.map((v) => ({ ...v, id: newId() })),
+      entities: src.entities.map(copyEntity),
+      viewports: src.viewports.map((v) => ({ ...v, id: newId(), ...(v.clipBoundary ? { clipBoundary: copyEntity(v.clipBoundary) } : {}) })),
     };
     const anchorRemaps = [
       { from: { kind: 'layout' as const, name: src.name }, to: { kind: 'layout' as const, name: copy.name } },
@@ -454,7 +460,8 @@ export class LayoutController {
       const i = list.findIndex((l) => l.name === src.name);
       list.splice(i + 1, 0, copy);
       return { ...s, layouts: list };
-    }, { cloneBatches: [{ ...cadCloneBatch(src.entities, copy.entities), anchorRemaps }] });
+    }, { cloneBatches: [{ ...cadCloneBatch([...src.entities, ...src.viewports.flatMap(viewport => viewport.clipBoundary ? [viewport.clipBoundary] : [])],
+      [...copy.entities, ...copy.viewports.flatMap(viewport => viewport.clipBoundary ? [viewport.clipBoundary] : [])]), anchorRemaps }] });
     return n;
   }
 

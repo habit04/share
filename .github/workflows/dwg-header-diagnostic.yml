@@ -1,0 +1,60 @@
+name: Development DWG R2018 candidate header diagnostic
+
+# Manual read-only evidence; no production runtime, installer, release or upload.
+on:
+  workflow_dispatch:
+  # Authorized bootstrap: dispatch requires default-branch registration.
+  push:
+    branches: [feature/remaining-2d-reliability]
+    paths:
+      - .github/workflows/dwg-header-diagnostic.yml
+      - scripts/native-dwg-build/header-diagnostic.*
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dwg-header-diagnostic-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  raw-header:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MAKEFLAGS: -j2
+      PYTHONDONTWRITEBYTECODE: 1
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Authenticate and prepare isolated source and input copies
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/feature/remaining-2d-reliability
+          test -n "$RUNNER_TEMP"
+          python3 scripts/native-dwg-build/header-diagnostic.test.py
+          python3 scripts/native-dwg-build/header-diagnostic.py prepare --workspace "$GITHUB_WORKSPACE" --directory "$RUNNER_TEMP/jcad-header-diagnostic" --revision "$GITHUB_SHA"
+      - name: Native GCC development decoder only
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y build-essential autoconf automake libtool pkg-config zlib1g-dev
+          gcc --version
+          source_dir="$RUNNER_TEMP/jcad-header-diagnostic/source"
+          build_dir="$RUNNER_TEMP/jcad-header-diagnostic/build"
+          (cd "$source_dir" && libtoolize --force --copy && autoreconf --force --install)
+          mkdir "$build_dir"
+          (cd "$build_dir" && CC=gcc CFLAGS='-O2 -DNDEBUG' "$source_dir/configure" --enable-release --enable-debug --disable-werror --disable-docs --disable-write --disable-json --disable-python --disable-bindings --disable-shared --enable-static)
+          make -C "$build_dir/src" -j2 libredwg.la
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -I"$source_dir/include" -I"$build_dir/src" scripts/native-dwg-build/header-diagnostic.c "$build_dir/src/.libs/libredwg.a" -lm -lz -o "$RUNNER_TEMP/jcad-header-diagnostic/diagnostic"
+          python3 scripts/native-dwg-build/header-diagnostic.py record-build --workspace "$GITHUB_WORKSPACE" --directory "$RUNNER_TEMP/jcad-header-diagnostic" --revision "$GITHUB_SHA"
+      - name: Four unchanged originals, exact R2018 candidate fields and two host zones
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/native-dwg-build/header-diagnostic.py run --workspace "$GITHUB_WORKSPACE" --directory "$RUNNER_TEMP/jcad-header-diagnostic" --revision "$GITHUB_SHA"

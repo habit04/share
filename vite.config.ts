@@ -26,12 +26,20 @@ export default defineConfig(({ command, mode }) => {
   const web = mode === 'site' || (command === 'serve' && mode !== 'test');
   return {
     base: './',
-    worker: { format: 'es' },
+    // Electron renderer build: worker bundles (the Manifold kernel worker) are emitted under
+    // assets/worker/ so the `jcad://app/` handler can recognise worker scripts by path alone and
+    // send them their own restrictive CSP header (electron/renderer-origin.cjs WORKER_CSP,
+    // docs/SECURITY-REVIEW.md E-19); assets they import (manifold.wasm) stay in assets/. The
+    // browser edition and the dev server keep Vite's default layout: static hosting cannot send
+    // that header anyway.
+    worker: web
+      ? { format: 'es' }
+      : { format: 'es', rollupOptions: { output: { entryFileNames: 'assets/worker/[name]-[hash].js', chunkFileNames: 'assets/worker/[name]-[hash].js' } } },
     resolve: { alias: web ? [] : [{ find: './dwg-browser-worker-factory', replacement: fileURLToPath(new URL('./src/io/dwg-browser-worker-disabled.ts', import.meta.url)) }] },
     plugins: web ? [webCspPlugin()] : [],
-    define: { __APP_VERSION__: JSON.stringify(pkg.version), __JCAD_WEB__: JSON.stringify(web) },
+    define: { __APP_VERSION__: JSON.stringify(pkg.version), __JCAD_WEB__: JSON.stringify(web), __JCAD_GPU_EXPERIMENTAL__: JSON.stringify(mode === 'gpu-experimental') },
     build: { outDir: mode === 'site' ? 'site-dist/app' : 'dist', emptyOutDir: true, target: 'chrome120' },
-    server: { port: 5173, strictPort: true },
+    server: { port: mode === 'gpu-experimental' ? 5189 : 5173, strictPort: true },
     test: { environment: 'node', include: ['tests/**/*.test.ts'] },
   };
 });

@@ -14,7 +14,7 @@ import { importReportOf } from '../src/io/import-report';
 import { explodeInsert, type InsertEntity, type DimensionEntity } from '../src/core/entities';
 import { resolveColor, trueColorCss } from '../src/render/draw';
 import { aciToCss } from '../src/render/palette';
-import { namedDimStyles, dimensionText } from '../src/core/dimension';
+import { namedDimStyles, dimensionMeasurement, dimensionText } from '../src/core/dimension';
 import { textStylesOf } from '../src/io/encoding';
 import type { DrawingState } from '../src/core/document';
 import { defaultLayout } from '../src/core/layouts';
@@ -25,9 +25,7 @@ const fixtures = join(__dirname, '..', 'fixtures');
 const dwg = async (f: string) => convertDwg((await readDwgPayload(readFileSync(join(fixtures, f)), 'dwg')).payload, f);
 
 describe('DWG fixtures against their DXF equivalent', () => {
-  // The native metadata reader is enabled only for the Windows update. The DXF
-  // layout identity regression also runs on CI's other operating systems.
-  it.skipIf(process.platform !== 'win32')('retains an AutoCAD-authored pristine Layout1 when a second sheet is added', async () => {
+  it.runIf(process.platform === 'win32')('retains an AutoCAD-authored pristine Layout1 when a second sheet is added', async () => {
     const original = readFileSync(join(__dirname, 'fixtures', 'interchange', 'r2018-mtext-background.dwg'));
     const { payload } = await readDwgPayload(original);
     const { state } = convertDwg(payload);
@@ -43,7 +41,8 @@ describe('DWG fixtures against their DXF equivalent', () => {
     expect(readFileSync(join(__dirname, 'fixtures', 'interchange', 'r2018-mtext-background.dwg'))).toEqual(original);
   }, 60000);
   it('layouts, dimension styles and layers match the DXF saved from the same drawing', async () => {
-    const { state } = await dwg('example_2000.dwg');
+    const native = (await readDwgPayload(readFileSync(join(fixtures, 'example_2000.dwg')), 'dwg')).payload;
+    const { state, report } = convertDwg(native, 'example_2000.dwg');
     const dxf = readDxf(readFileSync(join(fixtures, 'example_2000.dxf'), 'latin1'));
     const layouts = (s: DrawingState) => s.layouts?.map((l) => ({ name: l.name, paper: l.paper.id, units: l.paper.units, orientation: l.paper.orientation, viewports: l.viewports.length, entities: l.entities.length }));
     expect(layouts(state)).toEqual(layouts(dxf));
@@ -53,8 +52,35 @@ describe('DWG fixtures against their DXF equivalent', () => {
     const iso = namedDimStyles(state).find((d) => d.name === 'ISO-25')!;
     const isoDxf = namedDimStyles(dxf).find((d) => d.name === 'ISO-25')!;
     for (const k of ['textHeight', 'arrowSize', 'extOffset', 'extExtend', 'textGap', 'decimals'] as const) expect(iso[k], k).toBeCloseTo(isoDxf[k] as number, 6);
-    const dimStyles = (s: DrawingState) => s.entities.filter((e): e is DimensionEntity => e.type === 'dimension').map((d) => d.style.name);
-    expect(dimStyles(state)).toEqual(dimStyles(dxf));
+    const dimensions = (s: DrawingState) => s.entities.filter((e): e is DimensionEntity => e.type === 'dimension');
+    const dxfDimensions = dimensions(dxf), dwgDimensions = dimensions(state);
+    expect(dxfDimensions.map((d) => d.kind)).toEqual(['aligned', 'ordinate', 'ordinate', 'angular', 'ordinate', 'linear', 'linear', 'linear', 'linear']);
+    expect(dwgDimensions.map((d) => d.kind)).toEqual(['aligned', 'angular', 'linear', 'linear', 'linear', 'linear']);
+    const ordinates = dxfDimensions.filter((d) => d.kind === 'ordinate');
+    expect(ordinates.map((d) => [d.ordinateAxis, d.style.name])).toEqual([['y', 'ISO-25'], ['x', 'ISO-25'], ['y', 'ISO-25']]);
+    ordinates.forEach((d) => { expect(d.ordinateRotation).toBeCloseTo(0, 12); expect(d.p1).toEqual({ x: 0, y: 0 }); });
+    expect(ordinates.map((d) => [d.p2.x, d.p2.y, d.linePoint.x, d.linePoint.y])).toEqual([
+      [3869.533843413767, 4177.649923262783, 4397.996030489434, 4177.649923262783],
+      [4630.519359082827, 4515.678949653964, 4820.765738000104, 4198.776713909552],
+      [-276.8548009664508, 4701.847034571434, -780.9329392035434, 4621.313010328623],
+    ]);
+    [4177.649923262783, 4630.519359082827, 4701.847034571434].forEach((value, i) => expect(dimensionMeasurement(ordinates[i]!)).toBeCloseTo(value, 8));
+    // This immutable older-version drawing returns native compatibility flag64.
+    // Its projection is deliberately uncertified, so the legacy geometry fallback
+    // still explicitly reports these three native ordinate records as dropped.
+    if (process.platform === 'win32') {
+      expect(native.nativeMetadata).toMatchObject({ readError: 64, complete: false });
+      expect(report?.counts.CAD_METADATA?.unsupported).toBe(1);
+    }
+    const nativeDimensions = native.entities.filter((e: { type: string }) => e.type === 'DIMENSION') as unknown as Array<{ dimensionType: number; handle: string }>;
+    expect(nativeDimensions).toHaveLength(9);
+    expect(nativeDimensions.filter((e) => (e.dimensionType & 7) === 6).map((e) => e.handle)).toEqual(['420', '430', '453']);
+    const droppedDimensions = report?.items.filter((i) => i.type === 'DIMENSION' && i.action === 'dropped');
+    expect(droppedDimensions?.map((i) => [i.handle, i.where, i.layer])).toEqual([['420', 'model space', 'Tavolo 3'], ['430', 'model space', 'Tavolo 3'], ['453', 'model space', 'Tavolo 3']]);
+    expect(droppedDimensions?.every((i) => i.reason === 'this dimension type is not supported (ordinate dimensions, or unreadable definition points)')).toBe(true);
+    expect(report?.counts.DIMENSION?.dropped).toBe(3);
+    const sharedDxfDimensions = dxfDimensions.filter((d) => d.kind !== 'ordinate');
+    expect(dwgDimensions.map((d) => [d.kind, d.style.name])).toEqual(sharedDxfDimensions.map((d) => [d.kind, d.style.name]));
     const flags = (s: DrawingState) => s.layers.map((l) => [l.name.replace(/^\*/, ''), l.color, l.locked, !!l.frozen, l.plot !== false]);
     expect(flags(state)).toEqual(flags(dxf));
   }, 60000);

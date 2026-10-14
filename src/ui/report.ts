@@ -13,6 +13,7 @@ import { writeDxf } from '../io/dxf';
 import { withoutUnusedLibraryBlocks } from '../electrical/library';
 import { exportFailed } from '../app/file-error-text';
 import { supportContact } from '../app/about';
+import { collectGpuDiagnostics, emptyGpuDiagnostics, gpuDiagnosticsLines, type GpuDiagnosticsBridge } from '../app/gpu-diagnostics';
 
 interface AppInfo {
   version: string;
@@ -64,7 +65,7 @@ export function reportProblemDialog(editor: Editor, kind: 'bug' | 'feedback' = '
   intro.className = 'dlg-note';
   intro.textContent =
     kind === 'bug'
-      ? 'Describe what went wrong. The report includes the version and platform. You can choose to include recent commands and captured errors. Local paths and drawing names are omitted unless you opt in. Drawings are only attached when you tick the box.'
+      ? 'Describe what went wrong. The report includes the version, platform and GPU diagnostic summary. You can choose to include recent commands and captured errors. Local paths and drawing names are omitted unless you opt in. Drawings are only attached when you tick the box.'
       : 'Tell us what is missing or what would make JCad Electrical better for your work.';
   m.body.appendChild(intro);
 
@@ -124,6 +125,7 @@ export function reportProblemDialog(editor: Editor, kind: 'bug' | 'feedback' = '
   }
 
   let info: AppInfo = { version: APP_VERSION_LABEL, platform: window.jcad?.platform ?? 'browser', arch: '' };
+  let gpu = emptyGpuDiagnostics('pending', APP_VERSION_LABEL);
   const input = (): ReportInput => ({
     title: title.value.trim(),
     happened: happened.value.trim(),
@@ -136,7 +138,7 @@ export function reportProblemDialog(editor: Editor, kind: 'bug' | 'feedback' = '
     errors: errBox.checked ? errs : [],
     drawingName: editor.fileName(),
     includePrivateDetails: privateBox.checked,
-    extra: [`Symbol standard: ${editor.settings.symbolStandard}`, `Open drawings: ${editor.sessions.all.length}`],
+    extra: [`Symbol standard: ${editor.settings.symbolStandard}`, `Open drawings: ${editor.sessions.all.length}`, ...gpuDiagnosticsLines(gpu)],
   });
   const refresh = () => {
     preview.textContent = reportText(input());
@@ -147,6 +149,20 @@ export function reportProblemDialog(editor: Editor, kind: 'bug' | 'feedback' = '
   });
   for (const el of [title, happened, expected, steps, histBox, errBox, privateBox]) el.addEventListener('input', refresh);
   refresh();
+
+  const retryGpu = button('Retry GPU Diagnostics');
+  const loadGpu = async () => {
+    retryGpu.disabled = true;
+    gpu = emptyGpuDiagnostics('pending', APP_VERSION_LABEL);
+    refresh();
+    gpu = await collectGpuDiagnostics(window.jcad as GpuDiagnosticsBridge | undefined, APP_VERSION_LABEL);
+    if (!m.root.isConnected) return;
+    retryGpu.disabled = false;
+    refresh();
+  };
+  retryGpu.addEventListener('click', () => void loadGpu());
+  m.body.append(retryGpu);
+  void loadGpu();
 
   const canSend = () => {
     if (!happened.value.trim()) {

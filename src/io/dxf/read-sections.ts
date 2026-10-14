@@ -8,7 +8,7 @@
 import type { Pair, Obj } from './groups';
 import type { ReadContext } from './read-core';
 import { isRealCode, isRealText, isIntCode, PRECISION_NAMES, SUPPORTED_DIM_NAMES, PRECISION_CODES, isQuietXdataApp, UNSUPPORTED_DIM_CODES } from './codes';
-import { isIntegerText, DxfReadError, shortText, invalidPrecision, precisionRequirement, str, num, has, int, pt, xdata } from './groups';
+import { isIntegerText, DxfReadError, shortText, invalidPrecision, precisionRequirement, str, num, has, pt, xdata } from './groups';
 import { LAYER_TRANSPARENCY_APP, transparencyFromDxf, validColorName } from '../../core/appearance';
 import { dimStyleFromHeader, readDimStyleRecord } from './dimstyles';
 import { STANDARD_DIMSTYLE } from '../../core/dimension';
@@ -23,7 +23,8 @@ import * as g from '../../core/geometry';
 import { attdefFlagProps } from '../../electrical/symbol-builder-core';
 import { readEntities } from './read-pass';
 import { ImportReportBuilder } from '../import-report';
-import type { Linetype } from '../../core/linetypes';
+import type { Linetype, LinetypeShapeStyle } from '../../core/linetypes';
+import { linetypeStyleRecords, hasComplexLinetypeData, readComplexLinetype, complexLinetypeWarning } from './complex-linetypes';
 import type { NamedView, DrawingHeader } from '../../core/document';
 import { DEFAULT_HEADER } from '../../core/document';
 import type { LinearUnits } from '../../core/units';
@@ -68,6 +69,7 @@ export function readTablesSection(objs: Obj[], tables: TableRecords, dimStyles: 
   const { layers, linetypes, views, textStyles } = tables;
   const report = ctx.report!;
   layoutReader.scanTables(objs);
+  const complexStyles = linetypeStyleRecords(objs, tables.shapeStyles, report);
   for (const o of objs) {
     const invalid = o.groups.find((p) => isRealCode(p.code) ? !isRealText(p.value) || !Number.isFinite(Number(p.value)) : isIntCode(p.code) && !isIntegerText(p.value.trim()));
     if (invalid) { report.add({ type: o.kind, action: 'dropped', reason: `invalid numeric group ${invalid.code} at line ${(invalid.line ?? 1) + 1}: "${shortText(invalid.value)}"`, line: o.line }); continue; }
@@ -106,10 +108,17 @@ export function readTablesSection(objs: Obj[], tables: TableRecords, dimStyles: 
       if (has(o, 430) && !validColorName(colorName)) report.add({ type: 'LAYER', action: 'simplified', reason: 'invalid named/color-book identity is not kept; RGB/ACI color is kept', line: o.line });
     } else if (o.kind === 'LTYPE') {
       const ltName = str(o, 2);
+      if (hasComplexLinetypeData(o)) {
+        const lt = readComplexLinetype(o, complexStyles);
+        linetypes.push(lt);
+        report.add({ type: 'LTYPE', action: 'kept', reason: complexLinetypeWarning(lt), ...(o.line ? { line: o.line } : {}) });
+        const unknown = o.groups.filter((pair) => ![5, 330, 100, 2, 70, 3, 72, 73, 40, 49, 74, 75, 340, 46, 50, 44, 45, 9].includes(pair.code));
+        if (unknown.length) report.add({ type: 'LTYPE', action: 'simplified', reason: `complex linetype "${lt.name}" extension metadata (groups ${[...new Set(unknown.map((pair) => pair.code))].join(', ')}) is not modeled; known descriptor fields are retained`, ...(o.line ? { line: o.line } : {}) });
+        continue;
+      }
       if (!ltName || /^(BYLAYER|BYBLOCK|CONTINUOUS)$/i.test(ltName)) continue;
       const pattern = o.groups.filter((x) => x.code === 49).map((x) => Number(x.value)).filter((v) => Number.isFinite(v));
       const std = findLinetype(ltName);
-      if (o.groups.some((p) => p.code === 74 && (int(p.value) & 6) !== 0)) report.add({ type: 'LTYPE', action: 'simplified', reason: `complex linetype "${ltName}": embedded text/shapes are not kept; dash pattern is kept`, ...(o.line ? { line: o.line } : {}) });
       if (std && std.pattern.length === pattern.length && std.pattern.every((v, k) => Math.abs(v - pattern[k]!) < 1e-9)) continue;
       linetypes.push({ name: ltName, description: str(o, 3), pattern });
     } else if (o.kind === 'DIMSTYLE') {
@@ -269,4 +278,5 @@ export interface TableRecords {
   linetypes: Linetype[];
   views: NamedView[];
   textStyles: Record<string, TextStyle>;
+  shapeStyles: Record<string, LinetypeShapeStyle>;
 }

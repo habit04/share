@@ -28,8 +28,11 @@ import {
   type PdfImageData,
 } from '../io/pdf-vector';
 import { deflate, rgbaToRgb } from '../io/pdf';
-import { renderSettings } from '../render/draw';
+import type { ImageLoader } from '../render/draw';
 import { renderPageToCanvas } from '../render/layouts';
+import { capturedPlotLookup } from './plot-fonts';
+import { capturedPdfLookup } from './pdf-fonts';
+import { capturePlot, ExportAdmission, type PlotExportContext } from './export-admission';
 
 export interface PlotChoiceLike {
   options: PlotOptions;
@@ -60,6 +63,8 @@ export function styleFor(opts: PlotOptions, layout: Layout | undefined): PdfPlot
     screening: opts.screening ?? fromLayout.screening,
     lineweights: opts.lineweights ?? fromLayout.lineweights,
     usePlotStyles: opts.usePlotStyles ?? fromLayout.usePlotStyles,
+    table: opts.styleTable,
+    namedStyle: opts.namedStyle,
   };
 }
 
@@ -70,9 +75,8 @@ export function plotTarget(state: DrawingState, opts: PlotOptions): 'model' | 'l
 }
 
 /** Bitmaps of the IMAGE entities on the pages, as PDF image data (RGB, deflated when possible). */
-async function collectImages(pages: readonly PdfPageSpec[], lookup: Editor['doc']['lookupBlock']): Promise<Map<string, PdfImageData>> {
+async function collectImages(pages: readonly PdfPageSpec[], lookup: Editor['doc']['lookupBlock'], loader?: ImageLoader): Promise<Map<string, PdfImageData>> {
   const out = new Map<string, PdfImageData>();
-  const loader = renderSettings.imageLoader;
   if (!loader || typeof document === 'undefined') return out;
   const paths = new Set<string>();
   const visit = (list: readonly Entity[], depth = 0) => {
@@ -106,34 +110,59 @@ async function collectImages(pages: readonly PdfPageSpec[], lookup: Editor['doc'
 const inches = (pt: number) => (pt / 72).toFixed(2);
 
 /** Handle a PLOT / PRINT choice when it involves a layout or vector PDF; false = the caller's raster model path. */
-export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike): Promise<boolean> {
-  const opts = choice.options;
+export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pending?: PlotExportContext): Promise<boolean> {
+  const bridge = pending?.captured.bridge ?? ed.fileBridge ?? null;
+  const admission = pending?.admission ?? new ExportAdmission(bridge, choice.action === 'pdf');
+  try {
+  const opts = { ...choice.options };
   const vector = choice.action === 'pdf' && opts.output !== 'raster';
-  const snapshot = ed.doc.snapshot;
-  if (!vector && !snapshot.space) return false;
-  const lookup = ed.doc.lookupBlock;
-  const state = plottableState(snapshot, lookup);
-  const target = vector ? plotTarget(state, opts) : snapshot.space!.layout;
+  const captured = pending?.captured ?? capturePlot(ed, bridge), snapshot = captured.state, base = captured.base;
+  const targetHint = vector || !snapshot.space ? plotTarget(snapshot, opts) : snapshot.space.layout;
+  const hiddenLayers = new Set(snapshot.layers.filter(layer => !layer.visible).map(layer => layer.name));
+  if (choice.action === 'pdf' && targetHint === 'model' && snapshot.entities.every(entity => hiddenLayers.has(entity.layer))) {
+    ed.log('Nothing to plot: this tab has no visible objects.'); return true;
+  }
+  if (!vector && !snapshot.space && !opts.styleTable) return false;
+  if (!vector && opts.styleTable && opts.what === 'layouts') {
+    ed.log('Raster plotting with CTB/STB tables supports one tab at a time. Choose Vector PDF for all layouts.');
+    return true;
+  }
+  const suggested = vector ? targetHint === 'model' || targetHint === 'layouts' ? `${base}.pdf` : `${base}-${targetHint}.pdf` : `${base} - ${targetHint === 'model' ? 'Model' : targetHint}.pdf`;
+  const name = suggested.replace(/[<>:"/\\|?*]/g, '_');
+  if (choice.action === 'pdf') {
+    if (!(vector ? bridge?.savePdf : bridge?.plotPdf)) { ed.log('Plotting is not available here.'); return true; }
+    if (!await admission.choose(name)) return true;
+  }
+  const capturedGeometry = vector ? captured.vectorGeometry : captured.geometry;
+  const initialLookup = await capturedPlotLookup(snapshot, capturedGeometry);
+  const state = plottableState(snapshot, initialLookup);
+  const target = vector || !snapshot.space ? plotTarget(state, opts) : snapshot.space.layout;
+  const initialPages = vector ? plotPages(state, initialLookup, target, opts) : [];
+  const prepared = vector ? await capturedPdfLookup(state, captured.pdfFont, initialPages.flatMap((page) => page.groups), initialLookup) : null;
+  const lookup = prepared?.lookup ?? initialLookup;
   const pages = plotPages(state, lookup, target, opts);
   if (pages.length === 0 || pages.every((p) => p.groups.every((grp) => grp.entities.length === 0 && !(grp.frames?.length)))) {
     ed.log(target === 'model' ? 'Nothing to plot: this tab has no visible objects.' : 'Nothing to plot: the layout is empty.');
     return true;
   }
   const layout = target === 'model' || target === 'layouts' ? activeLayout(state) : findLayout(state, target);
-  const style = styleFor(opts, layout);
-  const base = ed.fileName().replace(/\.[^.]+$/, '');
+  const plotIssues = new Set<string>();
+  const style = { ...styleFor(opts, layout), issues: plotIssues };
+  const reportPlotStyles = () => {
+    if (lookup.textGeometry?.fontIssues?.size) ed.log(`Font substitutes: ${[...lookup.textGeometry.fontIssues].slice(0, 20).join(' ')}`);
+    const issues = [...plotIssues];
+    if (issues.length) ed.log(`Plot style limitations: ${issues.slice(0, 20).join(' ')}${issues.length > 20 ? ` (${issues.length - 20} additional issues.)` : ''}`);
+  };
   if (vector) {
-    const images = await collectImages(pages, lookup);
+    const images = await collectImages(pages, lookup, captured.imageLoader);
     const ctx = drawingContext(state, lookup, (p) => images.get(p) ?? null);
+    const fontFallbacks = new Set<string>();
+    Object.assign(ctx, { embeddedFonts: prepared?.fonts, textGeometry: prepared?.geometry, fontFallbacks });
     const title = target === 'model' ? base : target === 'layouts' ? `${base} - layouts` : `${base} - ${target}`;
     const bytes = await vectorPdfCompressed(pages, ctx, style, title, deflate);
-    const save = ed.fileBridge?.savePdf;
-    if (!save) {
-      ed.log('Plotting is not available here.');
-      return true;
-    }
-    const name = target === 'model' || target === 'layouts' ? `${base}.pdf` : `${base}-${target}.pdf`;
-    const out = await save(bytes, name.replace(/[<>:"/\\|?*]/g, '_'));
+    reportPlotStyles();
+    if (fontFallbacks.size) ed.log(`PDF used substitute fonts for ${[...fontFallbacks].join(', ')}. ${prepared?.issues.join(' ') || 'Some glyphs or font formats are unsupported.'}`);
+    const out = await admission.savePdf(bytes, name);
     if (!out) return true;
     const first = pages[0]!;
     if (pages.length === 1) ed.log(`Plotted to ${out} (${inches(first.width)} x ${inches(first.height)} in).`);
@@ -145,7 +174,8 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike): P
   const canvas = document.createElement('canvas');
   const maxPx = 12000;
   const dpi = Math.min(150, (maxPx / Math.max(page.width, page.height)) * 72);
-  renderPageToCanvas(canvas, page, drawingContext(state, lookup), style, dpi);
+  renderPageToCanvas(canvas, page, drawingContext(state, lookup), style, dpi, captured.imageLoader ?? (async () => null));
+  reportPlotStyles();
   const dataUrl = canvas.toDataURL('image/png');
   const sheet = { width: page.width / 72, height: page.height / 72 };
   const landscape = sheet.width >= sheet.height;
@@ -154,23 +184,20 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike): P
   const plotSheet = { ...sheet, ...(electron ? { electron } : {}) };
   const label = `${base} - ${page.label}`;
   if (choice.action === 'pdf') {
-    if (!ed.fileBridge?.plotPdf) {
-      ed.log('Plotting is not available here.');
-      return true;
-    }
-    const out = await ed.fileBridge.plotPdf(dataUrl, `${label}.pdf`, landscape, plotSheet);
+    const out = await admission.plotPdf(dataUrl, name, landscape, plotSheet);
     if (out) ed.log(`Plotted to ${out} (${sheet.width.toFixed(2)} x ${sheet.height.toFixed(2)} in).`);
     return true;
   }
-  if (!ed.fileBridge?.printDrawing) {
+  if (!bridge?.printDrawing) {
     ed.log('Printing is not available here.');
     return true;
   }
   try {
-    const ok = await ed.fileBridge.printDrawing(dataUrl, label, landscape, plotSheet);
+    const ok = await bridge.printDrawing(dataUrl, label, landscape, plotSheet);
     ed.log(ok ? `Sent ${page.label} to the print dialog.` : 'Print cancelled.');
   } catch (err) {
     ed.log(`Print failed: ${(err as Error).message}`);
   }
   return true;
+  } finally { if (!pending) await admission.close(); }
 }

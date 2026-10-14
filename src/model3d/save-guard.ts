@@ -1,0 +1,101 @@
+/**
+ * Saving a drawing with experimental 3D content (milestone 5 policy).
+ *
+ * - DXF (Save, Save As, autosave / recovery copies) holds the solids: each is a polyface mesh with
+ *   `JCAD_3D` data (io/dxf/mesh3d-write.ts, docs/3D-FILE-FORMAT.md), so nothing is asked.
+ *   `model3dDxfSaveNotes` gives the non-blocking log lines for what a DXF cannot fully keep (a
+ *   construction history too large for the file is stored as a plain mesh).
+ * - A file JCad could not reopen is never written: when 3D objects push the DXF past the reader's
+ *   default limits (`DXF_READ_LIMITS`), Save / Save As are refused (`model3dDxfLimitRefusal`) and
+ *   the drawing stays modified. A bounded first recovery fallback records every omitted object;
+ *   the autosaver preserves an existing recovery copy instead of replacing it with omissions.
+ * - DWG (Save to a .dwg, EXPORTDWG) cannot hold solids: the portable writer would drop records it
+ *   does not know. Those saves are refused (`model3dDwgRefusal`), never written without the solids.
+ */
+import { prepareDrawingTransition, validateDrawingState, type DrawingState } from '../core/document';
+import { defaultReadLimitExcess, writeDxf } from '../io/dxf';
+import { DXF_READ_LIMITS, payloadDegradation } from './file-format';
+import { meshTriangleCount } from './mesh';
+import { EMPTY_MODEL3D, withModel3D } from './model';
+
+/**
+ * Why a DWG save or export of a drawing with solids is refused (`Editor.lastFileError` and the log,
+ * which adds "Not saved: " / "DWG export canceled: " and a final period). It says which formats keep
+ * the 3D model: JCad DXF (Save / Save As > DXF) with the construction histories, and the autosave
+ * recovery copies (DXF too); DWG keeps none, and the solids are never removed to make a DWG save
+ * succeed (docs/DWG-SAVING.md, docs/USER-MANUAL.md "Experimental 3D objects in files").
+ */
+export const MODEL3D_DWG_REFUSAL = 'DWG files cannot hold 3D objects, so no DWG was written and nothing was removed from the drawing. To keep the 3D model, save as JCad DXF (Save, or Save As and choose DXF): DXF keeps the 3D objects and their construction histories (where they fit the file limits; see 3D-FILE-FORMAT), and so do the autosave recovery copies. To view or erase the 3D objects, turn on Experimental 3D (Options > Files)';
+
+/** MODEL3D_DWG_REFUSAL when the drawing holds solids or 3D dimensions, else null (DWG writing may go ahead). */
+export function model3dDwgRefusal(state: DrawingState): string | null {
+  return (state.model3d?.solids.length ?? 0) > 0 || (state.model3d?.dimensions?.length ?? 0) > 0 ? MODEL3D_DWG_REFUSAL : null;
+}
+
+/** Total triangles of the drawing's solids. */
+function triangleCount(state: DrawingState): number {
+  let n = 0;
+  for (const s of state.model3d?.solids ?? []) n += meshTriangleCount(s.mesh);
+  return n;
+}
+
+/**
+ * Why the DXF `text` written for `state` must not be saved, or null: the drawing has 3D objects and
+ * the file exceeds a limit of DXF_READ_LIMITS, so JCad could not open it again. The message names
+ * the triangle/dimension count, the limit exceeded and what to do. 2D-only drawings are never refused here.
+ */
+export function model3dDxfLimitRefusal(state: DrawingState, text: string): string | null {
+  const solids = state.model3d?.solids.length ?? 0, dimensions = state.model3d?.dimensions?.length ?? 0;
+  if (solids === 0 && dimensions === 0) return null;
+  const excess = defaultReadLimitExcess(text);
+  if (!excess) return null;
+  const limits = `${DXF_READ_LIMITS.maxPairs.toLocaleString('en-US')} group pairs, ${DXF_READ_LIMITS.maxRecords.toLocaleString('en-US')} records, ${DXF_READ_LIMITS.maxSourceLength.toLocaleString('en-US')} characters`;
+  const content = solids > 0 ? `the drawing's 3D objects have ${triangleCount(state).toLocaleString('en-US')} triangles${dimensions ? ` and ${dimensions.toLocaleString('en-US')} 3D dimensions` : ''}` : `the drawing has ${dimensions.toLocaleString('en-US')} 3D ${dimensions === 1 ? 'dimension' : 'dimensions'}`;
+  return `${content}, which makes a DXF file JCad could not open again (${excess}; limits: ${limits}). Reduce the 3D model (fewer objects or less mesh detail) and save again`;
+}
+
+/**
+ * Log lines for a DXF save of `state` (empty for a 2D drawing): solids whose construction history
+ * does not fit the per-solid payload limit are saved as plain meshes (geometry kept, no longer
+ * editable parametrically after reopening). Not blocking: the geometry is in the file either way.
+ */
+export function model3dDxfSaveNotes(state: DrawingState): string[] {
+  const solids = state.model3d?.solids ?? [];
+  let history = 0, names = 0;
+  for (const s of solids) {
+    const d = payloadDegradation(s);
+    if (d !== 'none') history += 1;
+    if (d === 'history-and-name') names += 1;
+  }
+  if (!history) return [];
+  const what = history === 1 ? '1 3D object has a construction history' : `${history} 3D objects have construction histories`;
+  return [`${what} too large for the DXF file: saved as plain meshes (the geometry is kept; after reopening ${history === 1 ? 'it is' : 'they are'} not editable parametrically${names ? `, and ${names} lose their name` : ''}).`];
+}
+
+/**
+ * The recovery (autosave) copy of `prepared` (the state after library-block cleanup): the full
+ * DXF, or a checked projection without over-budget 3D objects and its exact omission count.
+ * Dimensions are kept if they still fit. Graph-dependent removal or an oversized remaining
+ * projection refuses the copy. The autosaver may use a partial projection only for a first
+ * backup; existing recovery bytes and the open drawing's objects remain protected.
+ */
+export function recoveryDxf(prepared: DrawingState): { readonly text: string; readonly omitted3d: number } {
+  validateDrawingState(prepared);
+  const text = writeDxf(prepared);
+  if (!defaultReadLimitExcess(text)) return { text, omitted3d: 0 };
+  const model = prepared.model3d ?? EMPTY_MODEL3D;
+  if (!model.solids.length && !model.dimensions?.length) throw new Error('The recovery copy exceeds the DXF reader limits. The previous recovery copy is kept.');
+  const candidate = (withoutDimensions: boolean) => {
+    const reduced = withModel3D(prepared, withoutDimensions ? EMPTY_MODEL3D : { ...model, solids: [] });
+    // A deliberate omission still reconciles retained owners and references. Hard dependents
+    // refuse the entire copy; no raw model removal may leave dangling CAD carriers behind.
+    const state = prepareDrawingTransition(prepared, reduced);
+    validateDrawingState(state);
+    return writeDxf(state);
+  };
+  const withoutSolids = candidate(false);
+  if (!defaultReadLimitExcess(withoutSolids)) return { text: withoutSolids, omitted3d: model.solids.length };
+  const without3d = candidate(true), excess = defaultReadLimitExcess(without3d);
+  if (excess) throw new Error(`The recovery copy is still too large after omitting 3D objects (${excess}). The previous recovery copy is kept.`);
+  return { text: without3d, omitted3d: model.solids.length + (model.dimensions?.length ?? 0) };
+}

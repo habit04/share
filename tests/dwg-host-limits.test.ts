@@ -315,9 +315,9 @@ describe('desktop DWG process and IPC limits', () => {
 
   it.each(['out-of-order', 'wrong-type', 'oversized'])(
     'the actual controller refuses malformed input chunks (%s)', async (failure) => {
-      const child = launchNodeProcess(join(realScriptsDir, 'dwg-process.mjs'), { env: { ...process.env, NODE_OPTIONS: '' } });
+      const child = launchNodeProcess(join(realScriptsDir, 'dwg-process.mjs'), { env: { ...process.env, NODE_OPTIONS: '', TZ: 'UTC' } });
       const [ready] = await once(child, 'message');
-      expect(ready).toEqual({ type: 'ready', protocol: 1, pid: child.pid });
+      expect(ready).toEqual({ type: 'ready', protocol: 1, pid: child.pid, timezone: 'UTC', timezoneOffsetMinutes: 0 });
       const ack = once(child, 'message');
       child.postMessage({ type: 'input-start', id: 1, byteLength: 2 * 1024 * 1024, resourceLimits: WORKER_RESOURCE_LIMITS });
       expect((await ack)[0]).toEqual({ type: 'input-ack', id: 1, offset: 0 });
@@ -419,14 +419,41 @@ describe('plot and print sheet sizes (security review E-18)', () => {
     for (const sheet of [undefined, null, {}, { width: 8.5, height: 11 }, { width: 46.8, height: 33.1 }, { width: 200, height: 0.5 }, { electron: 'A4' }]) expect(() => validatePaperDimensions(sheet), JSON.stringify(sheet)).not.toThrow();
     for (const width of [Infinity, -Infinity, NaN, -1, 0, 200.01, 1e9, '10', null]) expect(() => validatePaperDimensions({ width, height: 11 }), String(width)).toThrow(/Paper dimensions must be between 0 and 200 inches/);
   });
-  it('plot-pdf and print-drawing check the sheet before anything else', () => {
-    const plot = require('node:fs').readFileSync(join(import.meta.dirname, '..', 'electron', 'main', 'ipc-plot.cjs'), 'utf8') as string;
-    for (const channel of ['plot-pdf', 'print-drawing']) {
-      const body = plot.slice(plot.indexOf(`ipcMain.handle('${channel}'`));
-      const check = body.indexOf('validatePaperDimensions(sheet);');
-      expect(check, channel).toBeGreaterThan(0);
-      expect(check, channel).toBeLessThan(body.indexOf('new BrowserWindow('));
-      if (channel === 'plot-pdf') expect(check).toBeLessThan(body.indexOf('showSaveDialog'));
+  it('plot-pdf and print-drawing reject invalid sheets before a dialog, export capture or hidden allocation', async () => {
+    // Exercise the actual registered callbacks; the dialog may live in a delegated
+    // helper. Electron/window APIs are fail-fast doubles, never a native app launch.
+    const file = join(import.meta.dirname, '..', 'electron', 'main', 'ipc-plot.cjs'), localRequire = createRequire(file);
+    const handlers = new Map<string, (ev: unknown, ...args: unknown[]) => Promise<unknown>>();
+    const frame = { processId: 1, routingId: 1, parent: null, url: 'jcad://app/index.html' };
+    const contents = { mainFrame: frame }, win = { isDestroyed: () => false, webContents: contents }, ev = { sender: contents, senderFrame: frame };
+    const saveDialog = vi.fn(async () => { throw new Error('Invalid sheets must not open a dialog'); });
+    const hiddenAllocation = vi.fn(() => { throw new Error('Invalid sheets must not allocate a hidden window'); });
+    class HiddenWindow {
+      constructor() { hiddenAllocation(); }
+      static fromWebContents() { return win; }
     }
+    const capture = vi.fn(), capturePicked = vi.fn(), writer = vi.fn(), secure = vi.fn();
+    const { guardIpc } = require('../electron/ipc-guard.cjs');
+    const ipcMain = guardIpc({ handle: (channel: string, callback: (ev: unknown, ...args: unknown[]) => Promise<unknown>) => handlers.set(channel, callback) }, {
+      getWindow: () => win, isAppUrl: (url: string) => url === frame.url, log: { reject: vi.fn() },
+    });
+    const module = { exports: {} as { registerPlotIpc(ctx: unknown): void } };
+    new Function('require', 'module', readFileSync(file, 'utf8'))((name: string) => {
+      if (name === 'electron') return { dialog: { showSaveDialog: saveDialog }, BrowserWindow: HiddenWindow };
+      if (name === './app-data.cjs') return { writeUserFile: writer, enqueueWrite: writer };
+      if (name === './window.cjs') return { secureContents: secure };
+      return localRequire(name);
+    }, module);
+    module.exports.registerPlotIpc({ ipcMain, senderWindow: () => win, saveOrder: { capture, capturePicked } });
+    const badSheets = [
+      { width: Infinity, height: 11 }, { width: 8.5, height: Infinity }, { width: NaN, height: 11 },
+      { width: 0, height: 11 }, { width: 8.5, height: -1 }, { width: 200.01, height: 11 },
+      { width: 8.5, height: 200.01 }, { width: '10', height: 11 }, { width: 1e9, height: 11, electron: 'A4' },
+    ];
+    for (const channel of ['plot-pdf', 'print-drawing']) for (const sheet of badSheets) {
+      await expect(handlers.get(channel)!(ev, 'data:image/png;base64,YQ==', 'Invalid sheet', false, sheet), `${channel}: ${String(sheet.width)}x${sheet.height}`).rejects.toThrow(/Paper dimensions must be between 0 and 200 inches/);
+    }
+    expect(saveDialog).not.toHaveBeenCalled(); expect(hiddenAllocation).not.toHaveBeenCalled(); expect(secure).not.toHaveBeenCalled();
+    expect(capture).not.toHaveBeenCalled(); expect(capturePicked).not.toHaveBeenCalled(); expect(writer).not.toHaveBeenCalled();
   });
 });

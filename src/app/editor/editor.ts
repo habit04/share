@@ -19,6 +19,8 @@
 import type { Point } from '../../core/geometry';
 import type { Entity } from '../../core/entities';
 import { Drawing } from '../../core/document';
+import { textGeometryForStyles } from '../../render/font-metrics';
+import { SessionShxResources } from '../shx-resources';
 import type { DrawingState } from '../../core/document';
 import { GeometryBudgetError } from '../../core/geometry-budget-error';
 import { defaultSnapSettings, type SnapSettings } from '../../core/snap';
@@ -53,7 +55,8 @@ import * as plotting from './plotting';
 const VERSION: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
 
 export class Editor {
-  readonly doc = new Drawing();
+  readonly shxResources = new SessionShxResources((session) => { if (this.sessions.current === session) this.render(); });
+  readonly doc = new Drawing(undefined, (styles) => this.sessions ? this.shxResources.for(this.sessions.current).geometry(styles) : textGeometryForStyles(styles));
   // ---- UI/workflow extensions (file tabs, Properties panel) — logic lives in app/sessions.ts / src/ui.
   /** Open drawings ("file tabs"); the active one is `doc`. */
   readonly sessions: SessionManager = new SessionManager(this);
@@ -139,8 +142,10 @@ export class Editor {
     this.doc.ensureBlocks([...LIBRARY_SYMBOLS, WIRE_DOT, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW]);
     this.applySettings();
     this.doc.subscribe(() => {
-      // Drop selection ids that no longer exist.
+      // Drop selection ids that no longer exist (experimental 3D solids count as existing).
       const ids = new Set(this.doc.entities.map((e) => e.id));
+      for (const s of this.doc.snapshot.model3d?.solids ?? []) ids.add(s.id);
+      for (const d of this.doc.snapshot.model3d?.dimensions ?? []) ids.add(d.id);
       let changed = false;
       for (const id of this.selection) if (!ids.has(id)) {
         this.selection.delete(id);
@@ -281,6 +286,38 @@ export class Editor {
 
   layerDialogRequested: (() => void) | null = null;
 
+  /**
+   * Experimental 3D (src/app/experimental-3d.ts, flag on only): adds the optional 3D members to
+   * every tool context the editor builds. Null (the default) leaves contexts exactly as before.
+   */
+  toolContextExtension: ((ctx: ToolContext) => ToolContext) | null = null;
+
+  /** The context the running tool gets (for input that does not come through the 2D canvas). */
+  toolContext(): ToolContext {
+    return prompter.makeContext(this, this.internals);
+  }
+
+  /**
+   * Hand a point to the running tool as a picked point (what a click on the 2D canvas does after
+   * snapping), without going through typed input. Used by the experimental 3D view.
+   */
+  acceptPoint(p: Point): void {
+    this.geometryAction(() => prompter.acceptPoint(this, this.internals, p), undefined);
+  }
+
+  /** True while a tool waits on "Select objects:". */
+  get selectionPending(): boolean {
+    return this.internals.selReq !== null;
+  }
+
+  /**
+   * Add (or with `remove`, take away) objects picked by id: into the pending "Select objects:"
+   * request when there is one, else into the selection (the same path a 2D pick takes).
+   */
+  pickIds(ids: string[], remove = false): void {
+    select.toggleSelect(this, this.internals, ids, remove);
+  }
+
   runCommand(input: string): void | Promise<void> {
     return this.geometryAction(() => prompter.runCommand(this, input), undefined);
   }
@@ -345,7 +382,9 @@ export class Editor {
 
   /**
    * Read DXF text the way OPEN does (see import-open.ts readDxfForOpen): a file that ends early
-   * asks whether to open what was readable (marked as recovered); null = declined.
+   * asks whether to open what was readable (marked as recovered); null = declined. Used by OPEN
+   * and the Drawing Recovery Manager; the experimental 3D setting decides whether polyface meshes
+   * of other programs become solids (JCad's own solids, as in recovery copies, are always read).
    */
   readDxfText(text: string, path: string | null): Promise<DrawingState | null> {
     return documents.readDxfText(this, text, path);
@@ -421,8 +460,8 @@ export class Editor {
    * Render the drawing extents onto the chosen paper (white sheet, black lines, hidden
    * layers left out) for plotting / printing. The image has exactly the sheet's proportions.
    */
-  renderPlotImage(opts: PlotOptions): Promise<{ dataUrl: string; landscape: boolean; sheet: { width: number; height: number }; electron?: string; reducedToFit: boolean } | null> {
-    return plotting.renderPlotImage(this, opts);
+  renderPlotImage(opts: PlotOptions, captured?: import('../export-admission').CapturedPlot): Promise<{ dataUrl: string; landscape: boolean; sheet: { width: number; height: number }; electron?: string; reducedToFit: boolean } | null> {
+    return plotting.renderPlotImage(this, opts, captured);
   }
 
   /** PLOT: open the Plot / Print dialog (default: PDF) and run the chosen output. */

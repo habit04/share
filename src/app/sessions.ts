@@ -6,10 +6,11 @@
  * dirty flag, view and selection) so switching tabs swaps that state in and out.
  * Pure of DOM so it can be unit tested with a fake host.
  */
-import { Drawing, type DrawingState } from '../core/document';
+import { Drawing, validateDrawingState, type DrawingState } from '../core/document';
 import type { Point } from '../core/geometry';
 import { fileBaseName, samePath, shortNames } from './paths';
-import { prepareDrawingState, validateGeometryBudget } from '../core/geometry-budget';
+import { prepareDrawingState } from '../core/geometry-budget';
+import { forgetOpenedSourceProof } from './opened-source-proof';
 
 /** Per-document views parked behind Model/paper/viewport context switches, independent of CAD data. */
 export interface ParkedSpaceViews {
@@ -55,6 +56,12 @@ export interface SessionHost {
   restoreParkedSpaceViews?(views: ParkedSpaceViews | null): void;
 }
 
+/** A refused restore must precede tab removal, proof retirement and live-document loading. */
+function validateRestoredSession(session: DocumentSession): void {
+  for (const state of [session.state, ...session.undo, ...session.redo]) {
+    validateDrawingState(state);
+  }
+}
 
 /** A random RFC 4122 version 4 UUID (crypto.randomUUID where available). */
 export function newDocumentId(): string {
@@ -91,6 +98,7 @@ export class SessionManager {
   }
 
   private make(state: DrawingState, filePath: string | null): DocumentSession {
+    validateDrawingState(state);
     prepareDrawingState(state);
     this.untitledCounter += 1;
     return {
@@ -160,6 +168,7 @@ export class SessionManager {
     if (!s) return;
     const { doc, viewport } = this.host;
     if (doc.loadCount !== this.observedDocumentLoadCount) {
+      forgetOpenedSourceProof(s);
       s.contentGeneration += 1;
       this.observedDocumentLoadCount = doc.loadCount;
     }
@@ -208,7 +217,7 @@ export class SessionManager {
 
   switchTo(i: number): boolean {
     if (i < 0 || i >= this.list.length || i === this.activeIndex) return false;
-    validateGeometryBudget(this.list[i]!.state);
+    validateRestoredSession(this.list[i]!);
     this.sync();
     this.activeIndex = i;
     this.restore(this.list[i]!);
@@ -253,7 +262,8 @@ export class SessionManager {
     target = Math.max(0, Math.min(remaining.length - 1, target));
     const restores = i === this.activeIndex || target !== (i < this.activeIndex ? this.activeIndex - 1 : this.activeIndex);
     // A rejected target must leave the outgoing tab and active index untouched.
-    if (remaining.length && restores) validateGeometryBudget(remaining[target]!.state);
+    if (remaining.length && restores) validateRestoredSession(remaining[target]!);
+    forgetOpenedSourceProof(this.list[i]!);
     this.list.splice(i, 1);
     if (this.list.length === 0) {
       // AutoCAD shows an empty application; we keep one blank drawing so the UI always has a document.
@@ -294,13 +304,16 @@ export class SessionManager {
   loadInto(id: number, state: DrawingState, filePath: string | null, dirty = false): boolean {
     const i = this.indexOfId(id);
     if (i < 0) return false;
+    validateDrawingState(state);
     prepareDrawingState(state);
     if (i === this.activeIndex) {
       this.host.loadState(state, filePath);
       this.host.doc.dirty = dirty;
+      this.sync();
       return true;
     }
     const s = this.list[i]!;
+    forgetOpenedSourceProof(s);
     s.revision += 1;
     s.contentGeneration += 1;
     s.state = state;

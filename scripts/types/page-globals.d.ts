@@ -9,6 +9,8 @@ declare global {
   interface Window {
     /** The running Editor (src/main.ts). */
     editor: any;
+    gpuPrototype: any;
+    __demoLossControl: any;
     /** The preload bridge (electron/preload.cjs); absent in the browser edition. */
     jcad: any;
     jacUi: any;

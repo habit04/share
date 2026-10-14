@@ -30,6 +30,7 @@ import {
   imageParts,
   imageBoundary,
   INFINITE_LENGTH,
+  inheritedColor,
 } from '../core/entities';
 import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
@@ -37,6 +38,8 @@ import { polylineWidthGeometry, strokeOutlinePolygons } from '../core/polyline-w
 import { aciToCss } from '../render/palette';
 import { strokeText, strokeTextWidth, expandControlCodes, textRenderer, CAP_HEIGHT_EM } from '../render/hershey';
 import { placedText } from '../core/text-placement';
+import { metricTextPlacement, textFontKey, type TextGeometryContext } from '../core/text-metrics';
+import { PdfFontRegistry, writePdfFontResources } from './pdf-fonts';
 import { hasMTextFill, hasMTextFrame } from '../core/mtext-background';
 import { findLinetype, effectiveLinetype, isByBlock, type Linetype } from '../core/linetypes';
 import type { TextStyle } from './encoding';
@@ -59,6 +62,9 @@ import {
 import { layoutPage, type PlotOptions } from '../app/plot';
 import type { DrawingState } from '../core/document';
 import { resolveAlpha } from '../core/appearance';
+import { hasHatchGradient, linearHatchGradientPlan, hatchGradientColorRgb, hatchGradientFrameProblem } from '../core/hatch-gradient';
+import { expandPlotInsert, plotEntityAppearance, plotObjectProperties } from '../render/plot-appearance';
+import { shxTextPaths } from '../render/shx-paths';
 
 // ---------------------------------------------------------------- page model
 
@@ -72,6 +78,8 @@ export interface PdfDrawGroup {
   readonly rotation?: number;
   /** Clip rectangle in page points. */
   readonly clip?: { x: number; y: number; w: number; h: number };
+  /** Additional native viewport polygon clip in page points (intersected with clip). */
+  readonly clipPolygon?: readonly Point[];
   /** Layers left out (off, frozen, no-plot, frozen in this viewport). */
   readonly hidden: ReadonlySet<string>;
   /** Points per linetype pattern unit (model: k; layout viewports: paper units, like PSLTSCALE 1). */
@@ -80,7 +88,29 @@ export interface PdfDrawGroup {
   readonly annoFactor: number;
   readonly hideAnnotative?: boolean;
   /** Frames of floating viewports (drawn as rectangles when their layer plots). */
-  readonly frames?: ReadonlyArray<{ x: number; y: number; w: number; h: number; layer: string }>;
+  readonly frames?: ReadonlyArray<{ x: number; y: number; w: number; h: number; layer: string; polygon?: readonly Point[] }>;
+}
+
+/** Conservative model-space bounds of a group's page clip, shared with font discovery. */
+export function pdfGroupView(group: PdfDrawGroup): Bounds | null {
+  const r = group.clip;
+  if (!r) return null;
+  const c = Math.cos(group.rotation ?? 0), s = Math.sin(group.rotation ?? 0);
+  const inverse = (x: number, y: number): Point => {
+    const dx = (x - group.e) / group.k, dy = (y - group.f) / group.k;
+    return { x: c * dx + s * dy, y: -s * dx + c * dy };
+  };
+  return g.boundsOfPoints([inverse(r.x, r.y), inverse(r.x + r.w, r.y), inverse(r.x + r.w, r.y + r.h), inverse(r.x, r.y + r.h)])!;
+}
+
+/** The same top-level culling must apply before reserving bounded PDF font resources. */
+export function pdfGroupEntityVisible(entity: Entity, group: PdfDrawGroup, lookup: BlockLookup, view = pdfGroupView(group)): boolean {
+  if (group.hidden.has(entity.layer) || (entity.annotative && group.hideAnnotative)) return false;
+  if (view && entity.type !== 'xline' && entity.type !== 'ray') {
+    const bounds = entityBounds(entity, lookup);
+    if (bounds && !g.boundsIntersect(bounds, view)) return false;
+  }
+  return true;
 }
 
 export interface PdfPageSpec {
@@ -99,6 +129,10 @@ export interface PdfPlotStyle {
   readonly lineweights: boolean;
   /** Plot with plot styles; off plots the object colours. */
   readonly usePlotStyles: boolean;
+  readonly table?: import('../core/plot-styles').PlotStyleTable;
+  readonly namedStyle?: string;
+  /** Per-plot diagnostics accumulated only for styles actually used. */
+  readonly issues?: Set<string>;
 }
 
 export interface PdfImageData {
@@ -116,6 +150,10 @@ export interface PdfDrawingContext {
   readonly ltscale: number;
   readonly linetypes: readonly Linetype[];
   readonly textStyles?: Readonly<Record<string, TextStyle>>;
+  /** Licensed programs and matching metrics local to this captured vector plot. */
+  readonly embeddedFonts?: PdfFontRegistry;
+  readonly textGeometry?: TextGeometryContext;
+  readonly fontFallbacks?: Set<string>;
   /** Bitmap of an IMAGE entity's file (null: the frame and file name are plotted instead). */
   readonly image?: (path: string) => PdfImageData | null;
 }
@@ -194,11 +232,12 @@ export function layoutPageSpec(state: DrawingState, layout: Layout, lookup: Bloc
   const hidden = hiddenLayers(state.layers);
   const canno = cannoscaleValue(state.header?.cannoscale);
   const groups: PdfDrawGroup[] = [];
-  const frames: Array<{ x: number; y: number; w: number; h: number; layer: string }> = [];
+  const frames: Array<{ x: number; y: number; w: number; h: number; layer: string; polygon?: readonly Point[] }> = [];
   for (const v of layout.viewports) {
     const vb = viewportPaperBounds(v);
     const rect = { x: pe + pk * vb.min.x, y: pf + pk * vb.min.y, w: pk * v.width, h: pk * v.height };
-    frames.push({ ...rect, layer: v.layer });
+    const polygon = v.clipOn !== false ? v.clipBoundary?.points.map((p) => ({ x: pe + pk * p.x, y: pf + pk * p.y })) : undefined;
+    if (!polygon) frames.push({ ...rect, layer: v.layer });
     if (!v.on) continue;
     const s = v.view.scale;
     const rotation = viewTwist(v.view);
@@ -210,13 +249,15 @@ export function layoutPageSpec(state: DrawingState, layout: Layout, lookup: Bloc
       f: pf + pk * origin.y,
       ...(rotation ? { rotation } : {}),
       clip: rect,
+      ...(polygon ? { clipPolygon: polygon } : {}),
       hidden: new Set([...hidden, ...(v.frozenLayers ?? [])]),
       ltUnit: pk,
       annoFactor: 1 / s,
       hideAnnotative: state.header?.annoAllVisible === false && Math.abs(s - canno) > 1e-9,
     });
   }
-  groups.push({ entities: layout.entities, k: pk, e: pe, f: pf, hidden, ltUnit: pk, annoFactor: 1, frames });
+  const paperEntities = [...layout.entities, ...layout.viewports.flatMap((v) => v.clipBoundary ? [v.clipBoundary] : [])];
+  groups.push({ entities: paperEntities, k: pk, e: pe, f: pf, hidden, ltUnit: pk, annoFactor: 1, frames });
   return { width: sheet.width * u, height: sheet.height * u, groups, label: layout.name };
 }
 
@@ -256,6 +297,8 @@ function objectRgb(color: number | 'ByLayer', trueColor: number | undefined, lay
 /** Apply the plot style to an object colour. */
 export function plotColor(rgb: [number, number, number], style: PdfPlotStyle): [number, number, number] {
   if (!style.usePlotStyles) return rgb;
+  // Table object styles require the source ACI identity; RGB-only resources retain their colors.
+  if (style.table) return rgb;
   switch (style.mode) {
     case 'monochrome':
       return [0, 0, 0];
@@ -331,12 +374,18 @@ interface VectorForm {
   height: number;
 }
 
+interface GradientRes {
+  name: string;
+  colors: readonly [[number, number, number], [number, number, number]];
+}
+
 /** Content stream builder for one page. */
 class PageWriter {
   readonly ops: string[] = [];
   readonly images: ImageRes[] = [];
-  readonly fonts = new Set<'F1' | 'F2'>();
+  readonly fonts = new Set<string>();
   readonly forms: VectorForm[] = [];
+  readonly gradients: GradientRes[] = [];
   readonly alphas = new Set<number>();
   private alpha = 255;
   private stroke = '';
@@ -385,14 +434,10 @@ class PageWriter {
       this.ops.push('q');
       this.resetState();
       if (grp.clip) this.ops.push(`${n(grp.clip.x)} ${n(grp.clip.y)} ${n(grp.clip.w)} ${n(grp.clip.h)} re W n`);
-      const view = grp.clip ? this.modelRect(grp.clip) : null;
+      if (grp.clipPolygon) this.ops.push(`${this.pagePolygon(grp.clipPolygon)} W* n`);
+      const view = pdfGroupView(grp);
       for (const e of grp.entities) {
-        if (grp.hidden.has(e.layer)) continue;
-        if (e.annotative && grp.hideAnnotative) continue;
-        if (view && e.type !== 'xline' && e.type !== 'ray') {
-          const b = entityBounds(e, this.ctx.lookup);
-          if (b && !g.boundsIntersect(b, view)) continue;
-        }
+        if (!pdfGroupEntityVisible(e, grp, this.ctx.lookup, view)) continue;
         const shown = e.annotative && grp.annoFactor !== 1 ? annotativeEntity(e, grp.annoFactor) : e;
         this.entity(shown, null, view);
       }
@@ -407,23 +452,18 @@ class PageWriter {
       const layer = this.ctx.layers.find((l) => l.name === f.layer);
       this.ops.push('q');
       this.resetState();
-      this.setStroke(plotColor(objectRgb('ByLayer', undefined, layer), this.style));
+      const appearance = this.style.table ? this.tableAppearance({ layer: f.layer, color: 'ByLayer' }) : undefined;
+      this.setStroke(appearance ? [...appearance.rgb] : plotColor(objectRgb('ByLayer', undefined, layer), this.style));
       this.setAlpha(resolveAlpha({ layer: f.layer }, this.ctx.layers));
-      this.setWidth(this.style.lineweights ? mmToPt(layer?.lineWeight ?? 0.25) : 0);
-      this.ops.push(`${n(f.x)} ${n(f.y)} ${n(f.w)} ${n(f.h)} re S`);
+      this.setWidth(this.style.lineweights ? mmToPt(appearance?.lineweightMm ?? layer?.lineWeight ?? 0.25) : 0);
+      this.ops.push(f.polygon ? `${this.pagePolygon(f.polygon)} S` : `${n(f.x)} ${n(f.y)} ${n(f.w)} ${n(f.h)} re S`);
       this.pathOps += 1;
       this.ops.push('Q');
     }
   }
 
-  /** Conservative model-space bounds of all four inverse-mapped clip corners. */
-  private modelRect(r: { x: number; y: number; w: number; h: number }): Bounds {
-    const { k, e, f, c, s } = this.tf;
-    const inverse = (x: number, y: number): Point => {
-      const dx = (x - e) / k, dy = (y - f) / k;
-      return { x: c * dx + s * dy, y: -s * dx + c * dy };
-    };
-    return g.boundsOfPoints([inverse(r.x, r.y), inverse(r.x + r.w, r.y), inverse(r.x + r.w, r.y + r.h), inverse(r.x, r.y + r.h)])!;
+  private pagePolygon(points: readonly Point[]): string {
+    return points.map((p, i) => `${n(p.x)} ${n(p.y)} ${i ? 'l' : 'm'}`).join(' ') + ' h';
   }
 
   private setStroke(c: [number, number, number]): void {
@@ -473,14 +513,15 @@ class PageWriter {
     const layer = this.layer(e.layer);
     // Block content arrives resolved from explodeInsert (core/entities.ts inheritedColor): ByBlock
     // objects carry the reference's colour, or `colorLayer` (the reference's layer) when it is ByLayer.
-    const rgb = plotColor(objectRgb(e.color, e.trueColor, e.colorLayer !== undefined ? this.layer(e.colorLayer) : layer), this.style);
+    const appearance = this.style.table ? this.tableAppearance(e, parent ? plotObjectProperties(parent, this.ctx.layers).lineweightMm : undefined) : undefined;
+    const rgb: [number, number, number] = appearance ? [...appearance.rgb] : plotColor(objectRgb(e.color, e.trueColor, e.colorLayer !== undefined ? this.layer(e.colorLayer) : layer), this.style);
     this.setStroke(rgb);
     this.setFill(rgb);
     let mm = e.lineWeight;
     if (mm === -2 && parent) mm = parent.lineWeight;
     if (mm === undefined || mm === -1) mm = layer?.lineWeight ?? 0.25;
     if (mm < 0) mm = 0.25;
-    this.setWidth(this.style.lineweights ? mmToPt(mm) : 0);
+    this.setWidth(this.style.lineweights ? mmToPt(appearance?.lineweightMm ?? mm) : 0);
     let lt = e.linetype;
     if (isByBlock(lt) && parent) lt = parent.linetype;
     const name = effectiveLinetype(lt, layer?.linetype);
@@ -488,9 +529,15 @@ class PageWriter {
     this.setDash(def ? dashPattern(def.pattern, this.ctx.ltscale * (e.ltscale ?? 1) * (this.group?.ltUnit ?? 1)) : []);
   }
 
+  private tableAppearance(entity: Parameters<typeof plotEntityAppearance>[0], inheritedLineweightMm?: number) {
+    const result = plotEntityAppearance(entity, this.ctx.layers, this.style.table!, this.style, inheritedLineweightMm);
+    for (const issue of result.issues) this.style.issues?.add(`${issue.path}: ${issue.message}`);
+    return result;
+  }
+
   private entity(e: Entity, parent: InsertEntity | null, view: Bounds | null): void {
     if (e.type === 'insert') {
-      for (const sub of explodeInsert(e, this.ctx.lookup)) {
+      for (const sub of this.style.table ? expandPlotInsert(e, this.ctx.lookup, this.ctx.layers) : explodeInsert(e, this.ctx.lookup)) {
         if (this.group?.hidden.has(sub.layer)) continue;
         this.entity(sub, e, view);
       }
@@ -503,7 +550,8 @@ class PageWriter {
   /** Sub-parts (dimension, leader, table, formatted MTEXT) keep the parent's colour unless they set their own. */
   private parts(parts: readonly Entity[], owner: Entity, parent: InsertEntity | null, view: Bounds | null): void {
     for (const p of parts) {
-      const styled = p.color === 'ByLayer' && p.trueColor === undefined ? ({ ...p, color: owner.color, trueColor: owner.trueColor, layer: owner.layer, colorLayer: owner.colorLayer, lineWeight: p.lineWeight ?? owner.lineWeight } as Entity) : p;
+      const styled = this.style.table ? (p.color === 0 ? { ...p, ...inheritedColor(p, owner) } as Entity : p)
+        : p.color === 'ByLayer' && p.trueColor === undefined ? ({ ...p, color: owner.color, trueColor: owner.trueColor, layer: owner.layer, colorLayer: owner.colorLayer, lineWeight: p.lineWeight ?? owner.lineWeight } as Entity) : p;
       this.applyStyle(styled, parent);
       this.geometry(styled, parent, view);
     }
@@ -545,16 +593,16 @@ class PageWriter {
         break;
       case 'mtext':
         this.mtextBackground(e);
-        this.parts([...mtextParts(e), ...mtextDecorations(e)], e, parent, view);
+        this.parts([...mtextParts(e, this.ctx.textGeometry), ...mtextDecorations(e, this.ctx.textGeometry)], e, parent, view);
         break;
       case 'dimension':
-        this.parts(dimensionParts(e), e, parent, view);
+        this.parts(dimensionParts(e, this.ctx.textGeometry), e, parent, view);
         break;
       case 'leader':
-        for (const part of leaderParts(e)) if (!this.group?.hidden.has(part.layer)) this.entity(part, parent, view);
+        for (const part of leaderParts(e, this.ctx.textGeometry)) if (!this.group?.hidden.has(part.layer)) this.entity(part, parent, view);
         break;
       case 'table':
-        this.parts(tableParts(e), e, parent, view);
+        this.parts(tableParts(e, this.ctx.textGeometry), e, parent, view);
         break;
       case 'hatch':
         this.hatch(e);
@@ -606,10 +654,11 @@ class PageWriter {
   private mtextBackground(e: MTextEntity): void {
     const bg = e.background;
     if (!bg) return;
-    const masks = mtextMasks(e);
+    const masks = mtextMasks(e, this.ctx.textGeometry);
     if (!masks.length) return;
     // The drawing-window mask becomes white paper, including under monochrome plotting.
-    const rgb: [number, number, number] = bg.flags & 2 ? [1, 1, 1] : plotColor(objectRgb(bg.color, bg.trueColor, this.layer(bg.colorLayer ?? e.layer)), this.style);
+    const rgb: [number, number, number] = bg.flags & 2 ? [1, 1, 1] : this.style.table ? [...this.tableAppearance({ ...e, color: bg.color, trueColor: bg.trueColor, colorLayer: bg.colorLayer }).rgb]
+      : plotColor(objectRgb(bg.color, bg.trueColor, this.layer(bg.colorLayer ?? e.layer)), this.style);
     this.ops.push(`q ${rgbOp(rgb, 'rg')}`);
     const paint = hasMTextFill(e) ? (hasMTextFrame(e) ? 'B' : 'f') : 'S';
     for (const mask of masks) this.polyPath(mask, true, paint);
@@ -720,7 +769,7 @@ class PageWriter {
 
   private hatch(e: HatchEntity): void {
     const geo = hatchGeometry(e);
-    if (e.solid || geo.dense) {
+    if (e.solid || hasHatchGradient(e) || geo.dense) {
       const parts: string[] = [];
       for (const poly of geo.polys) {
         parts.push(`${this.P(poly[0]!)} m`);
@@ -728,6 +777,30 @@ class PageWriter {
         parts.push('h');
       }
       if (!parts.length) return;
+      const gradient = linearHatchGradientPlan(e, geo.polys);
+      if (gradient) {
+        if (this.style.table && this.style.usePlotStyles) this.style.issues?.add('Gradient hatches retain their stored colors; CTB/STB effects on gradients are not verified.');
+        const name = `G${this.gradients.length + 1}`;
+        const colors = gradient.colors.map((color) => {
+          const rgb = hatchGradientColorRgb(color, (aci) => {
+            const values = objectRgb(aci, undefined, undefined);
+            return (Math.round(values[0] * 255) << 16) | (Math.round(values[1] * 255) << 8) | Math.round(values[2] * 255);
+          })!;
+          return plotColor([((rgb >> 16) & 255) / 255, ((rgb >> 8) & 255) / 255, (rgb & 255) / 255], this.style);
+        }) as [[number, number, number], [number, number, number]];
+        const origin = this.pt(gradient.frame.origin);
+        const x = g.sub(this.pt(g.add(gradient.frame.origin, gradient.frame.x)), origin);
+        const y = g.sub(this.pt(g.add(gradient.frame.origin, gradient.frame.y)), origin);
+        if (hatchGradientFrameProblem({ origin, x, y })) throw new Error('Cannot plot hatch gradient: its page transform exceeds finite or nondegenerate coordinate limits.');
+        const matrix = [x.x, x.y, y.x, y.y, origin.x, origin.y].map(n);
+        const values = matrix.map(Number);
+        const encoded = { x: { x: values[0]!, y: values[1]! }, y: { x: values[2]!, y: values[3]! }, origin: { x: values[4]!, y: values[5]! } };
+        if (matrix.some((value) => /e/i.test(value)) || hatchGradientFrameProblem(encoded)) throw new Error('Cannot plot hatch gradient: its page transform exceeds native PDF numeric precision.');
+        this.gradients.push({ name, colors });
+        this.ops.push(`q ${parts.join(' ')} W* n ${matrix.join(' ')} cm /${name} sh Q`);
+        this.pathOps += 1;
+        return;
+      }
       parts.push('f*');
       this.ops.push(parts.join(' '));
       this.pathOps += 1;
@@ -768,7 +841,47 @@ class PageWriter {
     const text = expandControlCodes(raw);
     if (!text.trim()) return;
     const r = textRenderer(textStyleOf(e), this.ctx.textStyles);
-    const initialWidthFactor = (e.widthFactor && e.widthFactor > 0 ? e.widthFactor : 1) * r.widthFactor;
+    const appearance = this.ctx.textGeometry?.resolve(e);
+    const shx = appearance && this.ctx.textGeometry?.shxRun?.(raw, e.height, appearance);
+    if (shx?.ok) {
+      const placed = metricTextPlacement(e, this.ctx.textGeometry!);
+      const fitted = this.ctx.textGeometry!.shxRun!(raw, placed.text.height, placed.appearance);
+      if (fitted?.ok) {
+        const paths = shxTextPaths(fitted, placed.text, placed.offset), parts: string[] = [];
+        for (const path of paths) {
+          parts.push(`${this.P(path.from)} m`);
+          parts.push(path.controls ? `${this.P(path.controls[0])} ${this.P(path.controls[1])} ${this.P(path.to)} c` : `${this.P(path.to)} l`);
+        }
+        if (parts.length) {
+          this.setDash([]);
+          if (e.bold) this.ops.push(`q ${n(Math.max(0.5, (placed.text.height * this.tf.k) / 12))} w ${parts.join(' ')} S Q`);
+          else this.ops.push(`${parts.join(' ')} S`);
+          this.pathOps += 1;
+        }
+        return;
+      }
+    }
+    if (appearance?.kind === 'canvas' && this.ctx.embeddedFonts) {
+      const key = textFontKey(appearance), face = this.ctx.embeddedFonts.face(key);
+      const run = this.ctx.embeddedFonts.encode(key, text);
+      if (face && run) {
+        const placed = metricTextPlacement(e, this.ctx.textGeometry!);
+        const t = placed.text, wf = t.widthFactor ?? 1, slant = Math.tan(t.oblique ?? 0);
+        const size = t.height * this.tf.k * face.metrics.unitsPerEm / face.metrics.capitalHeight;
+        const c = Math.cos(t.rotation + this.tf.rotation), s = Math.sin(t.rotation + this.tf.rotation);
+        const p = this.pt(t.position), off = placed.offset * wf * this.tf.k;
+        const values = [size, wf * c, wf * s, slant * c - s, slant * s + c, p.x + off * c, p.y + off * s];
+        const numbers = values.map((value) => {
+          if (!Number.isFinite(value) || Math.abs(value) >= 1e21) throw new Error('PDF text transform exceeds the supported numeric range.');
+          const result = value.toFixed(6).replace(/\.?0+$/, ''); return result === '-0' || !result ? '0' : result;
+        });
+        this.fonts.add(run.resourceName);
+        this.ops.push(`BT /${run.resourceName} ${numbers[0]} Tf ${numbers.slice(1).join(' ')} Tm <${run.hex}> Tj ET`);
+        return;
+      }
+    }
+    if (r.kind === 'canvas' && this.ctx.fontFallbacks) this.ctx.fontFallbacks.add(r.family.split(',')[0]!);
+    const initialWidthFactor = e.widthFactor !== undefined && Number.isFinite(e.widthFactor) && e.widthFactor > 0 ? e.widthFactor : r.widthFactor;
     e = placedText({ ...e, widthFactor: initialWidthFactor }, r.kind === 'canvas' && isWinAnsi(text) ? (_text, height) => helveticaWidth(text, r.bold || !!e.bold) * height / CAP_HEIGHT_EM : strokeTextWidth);
     const wf = e.widthFactor ?? 1;
     const oblique = e.oblique ?? r.oblique;
@@ -858,11 +971,14 @@ export interface RenderedPage {
   height: number;
   content: string;
   images: ImageRes[];
-  fonts: ReadonlySet<'F1' | 'F2'>;
+  fonts: ReadonlySet<string>;
+  embeddedFonts?: PdfFontRegistry;
   /** Isolated vector paint groups for translucent dash masks and mixed device hairlines. */
   forms?: readonly VectorForm[];
   /** ExtGState opacity bytes used by both strokes and fills. */
   alphas?: ReadonlySet<number>;
+  /** Smooth native axial gradient resources, clipped by the hatch's even-odd boundary. */
+  gradients?: readonly GradientRes[];
   pathOps: number;
 }
 
@@ -871,7 +987,7 @@ export function renderPdfPages(pages: readonly PdfPageSpec[], ctx: PdfDrawingCon
   return pages.map((page) => {
     const w = new PageWriter(ctx, style, page);
     w.run();
-    return { width: page.width, height: page.height, content: w.ops.join('\n'), images: w.images, fonts: w.fonts, forms: w.forms, alphas: w.alphas, pathOps: w.pathOps };
+    return { width: page.width, height: page.height, content: w.ops.join('\n'), images: w.images, fonts: w.fonts, embeddedFonts: ctx.embeddedFonts, forms: w.forms, alphas: w.alphas, gradients: w.gradients, pathOps: w.pathOps };
   });
 }
 
@@ -894,6 +1010,8 @@ export function assembleVectorPdf(rendered: readonly RenderedPage[], title = 'Dr
   const f2 = reserve();
   set(f1, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
   set(f2, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
+  const fontObjects = new Map<PdfFontRegistry, ReadonlyMap<string, number>>();
+  for (const pg of rendered) if (pg.embeddedFonts && !fontObjects.has(pg.embeddedFonts)) fontObjects.set(pg.embeddedFonts, writePdfFontResources(pg.embeddedFonts, { reserve, set }));
   const kids: number[] = [];
   rendered.forEach((pg, i) => {
     const pageNum = reserve();
@@ -916,13 +1034,22 @@ export function assembleVectorPdf(rendered: readonly RenderedPage[], title = 'Dr
         xobjects.push(`/${form.name} ${num} 0 R`);
       }
     }
-    const fonts = [...pg.fonts].map((f) => `/${f} ${f === 'F1' ? f1 : f2} 0 R`);
+    const fonts = [...pg.fonts].map((f) => {
+      const object = f === 'F1' ? f1 : f === 'F2' ? f2 : pg.embeddedFonts ? fontObjects.get(pg.embeddedFonts)?.get(f) : undefined;
+      if (!object) throw new Error('Missing PDF font resource.');
+      return `/${f} ${object} 0 R`;
+    });
     const alphaResources = [...(pg.alphas ?? [])].map((alpha) => {
       const num = reserve();
       set(num, `<< /Type /ExtGState /CA ${n(alpha / 255)} /ca ${n(alpha / 255)} /BM /Normal >>`);
       return `/A${alpha} ${num} 0 R`;
     });
-    const res = `<< /ProcSet [/PDF /Text /ImageC]${fonts.length ? ` /Font << ${fonts.join(' ')} >>` : ''}${xobjects.length ? ` /XObject << ${xobjects.join(' ')} >>` : ''}${alphaResources.length ? ` /ExtGState << ${alphaResources.join(' ')} >>` : ''} >>`;
+    const gradients = (pg.gradients ?? []).map((gradient) => {
+      const num = reserve();
+      set(num, `<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 1 0] /Domain [0 1] /Extend [true true] /Function << /FunctionType 2 /Domain [0 1] /C0 [${gradient.colors[0].map(n).join(' ')}] /C1 [${gradient.colors[1].map(n).join(' ')}] /N 1 >> >>`);
+      return `/${gradient.name} ${num} 0 R`;
+    });
+    const res = `<< /ProcSet [/PDF /Text /ImageC]${fonts.length ? ` /Font << ${fonts.join(' ')} >>` : ''}${xobjects.length ? ` /XObject << ${xobjects.join(' ')} >>` : ''}${alphaResources.length ? ` /ExtGState << ${alphaResources.join(' ')} >>` : ''}${gradients.length ? ` /Shading << ${gradients.join(' ')} >>` : ''} >>`;
     set(pageNum, `<< /Type /Page /Parent ${pagesObj} 0 R /MediaBox [0 0 ${n(pg.width)} ${n(pg.height)}] /Resources ${res} /Contents ${contentNum} 0 R >>`);
     const packed = compressed?.[i] ?? null;
     const body = packed ?? enc.encode(pg.content);

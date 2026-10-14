@@ -2,11 +2,13 @@
 import { DEFAULT_HEADER, type DrawingState } from '../core/document';
 import type { Entity } from '../core/entities';
 import type { CadAnchor, CadGroup, CadNode } from '../core/cad-graph';
-import { canonicalCadHandle, CadGraphError, reconcileCadGraph, validateCadState } from '../core/cad-graph';
+import { canonicalCadHandle, cadEntityLists, mapCadEntities, CadGraphError, reconcileCadGraph, validateCadState } from '../core/cad-graph';
 import { ACVAR_FIELDS } from '../core/fields';
 import { LAYER_TRANSPARENCY_APP } from '../core/appearance';
 import { dstylePairs, readDimStyleFromEntity } from './dxf/read-annotations';
 import { decodeUnicodeEscapes } from './encoding';
+import { isIntegerText } from './dxf/groups';
+import { native3dObject } from './dxf/mesh3d-read';
 
 export interface DwgCadGraphJoin {
   readonly entityTypes?: ReadonlyMap<string, string>;
@@ -20,11 +22,17 @@ function sameEntityClass(dto: string, node: CadNode): boolean {
   const kind = dto.toUpperCase();
   if (kind === node.type.toUpperCase()) return true;
   if (kind === 'MINSERT' && node.type === 'INSERT') return true;
-  if (kind === 'POLYLINE2D' && node.type === 'POLYLINE') return !(Number(node.groups.find(([code]) => code === 70)?.[1] ?? '0') & 8);
-  if (kind === 'POLYLINE3D' && node.type === 'POLYLINE') return !!(Number(node.groups.find(([code]) => code === 70)?.[1] ?? '0') & 8);
+  if (node.type === 'POLYLINE') {
+    const raw = native3dObject({ kind: node.type, groups: node.groups.map(([code, value]) => ({ code, value })) }).groups.find(group => group.code === 70)?.value ?? '0';
+    const flags = Number(raw);
+    if (!isIntegerText(raw.trim()) || !Number.isSafeInteger(flags) || flags < 0 || flags > 0xffff) throw new CadGraphError('invalid', 'Native POLYLINE structural flags are invalid.');
+    if (kind === 'POLYLINE2D') return !(flags & (8 | 64));
+    if (kind === 'POLYLINE3D') return !!(flags & 8) && !(flags & 64);
+    if (kind === 'POLYLINE_PFACE' || kind === 'POLYLINE_PFACE_MESH' || kind === 'POLYFACE') return !!(flags & 64);
+  }
   return false;
 }
-const entitiesOf = (state: DrawingState): readonly Entity[] => [state.entities, ...Object.values(state.blocks).map(block => block.entities), ...(state.layouts ?? []).map(layout => layout.entities)].flat();
+const entitiesOf = (state: DrawingState): readonly Entity[] => cadEntityLists(state).flat();
 const normalizeMap = <T>(map: ReadonlyMap<string, T> | undefined) => new Map([...map ?? []].map(([handle, data]) => [canonicalCadHandle(handle), data]));
 function hasSupportedEvaluators(code: string): boolean {
   const kinds = [...code.matchAll(/%<\\([A-Za-z_]+)(?:\.[0-9.]+)?\s/g)];
@@ -52,6 +60,21 @@ function trustworthyGroups(node: CadNode, anchor: CadAnchor | undefined): { grou
 export function mergeDwgCadGraph(base: DrawingState, projected: DrawingState, join: DwgCadGraphJoin = {}): DrawingState {
   const source = projected.cadGraph;
   if (!source) throw new CadGraphError('invalid', 'The native DWG projection has no checked metadata graph.');
+  if (projected.model3d) {
+    if (base.model3d?.solids.length || base.model3d?.dimensions?.length) throw new CadGraphError('dependency', 'Native 3D projection would replace an existing 3D model without a proven join.');
+    const consumed = new Set(source.nodes.flatMap(node => (node.anchor?.kind === 'solid3d' || node.anchor?.kind === 'dimension3d') && !node.anchor.part && node.sourceHandle ? [canonicalCadHandle(node.sourceHandle)] : []));
+    const keep = (entity: Entity) => !entity.cadIdentity || !consumed.has(canonicalCadHandle(entity.cadIdentity));
+    base = { ...base, entities: base.entities.filter(keep), blocks: Object.fromEntries(Object.entries(base.blocks).map(([name, block]) => [name, { ...block, entities: block.entities.filter(keep) }])),
+      ...(base.layouts ? { layouts: base.layouts.map(layout => ({ ...layout, entities: layout.entities.filter(keep) })) } : {}),
+    };
+    const ids = new Set(entitiesOf(base).map(entity => entity.id));
+    for (const layout of base.layouts ?? []) for (const viewport of layout.viewports) ids.add(viewport.id);
+    for (const item of [...projected.model3d.solids, ...projected.model3d.dimensions ?? []]) {
+      if (ids.has(item.id)) throw new CadGraphError('invalid', 'Native 3D projection identity collides with trusted 2D geometry.');
+      ids.add(item.id);
+    }
+    base = { ...base, model3d: projected.model3d };
+  }
   const byHandle = new Map<string, Entity>(), sourceEntities = new Map(entitiesOf(projected).map(entity => [entity.id, entity]));
   const entityTypes = normalizeMap(join.entityTypes), viewports = normalizeMap(join.viewportHandles), tables = normalizeMap(join.tableHandles), layouts = normalizeMap(join.layoutHandles), layerOff = normalizeMap(join.layerOff);
   for (const node of source.nodes) if (node.sourceHandle) {
@@ -122,7 +145,7 @@ export function mergeDwgCadGraph(base: DrawingState, projected: DrawingState, jo
     liveEntities.set(output.id, output); return output;
   };
   let state: DrawingState = {
-    ...base,
+    ...mapCadEntities(base, entity),
     layers: layerFlags.size || layerTransparency.size ? base.layers.map(layer => {
       const flags = layerFlags.get(layer.name);
       const transparency = layerTransparency.has(layer.name) ? { transparency: layerTransparency.get(layer.name)! } : {};
@@ -134,9 +157,6 @@ export function mergeDwgCadGraph(base: DrawingState, projected: DrawingState, jo
       return { ...ordinary, locked: flags.locked, visible: (flags.off === undefined ? layer.visible : !flags.off) && !flags.frozen,
         ...(flags.frozen ? { frozen: true } : {}), ...(flags.xrefFlags ? { xrefFlags: flags.xrefFlags } : {}), ...transparency };
     }) : base.layers,
-    entities: base.entities.map(entity),
-    blocks: Object.fromEntries(Object.entries(base.blocks).map(([name, block]) => [name, { ...block, entities: block.entities.map(entity) }])),
-    ...(base.layouts ? { layouts: base.layouts.map(layout => ({ ...layout, entities: layout.entities.map(entity) })) } : {}),
     ...(projected.header ? { header: { ...(base.header ?? DEFAULT_HEADER), views: projected.header.views,
       ...(projected.header.cannoscale !== undefined ? { cannoscale: projected.header.cannoscale } : {}),
       ...(projected.header.annoAllVisible !== undefined ? { annoAllVisible: projected.header.annoAllVisible } : {}),

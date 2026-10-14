@@ -76,7 +76,16 @@ w.webContents.session.flushStorageData(); w.destroy(); app.quit();
     portableDwg = JSON.parse(line.slice('SHIPPING_PROBE_OK '.length));
     assert.equal(portableDwg.phase, 'dwg'); assert.equal(portableDwg.version, expectedVersion); assert.equal(portableDwg.packaged, !source); assert.equal(portableDwg.testBuild, false);
     for (const key of ['writer', 'reopened', 'arrays', 'attributes', 'widths', 'appearance', 'workingPreserved', 'rejectedContent', 'backup', 'integrityRefused']) assert.equal(portableDwg[key], true, key);
-    if (needsPortableDwgSave(expectedVersion)) for (const key of ['saveAsDwg', 'saveDwg', 'normalSaveBackup', 'normalSaveLossConsent']) assert.equal(portableDwg[key], true, key);
+    if (needsPortableDwgSave(expectedVersion)) {
+      for (const key of ['saveAsDwg', 'saveDwg', 'normalSaveBackup']) assert.equal(portableDwg[key], true, key);
+      if (needsDwgMetadataPreservation(expectedVersion)) {
+        assert.equal(portableDwg.normalSaveLossEligibilityVerified, true, 'normalSaveLossEligibilityVerified');
+        assert.equal(typeof portableDwg.normalSaveLossConsentRequired, 'boolean', 'Actual source-loss eligibility is explicit');
+        assert.equal(typeof portableDwg.normalSaveLossConsent, 'boolean', 'Actual consent is explicit');
+        assert.equal(portableDwg.normalSaveLossConsent, portableDwg.normalSaveLossConsentRequired, 'Consent matches actual source-loss eligibility');
+        assert.equal(portableDwg.openedSourceRefused, true, 'openedSourceRefused');
+      } else assert.equal(portableDwg.normalSaveLossConsent, true, 'normalSaveLossConsent'); // Pre-metadata builds required their proven reader-loss warning.
+    }
     if (needsRotatedLayoutViewports(expectedVersion)) assert.equal(portableDwg.viewportRotation, true, 'viewportRotation');
     if (needsDwgMetadataPreservation(expectedVersion)) {
       for (const key of METADATA_SMOKE_FLAGS) assert.equal(portableDwg[key], true, key);

@@ -23,6 +23,14 @@ export class Writer {
   private handle = 0x100;
   readonly textStyleHandles = new Map<string, string>();
   readonly dimensionStyles = new Map<string, DimStyle>();
+  readonly reservedEntityHandles = new WeakMap<Entity, string>();
+  reserveEntityHandle(entity: Entity): string {
+    const known = this.reservedEntityHandles.get(entity);
+    if (known) return known;
+    const handle = this.nextHandle();
+    this.reservedEntityHandles.set(entity, handle);
+    return handle;
+  }
   readonly cadAnchors = new Map<string, CadAnchor>();
   anchor(handle: string, anchor: CadAnchor): void { this.cadAnchors.set(handle, anchor); }
   pair(code: number, value: string | number): void {
@@ -62,8 +70,9 @@ export function writePaperSpaceFlag(w: Writer, spaceOwner: string): void {
 
 export function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: string, subclass: string, spaceOwner = owner): void {
   w.pair(0, kind);
-  w.pair(5, w.nextHandle());
-  w.anchor(w.lastHandle().toString(16).toUpperCase(), { kind: 'entity', id: e.id });
+  const handle = w.reservedEntityHandles.get(e) ?? w.nextHandle();
+  w.pair(5, handle);
+  w.anchor(handle, { kind: 'entity', id: e.id });
   w.pair(330, owner);
   w.pair(100, 'AcDbEntity');
   writePaperSpaceFlag(w, spaceOwner);
@@ -99,8 +108,10 @@ export function writeTextLike(w: Writer, position: g.Point, height: number, text
 
 export function writeTextStyle(w: Writer, placement: TextPlacement & { readonly style?: string }): void {
   if (placement.style) w.pair(7, placement.style);
-  if (placement.widthFactor !== undefined && placement.widthFactor !== 1) w.pair(41, placement.widthFactor);
-  if (placement.oblique) w.pair(51, g.deg(placement.oblique));
+  // Canonical entity defaults also cover generated labels/attributes on their first export.
+  // The native reader materializes omitted 1/0, so later exports must not add new fields.
+  w.pair(41, placement.widthFactor ?? 1);
+  w.pair(51, g.deg(placement.oblique ?? 0));
 }
 
 /** Handles and names the writer allocates before the entity pass (images, tables). */

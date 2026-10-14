@@ -10,9 +10,8 @@ import { textStyleOf } from '../encoding';
 import { MTEXT_COLUMNS_APP, MTEXT_BACKGROUND_APP, DIM_TYPE, DIMSTYLE_APP, TABLE_APP } from './codes';
 import { backgroundMetadataChunks } from './mtext-background-data';
 import * as g from '../../core/geometry';
-import { dimensionTextPoint, dimensionMeasurement, diffDimStyles, DIM_VARIABLES } from '../../core/dimension';
+import { dimensionTextPoint, dimensionMeasurement, dimensionStyleOverrides, dimStyleOverrideCode, DIM_VARIABLES, ordinateDimensionProblem } from '../../core/dimension';
 import { textWidth, leaderParts, leaderPath } from '../../core/entities';
-import { dimStyleXdata } from './dimstyles';
 import type { WriteExtras } from './write-core';
 
 export function writeMText(w: Writer, e: MTextEntity, owner: string): void {
@@ -73,6 +72,8 @@ function radialPoints(e: DimensionEntity): { q: g.Point; far: g.Point } {
 }
 
 export function writeDimension(w: Writer, e: DimensionEntity, owner: string, blockName: string): void {
+  const problem = ordinateDimensionProblem(e);
+  if (problem) throw new Error(problem);
   // (No group 280: it is not part of an AC1015 DIMENSION, and AutoCAD's AUDIT reports it.)
   writeEntityCommon(w, e, owner, 'DIMENSION', 'AcDbDimension');
   w.pair(2, blockName);
@@ -85,6 +86,7 @@ export function writeDimension(w: Writer, e: DimensionEntity, owner: string, blo
       break;
     }
     case 'radius':
+    case 'ordinate':
       defpoint = e.p1;
       break;
     case 'diameter':
@@ -101,15 +103,21 @@ export function writeDimension(w: Writer, e: DimensionEntity, owner: string, blo
   w.pair(11, tp.x);
   w.pair(21, tp.y);
   w.pair(31, 0);
-  w.pair(70, DIM_TYPE[e.kind] | 32 | (e.textPosition ? 128 : 0));
+  w.pair(70, DIM_TYPE[e.kind] | 32 | (e.kind === 'ordinate' && e.ordinateAxis === 'x' ? 64 : 0) | (e.textPosition ? 128 : 0));
   w.pair(71, 5);
   w.pair(42, dimensionMeasurement(e));
   if (e.text !== undefined && e.text !== '') w.pair(1, e.text);
   // 52 is listed under AcDbAlignedDimension in the DXF reference, but files carry it with these groups.
   if (e.oblique !== undefined && (e.kind === 'linear' || e.kind === 'aligned')) w.pair(52, dimAngleDeg(e.oblique));
-  if (e.textRotation !== undefined) w.pair(53, dimAngleDeg(e.textRotation));
+  if (e.textRotation !== undefined) w.pair(53, dimAngleDeg(e.textRotation - (e.kind === 'ordinate' ? e.ordinateRotation ?? 0 : 0)));
+  if (e.kind === 'ordinate') w.pair(51, dimAngleDeg(-(e.ordinateRotation ?? 0)));
   w.pair(3, e.style.name);
   switch (e.kind) {
+    case 'ordinate':
+      w.pair(100, 'AcDbOrdinateDimension');
+      w.pair(13, e.p2.x); w.pair(23, e.p2.y); w.pair(33, 0);
+      w.pair(14, e.linePoint.x); w.pair(24, e.linePoint.y); w.pair(34, 0);
+      break;
     case 'linear':
     case 'aligned':
       w.pair(100, 'AcDbAlignedDimension');
@@ -151,9 +159,6 @@ export function writeDimension(w: Writer, e: DimensionEntity, owner: string, blo
   writeDimStyleOverrides(w, e);
 }
 
-/** DIM* variables that dimStyleRecordPairs writes under codes of their own. */
-const DERIVED_DIMVAR_CODES: Readonly<Record<string, number>> = { DIMTOL: 71, DIMLIM: 72, DIMTIH: 73, DIMTOH: 74, DIMZIN: 78 };
-
 /**
  * Per-dimension overrides of its named style, as AutoCAD writes them: ACAD XDATA
  * "DSTYLE" { 1070 code, value ... } for the DIM* variables that differ from the DIMSTYLE record
@@ -161,32 +166,34 @@ const DERIVED_DIMVAR_CODES: Readonly<Record<string, number>> = { DIMTOL: 71, DIM
  * XDATA for what DIMSTYLE records keep there (arrowheads, basic tolerance, alternate placement).
  * Ported from PR #2 (codex/electrical-review-fixes 2f89b0e).
  */
-function writeDimStyleOverrides(w: Writer, e: DimensionEntity): void {
+export function writeDimStyleOverrides(w: Writer, e: DimensionEntity): void {
   const inherited = w.dimensionStyles.get(e.style.name.toUpperCase());
   if (!inherited) return;
-  const differences = diffDimStyles(e.style, inherited).filter((v) => DIM_VARIABLES.some((def) => def.name === v.name && def.code !== undefined) || DERIVED_DIMVAR_CODES[v.name] !== undefined);
-  const textStyle = e.style.textStyle ?? 'Standard';
-  const textStyleDiffers = textStyle.toUpperCase() !== (inherited.textStyle ?? 'Standard').toUpperCase();
-  if (differences.length || textStyleDiffers) {
+  const overrides = dimensionStyleOverrides(e.style, inherited, e.styleOverrides);
+  const native = Object.entries(overrides).filter(([name]) => dimStyleOverrideCode(name) !== undefined && name !== 'DIMTXSTY');
+  const textStyle = String(overrides.DIMTXSTY ?? e.style.textStyle ?? 'Standard');
+  const textStyleOverridden = overrides.DIMTXSTY !== undefined;
+  if (native.length || textStyleOverridden) {
     w.pair(1001, 'ACAD');
     w.pair(1000, 'DSTYLE');
     w.pair(1002, '{');
-    for (const change of differences) {
-      const def = DIM_VARIABLES.find((v) => v.name === change.name);
-      w.pair(1070, DERIVED_DIMVAR_CODES[change.name] ?? def!.code!);
-      w.pair(def?.kind === 'string' ? 1000 : def?.kind === 'number' && def.code !== 371 && def.code !== 372 ? 1040 : 1070, change.a);
+    for (const [name, value] of native) {
+      const def = DIM_VARIABLES.find((v) => v.name === name);
+      w.pair(1070, dimStyleOverrideCode(name)!);
+      w.pair(def?.kind === 'string' ? 1000 : def?.kind === 'number' && def.code !== 371 && def.code !== 372 ? 1040 : 1070, value);
     }
-    if (textStyleDiffers) {
+    if (textStyleOverridden) {
       w.pair(1070, 340);
       w.pair(1005, w.textStyleHandles.get(textStyle.toUpperCase()) ?? w.textStyleHandles.get('STANDARD') ?? '0');
     }
     w.pair(1002, '}');
   }
-  if (e.style.arrow !== inherited.arrow || e.style.arrow2 !== inherited.arrow2 || e.style.altPlacement !== inherited.altPlacement || (e.style.tolerance === 'basic') !== (inherited.tolerance === 'basic')) {
+  const fields = Object.entries(overrides).filter(([name]) => ['DIMBLK1', 'DIMBLK2', 'TOLERANCE', 'ALTPLACEMENT'].includes(name));
+  if (fields.length) {
     w.pair(1001, DIMSTYLE_APP);
-    for (const [key, value] of dimStyleXdata(e.style)) {
+    for (const [key, value] of fields) {
       w.pair(1000, key);
-      w.pair(1000, value);
+      w.pair(1000, value === '' && (key === 'DIMBLK1' || key === 'DIMBLK2') ? '.' : String(value));
     }
   }
 }

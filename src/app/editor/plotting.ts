@@ -8,9 +8,21 @@ import { layoutPage, type PlotOptions } from '../plot';
 import { fileErrorText } from '../file-error-text';
 import { plotLayoutsOrVector } from '../plot-vector';
 import type { Editor } from './editor';
+import { capturedPlotLookup } from '../plot-fonts';
+import { entityBounds } from '../../core/entities';
+import * as geometry from '../../core/geometry';
+import { paperSpaceLayout, paperEntities, sheetBounds } from '../../core/layouts';
+import { capturePlot, ExportAdmission, type CapturedPlot } from '../export-admission';
+import { isCommittedSaveAdmissionError, UNVERIFIED_COMMITTED_SAVE_WARNING } from '../save-admission';
 
-export async function renderPlotImage(ed: Editor, opts: PlotOptions): Promise<{ dataUrl: string; landscape: boolean; sheet: { width: number; height: number }; electron?: string; reducedToFit: boolean } | null> {
-  const b = ed.doc.extents();
+export async function renderPlotImage(ed: Editor, opts: PlotOptions, captured?: CapturedPlot): Promise<{ dataUrl: string; landscape: boolean; sheet: { width: number; height: number }; electron?: string; reducedToFit: boolean } | null> {
+  const source = captured ?? capturePlot(ed), state = source.state, capturedGeometry = source.geometry;
+  const lookup = await capturedPlotLookup(state, capturedGeometry);
+  const hidden = new Set(state.layers.filter((l) => !l.visible).map((l) => l.name));
+  const layout = paperSpaceLayout(state), entities = layout ? paperEntities(layout) : state.entities;
+  let b: geometry.Bounds | null = null;
+  for (const e of entities) if (!hidden.has(e.layer)) b = geometry.unionBounds(b, entityBounds(e, lookup));
+  if (layout) b = geometry.unionBounds(b, sheetBounds(layout));
   if (!b) return null;
   const w = b.max.x - b.min.x;
   const h = b.max.y - b.min.y;
@@ -32,10 +44,9 @@ export async function renderPlotImage(ed: Editor, opts: PlotOptions): Promise<{ 
   const oy = lay.origin.y * px;
   const tf = { scale: k, toScreen: (p: Point) => ({ x: ox + (p.x - b.min.x) * k, y: oy + (b.max.y - p.y) * k }) };
   const { drawEntity } = await import('../../render/draw');
-  const hidden = new Set(ed.doc.layers.filter((l) => !l.visible).map((l) => l.name));
-  for (const e of ed.doc.entities) {
+  for (const e of entities) {
     if (hidden.has(e.layer)) continue;
-    drawEntity(ctx, e, tf, ed.doc.layers, ed.doc.lookupBlock, { strokeOverride: '#000000', lineWidthOverride: Math.max(1, Math.round(px / 100)), hidden });
+    drawEntity(ctx, e, tf, state.layers, lookup, { strokeOverride: '#000000', lineWidthOverride: Math.max(1, Math.round(px / 100)), hidden, imageLoader: source.imageLoader ?? (async () => null) });
   }
   return { dataUrl: canvas.toDataURL('image/png'), landscape: lay.landscape, sheet: lay.sheet, electron: lay.electron, reducedToFit: lay.reducedToFit };
 }
@@ -55,39 +66,45 @@ export async function print(ed: Editor): Promise<void> {
 
 /** A PDF that could not be written (disk full, locked file ...) is reported like a failed save. */
 export function plotFailed(ed: Editor, err: unknown): void {
-  ed.log(`Plot failed: ${fileErrorText(err, { action: 'save' })}`);
+  ed.log(`Plot failed: ${isCommittedSaveAdmissionError(err) ? UNVERIFIED_COMMITTED_SAVE_WARNING : fileErrorText(err, { action: 'save' })}`);
 }
 
 export async function plotOrPrint(ed: Editor, mode: 'pdf' | 'print'): Promise<void> {
-  const choice = await (ed.hooks.plot?.(mode) ?? Promise.resolve({ options: plotOptions(ed), action: mode }));
+  const bridge = ed.fileBridge ?? null, admission = new ExportAdmission(bridge);
+  try {
+  const selected = await (ed.hooks.plot?.(mode) ?? Promise.resolve({ options: plotOptions(ed), action: mode }));
+  const choice = selected ? { action: selected.action, options: { ...selected.options } } : null;
   if (!choice) return;
+  if (choice.action === 'print') await admission.close();
+  const captured = capturePlot(ed, bridge);
   // Track E: vector PDF (default output) and layout sheets; the raster Model-tab path below is unchanged.
-  if (await plotLayoutsOrVector(ed, choice)) return;
-  const img = await ed.renderPlotImage(choice.options);
+  if (await plotLayoutsOrVector(ed, choice, { captured, admission })) return;
+  const base = captured.base;
+  if (choice.action === 'pdf') {
+    if (!bridge?.plotPdf) { ed.log('Plotting is not available here.'); return; }
+    if (!await admission.choose(`${base}.pdf`)) return;
+  }
+  const img = await ed.renderPlotImage(choice.options, captured);
   if (!img) {
     ed.log('Nothing to plot: this tab has no visible objects.');
     return;
   }
   if (img.reducedToFit) ed.log('The chosen scale did not fit the paper; the drawing was scaled down to fit.');
   const sheet = { ...img.sheet, electron: img.electron };
-  const base = ed.fileName().replace(/\.[^.]+$/, '');
   if (choice.action === 'pdf') {
-    if (!ed.fileBridge?.plotPdf) {
-      ed.log('Plotting is not available here.');
-      return;
-    }
-    const out = await ed.fileBridge.plotPdf(img.dataUrl, `${base}.pdf`, img.landscape, sheet);
+    const out = await admission.plotPdf(img.dataUrl, `${base}.pdf`, img.landscape, sheet);
     if (out) ed.log(`Plotted to ${out} (${img.sheet.width.toFixed(2)} x ${img.sheet.height.toFixed(2)} in).`);
     return;
   }
-  if (!ed.fileBridge?.printDrawing) {
+  if (!bridge?.printDrawing) {
     ed.log('Printing is not available here.');
     return;
   }
   try {
-    const ok = await ed.fileBridge.printDrawing(img.dataUrl, base, img.landscape, sheet);
+    const ok = await bridge.printDrawing(img.dataUrl, base, img.landscape, sheet);
     ed.log(ok ? 'Sent to the print dialog.' : 'Print cancelled.');
   } catch (err) {
     ed.log(`Print failed: ${(err as Error).message}`);
   }
+  } finally { await admission.close(); }
 }

@@ -9,7 +9,7 @@ const path = require('node:path');
 const fsSync = require('node:fs');
 const updater = require('../updater.cjs');
 const { windowStateFile, writeStateFile, flushRendererPreferences, checkpointRendererPreferences, logMainError } = require('./app-data.cjs');
-const { APP_URL } = require('../renderer-origin.cjs');
+const { rendererStartUrl } = require('../renderer-origin.cjs');
 const { buildMenu } = require('./menu.cjs');
 const { secureContents } = require('../web-security.cjs');
 
@@ -279,7 +279,7 @@ function createWindows(ctx, devUrl, allowInspection = !app.isPackaged) {
     if (devUrl) {
       await win.loadURL(devUrl);
     } else {
-      await win.loadURL(APP_URL);
+      await win.loadURL(rendererStartUrl(process.env, allowInspection));
     }
   }
 

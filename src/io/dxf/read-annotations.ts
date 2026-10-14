@@ -5,9 +5,9 @@
  */
 import type { Obj, Pair } from './groups';
 import type { DimStyle, Entity, LeaderEntity, ImageEntity, TableEntity, TableCell } from '../../core/entities';
-import { str, xdata, num, pt, has, flt, int, afterSubclass, pointList } from './groups';
-import { dimStyleFromRecordPairs } from '../../core/dimension';
-import { DIMSTYLE_APP, MTEXT_COLUMNS_APP, TABLE_APP } from './codes';
+import { str, xdata, num, pt, has, flt, int, afterSubclass, pointList, DxfReadError, isIntegerText } from './groups';
+import { dimStyleFromRecordPairs, dimStyleOverrideName, dimVarValue, arrowFromBlockName, arrowBlockName, DIM_ARROWS, DIM_VARIABLES, ordinateDimensionProblem } from '../../core/dimension';
+import { DIMSTYLE_APP, MTEXT_COLUMNS_APP, TABLE_APP, isRealText, isRealCode, isIntCode } from './codes';
 import { applyDimStyleXdata } from './dimstyles';
 import { commonProps } from './read-core';
 import * as g from '../../core/geometry';
@@ -27,7 +27,7 @@ export function readDimStyleFromEntity(o: Obj, styles: Map<string, DimStyle>, fa
   return arrowData ? applyDimStyleXdata(result, arrowData) : result;
 }
 
-export function readDimension(o: Obj, base: ReturnType<typeof commonProps>, style: DimStyle): Entity | null {
+export function readDimension(o: Obj, base: ReturnType<typeof commonProps>, style: DimStyle, textStyleHandles?: ReadonlyMap<string, string>): Entity | null {
   const flags = Math.trunc(num(o, 70));
   const type = flags & 15;
   const userText = flags & 128 ? pt(o, 11) : undefined;
@@ -37,9 +37,62 @@ export function readDimension(o: Obj, base: ReturnType<typeof commonProps>, styl
   const rot = num(o, 53);
   const obl = num(o, 52);
   const angles = { ...(Math.abs(rot) > 1e-9 ? { textRotation: g.rad(rot) } : {}), ...(Math.abs(obl) > 1e-9 && (type === 0 || type === 1) ? { oblique: g.rad(obl) } : {}) };
-  const common = { ...base, type: 'dimension' as const, text, textPosition: userText, ...angles, style };
+  // Values alone cannot distinguish an inherited value from an explicit equal override.
+  // Keep only supported variables; unresolved handles and unmodeled codes stay out of the model.
+  const styleOverrides: Record<string, number | string> = {};
+  for (const [code, value] of dstylePairs(o)) {
+    const name = dimStyleOverrideName(code);
+    if (!name) continue;
+    if (code === 340) {
+      const resolved = textStyleHandles?.get(value.toUpperCase());
+      if (resolved) styleOverrides[name] = resolved;
+      continue;
+    }
+    const variable = DIM_VARIABLES.find((v) => v.name === name);
+    if (variable?.kind !== 'string' && !Number.isFinite(Number(value))) continue;
+    if (variable?.kind === 'enum' && !variable.values?.some(([n]) => n === Math.round(Number(value)))) continue;
+    // Native integer XDATA must not receive a malformed fractional value on export.
+    // Normalize it as the effective style parser does, while retaining the distinct 0/1
+    // combinations of DIMTIH/DIMTOH that share one normalized display mode.
+    styleOverrides[name] = variable?.kind === 'string' ? value
+      : variable?.kind === 'number' && code !== 371 && code !== 372 ? Number(value)
+      : code === 78 ? Math.trunc(Number(value))
+      : variable ? dimVarValue(style, name)
+      : Number(value) !== 0 ? 1 : 0;
+  }
+  const arrowData = xdata(o, DIMSTYLE_APP)?.filter((p) => p.code === 1000).map((p) => p.value) ?? [];
+  for (let i = 0; i + 1 < arrowData.length; i += 2) {
+    const name = arrowData[i]!.toUpperCase();
+    const value = arrowData[i + 1]!;
+    if (name === 'TOLERANCE' && ['none', 'symmetrical', 'deviation', 'limits', 'basic'].includes(value)) styleOverrides[name] = value;
+    else if (name === 'ALTPLACEMENT' && ['after', 'below'].includes(value)) styleOverrides[name] = value;
+    else if (name === 'DIMBLK1' || name === 'DIMBLK2') {
+      const block = value.toUpperCase();
+      if (block === '.' || block === '' || DIM_ARROWS.some((a) => a.block === (block.startsWith('_') ? block : `_${block}`))) styleOverrides[name] = arrowBlockName(arrowFromBlockName(value));
+    }
+  }
+  const common = { ...base, type: 'dimension' as const, text, textPosition: userText, ...angles, style, styleOverrides };
   const subclasses = o.groups.filter((x) => x.code === 100).map((x) => x.value);
   switch (type) {
+    case 6: {
+      const refuse = (reason: string): never => { throw new DxfReadError(`Ordinate dimension cannot be imported without changing its data: ${reason}`, o.groups[0]?.line ?? 1); };
+      if (!Number.isSafeInteger(Number(str(o, 70))) || flags < 0 || flags > 230 || flags & ~230) refuse('unsupported dimension flags');
+      if (o.groups.some((p) => isRealCode(p.code) && (!isRealText(p.value) || !Number.isFinite(Number(p.value))) || isIntCode(p.code) && !isIntegerText(p.value.trim()))) refuse('invalid native numeric group');
+      if (!subclasses.includes('AcDbOrdinateDimension')) refuse('missing native ordinate subclass');
+      for (const code of [10, 13, 14]) if (!has(o, code)) refuse(`missing definition point ${code}`);
+      if (flags & 128 && !has(o, 11)) refuse('missing manually positioned text point');
+      const coordinates = new Set([10, 20, 30, 11, 21, 31, 13, 23, 33, 14, 24, 34, 51, 53, 210, 220, 230]);
+      if (o.groups.some((p) => coordinates.has(p.code) && (!isRealText(p.value) || !Number.isFinite(Number(p.value))))) refuse('invalid numeric coordinate or angle');
+      if ([30, 31, 33, 34].some((code) => num(o, code) !== 0) || num(o, 210) !== 0 || num(o, 220) !== 0 || num(o, 230, 1) !== 1) refuse('only XY dimensions with the positive Z normal are supported');
+      if (num(o, 71, 5) !== 5 || num(o, 72, 1) !== 1 || num(o, 41, 1) !== 1 || num(o, 52) !== 0) refuse('unsupported native text attachment, spacing or oblique mode');
+      const frame = g.normAngle(-g.rad(num(o, 51)));
+      const result = { ...common, kind: 'ordinate' as const, p1: pt(o, 10), p2: pt(o, 13), linePoint: pt(o, 14), rotation: 0,
+        ordinateAxis: flags & 64 ? 'x' as const : 'y' as const, ordinateRotation: frame,
+        ...(Math.abs(rot) > 1e-9 ? { textRotation: g.normAngle(frame + g.rad(rot)) } : {}) };
+      const problem = ordinateDimensionProblem(result);
+      if (problem) refuse(problem);
+      return result;
+    }
     case 0: {
       const p1 = pt(o, 13);
       const p2 = pt(o, 14);

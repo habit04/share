@@ -100,14 +100,18 @@ describe('independent AutoCAD metadata oracle through DXF', () => {
     const complex = source.cadGraph!.nodes.filter(node => node.type === 'LTYPE' && node.groups.some(([code]) => code === 340));
     expect(complex).toHaveLength(2);
     const one = writeDxf(source), back = readDxf(one);
+    const numeric = new Set([70, 72, 73, 40, 49, 74, 75, 46, 50, 44, 45]);
+    const normalized = (groups: readonly (readonly [number, string])[]) => groups.map(([code, value]) => [code, numeric.has(code) ? String(Number(value)) : value]);
     for (const original of complex) {
       const retained = back.cadGraph!.nodes.find(node => node.sourceHandle === original.sourceHandle)!;
-      expect(retained.groups).toEqual(original.groups);
+      expect(normalized(retained.groups)).toEqual(normalized(original.groups));
       for (const ref of retained.references!.filter(ref => retained.groups[ref.groupIndex]![0] === 340)) expect(back.cadGraph!.nodes.find(node => node.id === ref.target)?.type).toBe('STYLE');
     }
     expect(writeDxf(back)).toBe(one);
-    const edited = { ...source, header: { ...source.header!, linetypes: source.header!.linetypes.map(line => line.name === 'GAS_LINE' ? { ...line, pattern: line.pattern.map((length, index) => index === 0 ? length + 1 : length) } : line) } };
-    expect(() => writeDxf(edited)).toThrow(/edited complex linetype GAS_LINE.*native regeneration/);
+    const edited = { ...source, header: { ...source.header!, linetypes: source.header!.linetypes.map(line => line.name === 'GAS_LINE' ? { ...line, pattern: line.pattern.map((length, index) => index === 0 ? length + 1 : length), complex: { ...line.complex!, totalPatternLength: line.complex!.totalPatternLength! + 1 } } : line) } };
+    const regenerated = readDxf(writeDxf(edited)).header!.linetypes.find(line => line.name === 'GAS_LINE')!;
+    expect(regenerated.pattern).toEqual(edited.header.linetypes.find(line => line.name === 'GAS_LINE')!.pattern);
+    expect(regenerated.complex).toEqual(edited.header.linetypes.find(line => line.name === 'GAS_LINE')!.complex);
     const described = { ...source, header: { ...source.header!, linetypes: source.header!.linetypes.map(line => line.name === 'GAS_LINE' ? { ...line, description: 'Updated description' } : line) } };
     const changed = readDxf(writeDxf(described)); expect(changed.header!.linetypes.find(line => line.name === 'GAS_LINE')!.description).toBe('Updated description');
   });

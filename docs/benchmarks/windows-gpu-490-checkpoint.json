@@ -1,0 +1,1960 @@
+{
+  "schemaVersion": 1,
+  "status": "Completed archived490 checkpoint; later source revisions require separate validation",
+  "source": {
+    "repository": "habit04/share",
+    "head": "490a7b046e11f38380595880820a6eda4fc7e538",
+    "commit": "https://github.com/habit04/share/commit/490a7b046e11f38380595880820a6eda4fc7e538",
+    "scope": "Archived unmodified source-Electron490 executions only. Later source revisions require their own validation; this record does not follow moving HEAD."
+  },
+  "provenance": "Each dataset is a closed complete local comparison archive authenticated by its source490 terminal exit0 check. ANGLE owner-created contexts corroborate active adapter diagnostics; requested preferences alone are insufficient. Raw datasets and PNGs are retained privately, not embedded here.",
+  "ci": {
+    "allFiveFirstAttemptJobsPassed": true,
+    "runs": [
+      {
+        "id": 38473184570,
+        "event": "pull_request",
+        "attempt": 1,
+        "url": "https://github.com/habit04/share/actions/runs/38473184570",
+        "head": "490a7b046e11f38380595880820a6eda4fc7e538",
+        "producerCheckout": "d02a54a41a4708707327753fab771d081045370a",
+        "producerBase": "4762534751977c72de57f5e39b543a5bd8595765",
+        "conclusion": "success",
+        "jobs": [
+          {
+            "id": 115557260211,
+            "name": "e2e-electron (windows-latest)",
+            "conclusion": "success"
+          },
+          {
+            "id": 115557260369,
+            "name": "gpu-experimental",
+            "conclusion": "success"
+          },
+          {
+            "id": 115557260450,
+            "name": "test (24)",
+            "conclusion": "success"
+          },
+          {
+            "id": 115557260458,
+            "name": "test (22)",
+            "conclusion": "success"
+          },
+          {
+            "id": 115557260482,
+            "name": "ui",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 38473174018,
+        "event": "push",
+        "attempt": 1,
+        "url": "https://github.com/habit04/share/actions/runs/38473174018",
+        "head": "490a7b046e11f38380595880820a6eda4fc7e538",
+        "producerCheckout": "490a7b046e11f38380595880820a6eda4fc7e538",
+        "producerBase": null,
+        "conclusion": "success",
+        "jobs": [
+          {
+            "id": 115557198390,
+            "name": "test (22)",
+            "conclusion": "success"
+          },
+          {
+            "id": 115557198446,
+            "name": "ui",
+            "conclusion": "success"
+          },
+          {
+            "id": 115557198479,
+            "name": "test (24)",
+            "conclusion": "success"
+          },
+          {
+            "id": 115557198669,
+            "name": "gpu-experimental",
+            "conclusion": "success"
+          },
+          {
+            "id": 115557198737,
+            "name": "e2e-electron (windows-latest)",
+            "conclusion": "success"
+          }
+        ]
+      }
+    ]
+  },
+  "datasets": {
+    "intel": {
+      "sha256": "65539dd05d7e1153fce3161e27a13de6f2c6f6f1050d273b3c8175a91dace8e7",
+      "bytes": 110263693,
+      "outcome": "passed",
+      "producer": {
+        "runtime": {
+          "jcad": "0.4.9",
+          "electron": "44.7.0",
+          "chromium": "152.0.7977.130",
+          "windows": "10.0.26200"
+        },
+        "activeAdapters": [
+          {
+            "name": "Intel(R) UHD Graphics",
+            "vendorId": "0x8086",
+            "deviceId": "0x4688",
+            "active": true,
+            "driverVendor": "Intel",
+            "driverVersion": "32.0.101.7088"
+          }
+        ],
+        "actualDenseContext": {
+          "state": "ready",
+          "rendered": true,
+          "unmaskedVendor": "Google Inc. (Intel)",
+          "unmaskedRenderer": "ANGLE (Intel, Intel(R) UHD Graphics (0x00004688) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+        },
+        "viewport": {
+          "width": 1216,
+          "height": 552,
+          "dpr": 1
+        },
+        "flags": {
+          "privateProfileVerified": true,
+          "highPerformanceSwitchPresent": false
+        },
+        "requestedPreference": {
+          "requested": "default",
+          "electronSwitch": null,
+          "scope": "Private launched app only; requested preference is not proof of active hardware."
+        }
+      },
+      "evidencePath": ".codex-local/validation-490a7b04/benchmark-default/comparison.json"
+    },
+    "nvidia": {
+      "sha256": "c6c295fb0e3cf422c43e8208287bdbc553fc30af52cc58ea3a020ae580a7accf",
+      "bytes": 110275415,
+      "outcome": "passed",
+      "actualNvidiaSelected": true,
+      "producer": {
+        "runtime": {
+          "jcad": "0.4.9",
+          "electron": "44.7.0",
+          "chromium": "152.0.7977.130",
+          "windows": "10.0.26200"
+        },
+        "activeAdapters": [
+          {
+            "name": "NVIDIA RTX A3000 12GB Laptop GPU",
+            "vendorId": "0x10de",
+            "deviceId": "0x24b9",
+            "active": true,
+            "driverVendor": "Unknown",
+            "driverVersion": "32.0.15.9671"
+          }
+        ],
+        "actualDenseContext": {
+          "state": "ready",
+          "rendered": true,
+          "unmaskedVendor": "Google Inc. (NVIDIA)",
+          "unmaskedRenderer": "ANGLE (NVIDIA, NVIDIA RTX A3000 12GB Laptop GPU (0x000024B9) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+        },
+        "viewport": {
+          "width": 1216,
+          "height": 552,
+          "dpr": 1
+        },
+        "flags": {
+          "privateProfileVerified": true,
+          "highPerformanceSwitchPresent": true
+        },
+        "requestedPreference": {
+          "requested": "high-performance",
+          "electronSwitch": "--force_high_performance_gpu",
+          "scope": "Private launched app only; requested preference is not proof of active hardware."
+        }
+      },
+      "evidencePath": ".codex-local/validation-490a7b04/benchmark-high-performance/comparison.json"
+    }
+  },
+  "fixtureCount": 32,
+  "fixtureHardwareTuple": [
+    "firstActualRenderer",
+    "30-sample actual [GPU,Canvas] counts",
+    "imageDifferenceFraction",
+    "bidirectionalTwoPixelCoverageMissFraction",
+    "originalCameraCertificateOutcome"
+  ],
+  "rasterGates": [
+    "Complete-view Canvas with identical RGBA pixels",
+    "Dense raster difference reported; unchanged bidirectional two-pixel coverage gate",
+    "Strict pixelmatch fraction <0.001 and bidirectional two-pixel miss <0.005",
+    "Exact RGBA whenever Canvas; when actually GPU-admitted, dense raster difference reported with unchanged bidirectional two-pixel coverage gate"
+  ],
+  "fixtures": [
+    {
+      "name": "curves",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "precision",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "precision-trillion",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "lineweights",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "dense-lines",
+      "expectedGpu": true,
+      "poseDependent": false,
+      "gate": 1,
+      "intel": [
+        "gpu",
+        [
+          30,
+          0
+        ],
+        0.03335508438215103,
+        0,
+        "passed"
+      ],
+      "nvidia": [
+        "gpu",
+        [
+          30,
+          0
+        ],
+        0.03335359458428681,
+        0,
+        "passed"
+      ]
+    },
+    {
+      "name": "mixed-schematic",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "wide-curve-fallback",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "curve-control",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "precision-control",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "lineweights-control",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "direct-arc-control",
+      "expectedGpu": true,
+      "poseDependent": false,
+      "gate": 2,
+      "intel": [
+        "gpu",
+        [
+          30,
+          0
+        ],
+        5.661231884057971E-05,
+        0,
+        "passed"
+      ],
+      "nvidia": [
+        "gpu",
+        [
+          30,
+          0
+        ],
+        5.661231884057971E-05,
+        0,
+        "passed"
+      ]
+    },
+    {
+      "name": "direct-arc-precision-control",
+      "expectedGpu": true,
+      "poseDependent": false,
+      "gate": 2,
+      "intel": [
+        "gpu",
+        [
+          30,
+          0
+        ],
+        5.661231884057971E-05,
+        0,
+        "passed"
+      ],
+      "nvidia": [
+        "gpu",
+        [
+          30,
+          0
+        ],
+        5.661231884057971E-05,
+        0,
+        "passed"
+      ]
+    },
+    {
+      "name": "direct-arc-lineweights-control",
+      "expectedGpu": true,
+      "poseDependent": false,
+      "gate": 2,
+      "intel": [
+        "gpu",
+        [
+          30,
+          0
+        ],
+        1.6387776506483602E-05,
+        0,
+        "passed"
+      ],
+      "nvidia": [
+        "gpu",
+        [
+          30,
+          0
+        ],
+        1.6387776506483602E-05,
+        0,
+        "passed"
+      ]
+    },
+    {
+      "name": "arc-full-huge",
+      "expectedGpu": true,
+      "poseDependent": false,
+      "gate": 2,
+      "intel": [
+        "gpu",
+        [
+          30,
+          0
+        ],
+        1.6387776506483602E-05,
+        0,
+        "passed"
+      ],
+      "nvidia": [
+        "gpu",
+        [
+          30,
+          0
+        ],
+        1.6387776506483602E-05,
+        0,
+        "passed"
+      ]
+    },
+    {
+      "name": "arc-sweep-fallback",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "arc-angle-fallback",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "collapse-polyline-fallback",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "collapse-text-fallback",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "collapse-attrib-fallback",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "negative-bulge-direct-fallback",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "negative-bulge-compound-fallback",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "positive-bulge-precision-fallback",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "compound-dense",
+      "expectedGpu": false,
+      "poseDependent": true,
+      "gate": 3,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        "passed"
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        "passed"
+      ]
+    },
+    {
+      "name": "compound-tags",
+      "expectedGpu": true,
+      "poseDependent": false,
+      "gate": 1,
+      "intel": [
+        "gpu",
+        [
+          30,
+          0
+        ],
+        0.02868605787566743,
+        0,
+        "passed"
+      ],
+      "nvidia": [
+        "gpu",
+        [
+          30,
+          0
+        ],
+        0.028680098684210526,
+        0,
+        "passed"
+      ]
+    },
+    {
+      "name": "compound-ordered",
+      "expectedGpu": true,
+      "poseDependent": false,
+      "gate": 2,
+      "intel": [
+        "gpu",
+        [
+          30,
+          0
+        ],
+        4.171434019832189E-05,
+        0,
+        "passed"
+      ],
+      "nvidia": [
+        "gpu",
+        [
+          30,
+          0
+        ],
+        4.171434019832189E-05,
+        0,
+        "passed"
+      ]
+    },
+    {
+      "name": "compound-trillion-reference",
+      "expectedGpu": true,
+      "poseDependent": false,
+      "gate": 2,
+      "intel": [
+        "gpu",
+        [
+          30,
+          0
+        ],
+        4.171434019832189E-05,
+        0,
+        "passed"
+      ],
+      "nvidia": [
+        "gpu",
+        [
+          30,
+          0
+        ],
+        4.171434019832189E-05,
+        0,
+        "passed"
+      ]
+    },
+    {
+      "name": "compound-trillion",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "compound-fallback-ttf",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "compound-fallback-mtext",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "compound-fallback-dash",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "compound-fallback-alpha",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    },
+    {
+      "name": "compound-fallback-geometry",
+      "expectedGpu": false,
+      "poseDependent": false,
+      "gate": 0,
+      "intel": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ],
+      "nvidia": [
+        "canvas",
+        [
+          0,
+          30
+        ],
+        0,
+        0,
+        null
+      ]
+    }
+  ],
+  "originalCameraCertificates": {
+    "intel": {
+      "gpuCount": 8,
+      "canvasCount": 1,
+      "gpuFixtures": [
+        "dense-lines",
+        "direct-arc-control",
+        "direct-arc-precision-control",
+        "direct-arc-lineweights-control",
+        "arc-full-huge",
+        "compound-tags",
+        "compound-ordered",
+        "compound-trillion-reference"
+      ],
+      "canvasFixtures": [
+        "compound-dense"
+      ],
+      "allPassed": true,
+      "allSnapshotHistoryRestored": true,
+      "noRendererReset": true,
+      "allGpuStagesActuallyGpu": true,
+      "allCanvasStagesActuallyCanvas": true,
+      "stageNames": [
+        "baseline",
+        "edited-before-undo",
+        "undo",
+        "redo"
+      ]
+    },
+    "nvidia": {
+      "gpuCount": 8,
+      "canvasCount": 1,
+      "gpuFixtures": [
+        "dense-lines",
+        "direct-arc-control",
+        "direct-arc-precision-control",
+        "direct-arc-lineweights-control",
+        "arc-full-huge",
+        "compound-tags",
+        "compound-ordered",
+        "compound-trillion-reference"
+      ],
+      "canvasFixtures": [
+        "compound-dense"
+      ],
+      "allPassed": true,
+      "allSnapshotHistoryRestored": true,
+      "noRendererReset": true,
+      "allGpuStagesActuallyGpu": true,
+      "allCanvasStagesActuallyCanvas": true,
+      "stageNames": [
+        "baseline",
+        "edited-before-undo",
+        "undo",
+        "redo"
+      ]
+    }
+  },
+  "cacheAndDelta": {
+    "intel": {
+      "dense-lines": {
+        "cold": {
+          "actualRenderer": "gpu",
+          "cacheReason": "cold",
+          "preparedEntities": 38000,
+          "uploadBytes": 6384000,
+          "uploadCalls": 1,
+          "uploadKind": "full"
+        },
+        "warm": {
+          "actualRendererCounts": null,
+          "cacheReasons": {
+            "hit": 15
+          },
+          "rebuildFrames": 0,
+          "documentDeltaFrames": 0,
+          "fullUploadFrames": 0,
+          "subrangeUploadFrames": 0,
+          "zeroUploadFrames": 15,
+          "editMemoHits": 0
+        },
+        "panZoom": {
+          "actualRendererCounts": {
+            "gpu": 30
+          },
+          "cacheReasons": {
+            "hit": 30
+          },
+          "rebuildFrames": 0,
+          "documentDeltaFrames": 0,
+          "fullUploadFrames": 0,
+          "subrangeUploadFrames": 0,
+          "zeroUploadFrames": 30,
+          "editMemoHits": 0
+        },
+        "lineEditUndo": {
+          "actualRendererCounts": {
+            "gpu": 30
+          },
+          "cacheReasons": {
+            "document-delta": 30
+          },
+          "rebuildFrames": 0,
+          "documentDeltaFrames": 30,
+          "fullUploadFrames": 0,
+          "subrangeUploadFrames": 30,
+          "zeroUploadFrames": 0,
+          "editMemoHits": 29
+        }
+      },
+      "compound-tags": {
+        "cold": {
+          "actualRenderer": "gpu",
+          "cacheReason": "cold",
+          "preparedEntities": 10500,
+          "uploadBytes": 20459040,
+          "uploadCalls": 1,
+          "uploadKind": "full"
+        },
+        "warm": {
+          "actualRendererCounts": null,
+          "cacheReasons": {
+            "hit": 15
+          },
+          "rebuildFrames": 0,
+          "documentDeltaFrames": 0,
+          "fullUploadFrames": 0,
+          "subrangeUploadFrames": 0,
+          "zeroUploadFrames": 15,
+          "editMemoHits": 0
+        },
+        "panZoom": {
+          "actualRendererCounts": {
+            "gpu": 30
+          },
+          "cacheReasons": {
+            "hit": 30
+          },
+          "rebuildFrames": 0,
+          "documentDeltaFrames": 0,
+          "fullUploadFrames": 0,
+          "subrangeUploadFrames": 0,
+          "zeroUploadFrames": 30,
+          "editMemoHits": 0
+        },
+        "lineEditUndo": {
+          "actualRendererCounts": {
+            "gpu": 30
+          },
+          "cacheReasons": {
+            "document-delta": 30
+          },
+          "rebuildFrames": 0,
+          "documentDeltaFrames": 30,
+          "fullUploadFrames": 0,
+          "subrangeUploadFrames": 30,
+          "zeroUploadFrames": 0,
+          "editMemoHits": 29
+        }
+      },
+      "compound-dense": {
+        "cold": {
+          "actualRenderer": "canvas",
+          "cacheReason": "not-checked",
+          "preparedEntities": null,
+          "uploadBytes": null,
+          "uploadCalls": null,
+          "uploadKind": null
+        },
+        "warm": {
+          "actualRendererCounts": null,
+          "cacheReasons": {
+            "not-checked": 15
+          },
+          "rebuildFrames": 0,
+          "documentDeltaFrames": 0,
+          "fullUploadFrames": 0,
+          "subrangeUploadFrames": 0,
+          "zeroUploadFrames": 0,
+          "editMemoHits": 0
+        },
+        "panZoom": {
+          "actualRendererCounts": {
+            "canvas": 30
+          },
+          "cacheReasons": {
+            "not-checked": 30
+          },
+          "rebuildFrames": 0,
+          "documentDeltaFrames": 0,
+          "fullUploadFrames": 0,
+          "subrangeUploadFrames": 0,
+          "zeroUploadFrames": 0,
+          "editMemoHits": 0
+        },
+        "lineEditUndo": {
+          "actualRendererCounts": {
+            "canvas": 30
+          },
+          "cacheReasons": {
+            "not-checked": 30
+          },
+          "rebuildFrames": 0,
+          "documentDeltaFrames": 0,
+          "fullUploadFrames": 0,
+          "subrangeUploadFrames": 0,
+          "zeroUploadFrames": 0,
+          "editMemoHits": 0
+        }
+      }
+    },
+    "nvidia": {
+      "dense-lines": {
+        "cold": {
+          "actualRenderer": "gpu",
+          "cacheReason": "cold",
+          "preparedEntities": 38000,
+          "uploadBytes": 6384000,
+          "uploadCalls": 1,
+          "uploadKind": "full"
+        },
+        "warm": {
+          "actualRendererCounts": null,
+          "cacheReasons": {
+            "hit": 15
+          },
+          "rebuildFrames": 0,
+          "documentDeltaFrames": 0,
+          "fullUploadFrames": 0,
+          "subrangeUploadFrames": 0,
+          "zeroUploadFrames": 15,
+          "editMemoHits": 0
+        },
+        "panZoom": {
+          "actualRendererCounts": {
+            "gpu": 30
+          },
+          "cacheReasons": {
+            "hit": 30
+          },
+          "rebuildFrames": 0,
+          "documentDeltaFrames": 0,
+          "fullUploadFrames": 0,
+          "subrangeUploadFrames": 0,
+          "zeroUploadFrames": 30,
+          "editMemoHits": 0
+        },
+        "lineEditUndo": {
+          "actualRendererCounts": {
+            "gpu": 30
+          },
+          "cacheReasons": {
+            "document-delta": 30
+          },
+          "rebuildFrames": 0,
+          "documentDeltaFrames": 30,
+          "fullUploadFrames": 0,
+          "subrangeUploadFrames": 30,
+          "zeroUploadFrames": 0,
+          "editMemoHits": 29
+        }
+      },
+      "compound-tags": {
+        "cold": {
+          "actualRenderer": "gpu",
+          "cacheReason": "cold",
+          "preparedEntities": 10500,
+          "uploadBytes": 20459040,
+          "uploadCalls": 1,
+          "uploadKind": "full"
+        },
+        "warm": {
+          "actualRendererCounts": null,
+          "cacheReasons": {
+            "hit": 15
+          },
+          "rebuildFrames": 0,
+          "documentDeltaFrames": 0,
+          "fullUploadFrames": 0,
+          "subrangeUploadFrames": 0,
+          "zeroUploadFrames": 15,
+          "editMemoHits": 0
+        },
+        "panZoom": {
+          "actualRendererCounts": {
+            "gpu": 30
+          },
+          "cacheReasons": {
+            "hit": 30
+          },
+          "rebuildFrames": 0,
+          "documentDeltaFrames": 0,
+          "fullUploadFrames": 0,
+          "subrangeUploadFrames": 0,
+          "zeroUploadFrames": 30,
+          "editMemoHits": 0
+        },
+        "lineEditUndo": {
+          "actualRendererCounts": {
+            "gpu": 30
+          },
+          "cacheReasons": {
+            "document-delta": 30
+          },
+          "rebuildFrames": 0,
+          "documentDeltaFrames": 30,
+          "fullUploadFrames": 0,
+          "subrangeUploadFrames": 30,
+          "zeroUploadFrames": 0,
+          "editMemoHits": 29
+        }
+      },
+      "compound-dense": {
+        "cold": {
+          "actualRenderer": "canvas",
+          "cacheReason": "not-checked",
+          "preparedEntities": null,
+          "uploadBytes": null,
+          "uploadCalls": null,
+          "uploadKind": null
+        },
+        "warm": {
+          "actualRendererCounts": null,
+          "cacheReasons": {
+            "not-checked": 15
+          },
+          "rebuildFrames": 0,
+          "documentDeltaFrames": 0,
+          "fullUploadFrames": 0,
+          "subrangeUploadFrames": 0,
+          "zeroUploadFrames": 0,
+          "editMemoHits": 0
+        },
+        "panZoom": {
+          "actualRendererCounts": {
+            "canvas": 30
+          },
+          "cacheReasons": {
+            "not-checked": 30
+          },
+          "rebuildFrames": 0,
+          "documentDeltaFrames": 0,
+          "fullUploadFrames": 0,
+          "subrangeUploadFrames": 0,
+          "zeroUploadFrames": 0,
+          "editMemoHits": 0
+        },
+        "lineEditUndo": {
+          "actualRendererCounts": {
+            "canvas": 30
+          },
+          "cacheReasons": {
+            "not-checked": 30
+          },
+          "rebuildFrames": 0,
+          "documentDeltaFrames": 0,
+          "fullUploadFrames": 0,
+          "subrangeUploadFrames": 0,
+          "zeroUploadFrames": 0,
+          "editMemoHits": 0
+        }
+      }
+    }
+  },
+  "fourfoldBoundaries": {
+    "intel": {
+      "dense-lines": {
+        "outcome": "passed",
+        "interval": {
+          "minRatio": 0.8,
+          "maxRatio": 4,
+          "minScale": 2.4518026471132908,
+          "maxScale": 12.259013235566453
+        },
+        "originalEndpointUnchanged": true,
+        "allThirtySustainedSamplesInside": true,
+        "singleColdSetup": true,
+        "noResetDuringProbes": true,
+        "samples": {
+          "cold": {
+            "rendered": true,
+            "cacheHit": false,
+            "cacheReason": "cold",
+            "preparedEntities": 38000,
+            "reusedEntities": 0,
+            "uploadCalls": 1,
+            "uploadKind": "full",
+            "bytes": 6384000
+          },
+          "inside": {
+            "rendered": true,
+            "cacheHit": true,
+            "cacheReason": "hit",
+            "preparedEntities": 0,
+            "reusedEntities": 38000,
+            "uploadCalls": 0,
+            "uploadKind": "none",
+            "bytes": 0
+          },
+          "beyond": {
+            "rendered": true,
+            "cacheHit": false,
+            "cacheReason": "zoom-range",
+            "preparedEntities": 38000,
+            "reusedEntities": 0,
+            "uploadCalls": 1,
+            "uploadKind": "full",
+            "bytes": 2697576
+          }
+        },
+        "accuracy": {
+          "inside": {
+            "actualRenderer": "gpu",
+            "imageDifferenceFraction": 0.019429943745232648,
+            "twoPixelCoverageMissFraction": 0.0002456269628226047,
+            "rawDifferentPixels": 108027
+          },
+          "beyond": {
+            "actualRenderer": "gpu",
+            "imageDifferenceFraction": 0.02117449704424104,
+            "twoPixelCoverageMissFraction": 5.231949773282177E-05,
+            "rawDifferentPixels": 108865
+          }
+        }
+      },
+      "compound-tags": {
+        "outcome": "passed",
+        "interval": {
+          "minRatio": 0.8,
+          "maxRatio": 4,
+          "minScale": 2.432149785324837,
+          "maxScale": 12.160748926624185
+        },
+        "originalEndpointUnchanged": true,
+        "allThirtySustainedSamplesInside": true,
+        "singleColdSetup": true,
+        "noResetDuringProbes": true,
+        "samples": {
+          "cold": {
+            "rendered": true,
+            "cacheHit": false,
+            "cacheReason": "cold",
+            "preparedEntities": 10500,
+            "reusedEntities": 0,
+            "uploadCalls": 1,
+            "uploadKind": "full",
+            "bytes": 20459040
+          },
+          "inside": {
+            "rendered": true,
+            "cacheHit": true,
+            "cacheReason": "hit",
+            "preparedEntities": 0,
+            "reusedEntities": 10500,
+            "uploadCalls": 0,
+            "uploadKind": "none",
+            "bytes": 0
+          },
+          "beyond": {
+            "rendered": true,
+            "cacheHit": false,
+            "cacheReason": "zoom-range",
+            "preparedEntities": 10500,
+            "reusedEntities": 0,
+            "uploadCalls": 1,
+            "uploadKind": "full",
+            "bytes": 8539104
+          }
+        },
+        "accuracy": {
+          "inside": {
+            "actualRenderer": "gpu",
+            "imageDifferenceFraction": 0.004390434305873379,
+            "twoPixelCoverageMissFraction": 0,
+            "rawDifferentPixels": 118003
+          },
+          "beyond": {
+            "actualRenderer": "gpu",
+            "imageDifferenceFraction": 0.0041908013920671245,
+            "twoPixelCoverageMissFraction": 4.4694734960221686E-05,
+            "rawDifferentPixels": 116344
+          }
+        }
+      }
+    },
+    "nvidia": {
+      "dense-lines": {
+        "outcome": "passed",
+        "interval": {
+          "minRatio": 0.8,
+          "maxRatio": 4,
+          "minScale": 2.4518026471132908,
+          "maxScale": 12.259013235566453
+        },
+        "originalEndpointUnchanged": true,
+        "allThirtySustainedSamplesInside": true,
+        "singleColdSetup": true,
+        "noResetDuringProbes": true,
+        "samples": {
+          "cold": {
+            "rendered": true,
+            "cacheHit": false,
+            "cacheReason": "cold",
+            "preparedEntities": 38000,
+            "reusedEntities": 0,
+            "uploadCalls": 1,
+            "uploadKind": "full",
+            "bytes": 6384000
+          },
+          "inside": {
+            "rendered": true,
+            "cacheHit": true,
+            "cacheReason": "hit",
+            "preparedEntities": 0,
+            "reusedEntities": 38000,
+            "uploadCalls": 0,
+            "uploadKind": "none",
+            "bytes": 0
+          },
+          "beyond": {
+            "rendered": true,
+            "cacheHit": false,
+            "cacheReason": "zoom-range",
+            "preparedEntities": 38000,
+            "reusedEntities": 0,
+            "uploadCalls": 1,
+            "uploadKind": "full",
+            "bytes": 2697576
+          }
+        },
+        "accuracy": {
+          "inside": {
+            "actualRenderer": "gpu",
+            "imageDifferenceFraction": 0.019429943745232648,
+            "twoPixelCoverageMissFraction": 0.0002456269628226047,
+            "rawDifferentPixels": 108076
+          },
+          "beyond": {
+            "actualRenderer": "gpu",
+            "imageDifferenceFraction": 0.02117449704424104,
+            "twoPixelCoverageMissFraction": 5.231949773282177E-05,
+            "rawDifferentPixels": 108916
+          }
+        }
+      },
+      "compound-tags": {
+        "outcome": "passed",
+        "interval": {
+          "minRatio": 0.8,
+          "maxRatio": 4,
+          "minScale": 2.432149785324837,
+          "maxScale": 12.160748926624185
+        },
+        "originalEndpointUnchanged": true,
+        "allThirtySustainedSamplesInside": true,
+        "singleColdSetup": true,
+        "noResetDuringProbes": true,
+        "samples": {
+          "cold": {
+            "rendered": true,
+            "cacheHit": false,
+            "cacheReason": "cold",
+            "preparedEntities": 10500,
+            "reusedEntities": 0,
+            "uploadCalls": 1,
+            "uploadKind": "full",
+            "bytes": 20459040
+          },
+          "inside": {
+            "rendered": true,
+            "cacheHit": true,
+            "cacheReason": "hit",
+            "preparedEntities": 0,
+            "reusedEntities": 10500,
+            "uploadCalls": 0,
+            "uploadKind": "none",
+            "bytes": 0
+          },
+          "beyond": {
+            "rendered": true,
+            "cacheHit": false,
+            "cacheReason": "zoom-range",
+            "preparedEntities": 10500,
+            "reusedEntities": 0,
+            "uploadCalls": 1,
+            "uploadKind": "full",
+            "bytes": 8539104
+          }
+        },
+        "accuracy": {
+          "inside": {
+            "actualRenderer": "gpu",
+            "imageDifferenceFraction": 0.004393413901601831,
+            "twoPixelCoverageMissFraction": 0,
+            "rawDifferentPixels": 118059
+          },
+          "beyond": {
+            "actualRenderer": "gpu",
+            "imageDifferenceFraction": 0.00419229118993135,
+            "twoPixelCoverageMissFraction": 4.46927374301676E-05,
+            "rawDifferentPixels": 116374
+          }
+        }
+      }
+    }
+  },
+  "freshNoReadback": {
+    "intel": {
+      "pairedWorkflows": 12,
+      "samplesPerMode": 30,
+      "drawingReadbacks": 0,
+      "beforeBenchmarkReadback": true,
+      "completionObserved": false,
+      "presentationObserved": false,
+      "fixtures": [
+        "dense-lines",
+        "compound-tags",
+        "compound-dense"
+      ],
+      "workflows": [
+        "pan",
+        "bounded-zoom",
+        "sustained-zoom",
+        "edit-undo"
+      ],
+      "allPairedSnapshotCameraSame": true
+    },
+    "nvidia": {
+      "pairedWorkflows": 12,
+      "samplesPerMode": 30,
+      "drawingReadbacks": 0,
+      "beforeBenchmarkReadback": true,
+      "completionObserved": false,
+      "presentationObserved": false,
+      "fixtures": [
+        "dense-lines",
+        "compound-tags",
+        "compound-dense"
+      ],
+      "workflows": [
+        "pan",
+        "bounded-zoom",
+        "sustained-zoom",
+        "edit-undo"
+      ],
+      "allPairedSnapshotCameraSame": true
+    }
+  },
+  "steadyStateCanvasFallbacks": {
+    "intel": {
+      "endpointCount": 192,
+      "allEndpointImageFractionsZero": true,
+      "allEndpointCoverageFractionsZero": true,
+      "allEndpointUploadsZero": true,
+      "sourceAssertionScope": "Passed script retains raw Buffer.compare(...)=0 checks for centered fallback (1530), legacy panned fallback (1595), trajectory endpoints, boundary refusal (1653), and compound fallback pairs (1722); image-difference fractions are not a substitute for raw RGBA assertions."
+    },
+    "nvidia": {
+      "endpointCount": 192,
+      "allEndpointImageFractionsZero": true,
+      "allEndpointCoverageFractionsZero": true,
+      "allEndpointUploadsZero": true,
+      "sourceAssertionScope": "Completed exit0 script retains raw Buffer.compare=0 checks for trajectory1189, edit1342, centered1530, panned1595, boundary1653 and compound1722. Raster fractions alone are not raw RGBA equality."
+    },
+    "interpretation": "192 actual complete-Canvas endpoints per hardware run passed unchanged raw RGBA assertions and issued no GPU uploads. GPU cached redraws still issue draws; admitted edit/undo intentionally uses document-delta subrange uploads and memo reuse."
+  },
+  "focusedAutomaticIdleObservation": [
+    {
+      "label": "raced IPC",
+      "resultPath": ".codex-local/admission-focused-native-PY0l47/result.json",
+      "resultSha256": "fc317ffa140662e8f7d71f57cd006551d54324985da3bf224c248576a626d979",
+      "resultBytes": 14050,
+      "privateProfileVerified": true,
+      "outcome": "passed",
+      "actions": [
+        "edit",
+        "undo",
+        "redo",
+        "undo"
+      ],
+      "allInitiallyDeferred": true,
+      "allFinalColdBudgetRefusals": true,
+      "observedFrames": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "settledBeforeObserver": [
+        true,
+        true,
+        true,
+        true
+      ],
+      "automaticObservation": true,
+      "noRequestedRenderOrReset": true,
+      "unchangedDocumentCamera": true,
+      "exactCanvas": true,
+      "zeroUploads": true
+    },
+    {
+      "label": "same-turn observer",
+      "resultPath": ".codex-local/admission-focused-native-puMlBg/result.json",
+      "resultSha256": "6ca192ed59a2195d7bd6fa748216a14b922bea93da05e57d3328d847c1319c9b",
+      "resultBytes": 14522,
+      "privateProfileVerified": true,
+      "outcome": "passed",
+      "actions": [
+        "edit",
+        "undo",
+        "redo",
+        "undo"
+      ],
+      "allInitiallyDeferred": true,
+      "allFinalColdBudgetRefusals": true,
+      "observedFrames": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "settledBeforeObserver": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "automaticObservation": true,
+      "noRequestedRenderOrReset": true,
+      "unchangedDocumentCamera": true,
+      "exactCanvas": true,
+      "zeroUploads": true
+    }
+  ],
+  "recovery": [
+    {
+      "name": "native-default",
+      "outcome": "passed",
+      "resultPath": "e2e-output/gpu-process/run-pcgt93/result.json",
+      "resultSha256": "18285e9634b7ed24dba2394616ebe43b9413fd85d079bb2b9d3d499c52bf209c",
+      "resultBytes": 18097,
+      "profileVerified": true,
+      "privateTempVerified": null,
+      "privatePidCreationIdentityVerified": true,
+      "targetDistinctFromMain": true,
+      "newGpuIdentityObserved": true,
+      "actualContexts": {
+        "before": "ANGLE (Intel, Intel(R) UHD Graphics (0x00004688) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "after": "ANGLE (Intel, Intel(R) UHD Graphics (0x00004688) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      },
+      "documentUnchanged": true,
+      "lostOriginalCacheDiscarded": true,
+      "currentHealthyCacheRestored": true,
+      "automaticWebglRestoration": {
+        "observed": true,
+        "automaticOnly": true
+      },
+      "recoveredCanvas": [
+        {
+          "rawDifferentChannels": 213,
+          "exactPixels": false,
+          "imageDifferenceFraction": 0,
+          "twoPixelCoverageMissFraction": 0,
+          "fullyOpaque": true,
+          "thresholds": {
+            "pixelmatch": 0.15,
+            "imageDifferenceFraction": 0.005,
+            "twoPixelCoverageMissFraction": 0.005
+          }
+        }
+      ],
+      "persistence": {
+        "expectedCount": 254,
+        "reopenedCount": 254,
+        "completeDxf": true
+      },
+      "pageErrors": []
+    },
+    {
+      "name": "native-high-performance",
+      "outcome": "passed",
+      "resultPath": "e2e-output/gpu-process/run-1HKV89/result.json",
+      "resultSha256": "80b8eb6b7351ae4992576af25cf059c90224d484662eebde01740f882313443f",
+      "resultBytes": 18108,
+      "profileVerified": true,
+      "privateTempVerified": null,
+      "privatePidCreationIdentityVerified": true,
+      "targetDistinctFromMain": true,
+      "newGpuIdentityObserved": true,
+      "actualContexts": {
+        "before": "ANGLE (NVIDIA, NVIDIA RTX A3000 12GB Laptop GPU (0x000024B9) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "after": "ANGLE (NVIDIA, NVIDIA RTX A3000 12GB Laptop GPU (0x000024B9) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+      },
+      "documentUnchanged": true,
+      "lostOriginalCacheDiscarded": true,
+      "currentHealthyCacheRestored": true,
+      "automaticWebglRestoration": {
+        "observed": true,
+        "automaticOnly": true
+      },
+      "recoveredCanvas": [
+        {
+          "rawDifferentChannels": 205,
+          "exactPixels": false,
+          "imageDifferenceFraction": 0,
+          "twoPixelCoverageMissFraction": 0,
+          "fullyOpaque": true,
+          "thresholds": {
+            "pixelmatch": 0.15,
+            "imageDifferenceFraction": 0.005,
+            "twoPixelCoverageMissFraction": 0.005
+          }
+        }
+      ],
+      "persistence": {
+        "expectedCount": 254,
+        "reopenedCount": 254,
+        "completeDxf": true
+      },
+      "pageErrors": []
+    },
+    {
+      "name": "native-unavailable",
+      "outcome": "passed",
+      "resultPath": "e2e-output/gpu-unavailable/run-q10Ode/result.json",
+      "resultSha256": "69e94ed08746e6ac17c0adc0837cd9d2eb1a949a264f60fd6e6841c88862299c",
+      "resultBytes": 42625,
+      "profileVerified": true,
+      "privateTempVerified": true,
+      "privatePidCreationIdentityVerified": null,
+      "targetDistinctFromMain": null,
+      "newGpuIdentityObserved": null,
+      "actualContexts": null,
+      "documentUnchanged": true,
+      "lostOriginalCacheDiscarded": null,
+      "currentHealthyCacheRestored": null,
+      "automaticWebglRestoration": null,
+      "persistence": {
+        "expectedCount": 6,
+        "count": 6,
+        "completeDxf": true,
+        "lineRetained": true,
+        "dirty": false,
+        "device": "failed"
+      },
+      "webgl": [
+        [
+          "webgl",
+          false
+        ],
+        [
+          "webgl2",
+          false
+        ]
+      ],
+      "unavailableCases": [
+        [
+          "direct-arc-control",
+          0,
+          true,
+          true
+        ],
+        [
+          "curves",
+          0,
+          true,
+          false
+        ],
+        [
+          "precision",
+          0,
+          true,
+          false
+        ],
+        [
+          "precision-trillion",
+          0,
+          true,
+          false
+        ],
+        [
+          "lineweights",
+          0,
+          true,
+          false
+        ],
+        [
+          "mixed-schematic",
+          0,
+          true,
+          false
+        ],
+        [
+          "curve-control",
+          0,
+          true,
+          false
+        ],
+        [
+          "precision-control",
+          0,
+          true,
+          false
+        ],
+        [
+          "lineweights-control",
+          0,
+          true,
+          false
+        ]
+      ],
+      "pageErrors": []
+    }
+  ],
+  "measurementLimits": [
+    "CPU issuance, completed fence/readback wall observations, and no-readback cadence are different measurements. No timing/performance-gain claim.",
+    "Requested GPU can complete through Canvas. Actual rendering and cache/upload evidence is identified.",
+    "Admitted edit/undo intentionally retains subrange issuance and memo reuse. Warm GPU redraws issue draws without uploads; complete-Canvas refusal issues neither.",
+    "Native recovery has213/205 raw channel differences and passed existing bounded gates. Initial samples were blank while Canvas was context-lost; uninterrupted display and exact recovery RGBA are not established.",
+    "Unavailable probe: real null WebGL/WebGL2 plus nine exact Canvas cases.",
+    "One Windows machine, two observed adapters, source-Electron, authored fixtures; no installer or broad AutoCAD-fidelity claim.",
+    "Earlier685 DPR/ARC native-reference aggregate remains inconclusive. Archived490 success does not validate subsequent lowering/integration."
+  ],
+  "claims": {
+    "performanceGains": false,
+    "defaultRendererChange": false,
+    "roadmapComplete": false,
+    "installerValidated": false,
+    "broadCadFidelity": false,
+    "subsequentHeadCertified": false,
+    "dprArcParityAt490": false
+  }
+}

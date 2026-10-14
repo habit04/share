@@ -64,14 +64,16 @@ function validatePaperDimensions(sheet) {
  * @param {string} file
  * @param {number} maxBytes
  * @param {BufferEncoding} [encoding]  return a string in this encoding instead of bytes
+ * @param {{ beforeRead?: (handle:any)=>Promise<void>, afterRead?: (handle:any,bytes:Buffer)=>Promise<void> }} [checks] host-owned identity checks while the descriptor remains open
  * @returns {Promise<Buffer | string>}
  */
-async function readLimitedFile(fs, file, maxBytes, encoding) {
+async function readLimitedFile(fs, file, maxBytes, encoding, checks) {
   const handle = await fs.open(file, READ_FLAGS);
   try {
     const stat = await handle.stat();
     if (!stat.isFile()) throw Object.assign(new Error(`EISDIR: not a file, read '${file}'`), { code: 'EISDIR' });
     if (stat.size > maxBytes) throw new Error(`${path.basename(file)} is larger than ${sizeText(maxBytes)}`);
+    if (checks?.beforeRead) await checks.beforeRead(handle);
     const bytes = Buffer.alloc(Math.min(stat.size + 1, maxBytes + 1));
     let length = 0;
     while (length < bytes.length) {
@@ -81,6 +83,7 @@ async function readLimitedFile(fs, file, maxBytes, encoding) {
     }
     if (length > maxBytes || length > stat.size) throw new Error(`${path.basename(file)} changed while it was read; try again.`);
     const result = bytes.subarray(0, length);
+    if (checks?.afterRead) await checks.afterRead(handle, result);
     return encoding ? result.toString(encoding) : result;
   } finally {
     await handle.close();

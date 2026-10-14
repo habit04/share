@@ -1,7 +1,7 @@
 import * as g from './geometry';
 import type { Point, Bounds } from './geometry';
 import { mtextLayoutFull, type Measure, type MTextEntity, type MTextLayout } from './mtext';
-import type { Entity } from './entities';
+import type { Entity, TextEntity } from './entities';
 
 /** Includes MTEXT carried by a LEADER after its native annotation association is resolved. */
 export const entityMTextBackground = (e: Entity) => e.type === 'mtext' ? e.background : e.type === 'leader' ? e.textBackground : undefined;
@@ -10,7 +10,7 @@ export const hasMTextFill = (m: MTextEntity): boolean => Boolean((m.background?.
 export const hasMTextFrame = (m: MTextEntity): boolean => Boolean((m.background?.flags ?? 0) & 16);
 
 /** One mask per populated column. Bounds use the same approximate text metrics as the layout. */
-export function mtextBackgroundPolygons(m: MTextEntity, measure: Measure, layout: MTextLayout = mtextLayoutFull(m, measure)): Point[][] {
+export function mtextBackgroundPolygons(m: MTextEntity, measure: Measure, layout: MTextLayout = mtextLayoutFull(m, measure), corners?: (text: TextEntity) => readonly Point[]): Point[][] {
   if (!m.background || (!hasMTextFill(m) && !hasMTextFrame(m))) return [];
   const boxes = new Map<number, Bounds>();
   const cols = m.columns;
@@ -21,6 +21,11 @@ export function mtextBackgroundPolygons(m: MTextEntity, measure: Measure, layout
       const prefix = `${m.id}:col`;
       if (t.id.startsWith(prefix)) index = Number(t.id.slice(prefix.length).split(':')[0]);
       if (!Number.isSafeInteger(index) || index < 0 || index >= Math.min(256, cols.count)) continue;
+    }
+    if (corners) {
+      const bounds = g.boundsOfPoints(corners(t).map(local));
+      if (bounds) boxes.set(index, g.unionBounds(boxes.get(index) ?? null, bounds)!);
+      continue;
     }
     const p = local(t.position);
     const width = measure(t.text, t.height) * (t.widthFactor ?? 1);

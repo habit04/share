@@ -11,10 +11,17 @@
  *   ipc-drawings.cjs  open / save drawings and projects, Save As paths, backups, images
  *   ipc-plot.cjs      plot to PDF, vector PDF, print
  *   ipc-stores.cjs    autosave, user library, plugins, catalog packs
+ *   ipc-shx.cjs       explicit Windows SHX font / shape selection, read-only
  *   updates.cjs       app info, external links, update checks and status
  *   handover.cjs      files handed over by the OS and by a second launch
  */
 const { app, BrowserWindow, session, ipcMain: rawIpcMain, protocol, net } = require('electron');
+const { createGPUCollector } = require('./gpu-diagnostics.cjs');
+const gpuCollector = createGPUCollector(app, { versions: {
+  jcad: app.getVersion(), electron: process.versions.electron, chromium: process.versions.chrome,
+  windows: process.platform === 'win32' ? require('node:os').release() : 'Unknown',
+} });
+app.on('will-quit', () => gpuCollector.dispose());
 const { rejectsProductionDebugging } = require('./inspection-policy.cjs');
 const path = require('node:path');
 const fs = require('node:fs/promises');
@@ -37,8 +44,10 @@ const { dwgHost, readDwg, registerDwgIpc } = require('./main/dwg.cjs');
 const { registerDrawingIpc } = require('./main/ipc-drawings.cjs');
 const { registerPlotIpc } = require('./main/ipc-plot.cjs');
 const { registerStoreIpc } = require('./main/ipc-stores.cjs');
+const { registerShxIpc } = require('./main/ipc-shx.cjs');
 const { registerUpdatesIpc } = require('./main/updates.cjs');
 const { createHandover } = require('./main/handover.cjs');
+const { createFontMetricsHost } = require('./font-metrics-host.cjs');
 const { runShippingProbe, shippingProbePhase } = require('./main/shipping-probe.cjs');
 let probePhase = null;
 try { probePhase = shippingProbePhase(process.argv); }
@@ -97,6 +106,7 @@ function senderWindow(/** @type {Electron.IpcMainInvokeEvent} */ ev) {
  * @type {import('./main/context.cjs').MainContext}
  */
 const ctx = { ipcMain, rejections, registry, pathPolicy, senderWindow, mainWindow: null, openFilesReady: false, handedOverProjects: new Set() };
+ipcMain.handle('gpu-diagnostics', () => gpuCollector.get());
 
 function loadPersistedPaths() {
   try {
@@ -113,8 +123,16 @@ const { takeHandedOverProject, handOverFiles, drawingArgs, registerSecondInstanc
 registerDrawingIpc(ctx, { takeHandedOverProject });
 registerPlotIpc(ctx);
 registerStoreIpc(ctx);
+registerShxIpc(ctx);
 registerMenuIpc(ctx);
 registerUpdatesIpc(ctx);
+const fontMetricsHost = process.platform === 'win32' ? createFontMetricsHost() : null;
+if (fontMetricsHost) ipcMain.handle('font-metrics', (_event, request) => fontMetricsHost.read(request).catch(() => null));
+if (fontMetricsHost) ipcMain.handle('pdf-font', async (_event, request) => {
+  try { return { font: await fontMetricsHost.readPdf(request) }; }
+  catch (error) { return { font: null, problem: String(error?.message || 'Installed font embedding unavailable.') }; }
+});
+app.on('will-quit', () => { void fontMetricsHost?.dispose(); });
 
 // Headless probe used by packaging smoke tests:  jcad --probe-dwg <file.dwg>
 const probeIndex = process.argv.indexOf('--probe-dwg');

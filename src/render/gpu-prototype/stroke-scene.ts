@@ -1,0 +1,501 @@
+import type { DrawingState } from '../../core/document';
+import type { ArcEntity, BlockDef, BlockLookup, CircleEntity, Entity, InsertEntity, LineEntity, PolylineEntity, TextEntity } from '../../core/entities';
+import type { TextGeometryContext } from '../../core/text-metrics';
+import { attributeText, entityGeometryWork, expandInsert, insertTransform, similarityTransform } from '../../core/entities';
+import type { Point } from '../../core/geometry';
+import { resolveAlpha } from '../../core/appearance';
+import { effectiveLinetype, findLinetype } from '../../core/linetypes';
+import { polylineWidthProblem } from '../../core/polyline-widths';
+import { placedText, textPlacementProblem, transformedTextAnchors } from '../../core/text-placement';
+import { TEXT_STYLES_META_KEY, textStyleOf, textStylesOf } from '../../io/encoding';
+import { colorDisplay, lineweightDisplay, resolveColor, resolveLineWidth } from '../draw';
+import { expandControlCodes, glyphFor, hasStrokeFont, strokeText, strokeTextWidth, textRenderer } from '../hershey';
+import type { Gpu2DOverlay, Gpu2DView } from './geometry2d';
+import { canvasArcAdmission } from './arc-admission';
+import { assertPrimitiveStrokePrecision, assertStrokePathPrecision, canvasPolylineStrokeProblem } from './stroke-parity';
+import { sourcePrecisionCertificateError, sourceTopologyAdmissionError, isSourcePrecisionCertificateError, isSourceTopologyAdmissionError } from './stroke-precision-error';
+import { isImmutableData } from '../../core/immutable-data';
+import { lowerHatchStrokes } from './hatch-strokes';
+import { lowerDimensionStrokes } from './dimension-strokes';
+import { isNativeDimensionSourceCertificate, type NativeDimensionSourceCertificate } from './dimension-native-source';
+import { preflightDimensionPreparation } from './dimension-budget';
+
+export type LocalStrokeEntity = LineEntity | PolylineEntity | CircleEntity | ArcEntity;
+/** All coordinates are world doubles relative to the copied camera anchor. */
+export type LocalStrokePath =
+  | { readonly kind: 'entity'; readonly entity: LocalStrokeEntity; readonly originalWorldSource?: LocalStrokeEntity }
+  | { readonly kind: 'path'; readonly points: readonly Point[]; readonly closed: boolean;
+      /** Exact canonical WORLD endpoints for hatch provenance, already source-certified. */
+      readonly worldPoints?: readonly [Point, Point] };
+
+/** Exactly one Canvas stroke: glyph subpaths must share a stencil/compositing batch. */
+interface SharedPaintOperation {
+  readonly ownerId: string;
+  readonly paintId: string;
+  readonly sourceId: string;
+  /** Non-painted original hatch boundaries, in anchor-local doubles. */
+  readonly sourcePoints?: readonly Point[];
+  readonly color: readonly [number, number, number];
+  readonly alpha: number;
+  readonly widthCss: number;
+}
+
+export type StrokePaintOperation =
+  | (SharedPaintOperation & { readonly kind: 'stroke'; readonly paths: readonly LocalStrokePath[] })
+  | (SharedPaintOperation & {
+    readonly kind: 'fillTriangle';
+    readonly points: readonly [Point, Point, Point];
+    readonly originalWorldPoints: readonly [Point, Point, Point];
+    readonly dimensionSource: NativeDimensionSourceCertificate;
+    readonly partIndex: number;
+  });
+
+export interface StrokeSceneOptions {
+  /** Captured frame definitions and display-only font context; never drawing metadata. */
+  readonly lookup?: BlockLookup;
+  readonly minRatio?: number;
+  readonly maxRatio?: number;
+  readonly maxEntities?: number;
+  readonly maxPoints?: number;
+  readonly maxWork?: number;
+  readonly maxBlockDepth?: number;
+  /** Retained camera translation in CSS pixels; used by hatch source certification. */
+  readonly panPadding?: number;
+}
+
+export type LoweredStrokeScene =
+  | { readonly ok: false; readonly reason: string; readonly cause?: unknown }
+  | {
+    readonly ok: true;
+    readonly operations: readonly StrokePaintOperation[];
+    readonly minRatio: number;
+    readonly maxRatio: number;
+    /** Original definitions, including nested references; identity changes invalidate reuse. */
+    readonly blockDependencies: ReadonlyMap<string, BlockDef>;
+    /** Raw document identity: textStylesOf's absent-style default creates a fresh object. */
+    readonly textStylesDependency: unknown;
+    readonly textGeometryDependency?: TextGeometryContext;
+    readonly metricKeyDependency?: object;
+    readonly preparedEntities: number;
+  };
+
+const DEFAULT_MAX_ENTITIES = 100_000;
+const DEFAULT_MAX_POINTS = 1_000_000;
+const DEFAULT_MAX_WORK = 1_000_000;
+const MAX_BLOCK_DEPTH = 8; // Keep inside explodeInsert's existing recursion limit.
+const QTEXT_PIXELS = 2.5;
+// Text has no curve approximation: keep its Canvas-world arithmetic difference inside
+// this small part of the quarter-physical-pixel geometry budget. Float32 remains separate.
+const CANVAS_WORLD_PIXEL_ERROR = 0.0625;
+
+/** Conservative binary64 reserve for construction at an original Canvas world origin. */
+export function canvasWorldCoordinatePrecisionProblem(worldMagnitude: number, view: Pick<Gpu2DView, 'scale' | 'dpr'>, maxRatio: number, operationCount = 8): string | null {
+  const bound = Math.abs(worldMagnitude) * Number.EPSILON * operationCount * view.scale * maxRatio * view.dpr;
+  return !Number.isFinite(bound) || bound > CANVAS_WORLD_PIXEL_ERROR ? 'Canvas world-coordinate quantization exceeds construction precision budget' : null;
+}
+
+function pointMagnitude(point: Point): number {
+  finitePoint(point);
+  return Math.max(Math.abs(point.x), Math.abs(point.y));
+}
+
+function sourceCoordinateMagnitude(entity: Entity): number {
+  switch (entity.type) {
+    case 'line': return Math.max(pointMagnitude(entity.a), pointMagnitude(entity.b));
+    case 'polyline': return entity.points.reduce((largest, point) => Math.max(largest, pointMagnitude(point)), 0);
+    case 'circle':
+    case 'arc': return pointMagnitude(entity.center) + Math.abs(entity.radius);
+    case 'insert': return pointMagnitude(entity.position);
+    case 'text': return Math.max(pointMagnitude(entity.position), entity.alignmentPoint ? pointMagnitude(entity.alignmentPoint) : 0, entity.firstAlignmentPoint ? pointMagnitude(entity.firstAlignmentPoint) : 0);
+    default: return 0; // Unsupported leaves already require complete-view Canvas fallback.
+  }
+}
+
+function finitePoint(point: Point): Point {
+  if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new Error('Nonfinite stroke-scene coordinate');
+  return point;
+}
+
+function rgb(css: string): [number, number, number] {
+  const match = /^#([0-9a-f]{6})$/i.exec(css);
+  if (!match) throw new Error('Unsupported stroke-scene display color');
+  const value = Number.parseInt(match[1]!, 16);
+  return [(value >> 16 & 255) / 255, (value >> 8 & 255) / 255, (value & 255) / 255];
+}
+
+function primitiveProblem(entity: Entity, state: DrawingState): string | null {
+  if (entity.annotative) return `Unsupported annotative style (${entity.id})`;
+  const layer = state.layers.find((item) => item.name === entity.layer);
+  const name = effectiveLinetype(entity.linetype, layer?.linetype);
+  if (findLinetype(name, state.header?.linetypes)?.pattern.length) return `Unsupported dashed linetype: ${name} (${entity.id})`;
+  if (resolveAlpha(entity, state.layers) !== 1) return `Unsupported transparency (${entity.id})`;
+  switch (entity.type) {
+    case 'line': return null;
+    case 'dimension': return null;
+    case 'hatch': return null; // Original-world phase, opacity and geometry are checked below.
+    case 'text': return entity.bold ? `Unsupported bold stroke text (${entity.id})` : null;
+    case 'circle': return entity.filled ? `Unsupported filled circle (${entity.id})` : null;
+    case 'arc': {
+      const admission = canvasArcAdmission(entity);
+      return admission.ok ? null : `${admission.reason} (${entity.id})`;
+    }
+    case 'polyline': {
+      const strokeProblem = canvasPolylineStrokeProblem(entity);
+      if (strokeProblem) throw sourceTopologyAdmissionError(`${strokeProblem} (${entity.id})`);
+      const problem = polylineWidthProblem(entity);
+      if (problem) return `${problem} (${entity.id})`;
+      return entity.filled || entity.widthFrame || (entity.width ?? 0) !== 0 || entity.widths?.some((width) => width.start !== 0 || width.end !== 0)
+        ? `Unsupported polyline width or fill (${entity.id})` : null;
+    }
+    default: return `Unsupported entity: ${entity.type} (${entity.id})`;
+  }
+}
+
+function localEntity(entity: LocalStrokeEntity, local: (point: Point) => Point): LocalStrokeEntity {
+  switch (entity.type) {
+    case 'line': return { ...entity, a: local(entity.a), b: local(entity.b) };
+    case 'polyline': {
+      if (entity.bulges?.some((value) => !Number.isFinite(value))) throw new Error(`Nonfinite polyline bulge (${entity.id})`);
+      return { ...entity, points: entity.points.map(local) };
+    }
+    case 'circle':
+    case 'arc': {
+      if (!Number.isFinite(entity.radius) || entity.radius < 0 || (entity.type === 'arc' && ![entity.startAngle, entity.endAngle].every(Number.isFinite))) throw new Error(`Invalid curve geometry (${entity.id})`);
+      return { ...entity, center: local(entity.center) };
+    }
+  }
+}
+
+/**
+ * Compile the whole layer-visible scene before any GL submission. Refusal exposes no partial
+ * operations. Expansion and text placement operate after camera rebasing, never at huge world
+ * glyph origins. The source drawing, definitions, text-style registry and anchors stay untouched.
+ * Geometry packing/clipping and curve-error checks remain the renderer's responsibility.
+ */
+export function lowerStrokeScene(state: DrawingState, view: Gpu2DView, overlay: Gpu2DOverlay, options: StrokeSceneOptions = {}): LoweredStrokeScene {
+  const previousPaper = colorDisplay.paper, previousWeights = { ...lineweightDisplay };
+  try {
+    if (![view.width, view.height, view.scale, view.dpr, view.center.x, view.center.y, view.twist].every(Number.isFinite) || view.width <= 0 || view.height <= 0 || view.scale <= 0 || view.dpr <= 0) throw new Error('Invalid stroke-scene view');
+    let minRatio = options.minRatio ?? 0.8, maxRatio = options.maxRatio ?? 1.25;
+    if (!Number.isFinite(minRatio) || !Number.isFinite(maxRatio) || minRatio <= 0 || minRatio > 1 || maxRatio < 1) throw new Error('Invalid stroke-scene zoom interval');
+    const maxEntities = options.maxEntities ?? DEFAULT_MAX_ENTITIES;
+    const maxPoints = options.maxPoints ?? DEFAULT_MAX_POINTS;
+    const maxWork = options.maxWork ?? DEFAULT_MAX_WORK;
+    const maxDepth = options.maxBlockDepth ?? MAX_BLOCK_DEPTH;
+    if (![maxEntities, maxPoints, maxWork, maxDepth].every((value) => Number.isSafeInteger(value) && value >= 0) || maxDepth > MAX_BLOCK_DEPTH) throw new Error('Invalid stroke-scene geometry budget');
+    const hidden = new Set(state.layers.filter((layer) => !layer.visible).map((layer) => layer.name));
+    const dependencies = new Map<string, BlockDef>();
+    const sourceLookup: BlockLookup = options.lookup ?? ((name: string): BlockDef | undefined => state.blocks[name]);
+    const textGeometry = sourceLookup.textGeometry, metricKey = textGeometry?.cacheKey;
+    const lookup: BlockLookup = Object.assign((name: string) => sourceLookup(name), { textGeometry });
+    let work = 0, visits = 0, preparedEntities = 0, points = 0;
+    const spend = (amount: number): void => {
+      work += amount;
+      if (!Number.isSafeInteger(work) || work > maxWork) throw new Error('Stroke-scene expansion exceeds work budget');
+    };
+    const countPoints = (amount: number): void => {
+      points += amount;
+      if (points > maxPoints) throw new Error('Stroke-scene geometry exceeds point budget');
+    };
+    // Preflight all reference paths: core expansion can silently skip missing/deep references.
+    // Do not prune an insert on a hidden layer: explicit-layer descendants can remain visible.
+    // Keep native construction in expansion order. Point displacement alone cannot prove
+    // stroke normals/joins when world rounding collapses a short segment.
+    let canvasSources: Entity[] = [];
+    const canvasSource = (entity: Entity): void => {
+      if (canvasSources.length >= maxEntities) throw new Error('Stroke-scene native preflight exceeds entity budget');
+      canvasSources.push(entity);
+    };
+    const preflightInsert = (insert: InsertEntity, chain: readonly string[]): void => {
+      if (++visits > maxEntities) throw new Error('Stroke-scene expansion exceeds reference budget');
+      if (chain.length > maxDepth) throw new Error('Stroke-scene block nesting exceeds depth budget');
+      if (chain.includes(insert.block)) throw new Error(`Cyclic block reference: ${insert.block}`);
+      if (!Number.isFinite(insert.scale) || insert.scale <= 0 || (insert.scaleY !== undefined && insert.scaleY !== insert.scale) || insert.mirror || !Number.isFinite(insert.rotation)) throw new Error(`Unsupported block transform (${insert.id})`);
+      if ((insert.rows ?? 1) !== 1 || (insert.columns ?? 1) !== 1) throw new Error(`Unsupported block array (${insert.id})`);
+      if (insert.annotative) throw new Error(`Unsupported annotative block (${insert.id})`);
+      finitePoint(insert.position);
+      const block = lookup(insert.block);
+      if (!block) throw new Error(`Missing block definition: ${insert.block}`);
+      if (block.xref) throw new Error(`Unsupported external reference: ${insert.block}`);
+      finitePoint(block.basePoint);
+      dependencies.set(insert.block, block);
+      const transform = insertTransform(insert, block);
+      for (const child of block.entities) {
+        spend(entityGeometryWork(child));
+        // Canvas constructs every expanded primitive at the world INSERT origin. This
+        // reserve also covers pure LINE blocks; standalone world LINEs still use their
+        // existing double-subtraction proof without any added origin restriction.
+        const constructionMagnitude = pointMagnitude(insert.position) + 2 * insert.scale * (pointMagnitude(block.basePoint) + sourceCoordinateMagnitude(child));
+        const precisionProblem = canvasWorldCoordinatePrecisionProblem(constructionMagnitude, view, maxRatio, 16 * (chain.length + 1));
+        if (precisionProblem) throw sourcePrecisionCertificateError(`${precisionProblem} in INSERT (${insert.id})`);
+        if (child.type === 'insert' || child.type === 'text' || child.type === 'line' || child.type === 'polyline' || child.type === 'circle' || child.type === 'arc') {
+          const moved = similarityTransform(child, transform, insert.rotation, insert.scale);
+          if (moved.type === 'insert') preflightInsert(moved, [...chain, insert.block]);
+          else canvasSource(moved);
+        }
+      }
+      for (const attribute of block.attributes) {
+        spend(1 + attribute.default.length);
+        if (attribute.invisible || insert.hiddenAttributes?.includes(attribute.tag)) continue;
+        const value = insert.attributes[attribute.tag] ?? attribute.default;
+        if (value) canvasSource(attributeText(insert, block, attribute, value));
+      }
+    };
+    colorDisplay.paper = false;
+    lineweightDisplay.enabled = view.lineweights ?? previousWeights.enabled;
+    lineweightDisplay.pxPerMm = undefined;
+    const styles = textStylesOf(state);
+    const operations: StrokePaintOperation[] = [];
+    const rebase = (point: Point): Point => finitePoint({ x: point.x - view.center.x, y: point.y - view.center.y });
+    const alreadyLocal = (point: Point): Point => finitePoint({ ...point });
+
+    const textPaths = (source: TextEntity, local: (point: Point) => Point, canvasSource: TextEntity, widthCss: number): LocalStrokePath[] => {
+      const rebased = transformedTextAnchors(source, local);
+      const problem = textPlacementProblem(rebased);
+      if (problem) throw new Error(`${problem} (${source.id})`);
+      if (![rebased.height, rebased.rotation, rebased.widthFactor ?? 1, rebased.oblique ?? 0].every(Number.isFinite) || rebased.height <= 0) throw new Error(`Invalid TEXT geometry (${source.id})`);
+      const appearance = textGeometry?.resolve(rebased) ?? textRenderer(textStyleOf(rebased), styles);
+      const nativeAppearance = textGeometry?.resolve(canvasSource) ?? textRenderer(textStyleOf(canvasSource), styles);
+      if (!hasStrokeFont || appearance.kind !== 'stroke' || nativeAppearance.kind !== 'stroke') throw new Error(`Unsupported Canvas font (${source.id})`);
+      if (appearance.shxResourceId !== undefined || nativeAppearance.shxResourceId !== undefined) throw new Error(`Loaded SHX text requires Canvas rendering (${source.id})`);
+      const placed = placedText(rebased, strokeTextWidth);
+      const canvasPlaced = placedText(canvasSource, strokeTextWidth);
+      finitePoint(placed.position);
+      finitePoint(canvasPlaced.position);
+      const px = placed.height * view.scale, wf = placed.widthFactor && placed.widthFactor > 0 ? placed.widthFactor : 1;
+      const slant = placed.oblique ? Math.tan(placed.oblique) : 0;
+      if (![px, wf, slant, placed.rotation].every(Number.isFinite) || px <= 0) throw new Error(`Invalid placed TEXT geometry (${source.id})`);
+      // Canvas strips decoration toggles after placement, so native FIT width uses raw text.
+      const text = placed.text.includes('%%') ? placed.text.replace(/%%[uUoOkK]/g, '') : placed.text;
+      const c = Math.cos(placed.rotation), s = Math.sin(placed.rotation);
+      const at = (x: number, y: number): Point => finitePoint({ x: placed.position.x + x * c - y * s, y: placed.position.y + x * s + y * c });
+      const canvasPx = canvasPlaced.height * view.scale;
+      if (!Number.isFinite(canvasPx) || (canvasPx < QTEXT_PIXELS) !== (px < QTEXT_PIXELS)) throw new Error(`Canvas world TEXT placement changes QTEXT decision (${source.id})`);
+      const parity = (maxX: number, maxY: number, placeholder: boolean): void => {
+        const basis = (entity: TextEntity): readonly [number, number, number, number] => {
+          const cos = Math.cos(entity.rotation), sin = Math.sin(entity.rotation);
+          const width = entity.widthFactor && entity.widthFactor > 0 ? entity.widthFactor : 1;
+          const shear = placeholder ? 0 : entity.oblique ? Math.tan(entity.oblique) : 0;
+          return [entity.height * width * cos, entity.height * (shear * cos - sin), entity.height * width * sin, entity.height * (shear * sin + cos)];
+        };
+        const a = basis(placed), b = basis(canvasPlaced);
+        const dx = Math.abs((canvasPlaced.position.x - view.center.x) - placed.position.x) + maxX * Math.abs(a[0] - b[0]) + maxY * Math.abs(a[1] - b[1]);
+        const dy = Math.abs((canvasPlaced.position.y - view.center.y) - placed.position.y) + maxX * Math.abs(a[2] - b[2]) + maxY * Math.abs(a[3] - b[3]);
+        const tc = Math.abs(Math.cos(view.twist)), ts = Math.abs(Math.sin(view.twist));
+        // QTEXT adds offsets in screen space. Readable Hershey glyphs add them in world
+        // space, so a huge world origin can round away offsets that rebasing preserves.
+        const magnitude = Math.max(Math.abs(canvasPlaced.position.x), Math.abs(canvasPlaced.position.y)) + maxX * Math.max(Math.abs(b[0]), Math.abs(b[2])) + maxY * Math.max(Math.abs(b[1]), Math.abs(b[3]));
+        const rounding = placeholder ? 0 : magnitude * Number.EPSILON * 8;
+        const physical = (Math.max(tc * dx + ts * dy, ts * dx + tc * dy) + rounding) * view.scale * maxRatio * view.dpr;
+        if (!Number.isFinite(physical) || physical > CANVAS_WORLD_PIXEL_ERROR) throw sourcePrecisionCertificateError(`Canvas world-coordinate quantization exceeds TEXT precision budget (${source.id})`);
+      };
+      if (px < QTEXT_PIXELS) {
+        // Keep every reused frame strictly on this side of Canvas's '< 2.5' decision.
+        maxRatio = Math.min(maxRatio, QTEXT_PIXELS / Math.max(px, canvasPx) * (1 - 8 * Number.EPSILON));
+        if (maxRatio < 1) throw new Error(`TEXT is too close to QTEXT threshold (${source.id})`);
+        const width = text.length * placed.height * 0.8 * wf;
+        const offset = placed.align === 'center' ? -width / 2 : placed.align === 'right' ? -width : 0;
+        parity(text.length * 0.8, 0, true);
+        countPoints(2);
+        const points = [at(offset, 0), at(offset + width, 0)];
+        const nativeWidth = text.length * canvasPlaced.height * 0.8 * (canvasPlaced.widthFactor ?? 1);
+        const nativeOffset = canvasPlaced.align === 'center' ? -nativeWidth / 2 : canvasPlaced.align === 'right' ? -nativeWidth : 0;
+        const cc = Math.cos(canvasPlaced.rotation), cs = Math.sin(canvasPlaced.rotation);
+        const nativeAt = (x: number): Point => ({ x: canvasPlaced.position.x - view.center.x + x * cc, y: canvasPlaced.position.y - view.center.y + x * cs });
+        assertStrokePathPrecision(points, [nativeAt(nativeOffset), nativeAt(nativeOffset + nativeWidth)], false, widthCss, view, maxRatio, true);
+        return [{ kind: 'path', points, closed: false }];
+      }
+      // New-scale multiplication can round differently from a cached ratio division.
+      // A small reserve rebuilds before that ambiguity; the current readable frame stays valid.
+      minRatio = Math.max(minRatio, Math.min(1, QTEXT_PIXELS / Math.min(px, canvasPx) * (1 + 8 * Number.EPSILON)));
+      // Refuse before glyph arrays are allocated: maxPoints must bound preparation as well
+      // as the returned scene. Count the same expanded/fallback glyphs the Canvas font uses.
+      let maxX = 0, maxY = 0;
+      const unitWidth = strokeTextWidth(text, 1);
+      let pen = placed.align === 'center' ? -unitWidth / 2 : placed.align === 'right' ? -unitWidth : 0;
+      for (const character of expandControlCodes(text)) {
+        const glyph = glyphFor(character) ?? glyphFor('?');
+        if (glyph) {
+          for (const stroke of glyph.strokes) {
+            countPoints(stroke.length);
+            for (const [x, y] of stroke) { maxX = Math.max(maxX, Math.abs(pen + x)); maxY = Math.max(maxY, Math.abs(y)); }
+          }
+          pen += glyph.advance;
+        }
+      }
+      parity(maxX, maxY, false);
+      // Compare one transient glyph subpath at a time, before strokeText allocates the
+      // complete output. Use Canvas's exact world-add order rather than lifting local points.
+      const alignedOffset = (height: number, align: TextEntity['align']): number => {
+        const width = strokeTextWidth(text, height);
+        return align === 'center' ? -width / 2 : align === 'right' ? -width : 0;
+      };
+      let localPen = alignedOffset(placed.height, placed.align), nativePen = alignedOffset(canvasPlaced.height, canvasPlaced.align);
+      const cc = Math.cos(canvasPlaced.rotation), cs = Math.sin(canvasPlaced.rotation);
+      const nwf = canvasPlaced.widthFactor && canvasPlaced.widthFactor > 0 ? canvasPlaced.widthFactor : 1;
+      const nslant = canvasPlaced.oblique ? Math.tan(canvasPlaced.oblique) : 0;
+      for (const character of expandControlCodes(text)) {
+        const glyph = glyphFor(character) ?? glyphFor('?');
+        if (!glyph) continue;
+        for (const stroke of glyph.strokes) {
+          const localPoints = stroke.map(([x, y]) => { const lx = localPen + x * placed.height, ly = y * placed.height; return at(lx * wf + ly * slant, ly); });
+          const nativePoints = stroke.map(([x, y]) => {
+            const lx = nativePen + x * canvasPlaced.height, ly = y * canvasPlaced.height;
+            const sx = lx * nwf + ly * nslant;
+            return { x: canvasPlaced.position.x + sx * cc - ly * cs, y: canvasPlaced.position.y + sx * cs + ly * cc };
+          });
+          assertStrokePathPrecision(localPoints, nativePoints, false, widthCss, view, maxRatio);
+        }
+        localPen += glyph.advance * placed.height; nativePen += glyph.advance * canvasPlaced.height;
+      }
+      const strokes = strokeText(text, { x: 0, y: 0 }, placed.height, 0, placed.align);
+      return strokes.map((stroke) => {
+        return { kind: 'path', points: stroke.map((point) => at(point.x * wf + point.y * slant, point.y)), closed: false };
+      });
+    };
+
+    for (const owner of state.entities) {
+      if (hidden.has(owner.layer)) continue;
+      spend(entityGeometryWork(owner));
+      const selected = overlay.selection.has(owner.id), hovered = overlay.hover === owner.id && !selected;
+      if (selected && !overlay.solidSelection) throw new Error(`Dashed selection requires Canvas rendering (${owner.id})`);
+      const widthCss = selected ? 2.5 : hovered ? 2 : resolveLineWidth(owner, state.layers, { scale: view.scale, toScreen: rebase });
+      if (!Number.isFinite(widthCss) || widthCss <= 0) throw new Error(`Invalid lineweight (${owner.id})`);
+      let leaves: readonly Entity[] = [owner];
+      let local = rebase;
+      canvasSources = [];
+      let sourceIndex = 0;
+      if (owner.type === 'insert') {
+        preflightInsert(owner, []);
+        // Base-point subtraction and every nested transform now happen in anchor-local doubles.
+        const expanded = expandInsert({ ...owner, position: rebase(owner.position) }, lookup, Math.max(0, maxEntities - preparedEntities));
+        if (expanded.truncated || expanded.cyclic) throw new Error(`Incomplete block expansion (${owner.id})`);
+        leaves = expanded.entities;
+        local = alreadyLocal;
+      }
+      for (const leaf of leaves) {
+        const paired = leaf.type === 'text' || leaf.type === 'line' || leaf.type === 'polyline' || leaf.type === 'circle' || leaf.type === 'arc';
+        const canvasLeaf = paired && owner.type === 'insert' ? canvasSources[sourceIndex++] : leaf;
+        if (paired && (!canvasLeaf || canvasLeaf.type !== leaf.type || canvasLeaf.id !== leaf.id)) throw new Error(`Canvas native preflight does not match block expansion (${owner.id})`);
+        if (hidden.has(leaf.layer)) continue;
+        if (++preparedEntities > maxEntities) throw new Error('Stroke-scene expansion exceeds entity budget');
+        const problem = primitiveProblem(leaf, state);
+        if (problem) throw new Error(problem);
+        let paths: LocalStrokePath[];
+        let sourcePoints: readonly Point[] | undefined;
+        if (leaf.type === 'dimension') {
+          if (owner !== leaf) throw sourceTopologyAdmissionError('Unsupported Canvas stroke construction: dimension block descendants require Canvas');
+          if (!isImmutableData(leaf)) throw sourceTopologyAdmissionError('Unsupported Canvas stroke construction: dimension mutable source requires Canvas');
+          if (selected || hovered) throw sourceTopologyAdmissionError('Unsupported Canvas stroke construction: dimension highlight requires Canvas');
+          const budget = preflightDimensionPreparation(
+            leaf, Math.max(0, maxWork - work), Math.max(0, maxPoints - points), Math.max(0, maxEntities - operations.length),
+          );
+          spend(budget.work);
+          const lowered = lowerDimensionStrokes(leaf, state, {
+            lookup,
+            anchor: view.center, widthCss, alpha: 1, nativeView: view, minRatio, maxRatio,
+            maxParts: budget.partBound, maxPoints: Math.max(0, maxPoints - points),
+            maxTextCharacters: Math.max(budget.inputCharacters, budget.outputCharacters), maxWork: budget.work,
+          });
+          if (!lowered.ok) {
+            if (isSourcePrecisionCertificateError(lowered.cause) || isSourceTopologyAdmissionError(lowered.cause)) throw lowered.cause;
+            throw new Error(lowered.reason, { cause: lowered.cause });
+          }
+          const certificate = lowered.nativeSourceCertificate;
+          if (!isNativeDimensionSourceCertificate(certificate) || certificate.textGeometryDependency !== textGeometry || certificate.metricKeyDependency !== metricKey || lowered.preparationWork !== budget.work || certificate.source !== leaf || certificate.widthCss !== widthCss ||
+            certificate.view.center.x !== view.center.x || certificate.view.center.y !== view.center.y ||
+            certificate.view.scale !== view.scale || certificate.view.dpr !== view.dpr ||
+            certificate.view.width !== view.width || certificate.view.height !== view.height || certificate.view.twist !== view.twist ||
+            certificate.minRatio > minRatio || certificate.maxRatio < maxRatio) {
+            throw sourceTopologyAdmissionError('Unsupported Canvas stroke construction: dimension source certificate is missing or mismatched');
+          }
+          countPoints(lowered.pointCount);
+          spend(lowered.textCharacterCount);
+          if (!lowered.parts.length) {
+            operations.push({
+              kind: 'stroke', ownerId: owner.id, sourceId: leaf.id, paintId: owner.id + ':' + operations.length,
+              paths: [], sourcePoints: certificate.sourcePoints, color: rgb(resolveColor(leaf, state.layers)), widthCss, alpha: 1,
+            });
+          }
+          for (let index = 0; index < lowered.parts.length; index++) {
+            if (operations.length >= maxEntities) throw sourceTopologyAdmissionError('Stroke-scene expansion exceeds operation budget');
+            const part = lowered.parts[index]!;
+            const original = certificate.originalWorldParts[index]!;
+            if (certificate.localParts[index] !== part.source || original.type !== part.source.type || original.id !== part.source.id) {
+              throw sourceTopologyAdmissionError('Unsupported Canvas stroke construction: dimension original WORLD pairing changed');
+            }
+            const paint = {
+              ownerId: owner.id, sourceId: part.source.id, paintId: owner.id + ':' + operations.length,
+              ...(index === 0 ? { sourcePoints: certificate.sourcePoints } : {}),
+              color: rgb(part.colorCss), widthCss: part.widthCss, alpha: part.alpha,
+            };
+            if (part.kind === 'fillTriangle') {
+              if (original.type !== 'polyline' || !certificate.triangleCertificates[index]) {
+                throw sourceTopologyAdmissionError('Unsupported Canvas stroke construction: dimension fill source certificate is missing');
+              }
+              operations.push({
+                ...paint, kind: 'fillTriangle', points: part.points,
+                originalWorldPoints: [original.points[0]!, original.points[1]!, original.points[2]!],
+                dimensionSource: certificate, partIndex: index,
+              });
+            } else if (part.kind === 'text') {
+              if (original.type !== 'text') throw sourceTopologyAdmissionError('Unsupported Canvas stroke construction: dimension native TEXT pairing changed');
+              operations.push({ ...paint, kind: 'stroke', paths: textPaths(part.source, alreadyLocal, original, widthCss) });
+            } else {
+              if (original.type !== 'line' && original.type !== 'polyline' && original.type !== 'circle' && original.type !== 'arc') {
+                throw sourceTopologyAdmissionError('Unsupported Canvas stroke construction: dimension native stroke pairing changed');
+              }
+              operations.push({ ...paint, kind: 'stroke', paths: [{ kind: 'entity', entity: part.source, originalWorldSource: original }] });
+            }
+          }
+          continue;
+        }
+        else if (leaf.type === 'text') paths = textPaths(leaf, local, canvasLeaf as TextEntity, widthCss);
+        else if (leaf.type === 'hatch') {
+          // A transformed block copy would generate a different canonical world phase.
+          // This increment admits only the original top-level immutable source.
+          if (owner !== leaf) throw sourceTopologyAdmissionError(`Hatches inside blocks require Canvas rendering (${leaf.id})`);
+          if (!isImmutableData(leaf)) throw sourceTopologyAdmissionError(`Mutable hatch requires Canvas rendering (${leaf.id})`);
+          const lowered = lowerHatchStrokes(leaf, view, {
+            minRatio, maxRatio, widthCss, alpha: resolveAlpha(leaf, state.layers), selected, hovered,
+            maxPoints: Math.max(0, maxPoints - points), maxWork: Math.max(0, maxWork - work),
+            panPadding: options.panPadding,
+          });
+          if (!lowered.ok) {
+            // Preserve factory identity so a genuine precision refusal can retry its
+            // ordinary interval. Unknown native/allocation errors retain their cause.
+            if (isSourcePrecisionCertificateError(lowered.cause) || isSourceTopologyAdmissionError(lowered.cause)) throw lowered.cause;
+            throw new Error(lowered.reason, { cause: lowered.cause });
+          }
+          minRatio = lowered.minRatio; maxRatio = lowered.maxRatio;
+          // The lowerer preflights this same charge BEFORE canonical generation:
+          // original boundaries plus two local and two copied WORLD points per segment.
+          countPoints(lowered.sourcePoints.length + lowered.paths.length * 4);
+          spend(lowered.preparationWork);
+          paths = [...lowered.paths]; sourcePoints = lowered.sourcePoints;
+        }
+        else if (leaf.type === 'line' || leaf.type === 'polyline' || leaf.type === 'circle' || leaf.type === 'arc') {
+          countPoints(leaf.type === 'polyline' ? leaf.points.length : 2);
+          const entity = localEntity(leaf, local);
+          if (owner.type === 'insert' || leaf.type === 'polyline' || leaf.type === 'line') assertPrimitiveStrokePrecision(entity, canvasLeaf as LocalStrokeEntity, widthCss, view, maxRatio);
+          paths = [{ kind: 'entity', entity }];
+        } else throw new Error(`Unsupported entity: ${leaf.type} (${leaf.id})`);
+        if (operations.length >= maxEntities) throw sourceTopologyAdmissionError('Stroke-scene expansion exceeds operation budget');
+        operations.push({ kind: 'stroke', ownerId: owner.id, sourceId: leaf.id, paintId: `${owner.id}:${operations.length}`, paths, ...(sourcePoints ? { sourcePoints } : {}), color: rgb(resolveColor(leaf, state.layers)), widthCss, alpha: selected || hovered ? 0.95 : 1 });
+      }
+      if (owner.type === 'insert' && sourceIndex !== canvasSources.length) throw new Error(`Canvas native preflight left unmatched block slots (${owner.id})`);
+    }
+    if (textGeometry?.cacheKey !== metricKey) throw new Error('Text geometry context changed during stroke-scene preparation');
+    for (const [name, block] of dependencies) if (lookup(name) !== block) throw new Error(`Block definition changed during stroke-scene preparation: ${name}`);
+    return { ok: true, operations, minRatio, maxRatio, blockDependencies: dependencies, textStylesDependency: state.meta?.[TEXT_STYLES_META_KEY], ...(textGeometry ? { textGeometryDependency: textGeometry, metricKeyDependency: metricKey } : {}), preparedEntities };
+  } catch (error) {
+    const failure = { ok: false as const, reason: error instanceof Error ? error.message : 'Stroke-scene preparation failed' };
+    // Internal admission provenance must survive wrapping without changing public JSON
+    // or exact refusal shapes. Unexpected allocation/graph/glyph errors must stay retryable.
+    Object.defineProperty(failure, 'cause', { value: error });
+    return failure;
+  } finally {
+    colorDisplay.paper = previousPaper;
+    Object.assign(lineweightDisplay, previousWeights);
+  }
+}

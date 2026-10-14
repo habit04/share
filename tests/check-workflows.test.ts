@@ -462,3 +462,17 @@ describe('workflow validation', () => {
     expect(r.out).toMatch(/Windows-only build must contain exactly one unconditional Windows NSIS target/);
   });
 });
+
+describe('local test build without the DWG writer', () => {
+  it('fails when a workflow builds the test app with dist:test:no-dwg', () => {
+    const r = check(withRelease((text) => text.replace('      - run: npm run dist:test\n', '      - run: npm run dist:test:no-dwg\n')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/release\.yml: must not use the local test build without the DWG writer/);
+  });
+
+  it('fails when a workflow sets JCAD_TEST_BUILD_WITHOUT_DWG_WRITER', () => {
+    const r = check(withRelease((text) => text.replace('      - run: npm run dist:test\n', '      - run: npm run dist:test\n        env:\n          JCAD_TEST_BUILD_WITHOUT_DWG_WRITER: "1"\n')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/release\.yml: must not use the local test build without the DWG writer/);
+  });
+});

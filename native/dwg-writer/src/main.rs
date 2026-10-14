@@ -2950,6 +2950,245 @@ mod tests {
     }
 
     #[test]
+    fn retained_table_style_roundtrip_dictionary_survives_dxf_and_native_provenance() {
+        let text = include_str!("../tests/fixtures/legacy-minsert.dxf");
+        let mut source = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes()))
+            .unwrap().read().unwrap();
+        source_schema::capture(text).unwrap().verify(&mut source).unwrap();
+        let style_handle = Handle::new(0x159);
+        let dictionary_handle = Handle::new(0x183);
+        let map_handle = Handle::new(0x184);
+        let assert_links = |document: &CadDocument| {
+            assert_eq!(document.extension_dictionary_handle(style_handle), Some(dictionary_handle));
+            let ObjectType::Dictionary(dictionary) = &document.objects[&dictionary_handle] else { unreachable!() };
+            assert_eq!(dictionary.owner, style_handle);
+            assert!(dictionary.hard_owner);
+            assert_eq!(dictionary.entries, vec![("ACAD_ROUNDTRIP_2008_TABLESTYLE_CELLSTYLEMAP".into(), map_handle)]);
+            let ObjectType::DataObject(map) = &document.objects[&map_handle] else { unreachable!() };
+            assert_eq!(map.owner, dictionary_handle);
+            assert_eq!(map.reactors, vec![dictionary_handle]);
+            assert_eq!(document.object_reactors(map_handle), map.reactors);
+            assert_eq!(document.extension_dictionary_handle(map_handle), map.xdictionary_handle);
+            let acadrust::objects::DataObjectData::CellStyleMap(cells) = &map.data else { unreachable!() };
+            assert_eq!(cells.cells.len(), 3);
+        };
+        let write_reopen = |document: &CadDocument| {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            DwgWriter::write_to_writer(&mut bytes, document).unwrap();
+            bytes.set_position(0);
+            DwgReader::from_stream(bytes).read().unwrap()
+        };
+        let map_metadata = |document: &CadDocument| {
+            // The helper's graph snapshot does not certify generic DataObject
+            // payloads. Compare this retained CELLSTYLEMAP independently, with
+            // only native storage identities replaced by stable graph aliases.
+            let mut value = typed_metadata_value(&document.objects[&map_handle]).unwrap();
+            canonicalize_metadata(&mut value, &metadata_aliases(document).unwrap()).unwrap();
+            value
+        };
+        assert_links(&source);
+        assert!(source.dwg_source_version.is_none());
+        assert!(matches!(&source.objects[&style_handle], ObjectType::TableStyle(style) if style.raw_dxf_codes.is_some()));
+        let reopened = write_reopen(&source);
+        assert_links(&source); // Writer preparation must not mutate the input.
+        assert_links(&reopened);
+        verify_reopening(&source, &reopened).unwrap();
+        equivalent(&map_metadata(&source), &map_metadata(&reopened), "retained CELLSTYLEMAP binary").unwrap();
+        // A native read has no raw DXF cache: native-document provenance must
+        // independently protect the same retained compatibility records.
+        assert!(reopened.dwg_source_version.is_some());
+        assert!(matches!(&reopened.objects[&style_handle], ObjectType::TableStyle(style) if style.raw_dxf_codes.is_none()));
+        let reopened_again = write_reopen(&reopened);
+        assert_links(&reopened_again);
+        verify_reopening(&reopened, &reopened_again).unwrap();
+        equivalent(&map_metadata(&reopened), &map_metadata(&reopened_again), "retained CELLSTYLEMAP native resave").unwrap();
+
+        let baseline = metadata_snapshot(&reopened).unwrap();
+        let map_baseline = map_metadata(&reopened);
+        for change in 0..7 {
+            let mut changed = reopened.clone();
+            if change < 4 {
+                let ObjectType::Dictionary(dictionary) = changed.objects.get_mut(&dictionary_handle).unwrap() else { unreachable!() };
+                match change {
+                    0 => dictionary.entries.clear(),
+                    1 => dictionary.entries[0].0 = "Changed compatibility key".into(),
+                    2 => dictionary.hard_owner = false,
+                    _ => dictionary.owner = Handle::NULL,
+                }
+            } else {
+                let ObjectType::DataObject(map) = changed.objects.get_mut(&map_handle).unwrap() else { unreachable!() };
+                match change {
+                    4 => map.owner = Handle::NULL,
+                    5 => map.reactors.clear(),
+                    _ => {
+                        let acadrust::objects::DataObjectData::CellStyleMap(cells) = &mut map.data else { unreachable!() };
+                        cells.cells[0].name = "Changed cell style".into();
+                    }
+                }
+            }
+            if change < 4 {
+                assert!(metadata_snapshot(&changed).and_then(|snapshot|
+                    equivalent(&baseline, &snapshot, "retained TABLESTYLE dictionary mutation")).is_err(), "{change}");
+            } else {
+                assert!(equivalent(&map_baseline, &map_metadata(&changed),
+                    "retained CELLSTYLEMAP mutation").is_err(), "{change}");
+            }
+        }
+    }
+
+    #[test]
+    fn data_object_typed_common_links_do_not_require_native_reader_side_caches() {
+        use acadrust::objects::{CellStyleMap, DataObject, DataObjectData, Dictionary};
+        let mut document = metadata_document(0);
+        let root = document.header.named_objects_dict_handle;
+        let handle = Handle::new(0xFFFFFD);
+        let extension = Handle::new(0xFFFFFE);
+        let mut map = DataObject::new(DataObjectData::CellStyleMap(CellStyleMap::default()));
+        map.handle = handle;
+        map.owner = root;
+        map.reactors = vec![root, handle];
+        map.xdictionary_handle = Some(extension);
+        let mut dictionary = Dictionary::new();
+        dictionary.handle = extension;
+        // A typed explicit reference must be observable without inferring the
+        // dictionary from its owner or populating native reader side caches.
+        dictionary.owner = root;
+        document.objects.insert(handle, ObjectType::DataObject(map));
+        document.objects.insert(extension, ObjectType::Dictionary(dictionary));
+        assert_eq!(document.object_reactors(handle), vec![root, handle]);
+        assert_eq!(document.extension_dictionary_handle(handle), Some(extension));
+        let before = metadata_snapshot(&document).unwrap();
+        for change in 0..3 {
+            let mut changed = document.clone();
+            let ObjectType::DataObject(map) = changed.objects.get_mut(&handle).unwrap() else { unreachable!() };
+            match change {
+                0 => map.reactors.reverse(),
+                1 => map.reactors.clear(),
+                _ => map.xdictionary_handle = None,
+            }
+            assert!(metadata_snapshot(&changed).and_then(|snapshot|
+                equivalent(&before, &snapshot, "typed DataObject common links")).is_err(), "{change}");
+        }
+        let ObjectType::DataObject(map) = document.objects.get_mut(&handle).unwrap() else { unreachable!() };
+        map.xdictionary_handle = Some(Handle::NULL);
+        assert_eq!(document.extension_dictionary_handle(handle), None);
+    }
+
+    #[test]
+    fn constructor_table_style_still_discards_only_its_stale_roundtrip_records() {
+        let text = include_str!("../tests/fixtures/legacy-minsert.dxf");
+        let mut source = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes()))
+            .unwrap().read().unwrap();
+        source_schema::capture(text).unwrap().verify(&mut source).unwrap();
+        assert!(source.dwg_source_version.is_none());
+        let style_handle = Handle::new(0x159);
+        let dictionary_handle = Handle::new(0x183);
+        let map_handle = Handle::new(0x184);
+        let ObjectType::TableStyle(prepared) = &source.objects[&style_handle] else { unreachable!() };
+        // Programmatically construct a style carrying native row values, while
+        // deliberately attaching the stale dictionary used by this control.
+        let mut generated = acadrust::objects::TableStyle::new(&prepared.name);
+        generated.handle = style_handle;
+        generated.owner_handle = prepared.owner_handle;
+        generated.modern_unknown_byte = prepared.modern_unknown_byte;
+        generated.modern_unknown_long1 = prepared.modern_unknown_long1;
+        generated.modern_unknown_long2 = prepared.modern_unknown_long2;
+        generated.modern_cell_style_handle = prepared.modern_cell_style_handle;
+        generated.modern_style = prepared.modern_style.clone();
+        generated.modern_overrides = prepared.modern_overrides.clone();
+        assert!(generated.raw_dxf_codes.is_none());
+        source.objects.insert(style_handle, ObjectType::TableStyle(generated));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut bytes, &source).unwrap();
+        assert!(source.objects.contains_key(&map_handle));
+        bytes.set_position(0);
+        let reopened = DwgReader::from_stream(bytes).read().unwrap();
+        let ObjectType::Dictionary(dictionary) = &reopened.objects[&dictionary_handle] else { unreachable!() };
+        assert_eq!(dictionary.owner, style_handle);
+        assert!(dictionary.hard_owner && dictionary.entries.is_empty());
+        assert!(!reopened.objects.contains_key(&map_handle));
+    }
+
+    #[test]
+    fn retained_legacy_minserts_style_has_exact_modern_binary_semantics() {
+        let text = include_str!("../tests/fixtures/legacy-minsert.dxf");
+        let mut source = DxfReader::from_reader(std::io::Cursor::new(text.as_bytes())).unwrap().read().unwrap();
+        let handle = Handle::new(0x159);
+        let ObjectType::TableStyle(original) = source.objects[&handle].clone() else { unreachable!() };
+        assert!(original.modern_style.is_none() && original.raw_dxf_codes.is_some());
+        assert_eq!(original.modern_overrides.len(), 3);
+        source_schema::capture(text).unwrap().verify(&mut source).unwrap();
+        let ObjectType::TableStyle(prepared) = &source.objects[&handle] else { unreachable!() };
+        assert_eq!(prepared.modern_overrides, original.modern_overrides);
+        assert_eq!(prepared.raw_dxf_codes, original.raw_dxf_codes);
+        assert!(prepared.modern_style.is_some());
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut bytes, &source).unwrap();
+        bytes.set_position(0);
+        let reopened = DwgReader::from_stream(bytes).read().unwrap();
+        verify_reopening(&source, &reopened).unwrap();
+        let baseline = metadata_snapshot(&source).unwrap();
+        for change in 0..5 {
+            let mut changed = reopened.clone();
+            let ObjectType::TableStyle(style) = changed.objects.get_mut(&handle).unwrap() else { unreachable!() };
+            match change {
+                0 => style.modern_unknown_long1 ^= 1,
+                1 => style.modern_style.as_mut().unwrap().cell_style.horizontal_margin += 1.0,
+                2 => style.modern_overrides[2].1.cell_style.content_format.text_height += 1.0,
+                3 => style.modern_overrides[2].1.cell_style.content_format.text_style = Handle::NULL,
+                _ => style.owner_handle = Handle::NULL,
+            }
+            assert!(equivalent(&baseline, &metadata_snapshot(&changed).unwrap(), "retained legacy native mutation").is_err());
+        }
+        for change in 0..9 {
+            let mut changed = original.clone();
+            match change {
+                0 => changed.description = "retained description".into(),
+                1 => changed.version = 1,
+                2 => changed.flow_direction = acadrust::objects::TableFlowDirection::Up,
+                3 => changed.annotative = true,
+                4 => changed.data_row_style.fill_color = acadrust::types::Color::Index(1),
+                5 => changed.data_row_style.text_height += 1.0,
+                6 => changed.data_row_style.text_style_name = "Missing".into(),
+                7 => changed.modern_overrides[2].1.cell_style.content_format.text_style = Handle::NULL,
+                _ => changed.data_row_style.top_border.line_weight = acadrust::types::LineWeight::ByLayer,
+            }
+            assert!(generated_table_style::canonical_retained_legacy_table_style(&source, &changed).is_err(), "{change}");
+        }
+        // Nondefault values with actual native slots are retained, rather than
+        // exempted as a stock Standard style or compared with defaults.
+        let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+        let mut kind = String::new();
+        let mut first_height = true;
+        let mut cell = 0;
+        for index in (0..lines.len()).step_by(2) {
+            let code = lines[index].trim().parse::<i32>().unwrap();
+            let value = lines[index + 1].clone();
+            if code == 0 { kind = value.trim().into(); }
+            if kind == "TABLESTYLE" {
+                match code {
+                    71 => lines[index + 1] = "8".into(),
+                    40 => lines[index + 1] = "0.37".into(),
+                    41 => lines[index + 1] = "0.23".into(),
+                    140 if first_height => { lines[index + 1] = "0.8".into(); first_height = false; }
+                    _ => (),
+                }
+            }
+            if kind == "CELLSTYLEMAP" {
+                if code == 1 && value == "TABLEFORMAT_BEGIN" { cell += 1; }
+                if code == 144 && cell == 3 { lines[index + 1] = "0.8".into(); }
+            }
+        }
+        let nondefault = lines.join("\n") + "\n";
+        let mut source = DxfReader::from_reader(std::io::Cursor::new(nondefault.as_bytes().to_vec())).unwrap().read().unwrap();
+        source_schema::capture(&nondefault).unwrap().verify(&mut source).unwrap();
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut bytes, &source).unwrap(); bytes.set_position(0);
+        let reopened = DwgReader::from_stream(bytes).read().unwrap();
+        verify_reopening(&source, &reopened).unwrap();
+    }
+
+    #[test]
     fn table_style_legacy_none_colors_and_trailing_xdata_are_preserved_or_refused() {
         let legacy = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nOBJECTS\n0\nTABLESTYLE\n5\n200\n330\nC\n100\nAcDbTableStyle\n3\nControlled\n70\n0\n71\n0\n7\nStandard\n62\n257\n63\n257\n64\n257\n0\nENDSEC\n0\nEOF\n";
         let mut document = DxfReader::from_reader(std::io::Cursor::new(legacy.as_bytes()))
@@ -2972,14 +3211,11 @@ mod tests {
             acadrust::types::Color::None
         );
         let retained = style.clone();
-        source_schema::capture(legacy)
+        assert!(source_schema::capture(legacy)
             .unwrap()
             .verify(&mut document)
-            .unwrap();
-        assert_eq!(
-            document.objects[&Handle::new(0x200)],
-            ObjectType::TableStyle(retained)
-        );
+            .unwrap_err().contains("_DATA row"));
+        assert_eq!(document.objects[&Handle::new(0x200)], ObjectType::TableStyle(retained));
         // Source identity, not raw/modern shape, excludes an explicit record
         // from constructor materialization even if its raw cache is cleared.
         let mut without_raw_cache = document.clone();
@@ -2991,13 +3227,11 @@ mod tests {
             unreachable!()
         };
         style.raw_dxf_codes = None;
-        source_schema::capture(legacy)
+        assert!(source_schema::capture(legacy)
             .unwrap()
             .verify(&mut without_raw_cache)
-            .unwrap();
-        assert!(
-            matches!(&without_raw_cache.objects[&Handle::new(0x200)], ObjectType::TableStyle(style) if style.modern_style.is_none())
-        );
+            .is_err());
+        assert!(matches!(&without_raw_cache.objects[&Handle::new(0x200)], ObjectType::TableStyle(style) if style.modern_style.is_none()));
         assert!(retained_metadata(&document.objects[&Handle::new(0x200)]));
         let baseline = typed_metadata_value(&document.objects[&Handle::new(0x200)]).unwrap();
         let ObjectType::TableStyle(style) = document.objects.get_mut(&Handle::new(0x200)).unwrap()

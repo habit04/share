@@ -58,14 +58,26 @@ export interface MTextEntity extends EntityBase {
   readonly field?: FieldLink;
   readonly columns?: MTextColumns;
   readonly background?: MTextBackground;
+  readonly style?: string;
 }
 
-export type Measure = (text: string, height: number) => number;
+/** The optional run carries the same formatting that the emitted TEXT piece uses. */
+export type Measure = (text: string, height: number, run?: MTextStyle) => number;
+
+/** Painted run bounds after its effective width/shear transforms, relative to its baseline. */
+export interface MTextInk {
+  readonly left: number;
+  readonly right: number;
+  readonly ascent: number;
+  readonly descent: number;
+}
+/** Null means no painted glyphs (for example a space); pen advances are measured separately. */
+export type InkMeasure = (text: string, height: number, run?: MTextStyle) => MTextInk | null;
 
 export const LINE_SPACING = 5 / 3;
 
 /** Word-wrap one paragraph to `width` (0 = no wrapping). Words longer than the width stay whole. */
-export function wrapParagraph(paragraph: string, width: number, height: number, measure: Measure): string[] {
+export function wrapParagraph(paragraph: string, width: number, height: number, measure: Measure, ink?: InkMeasure): string[] {
   if (width <= 0) return [paragraph];
   const words = paragraph.split(/\s+/).filter((w) => w.length > 0);
   if (words.length === 0) return [''];
@@ -73,7 +85,9 @@ export function wrapParagraph(paragraph: string, width: number, height: number, 
   let cur = '';
   for (const w of words) {
     const candidate = cur ? `${cur} ${w}` : w;
-    if (cur && measure(candidate, height) > width + 1e-9) {
+    const bounds = ink?.(candidate, height);
+    const candidateWidth = bounds ? bounds.right - bounds.left : measure(candidate, height);
+    if (cur && candidateWidth > width + 1e-9) {
       lines.push(cur);
       cur = w;
     } else cur = candidate;
@@ -83,9 +97,9 @@ export function wrapParagraph(paragraph: string, width: number, height: number, 
 }
 
 /** All display lines of an MTEXT after wrapping. */
-export function mtextLines(m: Pick<MTextEntity, 'text' | 'width' | 'height'>, measure: Measure): string[] {
+export function mtextLines(m: Pick<MTextEntity, 'text' | 'width' | 'height'>, measure: Measure, ink?: InkMeasure): string[] {
   const out: string[] = [];
-  for (const para of m.text.replace(/\\P/g, '\n').split('\n')) out.push(...wrapParagraph(para, m.width, m.height, measure));
+  for (const para of m.text.replace(/\\P/g, '\n').split('\n')) out.push(...wrapParagraph(para, m.width, m.height, measure, ink));
   return out;
 }
 
@@ -442,13 +456,13 @@ export interface MTextLayout {
 }
 
 /** Lay out an MTEXT into single-line TEXT pieces in world space. */
-export function mtextLayout(m: MTextEntity, measure: Measure): TextEntity[] {
-  return mtextLayoutFull(m, measure).texts;
+export function mtextLayout(m: MTextEntity, measure: Measure, ink?: InkMeasure): TextEntity[] {
+  return mtextLayoutFull(m, measure, ink).texts;
 }
 
 /** Full layout: text pieces plus decoration strokes. */
-export function mtextLayoutFull(m: MTextEntity, measure: Measure): MTextLayout {
-  const result = layoutMText(m, measure);
+export function mtextLayoutFull(m: MTextEntity, measure: Measure, ink?: InkMeasure): MTextLayout {
+  const result = layoutMText(m, measure, ink);
   // Layout may also be called directly by plugins. Invalid derived coordinates must never
   // escape into Canvas/PDF/bounds even when that caller bypasses import validation.
   const finitePoint = (p: Point) => Number.isFinite(p.x) && Number.isFinite(p.y);
@@ -458,13 +472,48 @@ export function mtextLayoutFull(m: MTextEntity, measure: Measure): MTextLayout {
   };
 }
 
-function layoutMText(m: MTextEntity, measure: Measure): MTextLayout {
+function layoutMText(m: MTextEntity, measure: Measure, ink?: InkMeasure): MTextLayout {
   const src = formattedSource(m);
   if (m.columns && m.columns.count > 1) {
     const c = m.columns;
     const { columns: _columns, ...single } = m;
+    const paragraphs = parseMText(src ?? mtextToDxf(m.text), m.height);
+    // Automatic-height balancing remains a separate approximation. Declared, finite heights
+    // can flow the already wrapped lines without changing the source formatting or columns.
+    if (!c.autoHeight && c.count <= 256 && Number.isInteger(c.count) && c.heights.length >= c.count && c.heights.slice(0, c.count).every((h) => Number.isFinite(h) && h > 0)) {
+      const lines = wrappedLines({ ...single, width: c.width }, paragraphs, measure, ink);
+      const columns: MTextLine[][] = Array.from({ length: c.count }, () => []);
+      const spacing = LINE_SPACING * (m.lineSpacing || 1);
+      let index = 0;
+      let usedHeight = 0;
+      for (const line of lines) {
+        if (line.columnBreakBefore && index < c.count - 1) { index += 1; usedHeight = 0; }
+        let column = columns[index]!;
+        const advance = column.length ? line.height * spacing : line.height;
+        const limit = c.heights[index]!;
+        const tolerance = Math.max(limit, usedHeight, advance) * 1e-12;
+        if (column.length && usedHeight + advance > limit + tolerance && index < c.count - 1) {
+          index += 1;
+          usedHeight = 0;
+          column = columns[index]!;
+        }
+        // An oversized first line stays whole; all excess content stays in the last column.
+        usedHeight += column.length ? line.height * spacing : line.height;
+        column.push(line);
+      }
+      const attachmentHeight = columns.reduce((height, column) => Math.max(height, linesHeight(column, spacing, !!ink)), 0);
+      const totalWidth = c.count * c.width + (c.count - 1) * c.gutter;
+      const col = (m.attachment - 1) % 3;
+      const left = col === 0 ? 0 : col === 1 ? -totalWidth / 2 : -totalWidth;
+      const layouts = columns.map((lines, i) => {
+        const physical = c.reversed ? c.count - 1 - i : i;
+        const x = left + physical * (c.width + c.gutter) + (col === 1 ? c.width / 2 : col === 2 ? c.width : 0);
+        return positionedLines({ ...single, id: `${m.id}:col${i}`, position: g.add(m.position, g.rotate({ x, y: 0 }, m.rotation)), width: c.width }, lines, measure, !!ink, attachmentHeight);
+      });
+      return { texts: layouts.flatMap((l) => l.texts), strokes: layouts.flatMap((l) => l.strokes) };
+    }
     const pieces: MTextParagraph[][] = [[]];
-    for (const paragraph of parseMText(src ?? mtextToDxf(m.text), m.height)) {
+    for (const paragraph of paragraphs) {
       if (paragraph.columnBreakBefore && pieces.length < c.count) pieces.push([]);
       pieces[pieces.length - 1]!.push(paragraph);
     }
@@ -474,11 +523,21 @@ function layoutMText(m: MTextEntity, measure: Measure): MTextLayout {
     const layouts = pieces.map((paragraphs, i) => {
       const index = c.reversed ? c.count - 1 - i : i;
       const x = left + index * (c.width + c.gutter) + (col === 1 ? c.width / 2 : col === 2 ? c.width : 0);
-      return formattedLayout({ ...single, id: `${m.id}:col${i}`, position: g.add(m.position, g.rotate({ x, y: 0 }, m.rotation)), width: c.width }, paragraphs, measure);
+      return formattedLayout({ ...single, id: `${m.id}:col${i}`, position: g.add(m.position, g.rotate({ x, y: 0 }, m.rotation)), width: c.width }, paragraphs, measure, ink);
     });
     return { texts: layouts.flatMap((l) => l.texts), strokes: layouts.flatMap((l) => l.strokes) };
   }
-  if (src !== null) return formattedLayout(m, parseMText(src, m.height), measure);
+  if (src !== null) return formattedLayout(m, parseMText(src, m.height), measure, ink);
+  if (ink) {
+    // Keep plain text as one TEXT per complete display line, including blank paragraphs.
+    const style: MTextStyle = { height: m.height, widthFactor: 1, oblique: 0, underline: false, overline: false, strike: false, bold: false, italic: false };
+    const lines = mtextLines(m, measure, ink).map((text): MTextLine => {
+      const bounds = ink(text, m.height);
+      const frag: Frag = { kind: 'text', text, style, width: measure(text, m.height), space: !text.trim(), ...(bounds ? { ink: bounds } : {}) };
+      return { frags: [frag], width: frag.width, height: m.height, align: mtextAlign(m.attachment), explicitAlign: false, paragraphEnd: true, columnBreakBefore: false, whole: true, ...(bounds ? { ink: bounds } : {}) };
+    });
+    return positionedLines(m, lines, measure, true);
+  }
   const { height: H, lines } = mtextExtents(m, measure);
   const lineH = m.height * LINE_SPACING * (m.lineSpacing || 1);
   const row = Math.floor((m.attachment - 1) / 3);
@@ -496,6 +555,7 @@ function layoutMText(m: MTextEntity, measure: Measure): MTextLayout {
       lineWeight: m.lineWeight,
       ...(m.trueColor !== undefined ? { trueColor: m.trueColor } : {}),
       type: 'text',
+      ...(m.style ? { style: m.style } : {}),
       position: g.add(m.position, g.rotate(local, m.rotation)),
       text,
       height: m.height,
@@ -517,49 +577,92 @@ interface Frag {
   style: MTextStyle;
   width: number;
   space: boolean;
+  ink?: MTextInk;
 }
 
 function fragWidth(f: Omit<Frag, 'width'>, measure: Measure): number {
   const s = f.style;
-  if (f.kind === 'text') return measure(f.text.replace(/ /g, ' '), s.height) * s.widthFactor;
+  if (f.kind === 'text') return measure(f.text.replace(/ /g, ' '), s.height, s) * s.widthFactor;
   const h = s.height * STACK_SCALE;
-  const wt = measure(f.top ?? '', h) * s.widthFactor;
-  const wb = measure(f.bottom ?? '', h) * s.widthFactor;
+  const wt = measure(f.top ?? '', h, s) * s.widthFactor;
+  const wb = measure(f.bottom ?? '', h, s) * s.widthFactor;
   return f.stackType === '#' ? wt + wb + s.height * 0.3 : Math.max(wt, wb);
 }
 
-function formattedLayout(m: MTextEntity, paras: MTextParagraph[], measure: Measure): MTextLayout {
-  interface Line {
-    frags: Frag[];
-    width: number;
-    height: number;
-    align: 'left' | 'center' | 'right' | 'justify';
+/** Union an ink rectangle placed at the next pen origin; blank runs contribute no ink. */
+function unionInk(a: MTextInk | undefined, b: MTextInk | null | undefined, x = 0, y = 0): MTextInk | undefined {
+  if (!b) return a;
+  const moved = { left: b.left + x, right: b.right + x, ascent: b.ascent + y, descent: b.descent - y };
+  return a ? { left: Math.min(a.left, moved.left), right: Math.max(a.right, moved.right), ascent: Math.max(a.ascent, moved.ascent), descent: Math.max(a.descent, moved.descent) } : moved;
+}
+
+function fragInk(f: Frag, measure: Measure, ink: InkMeasure): MTextInk | undefined {
+  const s = f.style;
+  if (f.kind === 'text') return ink(f.text.replace(/ /g, ' '), s.height, s) ?? undefined;
+  const h = s.height, sh = h * STACK_SCALE;
+  const wt = measure(f.top ?? '', sh, s) * s.widthFactor, wb = measure(f.bottom ?? '', sh, s) * s.widthFactor;
+  const top = ink(f.top ?? '', sh, s), bottom = ink(f.bottom ?? '', sh, s);
+  if (f.stackType === '/') {
+    const bounds = unionInk(unionInk(undefined, top, (f.width - wt) / 2, h * 0.6), bottom, (f.width - wb) / 2, -h * 0.3);
+    return unionInk(bounds, { left: 0, right: f.width, ascent: h * 0.5, descent: -h * 0.5 });
   }
+  if (f.stackType === '#') {
+    const bounds = unionInk(unionInk(undefined, top, 0, h * 0.45), bottom, wt + h * 0.3);
+    return unionInk(bounds, { left: wt, right: wt + h * 0.3, ascent: h, descent: 0 });
+  }
+  return unionInk(unionInk(undefined, top, 0, h * 0.55), bottom, 0, -h * 0.25);
+}
+
+function fragsInk(frags: readonly Frag[]): MTextInk | undefined {
+  let result: MTextInk | undefined, x = 0;
+  for (const frag of frags) { result = unionInk(result, frag.ink, x); x += frag.width; }
+  return result;
+}
+
+interface MTextLine {
+  frags: Frag[];
+  width: number;
+  height: number;
+  align: 'left' | 'center' | 'right' | 'justify';
+  /** Explicit paragraph alignment fits the reference rectangle; attachment alignment fits ink. */
+  explicitAlign: boolean;
+  paragraphEnd: boolean;
+  columnBreakBefore: boolean;
+  ink?: MTextInk;
+  whole?: boolean;
+}
+
+function wrappedLines(m: MTextEntity, paras: MTextParagraph[], measure: Measure, ink?: InkMeasure): MTextLine[] {
   const defaultAlign = mtextAlign(m.attachment);
-  const lines: Line[] = [];
+  const lines: MTextLine[] = [];
   for (const para of paras) {
     // Fragments: runs split at spaces; a word may span several runs.
     const frags: Frag[] = [];
     for (const it of para.items) {
       if (it.kind === 'stack') {
         const f = { kind: 'stack' as const, text: '', top: it.top, bottom: it.bottom, stackType: it.type, style: it.style, space: false };
-        frags.push({ ...f, width: fragWidth(f, measure) });
+        const frag = { ...f, width: fragWidth(f, measure) };
+        frags.push({ ...frag, ...(ink ? { ink: fragInk(frag, measure, ink) } : {}) });
         continue;
       }
       for (const piece of it.text.split(/( +)/)) {
         if (!piece) continue;
         const f = { kind: 'text' as const, text: piece, style: it.style, space: /^ +$/.test(piece) };
-        frags.push({ ...f, width: fragWidth(f, measure) });
+        const frag = { ...f, width: fragWidth(f, measure) };
+        frags.push({ ...frag, ...(ink ? { ink: fragInk(frag, measure, ink) } : {}) });
       }
     }
     const align = para.align ?? defaultAlign;
     const lineHeight = (fs: Frag[]) => fs.reduce((h, f) => Math.max(h, f.style.height), 0) || m.height;
-    const finish = (fs: Frag[]) => {
+    let firstLine = true;
+    const finish = (fs: Frag[], paragraphEnd = false) => {
       while (fs.length && fs[fs.length - 1]!.space) fs.pop();
-      lines.push({ frags: fs, width: fs.reduce((w, f) => w + f.width, 0), height: lineHeight(fs), align });
+      lines.push({ frags: fs, width: fs.reduce((w, f) => w + f.width, 0), height: lineHeight(fs), align, explicitAlign: para.align !== undefined, paragraphEnd, columnBreakBefore: firstLine && !!para.columnBreakBefore, ...(ink ? { ink: fragsInk(fs) } : {}) });
+      firstLine = false;
     };
     let cur: Frag[] = [];
     let curW = 0;
+    let curInk: MTextInk | undefined;
     let k = 0;
     while (k < frags.length) {
       // Next word = consecutive non-space fragments (plus the spaces before it).
@@ -568,19 +671,45 @@ function formattedLayout(m: MTextEntity, paras: MTextParagraph[], measure: Measu
       while (k < frags.length && !frags[k]!.space) word.push(frags[k++]!);
       const ww = word.reduce((w, f) => w + f.width, 0);
       const visible = word.filter((f) => !f.space);
-      if (m.width > 0 && cur.some((f) => !f.space) && curW + ww > m.width + 1e-9) {
+      // Trailing whitespace is trimmed by finish; it must not trigger a wrap into a new line.
+      if (visible.length === 0) break;
+      const candidateInk = ink ? unionInk(curInk, fragsInk(word), curW) : undefined;
+      const candidateWidth = candidateInk ? candidateInk.right - candidateInk.left : curW + ww;
+      if (m.width > 0 && cur.length && candidateWidth > m.width + 1e-9) {
         finish(cur);
         cur = [...visible];
         curW = visible.reduce((w, f) => w + f.width, 0);
+        curInk = ink ? fragsInk(visible) : undefined;
       } else {
         cur.push(...word);
         curW += ww;
+        curInk = candidateInk;
       }
     }
-    finish(cur);
+    finish(cur, true);
   }
+  return lines;
+}
+
+function linesHeight(lines: readonly MTextLine[], spacing: number, ink = false): number {
+  if (ink && lines.length) {
+    let baseline = 0, bottom = 0;
+    lines.forEach((line, i) => {
+      baseline -= i === 0 ? Math.max(line.height, line.ink?.ascent ?? line.height) : line.height * spacing;
+      bottom = Math.min(bottom, baseline - (line.ink?.descent ?? 0));
+    });
+    return -bottom;
+  }
+  return lines.reduce((h, l, i) => h + (i === 0 ? l.height : l.height * spacing), 0);
+}
+
+function formattedLayout(m: MTextEntity, paras: MTextParagraph[], measure: Measure, ink?: InkMeasure): MTextLayout {
+  return positionedLines(m, wrappedLines(m, paras, measure, ink), measure, !!ink);
+}
+
+function positionedLines(m: MTextEntity, lines: readonly MTextLine[], measure: Measure, ink = false, attachmentHeight?: number): MTextLayout {
   const spacing = LINE_SPACING * (m.lineSpacing || 1);
-  const H = lines.reduce((h, l, i) => h + (i === 0 ? l.height : l.height * spacing), 0);
+  const H = attachmentHeight ?? linesHeight(lines, spacing, ink);
   const row = Math.floor((m.attachment - 1) / 3);
   const col = (m.attachment - 1) % 3;
   const top = row === 0 ? 0 : row === 1 ? H / 2 : H;
@@ -597,8 +726,8 @@ function formattedLayout(m: MTextEntity, paras: MTextParagraph[], measure: Measu
     color: s.color ?? m.color,
     ...(s.trueColor !== undefined ? { trueColor: s.trueColor, colorName: undefined, colorLayer: undefined } : s.color !== undefined ? { trueColor: undefined, colorName: undefined, colorLayer: undefined } : {}),
   });
-  const piece = (text: string, x: number, y: number, s: MTextStyle, h: number) => {
-    if (!text.trim()) return;
+  const piece = (text: string, x: number, y: number, s: MTextStyle, h: number, whole = false) => {
+    if (!whole && !text.trim()) return;
     const c = color(s);
     texts.push({
       id: `${m.id}:${n++}`,
@@ -607,6 +736,7 @@ function formattedLayout(m: MTextEntity, paras: MTextParagraph[], measure: Measu
       lineWeight: m.lineWeight,
       ...c,
       type: 'text',
+      ...(m.style ? { style: m.style } : {}),
       position: toWorld(x, y),
       text: text.replace(/ /g, ' '),
       height: h,
@@ -622,21 +752,29 @@ function formattedLayout(m: MTextEntity, paras: MTextParagraph[], measure: Measu
     strokes.push({ a: toWorld(x0, y), b: toWorld(x1, y), ...(typeof c.color === 'number' ? { color: c.color } : {}), ...(c.trueColor !== undefined ? { trueColor: c.trueColor } : {}) });
   };
   lines.forEach((line, i) => {
-    baseline -= i === 0 ? line.height : line.height * spacing;
+    baseline -= i === 0 && ink ? Math.max(line.height, line.ink?.ascent ?? line.height) : i === 0 ? line.height : line.height * spacing;
     const slack = boxW - line.width;
     let x = boxLeft + (line.align === 'center' ? slack / 2 : line.align === 'right' ? slack : 0);
+    if (ink) {
+      const left = line.ink?.left ?? 0, right = line.ink?.right ?? line.width;
+      if (line.explicitAlign) x = boxLeft + (line.align === 'center' ? (boxW - (right - left)) / 2 - left : line.align === 'right' ? boxW - right : -left);
+      else x = line.align === 'center' ? -(left + right) / 2 : line.align === 'right' ? -right : -left;
+    }
     const gaps = line.frags.filter((f) => f.space).length;
-    const extra = line.align === 'justify' && gaps > 0 && i < lines.length - 1 && m.width > 0 ? slack / gaps : 0;
+    // Every paragraph's final line keeps its natural spacing. An oversized word can make
+    // slack negative; compressing its gaps would move following fragments backwards.
+    const fitSlack = ink && line.ink ? boxW - (line.ink.right - line.ink.left) : slack;
+    const extra = line.align === 'justify' && gaps > 0 && !line.paragraphEnd && m.width > 0 ? Math.max(0, fitSlack) / gaps : 0;
     for (const f of line.frags) {
       const s = f.style;
       const h = s.height;
       const w = f.width + (f.space ? extra : 0);
       if (f.kind === 'text') {
-        piece(f.text, x, baseline, s, h);
+        piece(f.text, x, baseline, s, h, line.whole);
       } else {
         const sh = h * STACK_SCALE;
-        const wt = measure(f.top ?? '', sh) * s.widthFactor;
-        const wb = measure(f.bottom ?? '', sh) * s.widthFactor;
+        const wt = measure(f.top ?? '', sh, s) * s.widthFactor;
+        const wb = measure(f.bottom ?? '', sh, s) * s.widthFactor;
         if (f.stackType === '/') {
           const bar = baseline + h * 0.5;
           piece(f.top ?? '', x + (f.width - wt) / 2, bar + h * 0.1, s, sh);

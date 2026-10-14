@@ -10,6 +10,7 @@ import { describeFileError } from '../file-errors';
 import type { Editor } from './editor';
 import { fallbackUi, type EditorInternals } from './internals';
 import { openErrorText, rememberRecent } from './documents';
+import { SaveAdmission, isStaleSaveAdmission, isSaveAdmissionAuthorizationError } from '../save-admission';
 
 export function projectState(st: EditorInternals): { generation: number; revision: number } {
   return { generation: st.projectGen, revision: st.projectRev };
@@ -111,24 +112,30 @@ export async function saveProject(ed: Editor, st: EditorInternals, saveAs: boole
   const gen = st.projectGen;
   const rev = st.projectRev;
   const snapshot = ed.project;
+  const admission = new SaveAdmission(bridge, 'project');
   const revision = captureRevision();
   const suggest = snapshot.path ?? `${snapshot.name.replace(/\s+/g, '_')}.jcadproj.json`;
   ed.lastFileError = null;
   let written: { path: string; project: Project };
   try {
+    await admission.ready;
     if (direct) {
-      let dest = !saveAs && snapshot.path ? snapshot.path : await bridge.chooseProjectPath!(suggest);
+      const dest = !saveAs && snapshot.path ? snapshot.path : await bridge.chooseProjectPath!(suggest);
       if (!dest) return false;
-      const write = (to: string) => saveQueue.run(to, revision, () => bridge.saveProject!(to, serializeProject(rebaseProject(snapshot, to))));
+      const write = async (to: string) => {
+        await admission.bind(to);
+        return saveQueue.run(to, revision, async () => {
+          const saved = admission.ticket ? await bridge.saveProject!(to, serializeProject(rebaseProject(snapshot, to)), admission.ticket) : await bridge.saveProject!(to, serializeProject(rebaseProject(snapshot, to)));
+          await admission.confirmSaved(saved); return saved;
+        });
+      };
       let r;
       try {
         r = await write(dest);
       } catch (err) {
         // A path the main process does not know (a recovered project from another session): ask where to save.
-        if (!/Unknown project path/.test((err as Error).message) || saveAs) throw err;
-        dest = await bridge.chooseProjectPath!(suggest);
-        if (!dest) return false;
-        r = await write(dest);
+        if (!isSaveAdmissionAuthorizationError(err) || saveAs) throw err;
+        await admission.close(); return ed.saveProject(true);
       }
       const out = rebaseProject(snapshot, dest);
       if (r.status === 'stale') {
@@ -145,14 +152,16 @@ export async function saveProject(ed: Editor, st: EditorInternals, saveAs: boole
       written = { path: p, project: { ...snapshot, path: p } };
     }
   } catch (err) {
+    if (isStaleSaveAdmission(err)) { ed.lastFileError = 'a newer version of the project was saved meanwhile'; return false; }
     // Nothing is marked as saved; the project stays modified (and autosaved). Retry / Save As... come from the save error dialog.
     const info = describeFileError(err, { action: 'save', path: snapshot.path });
     ed.lastFileError = info.message;
     ed.log(`Project not saved: ${info.message}`);
     const choice = ed.hooks.saveError ? await ed.hooks.saveError(info, snapshot.name, { saveAs: true }) : 'cancel';
     if (choice === 'cancel' || st.projectGen !== gen) return false;
+    await admission.close();
     return ed.saveProject(choice === 'saveas' ? true : saveAs);
-  }
+  } finally { await admission.close(); }
   if (st.projectGen !== gen) {
     ed.log(`Project ${snapshot.name} saved: ${written.path} (another project is open now; it is unchanged).`);
     return true;

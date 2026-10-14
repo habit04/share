@@ -64,9 +64,9 @@ describe('linetypes', () => {
     expect(dashArray(dashed, 1, 100)).toEqual([50, 25]);
     expect(dashArray(dashed, 2, 100)).toEqual([100, 50]);
     expect(dashArray(dashed, 1, 1)).toEqual([]); // 0.75 px period -> drawn solid, like AutoCAD
-    // dots become 1 px dashes and odd-length patterns are doubled for the canvas
+    // Dots become 1 px dashes; a positive-only pattern keeps drawing at every repetition.
     expect(dashArray(findLinetype('DOT')!.pattern, 1, 100)).toEqual([1, 25]);
-    expect(dashArray([0.5], 1, 100)).toEqual([50, 50]);
+    expect(dashArray([0.5], 1, 100)).toEqual([50, 0]);
   });
   it('snaps lineweights to the AutoCAD table', () => {
     expect(nearestLineweight(0.33)).toBe(0.35);
