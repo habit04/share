@@ -137,14 +137,21 @@ function* massPropScript(ctx: ToolContext): Step3<void> {
   const solids = yield* selectSolids(ctx, NAME);
   if (solids.length === 0) return;
   const frame = constructionPlaneOf(ctx);
-  let volume = 0, area = 0;
-  let c = { x: 0, y: 0, z: 0 };
+  let volume = 0, area = 0, negative = 0;
+  let c = { x: 0, y: 0, z: 0 }, mean = { x: 0, y: 0, z: 0 };
   let box: { min: Vec3; max: Vec3 } | null = null;
   for (const s of solids) {
     const mp = meshMassProperties(s.mesh);
-    volume += mp.volume;
+    // A volume is a size: a foreign polyface wound inside out (the import keeps its winding) or not
+    // closed can have a negative signed volume, and summing signed values cancels it against the
+    // others. Each solid's own centroid is right either way, so only the weights use the magnitude.
+    const v = Math.abs(mp.volume);
+    if (mp.volume < 0) negative++;
+    volume += v;
     area += mp.area;
-    c = add3(c, scale3(worldToPlane(frame, mp.centroid), mp.volume));
+    const pc = worldToPlane(frame, mp.centroid);
+    c = add3(c, scale3(pc, v));
+    mean = add3(mean, pc);
     const b = boundsInFrame(s.mesh, frame);
     if (b) {
       box = box
@@ -152,7 +159,8 @@ function* massPropScript(ctx: ToolContext): Step3<void> {
         : b;
     }
   }
-  const centroid = volume !== 0 ? scale3(c, 1 / volume) : c;
+  // Volume-weighted; with no volume at all (flat or degenerate meshes) the mean of the solids' own centroids.
+  const centroid = volume > 0 ? scale3(c, 1 / volume) : scale3(mean, 1 / solids.length);
   const f = (v: number) => fl(ctx, v);
   ctx.log('----------------   SOLIDS   ----------------');
   ctx.log(`Solids:        ${solids.length}`);
@@ -166,6 +174,7 @@ function* massPropScript(ctx: ToolContext): Step3<void> {
   ctx.log(`Centroid:      X: ${f(centroid.x)}  Y: ${f(centroid.y)}  Z: ${f(centroid.z)}`);
   const planeName = ctx.constructionPlaneName ?? 'World';
   if (planeName !== 'World') ctx.log(`(coordinates of the ${planeName} construction plane)`);
+  if (negative) ctx.log(`${negative} solid${negative === 1 ? ' has' : 's have'} a negative signed volume (wound inside out, or not closed); the magnitude is counted.`);
   if (solids.length > 1) ctx.log('Values are summed over the solids; overlapping volume counts once per solid.');
 }
 

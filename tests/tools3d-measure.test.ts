@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { Drawing } from '../src/core/document';
 import { WORLD_XY_FRAME, v3 } from '../src/model3d/math';
+import { invertWinding } from '../src/model3d/mesh';
 import { addSolids, newSolid } from '../src/model3d/model';
 import { primitiveMesh } from '../src/model3d/primitives';
 import type { PrimitiveFeature, Solid3D } from '../src/model3d/types';
@@ -113,6 +114,34 @@ describe('mass properties', () => {
     expect(ctx.logs).toContain('Centroid:      X: 6.0000  Y: 1.5000  Z: 2.0000');
     expect(ctx.logs.at(-1)).toMatch(/summed/);
     expect(ctx.selection.size).toBe(0);
+  });
+
+  it('3DMASSPROP counts an inside-out solid as positive volume and weights the centroid by magnitude', async () => {
+    // A foreign polyface wound inside out keeps its winding on import (signed volume -48 here).
+    const a = solidOf(box(0, 0, 0, 2, 3, 4));
+    const out = solidOf(box(10, 0, 0, 2, 3, 8));
+    const inward: Solid3D = { ...out, mesh: invertWinding(out.mesh) };
+    const ctx = fake3dContext(docWith(a, inward));
+    await drive3d(massProp3dTool(), ctx, [{ select: [inward.id] }]);
+    expect(ctx.logs).toContain('Volume:        48.0000');
+    expect(ctx.logs).toContain('Centroid:      X: 11.0000  Y: 1.5000  Z: 4.0000');
+    expect(ctx.logs).toContain('1 solid has a negative signed volume (wound inside out, or not closed); the magnitude is counted.');
+    ctx.logs.length = 0;
+    await drive3d(massProp3dTool(), ctx, [{ select: [a.id, inward.id] }]);
+    // 24 units at (1, 1.5, 2) and 48 units at (11, 1.5, 4): the volume-weighted centroid, not the mean.
+    expect(ctx.logs).toContain('Volume:        72.0000');
+    expect(ctx.logs).toContain('Centroid:      X: 7.6667  Y: 1.5000  Z: 3.3333');
+  });
+
+  it('3DMASSPROP of a zero-volume solid reports its own centroid, not the origin', async () => {
+    // An open quad far from the origin (what a foreign 3D face polyface imports as).
+    const quad = newSolid({ mesh: { positions: [100, 100, 100, 102, 100, 100, 102, 103, 100, 100, 103, 100], indices: [0, 1, 2, 0, 2, 3] }, feature: { kind: 'mesh', source: 'imported' } });
+    const ctx = fake3dContext(docWith(quad));
+    await drive3d(massProp3dTool(), ctx, [{ select: [quad.id] }]);
+    expect(ctx.logs).toContain('Volume:        0.0000');
+    expect(ctx.logs).toContain('Surface area:  6.0000');
+    expect(ctx.logs).toContain('Centroid:      X: 101.0000  Y: 101.5000  Z: 100.0000');
+    expect(ctx.logs.some((l) => /negative signed volume/.test(l))).toBe(false);
   });
 
   it('3DMASSPROP in construction-plane coordinates and with nothing to measure', async () => {
