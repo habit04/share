@@ -35,7 +35,7 @@ completion here does not authorize a release, default switch or merge.
 | 1. GPU diagnostics | Implemented initially at `16abc740`; PR #10 adds bounded collection and clipboard-completion repairs. Combined source `4bad60b2` passed collector/About/copy/report checks and exact-head CI. Adapter activity and unavailable/software states remain explicit. Intel and NVIDIA evidence are recorded below with their source commits. | Require exact CI for each new candidate. Missing adapter data must stay Unknown; capabilities must remain distinct from the renderer actually in use. Stable-branch integration still requires separate approval. |
 | 2. Experimental 2D/simple 3D | The prototype at `2fbae728` and PR #10's pan-cache/recovery milestone have successful source CI. Combined source `4bad60b2` passed both builds, native failure/unavailability, benchmarks and the existing isolated demo checks. See [prototype evidence](GPU-RENDERER-PROTOTYPE.md). | Keep the development flag. Repeat these checks on each changed renderer candidate. Record source SHA, viewport, actual adapter/limits, CPU preparation/submission, completion observations and drawing differences before interpreting speed. |
 | 3. Remaining 2D/reliability | Partly complete: PR #11's pinned `3ce7e10a` batch is integrated in draft PR #12, with seven real Windows batch checks and exact source CI passed. At the October 13, 19:18 UTC read, active draft PR #11 was unmerged/conflicted at `eb692896`; the [remaining checklist](REMAINING-2D-CHECKLIST.md) stays with its owners. [PR #9](https://github.com/habit04/share/pull/9) passed exact source CI at `14cb3f9f` and was merged by another task as stable `8dfe1caa`; v0.4.9 has public Windows release assets. Stable `8dfe1caa` is integrated in this isolated candidate alongside the pinned batch. Clean `455b2662` passed the combined regression suite and all seven real Windows 2D batch checks; clean repair `344ec1a1` also passed all seven native batch checks. The later active PR #11 head is not integrated. | Each remaining fix needs regression and relevant import-edit-save-reopen evidence. Require exact-head CI and source-specific native checks for each new combination. Release metadata does not prove installation. Coordinate the active PR #11 owner before integrating unfinished font/project/dimension work. |
-| 4. Production GPU renderer | Incomplete. Draft [PR #16](https://github.com/habit04/share/pull/16) checkpoint `490a7b04` passed all local checks, both exact-head CI runs, complete Intel/NVIDIA benchmarks and scoped native recovery. Original accuracy/admission assertions remain intact. The fourfold LINE/block/TEXT/ATTRIB cache and native safety guards have source-bound evidence below. The common hatch increment at `86e40da5` passed complete native Intel/NVIDIA runs and both exact-source CI attempts, including its permanent benchmark hook. Dimension source/compiler increments passed targeted checks and are undergoing combined/native validation. Later source and broader production gates require fresh validation. | Pass every production gate below before considering a default change. Canvas stays default; no general performance or untested hardware claim. Record geometry preparation, upload issuance and completed-frame observations separately, and supplement repeated-readback comparisons with ordinary frame-cadence measurements. |
+| 4. Production GPU renderer | Incomplete. Draft [PR #16](https://github.com/habit04/share/pull/16) checkpoint `490a7b04` passed all local checks, both exact-head CI runs, complete Intel/NVIDIA benchmarks and scoped native recovery. Original accuracy/admission assertions remain intact. The fourfold LINE/block/TEXT/ATTRIB cache and native safety guards have source-bound evidence below. The common hatch increment at `86e40da5` passed complete native Intel/NVIDIA runs and both exact-source CI attempts, including its permanent benchmark hook. The dimension compiler passed full local checks and focused native Intel/NVIDIA validation at0423; its permanent gate passed local checks at020b97da, with final combined native/CI acceptance pending. Later source and broader production gates require fresh validation. | Pass every production gate below before considering a default change. Canvas stays default; no general performance or untested hardware claim. Record geometry preparation, upload issuance and completed-frame observations separately, and supplement repeated-readback comparisons with ordinary frame-cadence measurements. |
 | 5. Full 3D development | Already begun on `share/feature/3d-development`, `0f644a7`; [CI passed](https://github.com/habit04/share/actions/runs/38336811063). A separate Open CASCADE/three.js application also exists in [habit04/jcad-3d](https://github.com/habit04/jcad-3d), `c3802fc`, with [successful CI](https://github.com/habit04/jcad-3d/actions/runs/38202841903). | Resolve which architecture owns future 3D integration. Require direct modeling, selection/snapping, dimensions, undo and persistent save/reopen/recovery evidence for the chosen track. Keep stable public 2D independent. Embedded 3D status/validation: [3D-STATUS](https://github.com/habit04/share/blob/feature/3d-development/docs/3D-STATUS.md); separate-app limits: [NOT-TESTED](https://github.com/habit04/jcad-3d/blob/main/docs/NOT-TESTED.md). |
 
 The [October 11 remediation record](REVIEW-FIXES.md) tracks the original **53
@@ -1035,12 +1035,30 @@ The next independently reviewable increment retains these gates:
   existing reserves; full original/owner bounds and neighboring LINE deltas
   remain covered. Blocks, highlights, unretained fills and uncertain sources
   use complete Canvas. These are source and mocked-GL checks.
-- [ ] Validate the combined dimension candidate with all required checks,
-  actual five-kind native raster/color/order, cache and visible edit history,
-  original unsafe controls, context restoration, private edited DXF IPC/reopen
-  against independent pre-save Canvas, and fresh exact-source CI. Frozen978384bc
-  is reuse material. The private helper's 12 real writer/parser/history checks
-  do not replace native app/IPC/GPU/raster evidence.
+- [x] Validate the dimension compiler at clean source `0423d095`: all ten local
+  checks pass (3,590 tests, 28 conditional skips), all61 Node harness tests and
+  five native Windows preflights pass. Both actual Intel/NVIDIA focused runs
+  pass all five kinds,29 comparisons (23GPU/6exact zero-submission Canvas),
+  12 visible edit transitions, original controls, fixed fill/color/order,
+  automatic context restoration and actual edited DXF IPC/reopen against
+  independent original pre-save Canvas (zero raw differences). Both first
+  [PR CI](https://github.com/habit04/share/actions/runs/38491347075) and
+  [push CI](https://github.com/habit04/share/actions/runs/38491341130) attempts pass
+  all five jobs; their wired benchmark still covers32 workloads plus hatch40.
+  [Focused dimension evidence](benchmarks/windows-gpu-dimension-0423-focused.json)
+  distinguishes these gates and retains explicit native anchor/text/hardware limits.
+- [x] Adopt the permanent untimed DIM native gate at `020b97da`. All ten required
+  checks pass:3,602 tests/28conditional skips, three TypeScript projects, full
+  lint, fixtures/workflows and both builds. All78 Node harness tests pass,
+  including17new mock-only cleanup/identity cases. The12real codec/history
+  regressions are included in the full suite. No renderer/runtime code changes
+  from0423; original fixtures, precision/raster assertions and exact refusal
+  provenance remain intact.
+- [ ] Complete the real combined benchmark callback, subsequent recovery gates
+  and exact-source CI with DIM now wired into the frozen candidate. Focused
+  native checks and the prior CI producer do not replace this acceptance.
+  New GPU feature additions stop at this milestone for deliberate 2D/3D integration;
+  see [single-owner handoff](GPU-INTEGRATION-HANDOFF.md).
 - [ ] Complete representative responsiveness and remaining hardware/production gates.
   Later PR11 work remains with its owner; integrating it requires separate fresh
   combined evidence. Canvas stays default. No merge, release or installer is included.
