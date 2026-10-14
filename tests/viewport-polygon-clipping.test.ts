@@ -5,6 +5,8 @@ import { mapCadEntities } from '../src/core/cad-graph';
 import { moveGrip, translateEntity, type PolylineEntity } from '../src/core/entities';
 import { defaultLayout, paperEntities, pointInViewport, viewportAt, type LayoutViewport } from '../src/core/layouts';
 import { readDxf, writeDxf } from '../src/io/dxf';
+import { tokenize } from '../src/io/dxf/groups';
+import { attachDxfCadGraph } from '../src/io/cad-graph-dxf';
 import { importReportOf } from '../src/io/import-report';
 import { drawingContext, layoutPageSpec, renderPdfPages } from '../src/io/pdf-vector';
 import { paintLayout, paperTransform, renderPageToCanvas } from '../src/render/layouts';
@@ -26,6 +28,45 @@ function scene() {
 }
 
 describe('native polygon viewport clipping', () => {
+  it('resolves canonical native viewport, clip, paper-owner and frozen-layer handle aliases without losing retained identities', () => {
+    const native = readFileSync(new URL('./fixtures/interchange/r2018-viewport-polygon.dxf', import.meta.url), 'utf8');
+    const source = readDxf(native), sourceLayout = source.layouts!.find(layout => layout.name === 'Polygon')!;
+    const original = sourceLayout.viewports[0]!, clipNode = source.cadGraph!.nodes.find(node => node.anchor?.kind === 'entity' && node.anchor.id === original.clipBoundary!.id)!;
+    const viewportNode = source.cadGraph!.nodes.find(node => node.anchor?.kind === 'viewport' && node.anchor.id === original.id)!;
+    const owner = source.cadGraph!.nodes.find(node => node.id === clipNode.references!.find(ref => ref.role === 'owner')!.target)!;
+    const layer = source.cadGraph!.nodes.find(node => node.anchor?.kind === 'table' && node.anchor.table === 'LAYER' && node.anchor.name === '0')!;
+    const pairs = tokenize(native), aliases = new Set([clipNode.sourceHandle!, viewportNode.sourceHandle!, owner.sourceHandle!]);
+    for (const pair of pairs) if ([5, 330, 340].includes(pair.code) && aliases.has(pair.value.trim().toUpperCase())) pair.value = `000${pair.value.trim().toLowerCase()}`;
+    const at = pairs.findIndex(pair => pair.code === 5 && pair.value === `000${viewportNode.sourceHandle!.toLowerCase()}`);
+    const end = pairs.findIndex((pair, index) => index > at && pair.code === 0);
+    expect(at).toBeGreaterThan(0); expect(end).toBeGreaterThan(at);
+    pairs.splice(end, 0, { code: 331, value: `000${layer.sourceHandle!.toLowerCase()}` });
+    let state = readDxf(pairs.flatMap(pair => [String(pair.code), pair.value]).join('\r\n') + '\r\n');
+    for (let pass = 0; pass < 3; pass++) {
+      const layout = state.layouts!.find(item => item.name === 'Polygon')!, viewport = layout.viewports[0]!;
+      const boundary = viewport.clipBoundary!;
+      expect(boundary.points).toEqual(original.clipBoundary!.points);
+      expect(viewport.frozenLayers).toEqual(['0']);
+      const retainedClip = state.cadGraph!.nodes.find(node => node.anchor?.kind === 'entity' && node.anchor.id === boundary.id)!;
+      const retainedViewport = state.cadGraph!.nodes.find(node => node.anchor?.kind === 'viewport' && node.anchor.id === viewport.id)!;
+      expect(retainedClip.sourceHandle).toBe(clipNode.sourceHandle);
+      expect(retainedViewport.sourceHandle).toBe(viewportNode.sourceHandle);
+      expect(retainedViewport.references!.find(ref => retainedViewport.groups[ref.groupIndex]![0] === 340)?.target).toBe(retainedClip.id);
+      expect(state.cadGraph!.nodes.find(node => node.id === retainedClip.references!.find(ref => ref.role === 'owner')!.target)!.sourceHandle).toBe(owner.sourceHandle);
+      state = readDxf(writeDxf(state));
+    }
+  });
+
+  it('refuses conflicting native viewport alias associations instead of selecting a different retained viewport', () => {
+    const native = readFileSync(new URL('./fixtures/interchange/r2018-viewport-polygon.dxf', import.meta.url), 'utf8');
+    const source = readDxf(native), viewport = source.layouts!.find(layout => layout.name === 'Polygon')!.viewports[0]!;
+    const handle = source.cadGraph!.nodes.find(node => node.anchor?.kind === 'viewport' && node.anchor.id === viewport.id)!.sourceHandle!;
+    const { cadGraph: _graph, ...bare } = source;
+    const geometry = mapCadEntities(bare, entity => { const { cadIdentity: _identity, ...plain } = entity; return plain; });
+    expect(() => attachDxfCadGraph(geometry, tokenize(native), { viewportHandles: new Map([[handle, viewport.id], [`000${handle.toLowerCase()}`, 'other-viewport']]) })).toThrow(/Ambiguous normalized viewport handle association/);
+    expect(source.layouts!.find(layout => layout.name === 'Polygon')!.viewports[0]).toBe(viewport);
+  });
+
   it('reopens an AutoCAD 2027 normalized native clip and keeps it through an edit/save cycle', () => {
     const state = readDxf(readFileSync(new URL('./fixtures/interchange/r2018-viewport-polygon.dxf', import.meta.url), 'utf8'));
     const layout = state.layouts!.find((l) => l.name === 'Polygon')!;

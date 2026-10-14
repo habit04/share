@@ -36,7 +36,13 @@ import {
 } from '../core/layouts';
 import type { ImportReportBuilder } from './import-report';
 import { importViewportView } from './viewport-view';
-import type { CadGraph, CadGroup } from '../core/cad-graph';
+import { canonicalCadHandle, type CadGraph, type CadGroup } from '../core/cad-graph';
+
+/** The graph attachment reports malformed identities; layout lookup keeps valid aliases canonical. */
+function layoutHandleKey(handle: string): string {
+  try { return canonicalCadHandle(handle.trim()); }
+  catch { return handle.trim().toUpperCase(); }
+}
 
 export interface DxfSink {
   pair(code: number, value: string | number): void;
@@ -516,7 +522,7 @@ export class LayoutReader {
   /** TABLES: BLOCK_RECORD names and LAYER handles (VIEWPORT 331 frozen layers). */
   scanTables(objs: readonly Obj[]): void {
     for (const o of objs) {
-      const h = str(o, 5).toUpperCase();
+      const h = layoutHandleKey(str(o, 5));
       if (o.kind === 'BLOCK_RECORD' && h) this.recordNames.set(h, str(o, 2));
       else if (o.kind === 'LAYER' && h) this.layerNames.set(h, str(o, 2));
     }
@@ -552,7 +558,7 @@ export class LayoutReader {
     for (const lo of this.layoutObjs) {
       const lay = after(lo, 'AcDbLayout');
       const name = str(lay, 1);
-      const record = str(lay, 330).toUpperCase();
+      const record = layoutHandleKey(str(lay, 330));
       const recName = this.recordNames.get(record) ?? '';
       if (!name || /^model$/i.test(name) || /^\*MODEL_SPACE$/i.test(recName)) continue;
       const objs = /^\*PAPER_SPACE$/i.test(recName) || (!recName && out.length === 0) ? this.activePaper : (this.blocks.get(recName.toUpperCase()) ?? []);
@@ -585,7 +591,7 @@ export class LayoutReader {
     const viewports: LayoutViewport[] = [];
     const clipObjects = new Set<Obj>();
     const clipBoundaries = new Map<Obj, import('../core/entities').PolylineEntity>();
-    const byHandle = new Map(rest.map((o) => [str(o, 5).toUpperCase(), o]));
+    const byHandle = new Map(rest.map((o) => [layoutHandleKey(str(o, 5)), o]));
     for (const o of vps) {
       if (o === overall) continue;
       const v = after(o, 'AcDbViewport');
@@ -616,7 +622,7 @@ export class LayoutReader {
         continue;
       }
       for (const reason of view.warnings) this.report?.add({ ...item, action: 'simplified', reason });
-      const clipHandle = str(v, 340).trim().toUpperCase();
+      const clipHandle = layoutHandleKey(str(v, 340));
       const clipObject = clipHandle && clipHandle !== '0' ? byHandle.get(clipHandle) : undefined;
       let clipBoundary = clipObject ? clipBoundaries.get(clipObject) : undefined;
       if (!clipBoundary && clipObject?.kind === 'LWPOLYLINE') {
@@ -631,9 +637,9 @@ export class LayoutReader {
         this.report?.add({ ...item, action: 'simplified', reason: 'its clipping boundary is not a supported closed straight polyline: the viewport shows its whole rectangle; readable boundary geometry is kept' });
       }
       const status = Math.trunc(num(v, 68, 1));
-      const frozen = v.groups.filter((x) => x.code === 331).map((x) => this.layerNames.get(x.value.toUpperCase())).filter((x): x is string => !!x);
+      const frozen = v.groups.filter((x) => x.code === 331).map((x) => this.layerNames.get(layoutHandleKey(x.value))).filter((x): x is string => !!x);
       const id = newViewportId();
-      if (str(o, 5)) this.viewportHandles.set(str(o, 5).trim().toUpperCase(), id);
+      if (str(o, 5)) this.viewportHandles.set(layoutHandleKey(str(o, 5)), id);
       viewports.push({
         id,
         center,

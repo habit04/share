@@ -1,0 +1,5600 @@
+{
+  "outcome": "failed",
+  "sourceSha": "9df70df05cb7f2f473f1d989d3535659160e6a45",
+  "worktreeModified": false,
+  "interpretation": "Diagnostic observations from a failed overall benchmark; not accepted milestone performance",
+  "failure": {
+    "fixture": "compound-dense",
+    "name": "AssertionError",
+    "message": "compound-dense: the edited line must visibly change both completed images before undo"
+  },
+  "hardware": {
+    "adapters": [
+      {
+        "name": "Intel(R) UHD Graphics",
+        "vendorId": "0x8086",
+        "deviceId": "0x4688",
+        "active": true,
+        "driverVendor": "Intel",
+        "driverVersion": "32.0.101.7088"
+      },
+      {
+        "name": "NVIDIA RTX A3000 12GB Laptop GPU",
+        "vendorId": "0x10de",
+        "deviceId": "0x24b9",
+        "active": false,
+        "driverVendor": "Unknown",
+        "driverVersion": "32.0.15.9671"
+      },
+      {
+        "name": "Microsoft Basic Render Driver",
+        "vendorId": "0x1414",
+        "deviceId": "0x008c",
+        "active": false,
+        "driverVendor": "Unknown",
+        "driverVersion": "10.0.26100.9549"
+      }
+    ],
+    "hardwareAcceleration": true,
+    "versions": {
+      "jcad": "0.4.9",
+      "electron": "44.7.0",
+      "chromium": "152.0.7977.130",
+      "windows": "10.0.26200"
+    }
+  },
+  "viewport": {
+    "width": 1216,
+    "height": 552,
+    "dpr": 1
+  },
+  "noReadbackCadence": {
+    "outcome": "passed",
+    "beforeAnyBenchmarkReadback": true,
+    "drawingGetImageDataCalls": 0,
+    "semantics": "CPU mutation/render and consecutive rAF-boundary cadence only; no getImageData, screenshot, toDataURL, GPU fence or completion observation during this phase. Shared fresh drawing context; AB/BA order is balanced across workflows and caches are retained.",
+    "comparisons": {
+      "dense-lines": {
+        "entityCount": 38000,
+        "topLevelTextCharacters": 0,
+        "expandedAttributeCount": 0,
+        "workflows": {
+          "pan": {
+            "canvas": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 47.10000014305115,
+                  "p95": 68.5,
+                  "max": 68.80000019073486
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0.09999990463256836
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 47.10000014305115,
+                  "p95": 68.5,
+                  "max": 68.80000019073486
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 50,
+                  "p95": 67,
+                  "max": 83.39999999999986
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 51.09999990463257,
+                  "p95": 69.90000009536743,
+                  "max": 72.20000004768372
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "actualRendererCounts": {
+                "canvas": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            },
+            "gpu": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 2.0999999046325684,
+                  "p95": 4.200000047683716,
+                  "max": 5.3999998569488525
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.09999990463256836,
+                  "max": 0.09999990463256836
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 2.0999999046325684,
+                  "p95": 4.200000047683716,
+                  "max": 5.3999998569488525
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 16.699999999999818,
+                  "p95": 16.800000000000182,
+                  "max": 16.90000000000009
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 16.600000143051147,
+                  "p95": 16.899999856948853,
+                  "max": 17
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.19999980926513672,
+                  "max": 0.20000004768371582
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 1.6000001430511475,
+                  "p95": 3.5999999046325684,
+                  "max": 4.300000190734863
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 38000,
+                  "p95": 38000,
+                  "max": 38000
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.19999980926513672,
+                  "max": 0.20000004768371582
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 1.6000001430511475,
+                  "p95": 3.5999999046325684,
+                  "max": 4.300000190734863
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 38000,
+                  "p95": 38000,
+                  "max": 38000
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                }
+              },
+              "actualRendererCounts": {
+                "gpu": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            }
+          },
+          "bounded-zoom": {
+            "canvas": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 43.60000014305115,
+                  "p95": 54.200000047683716,
+                  "max": 61.90000009536743
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.10000014305114746,
+                  "max": 0.10000014305114746
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 43.60000014305115,
+                  "p95": 54.299999952316284,
+                  "max": 61.90000009536743
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 50,
+                  "p95": 66.80000000000018,
+                  "max": 66.89999999999964
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 46.90000009536743,
+                  "p95": 55.09999990463257,
+                  "max": 68
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "actualRendererCounts": {
+                "canvas": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            },
+            "gpu": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 1.2000000476837158,
+                  "p95": 1.5999999046325684,
+                  "max": 1.6000001430511475
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.10000014305114746,
+                  "max": 0.10000014305114746
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 1.2999999523162842,
+                  "p95": 1.5999999046325684,
+                  "max": 1.6000001430511475
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 16.699999999999818,
+                  "p95": 16.800000000000182,
+                  "max": 16.800000000000182
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 16.700000047683716,
+                  "p95": 17,
+                  "max": 17.09999990463257
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.10000014305114746,
+                  "max": 0.10000014305114746
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 0.7000000476837158,
+                  "p95": 1,
+                  "max": 1.1000001430511475
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 38000,
+                  "p95": 38000,
+                  "max": 38000
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.10000014305114746,
+                  "max": 0.10000014305114746
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 0.7000000476837158,
+                  "p95": 1,
+                  "max": 1.1000001430511475
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 38000,
+                  "p95": 38000,
+                  "max": 38000
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                }
+              },
+              "actualRendererCounts": {
+                "gpu": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            }
+          },
+          "sustained-zoom": {
+            "canvas": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 41.19999980926514,
+                  "p95": 56.39999985694885,
+                  "max": 60.89999985694885
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.10000014305114746,
+                  "max": 0.10000014305114746
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 41.19999980926514,
+                  "p95": 56.39999985694885,
+                  "max": 60.89999985694885
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 50,
+                  "p95": 50.19999999999982,
+                  "max": 66.59999999999945
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 44.60000014305115,
+                  "p95": 57.39999985694885,
+                  "max": 61.69999980926514
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "actualRendererCounts": {
+                "canvas": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            },
+            "gpu": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 1.5999999046325684,
+                  "p95": 46.5,
+                  "max": 58.700000047683716
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.09999990463256836,
+                  "max": 0.10000014305114746
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 1.5999999046325684,
+                  "p95": 46.5,
+                  "max": 58.700000047683716
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 16.699999999999818,
+                  "p95": 33.30000000000018,
+                  "max": 50.19999999999982
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 16.600000143051147,
+                  "p95": 47.5,
+                  "max": 60.200000047683716
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.10000014305114746,
+                  "max": 0.10000014305114746
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 43.09999990463257,
+                  "max": 49.90000009536743
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 1.0999999046325684,
+                  "max": 4.599999904632568
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 0.9000000953674316,
+                  "p95": 3.299999952316284,
+                  "max": 3.4000000953674316
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 6384000,
+                  "max": 6384000
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 1,
+                  "max": 1
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 38000,
+                  "max": 38000
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 38000,
+                  "p95": 38000,
+                  "max": 38000
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.10000014305114746,
+                  "max": 0.10000014305114746
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 43.09999990463257,
+                  "max": 49.90000009536743
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 1.0999999046325684,
+                  "max": 4.599999904632568
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 0.9000000953674316,
+                  "p95": 3.299999952316284,
+                  "max": 3.4000000953674316
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 6384000,
+                  "max": 6384000
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 1,
+                  "max": 1
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 38000,
+                  "max": 38000
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 38000,
+                  "p95": 38000,
+                  "max": 38000
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                }
+              },
+              "actualRendererCounts": {
+                "gpu": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            }
+          },
+          "edit-undo": {
+            "canvas": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 45.5,
+                  "p95": 57.90000009536743,
+                  "max": 61.09999990463257
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 12.899999856948853,
+                  "p95": 16.799999952316284,
+                  "max": 17.200000047683716
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 56,
+                  "p95": 73.5,
+                  "max": 75.10000014305115
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 66.60000000000036,
+                  "p95": 83.30000000000109,
+                  "max": 83.5
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 62.39999985694885,
+                  "p95": 84.59999990463257,
+                  "max": 88.70000004768372
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "actualRendererCounts": {
+                "canvas": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            },
+            "gpu": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 7.099999904632568,
+                  "p95": 9.400000095367432,
+                  "max": 9.700000047683716
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 13.700000047683716,
+                  "p95": 19.399999856948853,
+                  "max": 19.40000009536743
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 20.699999809265137,
+                  "p95": 27.5,
+                  "max": 28.799999952316284
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 16.700000000000728,
+                  "p95": 33.5,
+                  "max": 33.600000000000364
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 22.899999856948853,
+                  "p95": 40.90000009536743,
+                  "max": 42
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 4.3999998569488525,
+                  "p95": 6.200000047683716,
+                  "max": 6.200000047683716
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0.40000009536743164
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0.40000009536743164
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0.2999999523162842,
+                  "p95": 0.40000009536743164,
+                  "max": 0.40000009536743164
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0.2999999523162842,
+                  "p95": 0.40000009536743164,
+                  "max": 0.40000009536743164
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 1.9000000953674316,
+                  "p95": 2.799999952316284,
+                  "max": 2.799999952316284
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 168,
+                  "p95": 168,
+                  "max": 168
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 1,
+                  "p95": 1,
+                  "max": 1
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 168,
+                  "p95": 168,
+                  "max": 168
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 1,
+                  "p95": 1,
+                  "max": 1
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 1
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 38000,
+                  "p95": 38000,
+                  "max": 38000
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 168,
+                  "p95": 168,
+                  "max": 168
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 1,
+                  "p95": 1,
+                  "max": 1
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 4.3999998569488525,
+                  "p95": 6.200000047683716,
+                  "max": 6.200000047683716
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0.40000009536743164
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0.40000009536743164
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0.2999999523162842,
+                  "p95": 0.40000009536743164,
+                  "max": 0.40000009536743164
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0.2999999523162842,
+                  "p95": 0.40000009536743164,
+                  "max": 0.40000009536743164
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 1.9000000953674316,
+                  "p95": 2.799999952316284,
+                  "max": 2.799999952316284
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 168,
+                  "p95": 168,
+                  "max": 168
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 1,
+                  "p95": 1,
+                  "max": 1
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 168,
+                  "p95": 168,
+                  "max": 168
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 1,
+                  "p95": 1,
+                  "max": 1
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 1
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 38000,
+                  "p95": 38000,
+                  "max": 38000
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 168,
+                  "p95": 168,
+                  "max": 168
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 1,
+                  "p95": 1,
+                  "max": 1
+                }
+              },
+              "actualRendererCounts": {
+                "gpu": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            }
+          }
+        }
+      },
+      "compound-tags": {
+        "entityCount": 6500,
+        "topLevelTextCharacters": 1890,
+        "expandedAttributeCount": 1000,
+        "workflows": {
+          "pan": {
+            "canvas": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 18.600000143051147,
+                  "p95": 25.59999990463257,
+                  "max": 36
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.09999990463256836,
+                  "max": 0.10000014305114746
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 18.600000143051147,
+                  "p95": 25.700000047683716,
+                  "max": 36
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 16.69999999999891,
+                  "p95": 34,
+                  "max": 50
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 19.899999856948853,
+                  "p95": 26.700000047683716,
+                  "max": 42.40000009536743
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "actualRendererCounts": {
+                "canvas": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            },
+            "gpu": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 1.0999999046325684,
+                  "p95": 7,
+                  "max": 11.099999904632568
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.09999990463256836,
+                  "max": 0.19999980926513672
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 1.0999999046325684,
+                  "p95": 7,
+                  "max": 11.099999904632568
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 16.69999999999891,
+                  "p95": 16.80000000000109,
+                  "max": 16.80000000000109
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 16.699999809265137,
+                  "p95": 16.799999952316284,
+                  "max": 18.700000047683716
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.09999990463256836,
+                  "max": 0.10000014305114746
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 0.9000000953674316,
+                  "p95": 6.699999809265137,
+                  "max": 10.900000095367432
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 10500,
+                  "p95": 10500,
+                  "max": 10500
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.09999990463256836,
+                  "max": 0.10000014305114746
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 0.9000000953674316,
+                  "p95": 6.699999809265137,
+                  "max": 10.900000095367432
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 10500,
+                  "p95": 10500,
+                  "max": 10500
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                }
+              },
+              "actualRendererCounts": {
+                "gpu": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            }
+          },
+          "bounded-zoom": {
+            "canvas": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 17.200000047683716,
+                  "p95": 19.40000009536743,
+                  "max": 33.90000009536743
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.10000014305114746,
+                  "max": 0.10000014305114746
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 17.200000047683716,
+                  "p95": 19.40000009536743,
+                  "max": 33.90000009536743
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 16.69999999999891,
+                  "p95": 33.399999999999636,
+                  "max": 33.399999999999636
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 18.100000143051147,
+                  "p95": 23.800000190734863,
+                  "max": 34.80000019073486
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "actualRendererCounts": {
+                "canvas": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            },
+            "gpu": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 1.1000001430511475,
+                  "p95": 1.5,
+                  "max": 1.7999999523162842
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 1.1000001430511475,
+                  "p95": 1.5,
+                  "max": 1.7999999523162842
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 16.69999999999891,
+                  "p95": 16.799999999999272,
+                  "max": 16.899999999999636
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 16.600000143051147,
+                  "p95": 17,
+                  "max": 17
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.09999990463256836,
+                  "max": 0.09999990463256836
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 0.8999998569488525,
+                  "p95": 1.2999999523162842,
+                  "max": 1.3999998569488525
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 10500,
+                  "p95": 10500,
+                  "max": 10500
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.09999990463256836,
+                  "max": 0.09999990463256836
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 0.8999998569488525,
+                  "p95": 1.2999999523162842,
+                  "max": 1.3999998569488525
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 10500,
+                  "p95": 10500,
+                  "max": 10500
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                }
+              },
+              "actualRendererCounts": {
+                "gpu": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            }
+          },
+          "sustained-zoom": {
+            "canvas": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 15.899999856948853,
+                  "p95": 20.700000047683716,
+                  "max": 25.200000047683716
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 15.899999856948853,
+                  "p95": 20.700000047683716,
+                  "max": 25.299999952316284
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 16.69999999999891,
+                  "p95": 33.399999999999636,
+                  "max": 33.5
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 17.399999856948853,
+                  "p95": 23.200000047683716,
+                  "max": 26.199999809265137
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "actualRendererCounts": {
+                "canvas": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            },
+            "gpu": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 1.2000000476837158,
+                  "p95": 155.40000009536743,
+                  "max": 172.09999990463257
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.09999990463256836,
+                  "max": 0.10000014305114746
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 1.2000000476837158,
+                  "p95": 155.40000009536743,
+                  "max": 172.09999990463257
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 16.69999999999891,
+                  "p95": 150,
+                  "max": 166.70000000000073
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 16.600000143051147,
+                  "p95": 156.70000004768372,
+                  "max": 173.19999980926514
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.09999990463256836,
+                  "max": 0.10000014305114746
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 145.20000004768372,
+                  "max": 155
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 4.799999952316284,
+                  "max": 10.799999952316284
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 0.8999998569488525,
+                  "p95": 6.700000047683716,
+                  "max": 7.599999904632568
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 20459040,
+                  "max": 20459040
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 1,
+                  "max": 1
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 10500,
+                  "max": 10500
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 10500,
+                  "p95": 10500,
+                  "max": 10500
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.09999990463256836,
+                  "max": 0.10000014305114746
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 145.20000004768372,
+                  "max": 155
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 4.799999952316284,
+                  "max": 10.799999952316284
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 0.8999998569488525,
+                  "p95": 6.700000047683716,
+                  "max": 7.599999904632568
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 20459040,
+                  "max": 20459040
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 1,
+                  "max": 1
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 10500,
+                  "max": 10500
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 10500,
+                  "p95": 10500,
+                  "max": 10500
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                }
+              },
+              "actualRendererCounts": {
+                "gpu": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            }
+          },
+          "edit-undo": {
+            "canvas": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 19.299999952316284,
+                  "p95": 22.200000047683716,
+                  "max": 22.899999856948853
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 3.5,
+                  "p95": 4.900000095367432,
+                  "max": 6.5
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 22.700000047683716,
+                  "p95": 26.200000047683716,
+                  "max": 27
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 16.80000000000109,
+                  "p95": 33.399999999999636,
+                  "max": 33.5
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 25.09999990463257,
+                  "p95": 31.90000009536743,
+                  "max": 33.799999952316284
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "actualRendererCounts": {
+                "canvas": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            },
+            "gpu": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 7,
+                  "p95": 7.800000190734863,
+                  "max": 11
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 3.799999952316284,
+                  "p95": 9.799999952316284,
+                  "max": 20.299999952316284
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 10.599999904632568,
+                  "p95": 16.799999952316284,
+                  "max": 27.09999990463257
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 16.69999999999891,
+                  "p95": 16.799999999999272,
+                  "max": 33.29999999999927
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 16.700000047683716,
+                  "p95": 22.09999990463257,
+                  "max": 28.899999856948853
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 0.7999999523162842,
+                  "p95": 1,
+                  "max": 1.1000001430511475
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0.20000004768371582
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0.20000004768371582
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0.20000004768371582,
+                  "p95": 0.3000001907348633,
+                  "max": 3
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0.20000004768371582,
+                  "p95": 0.3000001907348633,
+                  "max": 3
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 5.6000001430511475,
+                  "p95": 6.299999952316284,
+                  "max": 6.6000001430511475
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 168,
+                  "p95": 168,
+                  "max": 168
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 1,
+                  "p95": 1,
+                  "max": 1
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 168,
+                  "p95": 168,
+                  "max": 168
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 1,
+                  "p95": 1,
+                  "max": 1
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 1
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 10500,
+                  "p95": 10500,
+                  "max": 10500
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 168,
+                  "p95": 168,
+                  "max": 168
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 1,
+                  "p95": 1,
+                  "max": 1
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 0.7999999523162842,
+                  "p95": 1,
+                  "max": 1.1000001430511475
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0.20000004768371582
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0.20000004768371582
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0.20000004768371582,
+                  "p95": 0.3000001907348633,
+                  "max": 3
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0.20000004768371582,
+                  "p95": 0.3000001907348633,
+                  "max": 3
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 5.6000001430511475,
+                  "p95": 6.299999952316284,
+                  "max": 6.6000001430511475
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 168,
+                  "p95": 168,
+                  "max": 168
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 1,
+                  "p95": 1,
+                  "max": 1
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 168,
+                  "p95": 168,
+                  "max": 168
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 1,
+                  "p95": 1,
+                  "max": 1
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 1
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 10500,
+                  "p95": 10500,
+                  "max": 10500
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 168,
+                  "p95": 168,
+                  "max": 168
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 1,
+                  "p95": 1,
+                  "max": 1
+                }
+              },
+              "actualRendererCounts": {
+                "gpu": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            }
+          }
+        }
+      },
+      "compound-dense": {
+        "entityCount": 6500,
+        "topLevelTextCharacters": 11390,
+        "expandedAttributeCount": 1000,
+        "workflows": {
+          "pan": {
+            "canvas": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 23.5,
+                  "p95": 29.40000009536743,
+                  "max": 34.200000047683716
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.09999990463256836,
+                  "max": 0.10000014305114746
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 23.5,
+                  "p95": 29.40000009536743,
+                  "max": 34.200000047683716
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 33.20000000000073,
+                  "p95": 33.399999999999636,
+                  "max": 50
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 25.100000143051147,
+                  "p95": 35.5,
+                  "max": 35.799999952316284
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "actualRendererCounts": {
+                "canvas": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            },
+            "gpu": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 23,
+                  "p95": 32.299999952316284,
+                  "max": 32.799999952316284
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 23,
+                  "p95": 32.299999952316284,
+                  "max": 32.799999952316284
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 33.20000000000073,
+                  "p95": 33.70000000000073,
+                  "max": 50.10000000000218
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 26,
+                  "p95": 38.299999952316284,
+                  "max": 39.19999980926514
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 0.20000004768371582,
+                  "p95": 0.3000001907348633,
+                  "max": 0.40000009536743164
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                }
+              },
+              "actualRendererCounts": {
+                "canvas": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            }
+          },
+          "bounded-zoom": {
+            "canvas": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 19.600000143051147,
+                  "p95": 31.899999856948853,
+                  "max": 35.299999952316284
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0.09999990463256836
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 19.600000143051147,
+                  "p95": 31.899999856948853,
+                  "max": 35.299999952316284
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 16.799999999999272,
+                  "p95": 33.400000000001455,
+                  "max": 33.5
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 20.799999952316284,
+                  "p95": 36.40000009536743,
+                  "max": 37.89999985694885
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "actualRendererCounts": {
+                "canvas": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            },
+            "gpu": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 20.300000190734863,
+                  "p95": 24.100000143051147,
+                  "max": 36.40000009536743
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.09999990463256836,
+                  "max": 0.10000014305114746
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 20.40000009536743,
+                  "p95": 24.100000143051147,
+                  "max": 36.40000009536743
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 16.700000000000728,
+                  "p95": 33.5,
+                  "max": 33.5
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 21.5,
+                  "p95": 26,
+                  "max": 37.5
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 0.20000004768371582,
+                  "p95": 0.2999999523162842,
+                  "max": 0.3000001907348633
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                }
+              },
+              "actualRendererCounts": {
+                "canvas": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            }
+          },
+          "sustained-zoom": {
+            "canvas": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 18.799999952316284,
+                  "p95": 22.700000047683716,
+                  "max": 24.59999990463257
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.09999990463256836,
+                  "max": 0.10000014305114746
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 18.799999952316284,
+                  "p95": 22.700000047683716,
+                  "max": 24.59999990463257
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 16.69999999999709,
+                  "p95": 33.400000000001455,
+                  "max": 33.400000000001455
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 20.09999990463257,
+                  "p95": 23.5,
+                  "max": 25.59999990463257
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "actualRendererCounts": {
+                "canvas": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            },
+            "gpu": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 19.09999990463257,
+                  "p95": 21.800000190734863,
+                  "max": 22.300000190734863
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0.09999990463256836,
+                  "max": 0.09999990463256836
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 19.09999990463257,
+                  "p95": 21.800000190734863,
+                  "max": 22.300000190734863
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 16.700000000000728,
+                  "p95": 33.5,
+                  "max": 49.89999999999782
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 20.199999809265137,
+                  "p95": 28.300000190734863,
+                  "max": 36.10000014305115
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 0.19999980926513672,
+                  "p95": 0.2999999523162842,
+                  "max": 0.3000001907348633
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                }
+              },
+              "actualRendererCounts": {
+                "canvas": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            }
+          },
+          "edit-undo": {
+            "canvas": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 19.600000143051147,
+                  "p95": 27.299999952316284,
+                  "max": 32
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 3.299999952316284,
+                  "p95": 5,
+                  "max": 8.299999952316284
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 22.59999990463257,
+                  "p95": 29,
+                  "max": 37
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 16.900000000001455,
+                  "p95": 33.5,
+                  "max": 33.5
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 24.5,
+                  "p95": 30.5,
+                  "max": 40.700000047683716
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "actualRendererCounts": {
+                "canvas": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            },
+            "gpu": {
+              "summary": {
+                "viewportRenderCpuMs": {
+                  "count": 30,
+                  "median": 20.100000143051147,
+                  "p95": 21.59999990463257,
+                  "max": 23
+                },
+                "documentMutationMs": {
+                  "count": 30,
+                  "median": 3.299999952316284,
+                  "p95": 4.799999952316284,
+                  "max": 5.099999904632568
+                },
+                "cameraUpdateMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "workflowCpuMs": {
+                  "count": 30,
+                  "median": 22.799999952316284,
+                  "p95": 24.899999856948853,
+                  "max": 28.09999990463257
+                },
+                "rafCallbackIntervalMs": {
+                  "count": 29,
+                  "median": 16.799999999999272,
+                  "p95": 33.5,
+                  "max": 33.60000000000218
+                },
+                "observedNextRafBoundaryWallMs": {
+                  "count": 30,
+                  "median": 24.699999809265137,
+                  "p95": 28.40000009536743,
+                  "max": 29.799999952316284
+                }
+              },
+              "gpuStages": {
+                "cacheLookupMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "geometryPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "partialPreparationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "initializationMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "drawSubmissionMs": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "bytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "uploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "subrangeUploadCalls": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "preparedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "reusedEntities": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryBytes": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                },
+                "editHistoryEntries": {
+                  "count": 0,
+                  "median": null,
+                  "p95": null,
+                  "max": null
+                }
+              },
+              "gpuAttemptStages": {
+                "cacheLookupMs": {
+                  "count": 30,
+                  "median": 0.09999990463256836,
+                  "p95": 0.20000004768371582,
+                  "max": 0.20000004768371582
+                },
+                "geometryPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "partialPreparationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "initializationMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "drawSubmissionMs": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "bytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "uploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "subrangeUploadCalls": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "preparedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "reusedEntities": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryBytes": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                },
+                "editHistoryEntries": {
+                  "count": 30,
+                  "median": 0,
+                  "p95": 0,
+                  "max": 0
+                }
+              },
+              "actualRendererCounts": {
+                "canvas": 30
+              },
+              "completionObserved": false,
+              "presentationObserved": false
+            }
+          }
+        }
+      }
+    }
+  }
+}

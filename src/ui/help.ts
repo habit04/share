@@ -3,6 +3,7 @@ import { modal, button, tabbedDialog } from './dialogkit';
 import { esc } from './dom';
 import { aboutInfo, donateUrl, authorLinks, safeAboutUrl, licenseLineHtml, supportContact } from '../app/about';
 import { hasDwgSave } from '../app/drawing-save';
+import { collectGpuDiagnostics, emptyGpuDiagnostics, gpuDiagnosticsLines, type GpuDiagnosticsBridge } from '../app/gpu-diagnostics';
 
 /** Version compiled into the renderer (package.json version via Vite define). */
 export const APP_VERSION_LABEL: string = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
@@ -185,10 +186,56 @@ export function helpDialog(editor: Editor, query = ''): void {
   });
   updateRow.append(check, report, info);
   const bridge = window.jcad;
+  const gpuSection = document.createElement('section');
+  gpuSection.setAttribute('aria-label', 'GPU diagnostics');
+  const gpuHeading = document.createElement('h4');
+  gpuHeading.textContent = 'GPU diagnostics';
+  const gpuText = document.createElement('pre');
+  gpuText.style.whiteSpace = 'pre-wrap';
+  gpuText.style.overflowWrap = 'anywhere';
+  const gpuStatus = document.createElement('div');
+  gpuStatus.className = 'dlg-note';
+  gpuStatus.setAttribute('role', 'status');
+  const retryGpu = button('Retry Diagnostics');
+  const copyGpu = button('Copy Diagnostics');
+  let gpu = emptyGpuDiagnostics('pending', APP_VERSION_LABEL);
+  let generation = 0;
+  const renderGpu = () => { gpuText.textContent = gpuDiagnosticsLines(gpu).join('\n'); };
+  const loadGpu = async () => {
+    const request = ++generation;
+    gpu = emptyGpuDiagnostics('pending', APP_VERSION_LABEL);
+    renderGpu();
+    retryGpu.disabled = true;
+    copyGpu.disabled = true;
+    gpuStatus.textContent = 'Collecting diagnostics…';
+    const result = await collectGpuDiagnostics(bridge as GpuDiagnosticsBridge | undefined, APP_VERSION_LABEL);
+    if (request !== generation || !m.root.isConnected) return;
+    gpu = result;
+    renderGpu();
+    retryGpu.disabled = false;
+    copyGpu.disabled = false;
+    gpuStatus.textContent = gpu.state === 'pending' ? 'Diagnostics are still pending. You can retry.' : gpu.state === 'unavailable' ? 'Diagnostics are unavailable in this session. You can retry.' : '';
+  };
+  retryGpu.addEventListener('click', () => void loadGpu());
+  copyGpu.addEventListener('click', () => {
+    void (async () => {
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+        await navigator.clipboard.writeText(gpuDiagnosticsLines(gpu).join('\n'));
+        gpuStatus.textContent = 'Diagnostics copied.';
+      } catch {
+        gpuStatus.textContent = 'Could not copy diagnostics. Select the diagnostic text and copy it manually.';
+      }
+    })();
+  });
+  gpuSection.append(gpuHeading, gpuText, copyGpu, retryGpu, gpuStatus);
+  about.append(gpuSection);
+  renderGpu();
+  void loadGpu();
   if (bridge?.appInfo) {
     void bridge.appInfo().then((i) => {
       info.textContent = `Version ${i.version} (${i.platform} ${i.arch})${i.selfUpdate ? ' — updates install in place from GitHub Releases.' : ' — new versions are offered from the GitHub Releases page.'}`;
-    });
+    }).catch(() => { info.textContent = `Version ${APP_VERSION_LABEL} — desktop version information unavailable.`; });
   } else {
     check.disabled = true;
     info.textContent = `Version ${APP_VERSION_LABEL} (browser preview) — updates are delivered with the desktop application.`;

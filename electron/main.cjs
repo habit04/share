@@ -16,6 +16,12 @@
  *   handover.cjs      files handed over by the OS and by a second launch
  */
 const { app, BrowserWindow, session, ipcMain: rawIpcMain, protocol, net } = require('electron');
+const { createGPUCollector } = require('./gpu-diagnostics.cjs');
+const gpuCollector = createGPUCollector(app, { versions: {
+  jcad: app.getVersion(), electron: process.versions.electron, chromium: process.versions.chrome,
+  windows: process.platform === 'win32' ? require('node:os').release() : 'Unknown',
+} });
+app.on('will-quit', () => gpuCollector.dispose());
 const { rejectsProductionDebugging } = require('./inspection-policy.cjs');
 const path = require('node:path');
 const fs = require('node:fs/promises');
@@ -100,6 +106,7 @@ function senderWindow(/** @type {Electron.IpcMainInvokeEvent} */ ev) {
  * @type {import('./main/context.cjs').MainContext}
  */
 const ctx = { ipcMain, rejections, registry, pathPolicy, senderWindow, mainWindow: null, openFilesReady: false, handedOverProjects: new Set() };
+ipcMain.handle('gpu-diagnostics', () => gpuCollector.get());
 
 function loadPersistedPaths() {
   try {

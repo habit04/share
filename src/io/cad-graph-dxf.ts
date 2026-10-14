@@ -290,6 +290,12 @@ export function attachDxfCadGraph(state: DrawingState, pairs: readonly Pair[], o
     return replaceEntities(bare, entity => { const { cadIdentity: _drop, ...rest } = entity; return rest as Entity; });
   }
   const prefix = newId(), byHandle = new Map<string, string>(), modeledTables = tableNames(state);
+  const viewportHandles = new Map<string, string>();
+  for (const [handle, id] of options.viewportHandles ?? []) {
+    const key = canonicalCadHandle(handle.trim());
+    if (viewportHandles.has(key) && viewportHandles.get(key) !== id) throw new CadGraphError('invalid', 'Ambiguous normalized viewport handle association.');
+    viewportHandles.set(key, id);
+  }
   const shapeIds = new Map<string, string>();
   for (const sourceId of Object.keys(shapeStylesOf(state))) if (/^[0-9A-Fa-f]{1,16}$/.test(sourceId)) {
     const handle = canonicalCadHandle(sourceId);
@@ -300,6 +306,21 @@ export function attachDxfCadGraph(state: DrawingState, pairs: readonly Pair[], o
   const solids = new Map(state.model3d?.solids.map(solid => [solid.id, solid]));
   const dimensions3d = new Map(state.model3d?.dimensions?.map(dimension => [dimension.id, dimension]));
   for (const entity of entities) if (entity.cadIdentity) entityHandles.set(canonicalCadHandle(entity.cadIdentity), entity);
+  const viewportRecords = new Map<string, RecordData>();
+  for (const record of sourceRecords) {
+    const id = record.type === 'VIEWPORT' && record.handle ? viewportHandles.get(record.handle) : undefined;
+    if (!id) continue;
+    if (viewportRecords.has(id)) throw new CadGraphError('invalid', 'Ambiguous source viewport association.');
+    viewportRecords.set(id, record);
+  }
+  for (const layout of state.layouts ?? []) for (const viewport of layout.viewports) {
+    const boundary = viewport.clipBoundary;
+    if (!boundary?.cadIdentity) continue;
+    const source = viewportRecords.get(viewport.id);
+    if (!source) throw new CadGraphError('dependency', 'A consumed viewport clip has no exact sourceVIEWPORT association.');
+    const pointers = scopedValues(source, 340, 'AcDbViewport');
+    if (pointers.length !== 1 || canonicalCadHandle(pointers[0]!) !== canonicalCadHandle(boundary.cadIdentity)) throw new CadGraphError('dependency', 'A consumed viewport clip has no exact source340 association.');
+  }
   const followerHandles = new Set<string>(); let sourceInsert = false;
   const raw3d = new Set<RecordData>();
   let polyface = false;
@@ -348,7 +369,7 @@ export function attachDxfCadGraph(state: DrawingState, pairs: readonly Pair[], o
     return record.type === 'VIEWPORT' && value(record, 69) === '1' && !overallViewports.has(record) || (/^\*[DT]\d+$/i.test(block) || tablePictures.has(block)) && !state.blocks[block];
   };
   const records = sourceRecords.filter(record => (!synthetic(record) || raw3d.has(record) || !!record.handle && dimensionPictures3d.has(record.handle)) && (!['ENTITIES', 'BLOCKS'].includes(record.section) || ['BLOCK', 'ENDBLK', 'ATTDEF'].includes(record.type) || overallViewports.has(record)
-    || raw3d.has(record) || record.line !== undefined && options.model3dLines?.has(record.line) || !!record.handle && (entityHandles.has(record.handle) || followerHandles.has(record.handle) || options.viewportHandles?.has(record.handle) || options.model3dHandles?.has(record.handle))
+    || raw3d.has(record) || record.line !== undefined && options.model3dLines?.has(record.line) || !!record.handle && (entityHandles.has(record.handle) || followerHandles.has(record.handle) || viewportHandles.has(record.handle) || options.model3dHandles?.has(record.handle))
     || record.section === 'ENTITIES' && Number(value(record, 67)) !== 1 && ['3DFACE', '3DSOLID', 'REGION', 'BODY'].includes(record.type)
       && (record.type === '3DFACE' || record.groups.some(([code]) => code === 1 || code === 3))
       && (!options.rawEntityHandles || !!record.handle && options.rawEntityHandles.has(record.handle))));
@@ -370,7 +391,7 @@ export function attachDxfCadGraph(state: DrawingState, pairs: readonly Pair[], o
   }
   const nodes: CadNode[] = records.filter(r => r.handle || raw3d.has(r) || r.line !== undefined && options.model3dLines?.has(r.line) || r.type === 'CLASS' || r.type === 'HEADER').map((record, index) => {
     const entity = record.handle ? entityHandles.get(record.handle) : undefined;
-    const viewportId = record.handle ? options.viewportHandles?.get(record.handle) : undefined;
+    const viewportId = record.handle ? viewportHandles.get(record.handle) : undefined;
     const path = record.handle && dictionaries.has(record.type) ? paths.get(record.handle) : undefined;
     const carrier = record.handle ? options.model3dHandles?.get(record.handle) ?? dimensionPictures3d.get(record.handle) : record.line !== undefined ? options.model3dLines?.get(record.line) : undefined;
     const anchor: CadAnchor = carrier || (entity ? { kind: 'entity', id: entity.id } : record.handle && parts.get(record.handle) ? parts.get(record.handle)!
@@ -589,6 +610,7 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   for (const node of graph.nodes) if (node.anchor?.kind === 'solid3d' && node.type === 'POLYLINE') solidParents.set(JSON.stringify([node.anchor.id, node.anchor.part ?? 'polyface:0']), node);
   const generated = recordsOf(pairsOf(text)), sources = graph.nodes.map(node => ({ type: node.type, section: node.section, groups: [...node.groups], ...(node.sourceHandle ? { handle: canonicalCadHandle(node.sourceHandle) } : {}) }));
   const sourceKeys = logicalKeys(sources), generatedKeys = logicalKeys(generated), byAnchor = new Map<string, CadNode>(), byKey = new Map<string, CadNode>();
+  const viewportBoundaries = new Map((state.layouts ?? []).flatMap(layout => layout.viewports.flatMap(viewport => viewport.clipBoundary ? [[viewport.id, viewport.clipBoundary.id] as const] : [])));
   const overallSourceIds = new Set(graph.nodes.flatMap((node, index) => sourceKeys.get(sources[index]!)?.startsWith('["mainviewport",') ? [node.id] : []));
   graph.nodes.forEach((node, index) => {
     const anchor = cadAnchorKey(node.anchor); if (anchor) byAnchor.set(anchor, node);
@@ -853,9 +875,16 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       }
     }
     const selected = new Set<number>(), generatedCodes = new Set(record.groups.map(([code]) => code));
-    // The live viewport regenerates its clipping-boundary pointer. Application
-    // reference blocks and XDATA are selected above independently of these codes.
-    const rebuilt = liveComplex ? complexCodes : node.type === 'LAYER' ? new Set([390]) : node.type === 'DIMSTYLE' ? new Set([340, 342, 343, 344]) : node.type === 'LEADER' ? new Set([340]) : node.type === 'VIEWPORT' ? new Set([331, 340]) : ['MULTILEADER', 'MLEADER', 'ACAD_TABLE', 'IMAGE'].includes(node.type) ? new Set([340, 341, 342, 343, 344, 360]) : new Set<number>();
+    // Regenerate only a proven live clip link. An unexposed source340 remains a
+    // retained hard reference and must refuse export rather than disappear.
+    const viewportId = node.anchor?.kind === 'viewport' ? node.anchor.id : undefined;
+    const boundaryId = viewportId && viewportBoundaries.get(viewportId);
+    const sourceClip = boundaryId && byAnchor.get(cadAnchorKey({ kind: 'entity', id: boundaryId })!);
+    const clipPointers = node.type === 'VIEWPORT' ? scopedValues(node, 340, 'AcDbViewport') : [];
+    const provenClip = sourceClip && clipPointers.length === 1
+      && node.references?.some(ref => ref.target === sourceClip.id && node.groups[ref.groupIndex]?.[0] === 340
+        && node.groups[ref.groupIndex]![1].trim() === clipPointers[0]);
+    const rebuilt = liveComplex ? complexCodes : node.type === 'LAYER' ? new Set([390]) : node.type === 'DIMSTYLE' ? new Set([340, 342, 343, 344]) : node.type === 'LEADER' ? new Set([340]) : node.type === 'VIEWPORT' ? new Set(provenClip ? [331, 340] : [331]) : ['MULTILEADER', 'MLEADER', 'ACAD_TABLE', 'IMAGE'].includes(node.type) ? new Set([340, 341, 342, 343, 344, 360]) : new Set<number>();
     let nesting = 0, selectedApp: string | undefined, keepHeader = false, layoutSubclass = false, retainedLayoutBlock = false;
     const existingVariables = new Set(record.groups.filter(([code]) => code === 9).map(([, name]) => name));
     node.groups.forEach(([code, raw], index) => {

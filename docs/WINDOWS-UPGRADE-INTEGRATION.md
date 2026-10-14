@@ -9,27 +9,32 @@ runs and actual Intel/NVIDIA native gates pass. PR #16 contains the earlier GPU
 stack; integrate that leaf once, preserving Canvas as default and newer PR #11 fixes.
 Delivered 3D source remains `a4d5526380c844a93821fd7d61317856c715e5cb`.
 
-Current cleared checkpoint is `fccba52`: 4,436 local tests with zero failures and
-29 explicit skips, all three TypeScript projects/lint/fixtures/build, 32 actual
-Windows source-app workflows, and [all four exact-head CI jobs](https://github.com/habit04/share/actions/runs/38511894244).
-Windows CI passes 54 Rust tests, three CLI tests and 252 Electron checks, including
-both metadata clipboard destinations through DWG Save As/Save/exact backup/fresh
-reopen. The ten genuine native cases ran at `29abcec`; the later three-file test/doc
-correction leaves all other 926 source files and the authenticated native recipe
-unchanged.
+Current cleared combined 2D/metadata/3D checkpoint is
+`7b2fdea4c9e117a306dfcf1ae485f0eba5a83066`: 5,083 local passes, zero failures and
+38 explicit skips; all three TypeScript projects, lint, fixtures and build pass.
+[All four exact-head CI jobs pass](https://github.com/habit04/share/actions/runs/38520168590),
+including Windows' 54 Rust, three CLI and 252 actual Electron checks. Fresh private
+Windows gates pass ten native first/second-save metadata fixed points, 32 source-app
+workflows, six mixed 2D/3D file workflows and 19 kernel-security checks. The 3D visual
+gate passes render/picking/navigation/context restoration and return to Canvas.
+AutoCAD 2027 audits all private 3D inputs with zero errors and verifies DXF/DWG
+mesh/dimension reference results. These are development-source checks; no installed
+release or installer is certified. Full native metadata assertions remain intact.
 
-Delivered 3D is integrated on this development branch at `338ef82382f4f99b96c7d7d9a6369702568a4b7d`.
-Its complete 1,061-file static/build gate and UI CI pass. The first combined
-[CI run](https://github.com/habit04/share/actions/runs/38516177100) records 4,708
-Node test passes, 17 failures and 378 skips; Windows passes its 54 Rust and three
-CLI tests before failing an outdated imported-loss expectation. The candidate
-is not cleared. Separate owners are correcting report/fixture expectations,
-the DXF reader's leaked graph-error contract and a retained polyface owner lost
-during saving. Four incoming 2D golden baselines
-were independently proven stale: current output exactly matches `fccba52`.
-Existing fixtures and full native metadata/fixed-point assertions remain intact.
-Fresh combined full-suite, app, native save/reopen and CI gates must pass before
-the frozen GPU leaf is adopted. No release branch merge is authorized.
+The frozen GPU leaf is now being combined on this branch, preserving the newer
+clipping, fonts, graph identities, 3D and save/recovery behavior. Three source owners
+cover renderer/cache behavior, captured text/dimension context and compatibility.
+Loaded SHX, unqualified font ink and active gradients require complete Canvas
+fallback; font-context changes invalidate GPU admission and uploaded geometry.
+Actual 3D mode hides the experimental 2D GPU backing. Focused regressions precede
+a fresh committed-source freeze, complete checks, CI and actual Intel/NVIDIA gates.
+Producer GPU evidence does not certify this combined source.
+
+Claude's seven 3D picking/camera/measurement patches have an authenticated archive
+based on `a4d5526`. Independent review precedes adoption. The proposed DIST
+world-magnitude residue threshold is held because it can erase a real small delta
+at large coordinates; accepted fixes must retain a regression for that case.
+No release branch merge is authorized.
 
 The following checkpoints are historical evidence, not the current candidate's clearance.
 

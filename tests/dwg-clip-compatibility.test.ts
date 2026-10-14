@@ -58,6 +58,32 @@ afterEach(() => {
 });
 
 describe('retained viewport clip DWG compatibility safeguard', () => {
+  it.each([true, false].flatMap(enabled => (['save', 'saveas', 'export'] as const).map(operation => ({ enabled, operation }))))(
+    'refuses a reopened DXF clip with retained graph metadata before any destination write (enabled: $enabled, operation: $operation)',
+    async ({ enabled, operation }) => {
+      const f = setup(enabled);
+      f.ed.doc.load(readDxf(writeDxf(f.ed.doc.snapshot)), f.original);
+      f.ed.doc.addEntities([{ id: 'graph-edit', type: 'line', layer: '0', color: 'ByLayer', a: { x: 20, y: 0 }, b: { x: 21, y: 0 } }]);
+      const boundary = f.ed.doc.snapshot.layouts![0]!.viewports[0]!.clipBoundary!;
+      const retained = f.ed.doc.snapshot.cadGraph!.nodes.find(node => node.type === 'LWPOLYLINE' && node.anchor?.kind === 'entity' && node.anchor.id === boundary.id)!;
+      expect(retained.sourceHandle).toMatch(/^[0-9A-F]+$/);
+      const viewport = f.ed.doc.snapshot.cadGraph!.nodes.find(node => node.anchor?.kind === 'viewport' && node.anchor.id === f.ed.doc.snapshot.layouts![0]!.viewports[0]!.id)!;
+      expect(viewport.references!.find(ref => viewport.groups[ref.groupIndex]![0] === 340)?.target).toBe(retained.id);
+      if (boundary.cadIdentity !== undefined) expect(boundary.cadIdentity).toBe(retained.id);
+      const state = f.ed.doc.snapshot, history = f.ed.doc.history(), disk = [...f.disk], recovery = [...f.backups];
+      expect(operation === 'export' ? await exportDwgCopy(f.ed) : await f.ed.saveFile(operation === 'saveas')).toBe(false);
+      expect(f.bridge.saveDwg).not.toHaveBeenCalled();
+      expect(f.bridge.exportDwg).not.toHaveBeenCalled();
+      expect(f.bridge.saveDxf).not.toHaveBeenCalled();
+      expect([...f.disk]).toEqual(disk);
+      expect(f.ed.doc.snapshot).toBe(state);
+      expect(f.ed.doc.history()).toEqual(history);
+      expect(f.ed.doc.filePath).toBe(f.original);
+      expect(f.ed.doc.dirty).toBe(true);
+      expect([...f.backups]).toEqual(recovery);
+      expect(f.drawingSaved).not.toHaveBeenCalled();
+  });
+
   it.each([true, false])('refuses working DWG Save, DWG Save As and Export Copy without changing retained data (clip enabled: %s)', async (enabled) => {
     for (const operation of ['save', 'saveas', 'export'] as const) {
       const f = setup(enabled);

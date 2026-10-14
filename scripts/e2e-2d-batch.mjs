@@ -285,6 +285,36 @@ try {
       const insert = window.editor.doc.snapshot.entities.find((e) => e.type === 'insert' && e.block === 'LABEL');
       return insert?.type === 'insert' ? insert.attributePlacements?.TAG?.cadIdentity : undefined;
     }), attributeHandle, 'Fresh reopen retains the exact native ATTRIB handle.');
+    const nativeInsert = textNative.find((record) => record.kind === 'INSERT' && valueOf(record, 2) === 'LABEL');
+    const nativeAttribute = textNative.find((record) => record.kind === 'ATTRIB' && valueOf(record, 2) === 'TAG');
+    assert.ok(nativeInsert && nativeAttribute, 'Native INSERT/ATTRIB source records exist independently of the reader.');
+    const canonicalHandle = (handle) => {
+      assert.match(handle ?? '', /^[0-9a-f]{1,16}$/i, 'Native source identity is a bounded hexadecimal handle.');
+      return BigInt(`0x${handle}`).toString(16).toUpperCase();
+    };
+    const insertHandle = canonicalHandle(valueOf(nativeInsert, 5)), canonicalAttributeHandle = canonicalHandle(valueOf(nativeAttribute, 5));
+    assert.equal(canonicalHandle(valueOf(nativeAttribute, 330)), insertHandle, 'Native ATTRIB owner resolves to the saved INSERT.');
+    const identity = await page.evaluate(() => {
+      const state = window.editor.doc.snapshot;
+      const insert = state.entities.find((entity) => entity.type === 'insert' && entity.block === 'LABEL');
+      const nodes = state.cadGraph?.nodes ?? [];
+      const insertNode = nodes.find((node) => node.anchor?.kind === 'entity' && node.anchor.id === insert?.id && !node.anchor.part);
+      const attributeNode = nodes.find((node) => node.anchor?.kind === 'entity' && node.anchor.id === insert?.id && node.anchor.part === 'attribute:TAG');
+      return { insertId: insert?.id, insertCadIdentity: insert?.cadIdentity, placementCadIdentity: insert?.attributePlacements?.TAG?.cadIdentity,
+        insertNode: insertNode ? { id: insertNode.id, sourceHandle: insertNode.sourceHandle, type: insertNode.type } : null,
+        attributeNode: attributeNode ? { sourceHandle: attributeNode.sourceHandle, type: attributeNode.type, anchor: attributeNode.anchor, groups: attributeNode.groups, references: attributeNode.references } : null };
+    });
+    assert.ok(identity.insertNode && identity.attributeNode, 'Reopened INSERT and ATTRIB have retained native graph associations.');
+    assert.equal(identity.insertNode.type, 'INSERT'); assert.equal(identity.attributeNode.type, 'ATTRIB');
+    assert.equal(canonicalHandle(identity.insertNode.sourceHandle), insertHandle);
+    assert.equal(canonicalHandle(identity.attributeNode.sourceHandle), canonicalAttributeHandle);
+    assert.equal(canonicalHandle(identity.placementCadIdentity), canonicalAttributeHandle, 'Nested placement identity is the actual native ATTRIB handle, not appearance data.');
+    // Plain modeled INSERTs need no exposed cadIdentity when only their known
+    // owner edge exists; their graph anchor still proves the exact association.
+    if (identity.insertCadIdentity !== undefined) assert.equal(identity.insertCadIdentity, identity.insertNode.id, 'Exposed INSERT identity resolves to its graph node.');
+    assert.deepEqual(identity.attributeNode.anchor, { kind: 'entity', id: identity.insertId, part: 'attribute:TAG' });
+    assert.ok(identity.attributeNode.references.some((reference) => identity.attributeNode.groups[reference.groupIndex][0] === 330 && reference.target === identity.insertNode.id && canonicalHandle(reference.sourceHandle) === insertHandle), 'Retained ATTRIB owner edge targets the correct INSERT graph identity.');
+    writeFileSync(join(workspace, 'text-native-identity.json'), JSON.stringify({ insertHandle, attributeHandle: canonicalAttributeHandle, identity }, null, 2));
     assert.equal(readFileSync(textSource, 'utf8'), defaultsSource);
     ok('TEXT/ATTDEF/ATTRIB: explicit and omitted native1/0 defaults, real edits, undo/redo, canonical records and IPC save/reopen');
 

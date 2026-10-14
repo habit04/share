@@ -10,19 +10,21 @@ handoff `dc89bb0cbec839d489dce578034736c7cdb77dac` after clean gates. Both GPU
 first-attempt CI runs and actual Intel/NVIDIA native checks pass. The remaining
 partial features below are deferred; Canvas remains the default renderer.
 
-Current cleared checkpoint `fccba52` passes 4,436 local tests/29 explicit skips,
-all static/build checks, 32 actual Windows source workflows and all four CI jobs.
-Windows CI includes 54 Rust tests, three CLI tests and 252 actual Electron checks
-with source-bound metadata clipboard Save As/Save/exact backup/fresh reopen.
-Completed #19/#29 source is integrated. Delivered 3D is now integrated on this
-development branch at `338ef82382f4f99b96c7d7d9a6369702568a4b7d`; its complete
-1,061-file static/build gate and UI CI pass. Its first combined CI run records
-4,708 Node test passes, 17 failures and 378 skips. Three owners are correcting
-stale fixture/report assumptions, a leaked DXF graph-error contract and a retained
-polyface owner lost during saving. Four
-pure-2D outputs are independently byte-identical to the cleared `fccba52` baseline.
-The candidate remains uncleared: fresh full-suite, app, native save/reopen and CI
-gates precede frozen GPU adoption. Existing native fixed-point checks stay intact.
+Current cleared checkpoint `7b2fdea4c9e117a306dfcf1ae485f0eba5a83066` combines
+the completed #19/#29 metadata work with 2D reliability and delivered 3D. It passes
+5,083 local tests with zero failures/38 explicit skips, all static/build checks,
+32 actual Windows source workflows, ten native first/second-save fixed points,
+six mixed 2D/3D file workflows, 19 kernel-security checks, 3D visual checks and
+AutoCAD 2027 private reference audits. [All four CI jobs pass](https://github.com/habit04/share/actions/runs/38520168590),
+including 54 Rust, three CLI and 252 actual Windows Electron checks.
+
+The frozen GPU leaf is now being integrated with three source owners. Newer
+viewport/metadata safeguards stay intact; GPU text/dimensions use captured drawing
+font context, unqualified fonts/SHX/active gradients use complete Canvas fallback,
+and 3D mode hides the GPU 2D backing. Focused tests precede fresh complete combined
+checks, CI and both actual adapter gates. Claude's authenticated 3D patch archive
+is under independent review; a DIST threshold that erases real small deltas at
+large coordinates is held for correction. Full native fixed-point checks stay intact.
 
 The following checkpoints are historical evidence, not the current candidate's clearance.
 
@@ -121,7 +123,7 @@ remain open where full compatibility is unverified.
 | 29 | **Completed externally in PR #9/v0.4.9; integration only.** Bounded metadata/object-reference preservation is already implemented. The completed graph/codecs are integrated with current compatibility/save guards and clear fccba52 validation. 3D carrier extensions receive new combined native/reference checks. | Same completed external work as #19; lead owns compatibility integration, not duplicate implementation. | Reuse the completed graph and verify metadata equivalence, ownership and real-file edit/save/reopen on the combined branch. |
 | 30 | Missing dynamic-block actions/parameters and constraints; static INSERT representation exists. | #29 reference graph prerequisite. | Native actions/parameters/constraints retained, safe supported edits, explicit unsupported cases. |
 | 31 | Missing sheet sets, data links and drawing digital signatures. Drawing signatures differ from installer signing. | Formats/reference graph/licensed validation prerequisites. | Real sheet/data-link fixtures; signature validity and explicit invalidation on edits, no false signing claim. |
-| 32 | **Delivered 3D milestones 0–7 complete externally; adoption in progress here.** Published a4d5526 retains producer AutoCAD 2027 mesh/dimension and kernel-security evidence. After fccba52 clears all combined 2D/native/app/CI gates, source adoption adds typed 3D identities, safe mixed edits, DXF carrier retention and save/recovery controls. Core205 and save/recovery137 focused tests pass; combined validation remains pending. Default off; native ACIS/DWG solid export and full font/view/plot parity remain limited. | Lead integration with separate core, codec and reliability owners; [delivered plan/status](https://github.com/habit04/share/blob/feature/3d-development/docs/3D-PLAN.md). | Fresh complete tests/static/build, actual source-app and native reference cases, metadata fixed points and exact-head CI before GPU adoption. Unsigned installed launch remains a separate Application Control limitation; no installer stage here. |
+| 32 | **Delivered 3D milestones0–7 integrated and validated at7b2fdea.** Local5,083/0/38, all static/build checks, four exact-head CI jobs, native10/app32, kernel-security19, private AutoCAD DXF/DWG reference audits, 3D visual and mixed2D/3D file6 gates pass. Default off; native ACIS/DWG solid export and full font/view/plot parity remain limited. Claude picking/camera/measurement follow-ups are reviewed separately; combined GPU adoption needs fresh gates. | Lead integration with separate core, codec and reliability owners; [delivered plan/status](https://github.com/habit04/share/blob/feature/3d-development/docs/3D-PLAN.md). | Retain complete source/native/app/AutoCAD/security/CI assertions on each combined source. Producer or mock-only passes never substitute for actual combined hardware checks. No installer stage here. |
 
 Completed baseline priorities 1–6, 8 and portable Windows DWG saving #27 remain regression
 coverage, not rebuild work. #7 was superseded by portable saving. #26 (Mac/Linux updates) and

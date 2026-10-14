@@ -37,9 +37,9 @@ export default defineConfig(({ command, mode }) => {
       : { format: 'es', rollupOptions: { output: { entryFileNames: 'assets/worker/[name]-[hash].js', chunkFileNames: 'assets/worker/[name]-[hash].js' } } },
     resolve: { alias: web ? [] : [{ find: './dwg-browser-worker-factory', replacement: fileURLToPath(new URL('./src/io/dwg-browser-worker-disabled.ts', import.meta.url)) }] },
     plugins: web ? [webCspPlugin()] : [],
-    define: { __APP_VERSION__: JSON.stringify(pkg.version), __JCAD_WEB__: JSON.stringify(web) },
+    define: { __APP_VERSION__: JSON.stringify(pkg.version), __JCAD_WEB__: JSON.stringify(web), __JCAD_GPU_EXPERIMENTAL__: JSON.stringify(mode === 'gpu-experimental') },
     build: { outDir: mode === 'site' ? 'site-dist/app' : 'dist', emptyOutDir: true, target: 'chrome120' },
-    server: { port: 5173, strictPort: true },
+    server: { port: mode === 'gpu-experimental' ? 5189 : 5173, strictPort: true },
     test: { environment: 'node', include: ['tests/**/*.test.ts'] },
   };
 });

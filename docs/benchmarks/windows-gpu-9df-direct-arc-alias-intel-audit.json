@@ -1,0 +1,283 @@
+{
+  "outcome": "inconclusive",
+  "compiledSourceSha": "9df70df05cb7f2f473f1d989d3535659160e6a45",
+  "currentSourceSha": "5188097045fd64b1da6b0e197afa04617885cd2a",
+  "currentWorktreeModified": true,
+  "distAssetsUnchanged": true,
+  "privateAppClosed": true,
+  "scope": {
+    "privateProfileVerified": true,
+    "userData": "[private workspace path omitted]",
+    "mainPid": 55300,
+    "platform": "win32",
+    "windows": "10.0.26200",
+    "versions": {
+      "electron": "44.7.0",
+      "chromium": "152.0.7977.130",
+      "node": "24.21.0"
+    }
+  },
+  "activeAdapter": [
+    {
+      "name": "Intel(R) UHD Graphics",
+      "vendorId": "0x8086",
+      "deviceId": "0x4688",
+      "active": true,
+      "driverVendor": "Intel",
+      "driverVersion": "32.0.101.7088"
+    }
+  ],
+  "candidate": {
+    "logicalCSS": {
+      "width": 1216,
+      "height": 552
+    },
+    "dpr": 1,
+    "center": {
+      "x": 0,
+      "y": 0
+    },
+    "scale": 1,
+    "twist": 0,
+    "radius": 40000000,
+    "startAngle": 0,
+    "endAngle": 0.000002,
+    "centerVariants": [
+      -40000000,
+      -40000000.75
+    ],
+    "widths": [
+      16,
+      2.5
+    ],
+    "roi": {
+      "x": 584,
+      "y": 252,
+      "width": 48,
+      "height": 48
+    }
+  },
+  "rows": [
+    {
+      "widthCss": 16,
+      "centerX": -40000000,
+      "exactNativeStable": false,
+      "exactGpuStable": true,
+      "nativeConsistency": [
+        {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        },
+        {
+          "rawPixels": 336,
+          "rawChannels": 1006,
+          "pixelmatchPixels": 322
+        },
+        {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        }
+      ],
+      "nativeRepeat": {
+        "rawPixels": 0,
+        "rawChannels": 0,
+        "pixelmatchPixels": 0
+      },
+      "nativeGpu": {
+        "rawPixels": 384,
+        "rawChannels": 1152,
+        "pixelmatchPixels": 384
+      },
+      "nativeVsIndependentLine": {
+        "rawPixels": 384,
+        "rawChannels": 1152,
+        "pixelmatchPixels": 384
+      },
+      "nativeForegroundPixels": 0,
+      "gpuForegroundPixels": 384,
+      "nativeWeightedX": null,
+      "gpuWeightedX": 608,
+      "nativeFloatTuple": [
+        -39999392,
+        276,
+        40000000,
+        0,
+        -0.0000019999999949504854,
+        true
+      ],
+      "gpuAdmission": true,
+      "vertices": 6,
+      "bytes": 168,
+      "dimensions": {
+        "actualWindowDpr": 1,
+        "requested": {
+          "width": 1216,
+          "height": 552,
+          "dpr": 1,
+          "center": {
+            "x": 0,
+            "y": 0
+          },
+          "scale": 1,
+          "twist": 0,
+          "canvasWidth": 1216,
+          "canvasHeight": 552
+        },
+        "current": {
+          "width": 1216,
+          "height": 552,
+          "dpr": 1,
+          "center": {
+            "x": 0,
+            "y": 0
+          },
+          "scale": 1,
+          "twist": 0,
+          "canvasWidth": 1216,
+          "canvasHeight": 552
+        },
+        "gpuCanvas": {
+          "width": 1216,
+          "height": 552
+        },
+        "actualFramebuffer": {
+          "width": 1216,
+          "height": 552
+        },
+        "glViewport": [
+          0,
+          0,
+          1216,
+          552
+        ]
+      }
+    },
+    {
+      "widthCss": 16,
+      "centerX": -40000000.75,
+      "exactNativeStable": true,
+      "exactGpuStable": true,
+      "nativeConsistency": [
+        {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        },
+        {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        },
+        {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        }
+      ],
+      "nativeRepeat": {
+        "rawPixels": 0,
+        "rawChannels": 0,
+        "pixelmatchPixels": 0
+      },
+      "nativeGpu": {
+        "rawPixels": 408,
+        "rawChannels": 1224,
+        "pixelmatchPixels": 360
+      },
+      "nativeVsIndependentLine": {
+        "rawPixels": 384,
+        "rawChannels": 1152,
+        "pixelmatchPixels": 384
+      },
+      "nativeForegroundPixels": 0,
+      "gpuForegroundPixels": 408,
+      "nativeWeightedX": null,
+      "gpuWeightedX": 607.2517006802722,
+      "nativeFloatTuple": [
+        -39999392,
+        276,
+        40000000,
+        0,
+        -0.0000019999999949504854,
+        true
+      ],
+      "gpuAdmission": true,
+      "vertices": 6,
+      "bytes": 168,
+      "dimensions": {
+        "actualWindowDpr": 1,
+        "requested": {
+          "width": 1216,
+          "height": 552,
+          "dpr": 1,
+          "center": {
+            "x": 0,
+            "y": 0
+          },
+          "scale": 1,
+          "twist": 0,
+          "canvasWidth": 1216,
+          "canvasHeight": 552
+        },
+        "current": {
+          "width": 1216,
+          "height": 552,
+          "dpr": 1,
+          "center": {
+            "x": 0,
+            "y": 0
+          },
+          "scale": 1,
+          "twist": 0,
+          "canvasWidth": 1216,
+          "canvasHeight": 552
+        },
+        "gpuCanvas": {
+          "width": 1216,
+          "height": 552
+        },
+        "actualFramebuffer": {
+          "width": 1216,
+          "height": 552
+        },
+        "glViewport": [
+          0,
+          0,
+          1216,
+          552
+        ]
+      }
+    }
+  ],
+  "pairComparisons": [
+    {
+      "width": 16,
+      "nativeFloatTupleIdentical": true,
+      "stableNativePair": false,
+      "stableGpuPair": true,
+      "nativePair": {
+        "rawPixels": 0,
+        "rawChannels": 0,
+        "pixelmatchPixels": 0
+      },
+      "gpuPair": {
+        "rawPixels": 48,
+        "rawChannels": 144,
+        "pixelmatchPixels": 0
+      },
+      "nativeWeightedShift": null,
+      "gpuWeightedShift": -0.7482993197278347
+    }
+  ],
+  "width2_5Skipped": "The width16 pair was unstable; preserve it as inconclusive without extending the native probe",
+  "limitations": [
+    "One actual adapter/runtime; no hardware matrix.",
+    "Untimed rawROI correctness audit only.",
+    "Old clean9df compiled artifacts; current source SHA/dirty state separately recorded.",
+    "Computed Float32 tuple uses recorded actual Canvas arguments and pinned Chromium casts; it is not direct introspection of native path storage.",
+    "Every native/GPU repeated readback is retained; unstable cases are inconclusive. An empty native arc is recorded without inventing a paint boundary."
+  ],
+  "publication": "Failed pre-fix native observations. Raw captures remain in the private archive; no performance claim."
+}

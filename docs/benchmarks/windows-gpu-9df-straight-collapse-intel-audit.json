@@ -1,0 +1,277 @@
+{
+  "compiledSourceSha": "9df70df05cb7f2f473f1d989d3535659160e6a45",
+  "currentWorktreeModified": true,
+  "distUnchanged": true,
+  "runtime": {
+    "electron": "44.7.0",
+    "chromium": "152.0.7977.130",
+    "node": "24.21.0"
+  },
+  "graphics": {
+    "state": "ready",
+    "adapters": [
+      {
+        "name": "Intel(R) UHD Graphics",
+        "vendorId": "0x8086",
+        "deviceId": "0x4688",
+        "active": true,
+        "driverVendor": "Intel",
+        "driverVersion": "32.0.101.7088"
+      },
+      {
+        "name": "NVIDIA RTX A3000 12GB Laptop GPU",
+        "vendorId": "0x10de",
+        "deviceId": "0x24b9",
+        "active": false,
+        "driverVendor": "Unknown",
+        "driverVersion": "32.0.15.9671"
+      },
+      {
+        "name": "Microsoft Basic Render Driver",
+        "vendorId": "0x1414",
+        "deviceId": "0x008c",
+        "active": false,
+        "driverVendor": "Unknown",
+        "driverVersion": "10.0.26100.9549"
+      }
+    ],
+    "hardwareAcceleration": true,
+    "features": {
+      "2d_canvas": "enabled",
+      "flash_3d": "Unknown",
+      "flash_stage3d": "Unknown",
+      "flash_stage3d_baseline": "Unknown",
+      "gpu_compositing": "enabled",
+      "multiple_raster_threads": "enabled_on",
+      "native_gpu_memory_buffers": "Unknown",
+      "rasterization": "enabled",
+      "video_decode": "enabled",
+      "video_encode": "enabled",
+      "vpx_decode": "Unknown",
+      "webgl": "enabled",
+      "webgl2": "Unknown",
+      "opengl": "enabled_on",
+      "vulkan": "Unknown",
+      "webgpu": "enabled",
+      "direct_rendering_display": "Unknown",
+      "skia_graphite": "disabled_off"
+    },
+    "driver": {
+      "vendor": "Unknown",
+      "version": "Unknown"
+    },
+    "fallback": "Unknown",
+    "reasons": [
+      "skia_graphite: disabled_off"
+    ],
+    "versions": {
+      "jcad": "0.4.9",
+      "electron": "44.7.0",
+      "chromium": "152.0.7977.130",
+      "windows": "10.0.26200"
+    }
+  },
+  "overallAuditOutcome": "inconclusive",
+  "observations": [
+    {
+      "width": 2.5,
+      "dimensions": {
+        "requested": {
+          "width": 1216,
+          "height": 552,
+          "dpr": 1
+        },
+        "viewport": {
+          "width": 1216,
+          "height": 552,
+          "dpr": 1,
+          "center": {
+            "x": 0,
+            "y": 0
+          },
+          "scale": 10,
+          "twist": 0,
+          "canvasWidth": 1216,
+          "canvasHeight": 552
+        },
+        "gpuCanvas": {
+          "width": 1216,
+          "height": 552
+        },
+        "actualFramebuffer": {
+          "width": 1216,
+          "height": 552
+        }
+      },
+      "nativeStable": false,
+      "actualCommands": {
+        "move": {
+          "x": 607.99999,
+          "y": 276
+        },
+        "lines": [
+          {
+            "x": 608,
+            "y": 276
+          },
+          {
+            "x": 608,
+            "y": 176
+          }
+        ],
+        "width": 2.5,
+        "color": "#44bb55",
+        "cap": "butt",
+        "join": "miter"
+      },
+      "referenceControlKind": "Independent direct native LINE(0,0)->(0,10)",
+      "gpuRendered": true,
+      "comparisons": {
+        "nativeRepeat": {
+          "rawPixels": 48,
+          "rawChannels": 96,
+          "pixelmatchPixels": 0
+        },
+        "nativeVersusNoMove": {
+          "rawPixels": 48,
+          "rawChannels": 96,
+          "pixelmatchPixels": 0
+        },
+        "nativeVersusGpu": {
+          "rawPixels": 3,
+          "rawChannels": 9,
+          "pixelmatchPixels": 1
+        },
+        "noMoveVersusGpu": {
+          "rawPixels": 51,
+          "rawChannels": 105,
+          "pixelmatchPixels": 1
+        },
+        "nativeVersusFallback": null
+      },
+      "planes": {
+        "native": {
+          "foregroundBelowIdealY276ButtCap": 0,
+          "bounds": null
+        },
+        "nativeRepeated": {
+          "foregroundBelowIdealY276ButtCap": 0,
+          "bounds": null
+        },
+        "noMoveControl": {
+          "foregroundBelowIdealY276ButtCap": 0,
+          "bounds": null
+        },
+        "gpu": {
+          "foregroundBelowIdealY276ButtCap": 1,
+          "bounds": {
+            "minX": 608,
+            "maxX": 608,
+            "minY": 276,
+            "maxY": 276
+          }
+        }
+      }
+    },
+    {
+      "width": 16,
+      "dimensions": {
+        "requested": {
+          "width": 1216,
+          "height": 552,
+          "dpr": 1
+        },
+        "viewport": {
+          "width": 1216,
+          "height": 552,
+          "dpr": 1,
+          "center": {
+            "x": 0,
+            "y": 0
+          },
+          "scale": 10,
+          "twist": 0,
+          "canvasWidth": 1216,
+          "canvasHeight": 552
+        },
+        "gpuCanvas": {
+          "width": 1216,
+          "height": 552
+        },
+        "actualFramebuffer": {
+          "width": 1216,
+          "height": 552
+        }
+      },
+      "nativeStable": true,
+      "actualCommands": {
+        "move": {
+          "x": 607.99999,
+          "y": 276
+        },
+        "lines": [
+          {
+            "x": 608,
+            "y": 276
+          },
+          {
+            "x": 608,
+            "y": 176
+          }
+        ],
+        "width": 16,
+        "color": "#44bb55",
+        "cap": "butt",
+        "join": "miter"
+      },
+      "referenceControlKind": "Independent direct native LINE(0,0)->(0,10)",
+      "gpuRendered": true,
+      "comparisons": {
+        "nativeRepeat": {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        },
+        "nativeVersusNoMove": {
+          "rawPixels": 0,
+          "rawChannels": 0,
+          "pixelmatchPixels": 0
+        },
+        "nativeVersusGpu": {
+          "rawPixels": 64,
+          "rawChannels": 192,
+          "pixelmatchPixels": 64
+        },
+        "noMoveVersusGpu": {
+          "rawPixels": 64,
+          "rawChannels": 192,
+          "pixelmatchPixels": 64
+        },
+        "nativeVersusFallback": null
+      },
+      "planes": {
+        "native": {
+          "foregroundBelowIdealY276ButtCap": 0,
+          "bounds": null
+        },
+        "nativeRepeated": {
+          "foregroundBelowIdealY276ButtCap": 0,
+          "bounds": null
+        },
+        "noMoveControl": {
+          "foregroundBelowIdealY276ButtCap": 0,
+          "bounds": null
+        },
+        "gpu": {
+          "foregroundBelowIdealY276ButtCap": 64,
+          "bounds": {
+            "minX": 608,
+            "maxX": 615,
+            "minY": 276,
+            "maxY": 283
+          }
+        }
+      }
+    }
+  ]
+}

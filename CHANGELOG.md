@@ -13,6 +13,13 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Added
 
+- Optional development GPU build adds bounded WebGL2 drawing coverage and GPU diagnostics.
+  Canvas remains the ordinary renderer; unsupported geometry, fonts, SHX and active gradients
+  use the complete Canvas view. Captured drawing font contexts invalidate GPU geometry and
+  admission caches on arrival or resource changes. Experimental 3D mode hides the 2D GPU
+  backing and restores the selected 2D renderer on exit. Combined hardware validation is
+  recorded separately from the producer's frozen GPU evidence.
+
 - Experimental 3D modelling behind Options > Files > Experimental 3D (off by default):
   a WebGL2 viewport, primitives, extrusion/revolution, Manifold Boolean operations,
   construction planes, transforms, measurement, snaps and grips. DIM3D supports aligned,

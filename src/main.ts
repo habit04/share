@@ -1,6 +1,7 @@
 import './styles/app.css';
 import './styles/parity.css';
 import { Editor, type FileBridge } from './app/editor';
+import { installGpuPrototype } from './app/gpu-prototype';
 import { Ribbon, ELECTRICAL_TABS } from './ui/ribbon';
 import { CommandLine } from './ui/commandline';
 import { StatusBar } from './ui/statusbar';
@@ -521,7 +522,8 @@ function boot(): void {
   };
 
   // Experimental 3D (inert unless Options > Experimental > 3D modelling was on at startup).
-  installExperimental3d(editor);
+  const experimental3d = installExperimental3d(editor);
+  if (__JCAD_GPU_EXPERIMENTAL__) installGpuPrototype(editor, () => experimental3d?.active ?? false);
 
   // ------------------------------------------------------------ chrome
   buildTitleBar(editor, document.getElementById('titlebar')!, (anchor) => showAppMenu(editor, anchor, { exit: () => (window.jcad?.quit ? window.jcad.quit() : window.close()) }));
