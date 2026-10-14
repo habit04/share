@@ -7,6 +7,7 @@ import { evaluateFields, FIELD_UNAVAILABLE, type FieldContext } from '../core/fi
 import type { Pair } from './dxf/groups';
 import { isQuietXdataApp } from './dxf/codes';
 import { decodeUnicodeEscapes, shapeStylesOf } from './encoding';
+import { retainNativeLayoutPaper } from './dxf-layouts';
 import { DIM_VARIABLES } from '../core/dimension';
 import { isScaleName } from '../core/layouts';
 
@@ -14,6 +15,33 @@ interface RecordData { type: string; section: string; groups: CadGroup[]; handle
 const value = (record: { readonly groups: readonly CadGroup[] }, code: number) => record.groups.find(([c]) => c === code)?.[1].trim() ?? '';
 /** Decode a proven CAD identifier for matching only; stored metadata groups remain raw. */
 const identifierValue = (record: { readonly groups: readonly CadGroup[] }, code: number) => decodeUnicodeEscapes(value(record, code));
+/** Structural identity must not read a reactor or opaque application field as the common owner. */
+function scopedValues(record: { readonly groups: readonly CadGroup[] }, code: number, subclass?: string): string[] {
+  const found: string[] = [];
+  let depth = 0, current: string | undefined;
+  for (const [candidate, raw] of record.groups) {
+    if (candidate === 102) {
+      if (raw.trim().startsWith('{')) depth++;
+      else if (raw.trim() === '}') depth--;
+      continue;
+    }
+    if (depth) continue;
+    if (candidate === 1001) break;
+    if (candidate === 100) current = raw.trim();
+    else if (candidate === code && current === subclass) found.push(raw.trim());
+  }
+  return found;
+}
+/** Only the native overall paper viewport has a generated structural counterpart. */
+function overallPaperOwner(record: RecordData, byHandle: ReadonlyMap<string, RecordData>): RecordData | undefined {
+  if (record.type !== 'VIEWPORT' || !record.handle || !['ENTITIES', 'BLOCKS'].includes(record.section)
+    || scopedValues(record, 69, 'AcDbViewport').join(',') !== '1'
+    || scopedValues(record, 67, 'AcDbEntity').join(',') !== '1') return undefined;
+  const owners = scopedValues(record, 330);
+  if (owners.length > 1) throw new CadGraphError('invalid', 'An overall paper viewport has ambiguous common owners.');
+  const owner = owners[0] && byHandle.get(canonicalCadHandle(owners[0]));
+  return owner && owner.type === 'BLOCK_RECORD' && /^\*PAPER_SPACE(?:\d+)?$/i.test(identifierValue(owner, 2)) ? owner : undefined;
+}
 const dictionaries = new Set(['DICTIONARY', 'ACDBDICTIONARYWDFLT']);
 const dimensionOverrideCodes = new Set([71, 72, 73, 74, 78, 340, ...DIM_VARIABLES.flatMap(variable => variable.code === undefined ? [] : [variable.code])]);
 const leaderOverrideCodes = new Set([41]);
@@ -61,8 +89,9 @@ function mergeAcadDstyle(retained: readonly CadGroup[], generated: readonly CadG
   return [...retained.slice(0, source.start), ...(body.length ? [retained[source.start]!, ...body] : []), ...retained.slice(source.end)];
 }
 const layoutName = (record: { readonly groups: readonly CadGroup[] }) => {
-  for (let index = record.groups.length - 1; index >= 0; index--) if (record.groups[index]![0] === 1) return decodeUnicodeEscapes(record.groups[index]![1].trim());
-  return '';
+  const names = scopedValues(record, 1, 'AcDbLayout');
+  if (names.length > 1) throw new CadGraphError('invalid', 'A retained layout has ambiguous native names.');
+  return decodeUnicodeEscapes(names[0] ?? scopedValues(record, 1).at(-1) ?? '');
 };
 
 function recordsOf(pairs: readonly Pair[]): RecordData[] {
@@ -269,12 +298,13 @@ export function attachDxfCadGraph(state: DrawingState, pairs: readonly Pair[], o
   }
   // Preserve exposed object metadata; unsupported geometry remains in the existing loss report.
   const sourceByHandle = new Map(sourceRecords.flatMap(record => record.handle ? [[record.handle, record] as const] : []));
+  const overallViewports = new Set(sourceRecords.filter(record => overallPaperOwner(record, sourceByHandle)));
   const tablePictures = new Set(sourceRecords.filter(record => record.type === 'INSERT' && record.groups.some(([code, app]) => code === 1001 && app.trim() === 'JCAD_TABLE')).map(record => identifierValue(record, 2)));
   const synthetic = (record: RecordData): boolean => {
     const owner = sourceByHandle.get(value(record, 330)), block = record.type === 'BLOCK_RECORD' || record.type === 'BLOCK' ? identifierValue(record, 2) : owner?.type === 'BLOCK_RECORD' ? identifierValue(owner, 2) : '';
-    return record.type === 'VIEWPORT' && value(record, 69) === '1' || (/^\*[DT]\d+$/i.test(block) || tablePictures.has(block)) && !state.blocks[block];
+    return record.type === 'VIEWPORT' && value(record, 69) === '1' && !overallViewports.has(record) || (/^\*[DT]\d+$/i.test(block) || tablePictures.has(block)) && !state.blocks[block];
   };
-  const records = sourceRecords.filter(record => !synthetic(record) && (!['ENTITIES', 'BLOCKS'].includes(record.section) || ['BLOCK', 'ENDBLK', 'ATTDEF'].includes(record.type)
+  const records = sourceRecords.filter(record => !synthetic(record) && (!['ENTITIES', 'BLOCKS'].includes(record.section) || ['BLOCK', 'ENDBLK', 'ATTDEF'].includes(record.type) || overallViewports.has(record)
     || !!record.handle && (entityHandles.has(record.handle) || followerHandles.has(record.handle) || options.viewportHandles?.has(record.handle))
     || record.section === 'ENTITIES' && Number(value(record, 67)) !== 1 && ['3DFACE', '3DSOLID', 'REGION', 'BODY'].includes(record.type)
       && (record.type === '3DFACE' || record.groups.some(([code]) => code === 1 || code === 3))
@@ -362,9 +392,13 @@ function logicalKeys(records: readonly RecordData[]): Map<RecordData, string> {
     const owner = byHandle.get(value(record, 330));
     if (owner?.type === 'BLOCK_RECORD') keys.set(record, JSON.stringify(['attribute-definition', identifierValue(owner, 2).toUpperCase(), identifierValue(record, 2).toUpperCase()]));
   }
-  for (const record of records) if (record.type === 'VIEWPORT' && value(record, 69) === '1') {
-    const owner = byHandle.get(value(record, 330));
-    if (owner?.type === 'BLOCK_RECORD') keys.set(record, JSON.stringify(['mainviewport', identifierValue(owner, 2).toUpperCase()]));
+  const overallSlots = new Set<string>();
+  for (const record of records) {
+    const owner = overallPaperOwner(record, byHandle);
+    if (!owner) continue;
+    const key = JSON.stringify(['mainviewport', identifierValue(owner, 2).toUpperCase()]);
+    if (overallSlots.has(key)) throw new CadGraphError('invalid', 'A paper-space owner has duplicate overall viewports.');
+    overallSlots.add(key); keys.set(record, key);
   }
   return keys;
 }
@@ -382,17 +416,25 @@ function structuralKeys(records: readonly RecordData[]): Map<RecordData, string>
   }
   return keys;
 }
-function withoutReplacedReferenceBlocks(groups: readonly CadGroup[], replacement: readonly CadGroup[]): CadGroup[] {
+function withoutReplacedReferenceBlocks(groups: readonly CadGroup[], replacement: readonly CadGroup[], commonOnly = false): CadGroup[] {
   const labels = new Set(replacement.filter(([code, text]) => code === 102 && text.startsWith('{')).map(([, text]) => text));
-  let depth = 0, skip = false;
+  let depth = 0, skip = false, subclass = false;
   return groups.filter(([code, text]) => {
-    if (code === 102 && text.startsWith('{')) { if (!depth) skip = labels.has(text); depth++; return !skip; }
+    if (!depth && code === 100) subclass = true;
+    if (code === 102 && text.startsWith('{')) { if (!depth) skip = (!commonOnly || !subclass) && labels.has(text); depth++; return !skip; }
     if (code === 102 && text === '}') { const keep = !skip; if (depth) depth--; if (!depth) skip = false; return keep; }
     return !skip;
   });
 }
 const referenceBlockPosition = (groups: readonly CadGroup[]) => { const index = groups.findIndex(([code]) => code === 5 || code === 105); return index < 0 ? 0 : index + 1; };
-const appendBeforeXdata = (groups: CadGroup[], ...extra: CadGroup[]) => { const index = groups.findIndex(([code]) => code === 1001); groups.splice(index < 0 ? groups.length : index, 0, ...extra); };
+const appendBeforeXdata = (groups: CadGroup[], ...extra: CadGroup[]) => {
+  let depth = 0;
+  const index = groups.findIndex(([code, raw]) => {
+    if (code === 102) depth += raw.startsWith('{') ? 1 : raw === '}' ? -1 : 0;
+    return code === 1001 && depth === 0;
+  });
+  groups.splice(index < 0 ? groups.length : index, 0, ...extra);
+};
 /** Retained dictionaries own their schema and existing entries; generated records only add missing keys. */
 function mergeDictionaryGroups(source: readonly CadGroup[], generated: readonly CadGroup[]): CadGroup[] {
   const groups = [...source], keys = new Set(source.filter(([code]) => code === 3).map(([, name]) => name));
@@ -411,21 +453,65 @@ function mergeDictionaryGroups(source: readonly CadGroup[], generated: readonly 
   return groups;
 }
 /** Repeated codes in PlotSettings and Layout belong to distinct native subclasses. */
-function retainLayoutSubclassProperties(source: readonly CadGroup[], generated: readonly CadGroup[]): CadGroup[] {
+function retainLayoutSubclassProperties(source: readonly CadGroup[], generated: readonly CadGroup[], copiedOverall?: string): CadGroup[] {
   const groups = [...generated];
-  for (let start = 0; start < source.length; start++) {
+  const subclasses = (pairs: readonly CadGroup[]) => {
+    const spans: { start: number; end: number }[] = [];
+    let depth = 0, start = -1;
+    for (let index = 0; index < pairs.length; index++) {
+      const [code, raw] = pairs[index]!;
+      if (code === 102) {
+        if (raw.trim().startsWith('{')) depth++;
+        else if (raw.trim() === '}') depth--;
+        if (depth < 0) throw new CadGraphError('dependency', 'Cannot save a layout with malformed application blocks.');
+      } else if (!depth && (code === 100 || code === 1001)) {
+        if (start >= 0) spans.push({ start, end: index });
+        start = code === 100 ? index : -1;
+        if (code === 1001) break;
+      }
+    }
+    if (depth) throw new CadGraphError('dependency', 'Cannot save a layout with malformed application blocks.');
+    if (start >= 0) spans.push({ start, end: pairs.length });
+    return spans;
+  };
+  for (const { start, end } of subclasses(source)) {
     const marker = source[start]!;
-    if (marker[0] !== 100) continue;
-    let end = source.findIndex(([code], index) => index > start && (code === 100 || code === 1001));
-    if (end < 0) end = source.length;
-    const target = groups.findIndex(([code, name]) => code === 100 && name.trim() === marker[1].trim());
-    if (target < 0) { appendBeforeXdata(groups, ...source.slice(start, end)); continue; }
-    let targetEnd = groups.findIndex(([code], index) => index > target && (code === 100 || code === 1001));
-    if (targetEnd < 0) targetEnd = groups.length;
+    const targets = subclasses(groups).filter(span => groups[span.start]![1].trim() === marker[1].trim());
+    if (targets.length > 1) throw new CadGraphError('dependency', 'Cannot save a layout with ambiguous subclasses.');
+    if (!targets.length) { appendBeforeXdata(groups, ...source.slice(start, end)); continue; }
+    const { start: target, end: targetEnd } = targets[0]!;
+    if (marker[1].trim() === 'AcDbLayout') {
+      // Physical paper dimensions do not define native drawing limits, extents,
+      // elevation or UCS. Only the name, tab order and paper owner are modeled.
+      const modeled = new Set([1, 71, 330, ...(copiedOverall ? [331] : [])]);
+      const direct = (body: readonly CadGroup[]) => {
+        let depth = 0;
+        return body.map(pair => {
+          const scoped = depth === 0 && pair[0] !== 102;
+          if (pair[0] === 102 && pair[1].trim().startsWith('{')) depth++;
+          else if (pair[0] === 102 && pair[1].trim() === '}') depth--;
+          return { pair, scoped };
+        });
+      };
+      const replacements = new Map(direct(groups.slice(target + 1, targetEnd))
+        .filter(({ pair, scoped }) => scoped && modeled.has(pair[0])).map(({ pair }) => [pair[0], pair]));
+      if (copiedOverall) replacements.set(331, [331, copiedOverall]);
+      const used = new Set<number>();
+      const body = direct(source.slice(start + 1, end)).map(({ pair, scoped }) => {
+        if (!scoped || !modeled.has(pair[0]) || !replacements.has(pair[0])) return pair;
+        used.add(pair[0]); return replacements.get(pair[0])!;
+      });
+      body.push(...[...replacements].filter(([code]) => !used.has(code)).map(([, pair]) => pair));
+      groups.splice(target + 1, targetEnd - target - 1, ...body);
+      continue;
+    }
     const existing = new Set(groups.slice(target + 1, targetEnd).map(([code]) => code));
-    const retained = source.slice(start + 1, end).filter(([code]) => !existing.has(code));
+    let depth = 0;
+    const retained = source.slice(start + 1, end).filter(([code, raw]) => {
+      if (code === 102) { depth += raw.trim().startsWith('{') ? 1 : raw.trim() === '}' ? -1 : 0; return true; }
+      return depth > 0 || !existing.has(code);
+    });
     groups.splice(targetEnd, 0, ...retained);
-    start = end - 1;
   }
   return groups;
 }
@@ -439,6 +525,7 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   validateCadState(state);
   const generated = recordsOf(pairsOf(text)), sources = graph.nodes.map(node => ({ type: node.type, section: node.section, groups: [...node.groups], ...(node.sourceHandle ? { handle: canonicalCadHandle(node.sourceHandle) } : {}) }));
   const sourceKeys = logicalKeys(sources), generatedKeys = logicalKeys(generated), byAnchor = new Map<string, CadNode>(), byKey = new Map<string, CadNode>();
+  const overallSourceIds = new Set(graph.nodes.flatMap((node, index) => sourceKeys.get(sources[index]!)?.startsWith('["mainviewport",') ? [node.id] : []));
   graph.nodes.forEach((node, index) => {
     const anchor = cadAnchorKey(node.anchor); if (anchor) byAnchor.set(anchor, node);
     // Synthesized document registries have no source file handle. Their proven dictionary path
@@ -471,6 +558,11 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   const nodeHandles = new Map<string, string>(), generatedHandles = new Map<string, string>();
   for (const node of graph.nodes) if (node.type !== 'CLASS' && node.type !== 'HEADER') nodeHandles.set(node.id, node.sourceHandle ? canonicalCadHandle(node.sourceHandle) : allocate());
   for (const record of generated) if (record.handle) generatedHandles.set(record.handle, match.has(record) ? nodeHandles.get(match.get(record)!.id)! : hintHandles.get(generatedSlots.get(record) ?? '') ?? allocate());
+  const overallOwners = new Map(generated.flatMap(record => {
+    const owner = overallPaperOwner(record, generatedByHandle);
+    return owner?.handle && record.handle ? [[generatedHandles.get(record.handle)!, generatedHandles.get(owner.handle)!] as const] : [];
+  }));
+  const overallByOwner = new Map([...overallOwners].map(([viewport, owner]) => [owner, viewport]));
   const modelRecord = generated.find(record => record.type === 'BLOCK_RECORD' && identifierValue(record, 2).toUpperCase() === '*MODEL_SPACE');
   const modelOwner = modelRecord?.handle && generatedHandles.get(modelRecord.handle);
   const retainedModelGeometry = (node: CadNode) => node.section === 'ENTITIES' && (!node.anchor || node.anchor.kind === 'raw') && Number(value(node, 67)) !== 1 && ['3DFACE', '3DSOLID', 'REGION', 'BODY'].includes(node.type);
@@ -508,14 +600,32 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       record.groups = mergeDictionaryGroups(sourceGroups(node), record.groups);
       continue;
     }
-    if (node.type === 'VPORT' && node.section === 'TABLES') {
+    if (node.type === 'VPORT' && node.section === 'TABLES'
+      || node.type === 'VIEWPORT' && node.anchor?.kind === 'raw' && overallSourceIds.has(node.id)) {
       // The editor's viewport/session view is not a modeled VPORT symbol-table
       // edit. The default writer's limits-based *Active record is a new-drawing
       // fallback; replacing imported native cameras with it loses retained data.
+      // Overall paper viewports likewise have no editable UI camera; retain their
+      // actual record so LAYOUT references and native properties stay connected.
       record.groups = sourceGroups(node);
       continue;
     }
-    if (node.type === 'LAYOUT') record.groups = retainLayoutSubclassProperties(sourceGroups(node), record.groups);
+    if (node.type === 'LAYOUT') {
+      const source = sourceGroups(node), name = node.anchor?.kind === 'layout' ? node.anchor.name : layoutName(node);
+      const original = { ...record, groups: source };
+      const sourceOwner = scopedValues(original, 330, 'AcDbLayout'), sourceViewport = scopedValues(original, 331, 'AcDbLayout');
+      const targetOwner = scopedValues(record, 330, 'AcDbLayout'), targetViewport = scopedValues(record, 331, 'AcDbLayout');
+      // A copied sheet gets a new paper owner and overall viewport. Rebind only
+      // this proven structural pair; a retained active floating viewport or an
+      // arbitrary/unresolved pointer must not be redirected to a generated slot.
+      const copiedOverall = [sourceOwner, sourceViewport, targetOwner].every(values => values.length === 1)
+        && sourceOwner[0] !== targetOwner[0] && overallOwners.get(sourceViewport[0]!) === sourceOwner[0]
+        && (targetViewport.length === 0 || targetViewport.length === 1 && overallOwners.get(targetViewport[0]!) === targetOwner[0])
+        ? overallByOwner.get(targetOwner[0]!) : undefined;
+      record.groups = retainLayoutSubclassProperties(source, record.groups, copiedOverall);
+      const layout = state.layouts?.find(item => item.name.toUpperCase() === name.toUpperCase());
+      if (layout || name.toUpperCase() === 'MODEL') record.groups = retainNativeLayoutPaper(source, record.groups, layout ?? 'model');
+    }
     const liveComplex = node.type === 'LTYPE' ? state.header?.linetypes.find(line => line.name.toUpperCase() === identifierValue(node, 2).toUpperCase())?.complex : undefined;
     const unmodeledTableCodes = node.type === 'APPID' || node.type === 'LTYPE' && !liveComplex || node.type === 'DIMSTYLE' ? new Set([70])
       : node.type === 'BLOCK_RECORD' ? new Set([70, 280, 281])
@@ -571,12 +681,19 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     // The live viewport regenerates its clipping-boundary pointer. Application
     // reference blocks and XDATA are selected above independently of these codes.
     const rebuilt = liveComplex ? complexCodes : node.type === 'LAYER' ? new Set([390]) : node.type === 'DIMSTYLE' ? new Set([340, 342, 343, 344]) : node.type === 'LEADER' ? new Set([340]) : node.type === 'VIEWPORT' ? new Set([331, 340]) : ['MULTILEADER', 'MLEADER', 'ACAD_TABLE', 'IMAGE'].includes(node.type) ? new Set([340, 341, 342, 343, 344, 360]) : new Set<number>();
-    let nesting = 0, selectedApp: string | undefined, keepHeader = false;
+    let nesting = 0, selectedApp: string | undefined, keepHeader = false, layoutSubclass = false, retainedLayoutBlock = false;
     const existingVariables = new Set(record.groups.filter(([code]) => code === 9).map(([, name]) => name));
     node.groups.forEach(([code, raw], index) => {
       if (node.type === 'HEADER') { if (code === 9) keepHeader = !existingVariables.has(raw); if (keepHeader) selected.add(index); return; }
-      if (code === 102) { nesting += raw.startsWith('{') ? 1 : raw === '}' ? -1 : 0; selected.add(index); return; }
-      if (nesting) { selected.add(index); return; }
+      if (code === 102) {
+        if (!nesting) retainedLayoutBlock = node.type === 'LAYOUT' && layoutSubclass && !selectedApp;
+        nesting += raw.startsWith('{') ? 1 : raw === '}' ? -1 : 0;
+        if (!retainedLayoutBlock) selected.add(index);
+        if (!nesting) retainedLayoutBlock = false;
+        return;
+      }
+      if (nesting) { if (!retainedLayoutBlock) selected.add(index); return; }
+      if (code === 100) layoutSubclass = true;
       if (code === 1001) selectedApp = raw.trim();
       if (selectedApp) { if (!isQuietXdataApp(selectedApp, node.type) && !(selectedApp === 'AcCmTransparency' && node.type === 'LAYER')) selected.add(index); return; }
       if (rebuilt.has(code)) return;
@@ -602,10 +719,18 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       else if ((node.anchor?.kind === 'entity' || node.anchor?.kind === 'viewport') && cadReferenceKind(code)) appendBeforeXdata(record.groups, group);
     }
     // Source extension/reactor blocks precede the common subclass; each XDATA application occurs once.
-    let active: string | undefined;
-    record.groups = record.groups.filter(([code, raw]) => { if (code === 1001) active = raw.trim().toUpperCase(); return !active || !apps.has(active); });
-    record.groups = withoutReplacedReferenceBlocks(record.groups, metadata);
-    const application = metadata.findIndex(([code]) => code === 1001);
+    let active: string | undefined, activeDepth = 0;
+    record.groups = record.groups.filter(([code, raw]) => {
+      if (code === 102) activeDepth += raw.startsWith('{') ? 1 : raw === '}' ? -1 : 0;
+      if (!activeDepth && code === 1001) active = raw.trim().toUpperCase();
+      return !active || !apps.has(active);
+    });
+    record.groups = withoutReplacedReferenceBlocks(record.groups, metadata, node.type === 'LAYOUT');
+    let applicationDepth = 0;
+    const application = metadata.findIndex(([code, raw]) => {
+      if (code === 102) applicationDepth += raw.startsWith('{') ? 1 : raw === '}' ? -1 : 0;
+      return code === 1001 && applicationDepth === 0;
+    });
     record.groups.splice(referenceBlockPosition(record.groups), 0, ...metadata.slice(0, application < 0 ? undefined : application));
     if (application >= 0) record.groups.push(...metadata.slice(application));
   }

@@ -36,6 +36,7 @@ import {
 } from '../core/layouts';
 import type { ImportReportBuilder } from './import-report';
 import { importViewportView } from './viewport-view';
+import type { CadGroup } from '../core/cad-graph';
 
 export interface DxfSink {
   pair(code: number, value: string | number): void;
@@ -358,6 +359,124 @@ const before = (o: Obj, subclass: string): Obj => {
   return { kind: o.kind, groups: i >= 0 ? o.groups.slice(0, i) : o.groups };
 };
 
+interface LayoutPlotSettings {
+  layout: Layout;
+  offset: Point;
+}
+
+/** Decode physical paper and plot origin independently of paper-space drawing limits. */
+function layoutPlotSettings(ps: Obj, name: string, fallbackUnits: PaperUnits): LayoutPlotSettings {
+  const units: PaperUnits = num(ps, 72, fallbackUnits === 'mm' ? 1 : 0) === 1 ? 'mm' : 'in';
+  const rotation = Math.trunc(num(ps, 73, 0)) & 3;
+  const w = num(ps, 44, 0), h = num(ps, 45, 0);
+  const turned = rotation === 1 || rotation === 3;
+  const orientation = (turned ? h : w) >= (turned ? w : h) ? 'landscape' : 'portrait';
+  const media = str(ps, 4);
+  const paper =
+    (w > 0 && h > 0 ? paperFromSize(fromMm(w, units), fromMm(h, units), units, orientation) : null) ??
+    (media ? paperFromMediaName(media, orientation) : null) ??
+    defaultLayout(name, units).paper;
+  const margins: LayoutMargins = {
+    left: fromMm(num(ps, 40, 0), units), bottom: fromMm(num(ps, 41, 0), units),
+    right: fromMm(num(ps, 42, 0), units), top: fromMm(num(ps, 43, 0), units),
+  };
+  const n = num(ps, 142, 1), d = num(ps, 143, 1);
+  const sheetName = str(ps, 7).toLowerCase();
+  const plotStyle: PlotStyleMode = /monochrome/.test(sheetName) ? 'monochrome' : /gray|grey/.test(sheetName) ? 'grayscale' : /screen/.test(sheetName) ? 'screening' : 'color';
+  const flags = Math.trunc(num(ps, 70, 0));
+  return {
+    layout: {
+      name, paper: { ...paper, orientation },
+      plotScale: Math.trunc(num(ps, 75, 16)) === 0 && flags & 16 ? 'fit' : n > 0 && d > 0 ? formatScale(n / d) : '1:1',
+      margins, entities: [], viewports: [], plotStyle,
+      ...(plotStyle === 'screening' ? { screening: Number(/(\d+)%/.exec(sheetName)?.[1] ?? 50) } : {}),
+      ...(flags & 128 ? {} : { plotLineweights: false }),
+      ...(flags & 32 || !sheetName ? {} : { usePlotStyles: false }),
+    },
+    offset: { x: margins.left + fromMm(num(ps, 46, 0), units), y: margins.bottom + fromMm(num(ps, 47, 0), units) },
+  };
+}
+
+/** A unique native subclass, excluding application 102 blocks and XDATA. */
+function nativeLayoutSubclass(groups: readonly CadGroup[], name: string, keepOpaque = false): Pair[] | undefined {
+  let depth = 0, found = false, active = false;
+  const out: Pair[] = [];
+  for (const [code, value] of groups) {
+    if (code === 102) {
+      if (active && keepOpaque) out.push({ code, value });
+      if (value.trim().startsWith('{')) depth += 1;
+      else if (value.trim() === '}') depth -= 1;
+      if (depth < 0) return undefined;
+      continue;
+    }
+    if (depth) { if (active && keepOpaque) out.push({ code, value }); continue; }
+    if (code === 1001) break;
+    if (code === 100) {
+      active = value.trim() === name;
+      if (active && found) return undefined;
+      if (active) found = true;
+    } else if (active) out.push({ code, value });
+  }
+  return depth === 0 && found ? out : undefined;
+}
+
+/** Trusted native projection page setup; the caller must join its exact layout and paper owner. */
+export function readNativeLayoutPlotSettings(groups: readonly CadGroup[], name: string, fallbackUnits: PaperUnits): (LayoutPlotSettings & { paperOwner: string }) | undefined {
+  const ps = nativeLayoutSubclass(groups, 'AcDbPlotSettings'), layout = nativeLayoutSubclass(groups, 'AcDbLayout');
+  if (!ps || !layout) return undefined;
+  const unique = (pairs: readonly Pair[], code: number) => pairs.filter(pair => pair.code === code);
+  const owners = unique(layout, 330);
+  if (owners.length !== 1 || !/^[0-9a-f]{1,16}$/i.test(owners[0]!.value.trim())) return undefined;
+  for (const code of [44, 45, 72, 73]) {
+    const values = unique(ps, code);
+    if (values.length !== 1 || !Number.isFinite(Number(values[0]!.value))) return undefined;
+  }
+  if (!(Number(unique(ps, 44)[0]!.value) > 0 && Number(unique(ps, 45)[0]!.value) > 0)) return undefined;
+  const units = Number(unique(ps, 72)[0]!.value), rotation = Number(unique(ps, 73)[0]!.value);
+  if (!(units === 0 || units === 1) || !Number.isInteger(rotation) || rotation < 0 || rotation > 3) return undefined;
+  return { ...layoutPlotSettings({ kind: 'LAYOUT', groups: ps }, name, fallbackUnits), paperOwner: owners[0]!.value.trim() };
+}
+
+/** Keep exact device-specific media and paper fields only while their modeled inputs are unchanged. */
+export function retainNativeLayoutPaper(source: readonly CadGroup[], generated: readonly CadGroup[], layout: Layout | 'model'): CadGroup[] {
+  if (layout === 'model') {
+    const original = nativeLayoutSubclass(source, 'AcDbPlotSettings', true);
+    if (!original) return [...generated];
+    const out: CadGroup[] = [];
+    let active = false, depth = 0;
+    for (const pair of generated) {
+      const [code, value] = pair;
+      if (!depth && (code === 100 || code === 1001)) {
+        active = code === 100 && value.trim() === 'AcDbPlotSettings';
+        if (active) { out.push(pair, ...original.map(({ code, value }): CadGroup => [code, value])); continue; }
+      }
+      if (code === 102) {
+        if (value.trim().startsWith('{')) depth += 1;
+        else if (value.trim() === '}') depth -= 1;
+      }
+      if (!active) out.push(pair);
+    }
+    return out;
+  }
+  const native = readNativeLayoutPlotSettings(source, layout.name, layout.paper.units);
+  if (!native) return [...generated];
+  const before = native.layout.paper, after = layout.paper;
+  if (before.width !== after.width || before.height !== after.height || before.units !== after.units || before.orientation !== after.orientation) return [...generated];
+  const paperCodes = new Set([4, 44, 45, 72, 73]);
+  const original = nativeLayoutSubclass(source, 'AcDbPlotSettings')!;
+  if ([...paperCodes].some(code => original.filter(pair => pair.code === code).length !== 1)) return [...generated];
+  const retained = new Map(original.filter(pair => paperCodes.has(pair.code)).map(pair => [pair.code, pair.value]));
+  let active = false, depth = 0;
+  return generated.map(([code, value]): CadGroup => {
+    if (code === 102) {
+      if (value.trim().startsWith('{')) depth += 1;
+      else if (value.trim() === '}') depth -= 1;
+    }
+    if (!depth && (code === 100 || code === 1001)) active = code === 100 && value.trim() === 'AcDbPlotSettings';
+    return active && !depth && retained.has(code) ? [code, retained.get(code)!] : [code, value];
+  });
+}
+
 /** VIEWPORT 90 flag: clipped by a non-rectangular boundary (group 340). */
 const VP_NONRECT_CLIP = 65536;
 
@@ -446,44 +565,8 @@ export class LayoutReader {
   }
 
   private layoutFrom(ps: Obj, name: string, objs: Obj[], readEntities: LayoutEntityReader, fallbackUnits: PaperUnits): Layout {
-    const units: PaperUnits = num(ps, 72, fallbackUnits === 'mm' ? 1 : 0) === 1 ? 'mm' : 'in';
-    const rotation = Math.trunc(num(ps, 73, 0)) & 3;
-    const w = num(ps, 44, 0);
-    const h = num(ps, 45, 0);
-    const turned = rotation === 1 || rotation === 3;
-    const sheetW = turned ? h : w;
-    const sheetH = turned ? w : h;
-    const orientation = sheetW >= sheetH ? 'landscape' : 'portrait';
-    const media = str(ps, 4);
-    const paper =
-      (w > 0 && h > 0 ? paperFromSize(fromMm(w, units), fromMm(h, units), units, orientation) : null) ??
-      (media ? paperFromMediaName(media, orientation) : null) ??
-      defaultLayout(name, units).paper;
-    const margins: LayoutMargins = {
-      left: fromMm(num(ps, 40, 0), units),
-      bottom: fromMm(num(ps, 41, 0), units),
-      right: fromMm(num(ps, 42, 0), units),
-      top: fromMm(num(ps, 43, 0), units),
-    };
-    const offset = { x: margins.left + fromMm(num(ps, 46, 0), units), y: margins.bottom + fromMm(num(ps, 47, 0), units) };
-    const n = num(ps, 142, 1);
-    const d = num(ps, 143, 1);
-    const sheetName = str(ps, 7).toLowerCase();
-    const plotStyle: PlotStyleMode = /monochrome/.test(sheetName) ? 'monochrome' : /gray|grey/.test(sheetName) ? 'grayscale' : /screen/.test(sheetName) ? 'screening' : 'color';
-    const flags = Math.trunc(num(ps, 70, 0));
-    const base: Layout = {
-      name,
-      paper: { ...paper, orientation },
-      plotScale: Math.trunc(num(ps, 75, 16)) === 0 && flags & 16 ? 'fit' : n > 0 && d > 0 ? formatScale(n / d) : '1:1',
-      margins,
-      entities: [],
-      viewports: [],
-      plotStyle,
-      ...(plotStyle === 'screening' ? { screening: Number(/(\d+)%/.exec(sheetName)?.[1] ?? 50) } : {}),
-      ...(flags & 128 ? {} : { plotLineweights: false }),
-      ...(flags & 32 || !sheetName ? {} : { usePlotStyles: false }),
-    };
-    const lay = this.withContent(base, objs, readEntities, offset);
+    const settings = layoutPlotSettings(ps, name, fallbackUnits);
+    const lay = this.withContent(settings.layout, objs, readEntities, settings.offset);
     return lay.entities.length === 0 && lay.viewports.length === 0 ? { ...lay, pristine: true } : lay;
   }
 

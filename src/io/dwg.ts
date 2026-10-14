@@ -60,6 +60,8 @@ import { readDxf } from './dxf/reader';
 import { importReportOf, rawEntitiesOf } from './import-report';
 import { validateNativeMetadata } from '../../scripts/dwg-native-metadata.mjs';
 import { mergeDwgCadGraph } from './cad-graph-dwg';
+import { canonicalCadHandle } from '../core/cad-graph';
+import { readNativeLayoutPlotSettings } from './dxf-layouts';
 
 /** Subset of DwgDatabase we actually need (what the main process sends over IPC). */
 export interface DwgImportPayload {
@@ -1014,9 +1016,9 @@ const DWG_VP_LOCKED = 16384;
 const DWG_VP_OFF = 131072;
 
 /**
- * Paper-space layouts from the LAYOUT objects and their *Paper_Space blocks. LibreDWG does not
- * expose the page setup: the sheet is taken from the layout limits (paper-space drawing units,
- * the limits' lower-left corner being the sheet corner) and the plot settings are defaults.
+ * Paper-space geometry remains the reader DTO. A complete native projection supplies page
+ * setup only through the exact LAYOUT handle and paper-space owner; legacy DTOs retain their
+ * limits-based fallback when neither the projection nor explicit plot settings is available.
  */
 function convertLayouts(
   payload: DwgImportPayload,
@@ -1024,14 +1026,19 @@ function convertLayouts(
   host: { entities: readonly Entity[]; header: DrawingHeader },
   report: ImportReportBuilder,
   viewportHandles?: Map<string, string>,
+  nativeProjected?: DrawingState,
 ): Layout[] | undefined {
   const units = unitsOfHost(host);
   const out: Array<{ layout: Layout; tab: number }> = [];
   let unknownFrozen = 0;
   const layerNames = new Map(payload.layers.flatMap((l) => l.handle ? [[l.handle.toUpperCase(), l.name] as const] : []));
+  const nativeLayouts = new Map(nativeProjected?.cadGraph?.nodes.flatMap(node => node.type === 'LAYOUT' && node.sourceHandle && node.anchor?.kind === 'layout'
+    ? [[canonicalCadHandle(node.sourceHandle), node] as const] : []) ?? []);
+  const handle = (value: string | undefined): string | undefined => value && /^[0-9a-f]{1,16}$/i.test(value.trim()) ? canonicalCadHandle(value.trim()) : undefined;
   for (const lo of payload.layouts ?? []) {
     if (!lo.name || /^model$/i.test(lo.name)) continue;
-    const block = payload.blocks.find((b) => b.handle && String(b.handle).toUpperCase() === lo.blockHandle.toUpperCase());
+    const paperOwner = handle(lo.blockHandle);
+    const block = payload.blocks.find((b) => b.handle && paperOwner && handle(String(b.handle)) === paperOwner);
     if (block && /^\*MODEL_SPACE$/i.test(block.name ?? '')) continue;
     const min = lo.minLimit ?? { x: 0, y: 0 };
     const max = lo.maxLimit ?? { x: 0, y: 0 };
@@ -1045,12 +1052,15 @@ function convertLayouts(
     const guess = valid ? paperFromSize(w, h, units, orientation) : null;
     const alt = guess && guess.id === 'custom' ? paperFromSize(w, h, other, orientation) : null;
     const paper = guess ? (alt && alt.id !== 'custom' ? alt : guess) : { id: units === 'mm' ? 'a3' : 'tabloid', width: units === 'mm' ? 297 : 11, height: units === 'mm' ? 420 : 17, units, orientation: 'landscape' as const };
+    const native = nativeLayouts.get(handle(lo.handle) ?? '');
+    const settings = native ? readNativeLayoutPlotSettings(native.groups, lo.name, units) : undefined;
+    const nativeSettings = settings && block && handle(settings.paperOwner) !== '0' && handle(settings.paperOwner) === handle(lo.blockHandle) ? settings : undefined;
     const vps = (block?.entities ?? []).filter((e) => e.type === 'VIEWPORT') as Array<DwgEntity & { viewportId?: number }>;
     // The overall paper-space viewport has id 1 (else: the first VIEWPORT, as the DXF reader does).
     const overall = vps.find((v) => v.viewportId === 1) ?? vps[0];
     // AutoCAD paper space has its origin at the printable-area corner: the limits start at -margin.
     const margin = valid ? Math.max(0, Math.min(-min.x, -min.y)) : units === 'mm' ? 6.35 : 0.25;
-    const offset = valid ? { x: -min.x, y: -min.y } : { x: margin, y: margin };
+    const offset = nativeSettings?.offset ?? (valid ? { x: -min.x, y: -min.y } : { x: margin, y: margin });
     const where = `layout "${lo.name}"`;
     const entities: Entity[] = [];
     const viewports: LayoutViewport[] = [];
@@ -1105,13 +1115,14 @@ function convertLayouts(
       paper: plotPaper ?? paper,
       plotScale: ps?.printScaleNominator && ps.printScaleDenominator ? `${ps.printScaleNominator}:${ps.printScaleDenominator}` : '1:1',
       margins: ps ? { left: ps.marginLeft ?? margin, bottom: ps.marginBottom ?? margin, right: ps.marginRight ?? margin, top: ps.marginTop ?? margin } : uniformMargins(margin),
+      plotStyle: 'monochrome',
+      ...(nativeSettings?.layout ?? {}),
       entities,
       viewports,
-      plotStyle: 'monochrome',
       ...(entities.length === 0 && viewports.length === 0 ? { pristine: true } : {}),
     };
     out.push({ layout, tab: lo.tabOrder ?? out.length + 1 });
-    report.add({ type: 'LAYOUT', action: 'unsupported', where, reason: ps ? 'exposed page size, margins and scale are kept; plot device and external plot style tables are not retained' : 'page setup (plot device, plot scale, plot style) is not exposed by the DWG reader: the paper size is taken from the layout limits' });
+    report.add({ type: 'LAYOUT', action: nativeSettings ? 'kept' : 'unsupported', where, reason: nativeSettings ? 'physical page size, margins, scale and plot origin are decoded from the exact retained native layout; device-specific properties remain source metadata' : ps ? 'exposed page size, margins and scale are kept; plot device and external plot style tables are not retained' : 'page setup (plot device, plot scale, plot style) is not exposed by the DWG reader: the paper size is taken from the layout limits' });
   }
   if (unknownFrozen) report.add({ type: 'VIEWPORT', action: 'unsupported', reason: `layers frozen in individual viewports (VPLAYER) are not exposed by the DWG reader: ${unknownFrozen} viewport(s) show every layer` });
   out.sort((a, b) => a.tab - b.tab);
@@ -1539,6 +1550,7 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     { entities, header },
     report,
     viewportHandles,
+    nativeProjected,
   );
   for (const l of layouts ?? []) {
     for (const e of l.entities) ensureEntityLayers(e);

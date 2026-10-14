@@ -10,6 +10,19 @@ handoff `dc89bb0cbec839d489dce578034736c7cdb77dac` after clean gates. Both GPU
 first-attempt CI runs and actual Intel/NVIDIA native checks pass. The remaining
 partial features below are deferred; Canvas remains the default renderer.
 
+Latest gate: published `0982bda` clears all four CI jobs, 4,352 local tests (28
+existing skips), static/build checks and 32 actual Windows source workflows.
+The genuine native save gate exposed layout media/limits and overall-viewport
+reference loss in the import/rewrite path. This branch owns the narrow integration
+repair; the completed #19/#29 reader/writer work remains unchanged. The stored real
+native snapshot passes the unchanged full metadata comparison after the repair.
+Thirty-five new regressions pass, including copied/edited sheets, opaque metadata,
+viewport clipping controls and undo/redo. Full source checks, fresh exact-head CI
+and native first-save/reopen/second-save fixed point remain due before integration.
+Copied sheets receive a generated overall viewport; imported originals retain
+their native overall camera and properties. Existing unsafe metadata-dependent
+layout deletions continue to refuse atomically.
+
 The corrected original-reference diagnostic at `3c3592` now passes all eight native
 reads with unchanged originals/copies and complete typed/raw Aux agreement. The
 development repair sets a captured fixed-hour source creation context only

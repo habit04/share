@@ -73,6 +73,10 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Fixed
 
+- Native layout rewrites retain physical page setup independently of drawing limits,
+  unmodeled limits/extents/UCS and the overall paper viewport's identity and camera
+  data. Copied sheets use their own current page settings when explicitly edited.
+
 - TABLESTYLE postflight compares complete adjacent reactor/extension-dictionary
   blocks symmetrically while retaining owner, ordered references and opaque data.
   Malformed, duplicate, nested or interleaved common framing refuses.

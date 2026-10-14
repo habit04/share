@@ -9,6 +9,23 @@ runs and actual Intel/NVIDIA native gates pass. PR #16 contains the earlier GPU
 stack; integrate that leaf once, preserving Canvas as default and newer PR #11 fixes.
 Delivered 3D source remains `a4d5526380c844a93821fd7d61317856c715e5cb`.
 
+The published `0982bda` baseline clears all four exact-head CI jobs, all three
+TypeScript projects, broad lint, fixture/build checks, 4,352 local tests (28 existing
+skips) and 32 actual Windows source-desktop workflows. The authenticated native
+helper's first save/read then exposed a layout preservation defect in JCad's DXF
+rewrite: physical media was inferred from drawing limits, unmodeled layout fields
+were regenerated, and the overall paper viewport was excluded from the retained
+graph. The narrow repair hydrates proven native page settings and retains that
+viewport's real identity and properties. The stored real native snapshot now passes
+the unchanged full metadata comparison through import/rewrite. Copied-sheet page
+edits are also covered. Thirty-five new regressions pass, including copied
+viewport ownership, opaque application framing and repeated-save fixed points.
+Fresh full-source, CI and genuine first/second native-save gates are required
+before integration; no merge is cleared by the earlier baseline results. Copies
+receive a generated overall viewport; imported originals retain native camera
+properties. Existing unsafe metadata-dependent layout deletions still refuse
+atomically rather than dropping retained references.
+
 The corrected `3c3592` diagnostic passes all four originals in UTC and Chicago:
 eight source/private-copy hashes stay unchanged, all 19 ABI facts and 28 typed
 fields match the complete 129-byte Aux section, and creation/update tuples match
