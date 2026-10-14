@@ -11,6 +11,19 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+### Added
+
+- Label the 3D orientation indicator with upright X, Y and Z letters, keeping end-on axes and
+  overlapping projected directions readable during orbit and on high-DPI displays.
+- Make experimental 3D tools available by default for new profiles while keeping the initial
+  drawing in Canvas 2D. Preserve explicit opt-outs and old opted-in import preferences; expose
+  foreign 3D import separately so the default does not change CAD classification or DWG guards.
+
+### Fixed
+
+- Generic 2D Select All no longer includes hidden retained 3D objects. Active 3D views, explicit
+  object IDs and registered 3D commands keep intentional access, including undo and redo.
+
 ## [0.5.0] - 2026-10-14
 
 ### Upgrade notes

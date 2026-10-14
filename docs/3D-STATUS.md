@@ -232,7 +232,9 @@ Baseline on Windows x64, Node 22.23.3: typecheck, lint and 177 test files / 2,21
 ## How to try it
 
 1. `npm ci`, `npm run build`, `npm start` (or `npm run dev` for the browser edition).
-2. Options > Files > Experimental: tick "3D modelling", restart.
+2. New profiles have the experimental 3D tools available immediately. Existing opted-out profiles
+   can enable "3D modelling" under Options > Files > Experimental and restart. The initial view
+   stays Canvas 2D; foreign 3D mesh/dimension import is a separate option, off for new profiles.
 3. Ribbon tab **3D** or type `3DMODE`, then `BOX`, `CYLINDER`, `EXTRUDE`, `UNION`, `3DMOVE` and
    so on; `3DDEMO` adds a test scene. Input sequences: [3D-MODELLING.md](3D-MODELLING.md) and
    [3D-EDITING.md](3D-EDITING.md). File format: [3D-FILE-FORMAT.md](3D-FILE-FORMAT.md).
@@ -240,7 +242,9 @@ Baseline on Windows x64, Node 22.23.3: typecheck, lint and 177 test files / 2,21
 
 ## Known limitations (always current)
 
-- Everything is behind the `experimental3d` setting (default off) and labelled experimental.
+- Everything is behind the `experimental3d` setting (tools available by default for new profiles)
+  and labelled experimental. Explicit opt-outs remain respected; the 3D renderer and kernel
+  are created only when needed. See [3D-VIEWPORT.md](3D-VIEWPORT.md) for current startup behavior.
 - DWG files are never written with 3D objects (Save, Save As and EXPORTDWG refuse; save DXF).
   Reading solids from DWG files is unsupported (polyface meshes are dropped and reported).
 - Models whose DXF would exceed the reader's limits cannot be saved; reduce the model.

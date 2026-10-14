@@ -2,7 +2,17 @@
 
 Baseline: `83aedbcc7b145ff87293a35d9001cb56f127a2b0` (Windows v0.4.8).
 Worktree: `C:\Users\justi\Chad\jcad-2d-reliability`, branch `feature/remaining-2d-reliability`.
-This is Windows development integration; no release, installer or signing changes.
+This work began as Windows development integration. The completed combined upgrade shipped as
+[Windows v0.5.0](https://github.com/habit04/share/releases/tag/v0.5.0); the checkpoints below
+retain the earlier integration evidence and outstanding scope.
+
+Current follow-up: label the 3D orientation indicator and make tools available for new profiles
+while retaining initial Canvas rendering, explicit opt-outs and imported-data compatibility.
+Separate foreign 3D import from tool availability and protect hidden retained 3D objects from
+generic 2D Select All edits. Validation includes settings migration, real import/edit/save/reopen,
+selection undo/redo, actual viewport rendering/context restoration and Windows source-runtime
+default/opt-out/restart/save/backup checks. This follow-up remains unreleased development work;
+the long roadmap is still paused and GPU work retains its separate ownership.
 
 Current work is deliberate integration: #24 is frozen and the long list stays
 paused. A single lead integrates the delivered 3D source and the completed GPU
