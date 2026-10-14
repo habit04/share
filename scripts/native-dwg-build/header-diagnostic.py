@@ -14,7 +14,13 @@ ARCHIVE_SHA = "96d407e96047237200360b1669768f80aaffbb003c34c6fe57228fc4cd345d5a"
 DECODE_SHA = "be1fa5ba174fee1a513de35c7a32a2344a009e00a45c39a7480fb444cf10829a"
 # Authenticated include/dwg.h DWG_VERSION_TYPE: R_12 aliases R_11; R_2018 is 40.
 NATIVE_R2018 = 40
-LIBRARY_CFLAGS = "-O2 -DNDEBUG -Wno-error=pointer-sign"
+LIBRARY_CFLAGS = "-O2 -DNDEBUG"
+CONFIGURE_ARGS = ["--enable-release", "--enable-debug", "--disable-werror", "--disable-docs",
+                  "--disable-write", "--disable-json", "--disable-python", "--disable-bindings",
+                  "--disable-shared", "--enable-static"]
+CONFIG_FEATURES = {"DEBUG_CLASSES": "1", "HAVE_WERROR": None, "USE_WRITE": None,
+                   "USE_TRACING": None, "DISABLE_JSON": "1", "DISABLE_DXF": None,
+                   "DEBUG": None, "ENABLE_MIMALLOC": None}
 FIXTURES = {
     "r2018-minsert": "74cafbe617e7a885d622a8a0270b60f64cc285801be42ea8829cc9e9472616d5",
     "r2018-views-fields": "5f5a9bd4a0ffd2e545f6f5404bed9edb27f2c41411c3b26a264f0696a649f105",
@@ -246,6 +252,25 @@ def validated_result(data, returncode, input_bytes):
     return result
 
 
+def validated_build_config(make_bytes, config_bytes):
+    make = make_bytes.decode("utf-8")
+    config = config_bytes.decode("utf-8")
+    cflags = re.findall(r"^CFLAGS = ([^\r\n]*)$", make, flags=re.M)
+    compiler = re.findall(r"^CC = ([^\r\n]*)$", make, flags=re.M)
+    if len(cflags) != 1 or len(compiler) != 1 or compiler[0].strip() != "gcc" or "-DNDEBUG" not in cflags[0].split():
+        raise ValueError("Unexpected effective compiler/flags")
+    features = {}
+    for name, expected in CONFIG_FEATURES.items():
+        definitions = re.findall(r"^#define " + re.escape(name) + r"\s+([^\r\n]+)$", config, flags=re.M)
+        if len(definitions) > 1:
+            raise ValueError("Duplicate build configuration macro")
+        actual = definitions[0].strip() if definitions else None
+        if actual != expected:
+            raise ValueError("Unexpected build configuration feature: " + name)
+        features[name] = actual
+    return {"effectiveCflags": cflags[0], "effectiveCompiler": compiler[0].strip(), "features": features}
+
+
 def record_build(workspace, directory, revision):
     workspace, directory = checked_context(workspace, directory, revision)
     prepared = json.loads(checked_file(directory / "prepared.json", 512 * 1024))
@@ -258,12 +283,15 @@ def record_build(workspace, directory, revision):
     compiler = subprocess.check_output(["gcc", "--version"], text=True, timeout=5)
     if len(compiler) > 4096 or "gcc" not in compiler.lower():
         raise ValueError("Invalid observed compiler identity")
+    make_bytes = checked_file(directory / "build/src/Makefile", 512 * 1024)
+    config_bytes = checked_file(directory / "build/src/config.h", 512 * 1024)
+    configured = validated_build_config(make_bytes, config_bytes)
     # These commands are the explicit GCC step in the hash-bound development workflow.
     workflow = workspace / ".github/workflows/dwg-header-diagnostic.yml"
     manifest = {"revision": revision, "compilerKind": "native-gcc-development-only",
-        "compilerVersion": compiler, "cc": "gcc", "cflags": LIBRARY_CFLAGS,
-        "configureArgs": ["--disable-docs", "--disable-write", "--disable-json", "--disable-python",
-                          "--disable-bindings", "--disable-shared", "--enable-static"],
+        "compilerVersion": compiler, "requestedCflags": LIBRARY_CFLAGS, **configured,
+        "configuredMakefileSha256": sha(make_bytes), "configuredHeaderSha256": sha(config_bytes),
+        "configureArgs": CONFIGURE_ARGS,
         "libraryTarget": ["make", "-C", "build/src", "-j2", "libredwg.la"],
         "linkFlags": ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-lm", "-lz"],
         "workflowSha256": sha(checked_file(workflow, 64 * 1024)),
@@ -283,7 +311,7 @@ def run_one(binary, copy, output, zone):
     environment = {**os.environ, "TZ": zone}
     environment.pop("LIBREDWG_TRACE", None)
     with output.with_suffix(".stdout").open("xb") as stdout, output.with_suffix(".stderr").open("xb") as stderr:
-        process = subprocess.Popen([str(binary), str(copy)], stdout=stdout, stderr=stderr,
+        process = subprocess.Popen([str(binary), str(copy)], stdout=stdout, stderr=stderr, cwd=output.parent,
                                    env=environment, start_new_session=True, preexec_fn=limits)
         try:
             process.wait(timeout=20)
@@ -324,6 +352,12 @@ def run(workspace, directory, revision):
     compiled = json.loads(checked_file(directory / "compiled.json", 64 * 1024))
     if compiled["revision"] != revision or compiled["driverSha256"] != prepared["driverSha256"] or compiled["binarySha256"] != binary_sha or compiled["workflowSha256"] != sha(checked_file(workspace / ".github/workflows/dwg-header-diagnostic.yml", 64 * 1024)) or compiled["librarySha256"] != sha(checked_file(directory / "build/src/.libs/libredwg.a", 64 * 1024 * 1024)):
         raise ValueError("Compiled diagnostic provenance changed")
+    make_bytes = checked_file(directory / "build/src/Makefile", 512 * 1024)
+    config_bytes = checked_file(directory / "build/src/config.h", 512 * 1024)
+    if compiled["requestedCflags"] != LIBRARY_CFLAGS or compiled["configureArgs"] != CONFIGURE_ARGS or compiled["configuredMakefileSha256"] != sha(make_bytes) or compiled["configuredHeaderSha256"] != sha(config_bytes):
+        raise ValueError("Configured diagnostic provenance changed")
+    if any(compiled[key] != value for key, value in validated_build_config(make_bytes, config_bytes).items()):
+        raise ValueError("Effective diagnostic configuration changed")
     cases = []
     for fixture in prepared["fixtures"]:
         stem, expected = fixture["stem"], fixture["sha256"]

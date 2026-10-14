@@ -41,6 +41,9 @@ class DiagnosticTests(unittest.TestCase):
             cls.original = source.extractfile("./src/decode.c").read()
             cls.header = source.extractfile("./include/dwg.h").read().decode()
             cls.makefile = source.extractfile("./src/Makefile.in").read().decode()
+            cls.configure = source.extractfile("./configure.ac").read().decode()
+            cls.dwg2 = source.extractfile("./src/dwg2.spec").read().decode()
+            cls.print_source = source.extractfile("./src/print.c").read().decode()
         root = Path(os.environ.get("RUNNER_TEMP", WORKSPACE / ".codex-local/header-creation-audit")).resolve()
         root.mkdir(parents=True, exist_ok=True)
         cls.private = tempfile.TemporaryDirectory(prefix="header-diagnostic-tests-", dir=root)
@@ -96,16 +99,48 @@ class DiagnosticTests(unittest.TestCase):
             with self.subTest(version=version), self.assertRaises(ValueError):
                 diagnostic.validated_result(json.dumps(result).encode(), 0, 18644)
 
-    def test_only_library_pointer_sign_warning_is_nonfatal_driver_remains_strict(self):
+    def test_factory_class_configuration_and_foreign_warnings_driver_remains_strict(self):
         workflow = (WORKSPACE / '.github/workflows/dwg-header-diagnostic.yml').read_text()
         flags = re.search(r"CC=gcc CFLAGS='([^']+)'", workflow).group(1)
         self.assertEqual(flags, diagnostic.LIBRARY_CFLAGS)
-        self.assertEqual(flags.split(), ['-O2', '-DNDEBUG', '-Wno-error=pointer-sign'])
+        self.assertEqual(flags.split(), ['-O2', '-DNDEBUG'])
         self.assertIn('$(AM_CFLAGS) $(CFLAGS)', self.makefile)
-        self.assertNotIn('--disable-werror', workflow)
+        arguments = re.search(r'"\$source_dir/configure" ([^\n)]+)', workflow).group(1).split()
+        self.assertEqual(arguments, diagnostic.CONFIGURE_ARGS)
+        for required in ('--enable-release', '--enable-debug', '--disable-werror', '--disable-write', '--disable-json'):
+            self.assertIn(required, arguments)
+        self.assertNotIn('--enable-trace', arguments)
+        self.assertNotIn('-Wno-error', workflow)
+        self.assertIn('AC_DEFINE([DEBUG_CLASSES],1', self.configure)
+        self.assertIn('AC_ARG_ENABLE([werror]', self.configure)
+        guarded_region = self.dwg2[self.dwg2.index('// AutoCAD Mechanical'):self.dwg2.index('#endif /* DEBUG_CLASSES || IS_FREE */', self.dwg2.index('// AutoCAD Mechanical'))]
+        self.assertIn('DWG_ENTITY (ARCALIGNEDTEXT)', guarded_region)
+        self.assertIn('#define IS_PRINT', self.print_source)
+        self.assertLess(self.print_source.index('#include "dwg2.spec"'), self.print_source.index('#include "classes.inc"'))
         driver = next(line for line in workflow.splitlines() if line.strip().startswith('gcc -std=c11'))
         self.assertIn('-Wall -Wextra -Werror ', driver)
         self.assertNotIn('-Wno-error', driver)
+
+    def test_effective_native_configuration_records_gnu_debug_flags(self):
+        make = b'CC = gcc\nCFLAGS =  -DNDEBUG -fno-omit-frame-pointer\n'
+        config = b'#define DEBUG_CLASSES 1\n#define DISABLE_JSON 1\n/* #undef HAVE_WERROR */\n'
+        actual = diagnostic.validated_build_config(make, config)
+        self.assertEqual(actual['effectiveCflags'], ' -DNDEBUG -fno-omit-frame-pointer')
+        self.assertEqual(actual['features'], diagnostic.CONFIG_FEATURES)
+        self.assertNotEqual(actual['effectiveCflags'], diagnostic.LIBRARY_CFLAGS)
+
+    def test_wrong_effective_features_compiler_and_missing_flags_refuse(self):
+        make = b'CC = gcc\nCFLAGS = -DNDEBUG -fno-omit-frame-pointer\n'
+        config = b'#define DEBUG_CLASSES 1\n#define DISABLE_JSON 1\n'
+        for wrong in (config.replace(b'#define DEBUG_CLASSES 1', b''),
+                      config + b'#define HAVE_WERROR 1\n', config + b'#define USE_WRITE 1\n',
+                      config + b'#define USE_TRACING 1\n', config + b'#define DEBUG 1\n',
+                      config + b'#define DISABLE_DXF 1\n', config + b'#define DEBUG_CLASSES 1\n'):
+            with self.subTest(config=wrong), self.assertRaises(ValueError):
+                diagnostic.validated_build_config(make, wrong)
+        for wrong in (make.replace(b'gcc', b'clang'), make.replace(b'-DNDEBUG', b''), make + b'CFLAGS = -DNDEBUG\n'):
+            with self.subTest(make=wrong), self.assertRaises(ValueError):
+                diagnostic.validated_build_config(wrong, config)
 
     def test_parent_and_windows_archive_escape_refuse_before_output(self):
         for name in ("../outside", "/outside", "src\\outside", "src/../outside"):
