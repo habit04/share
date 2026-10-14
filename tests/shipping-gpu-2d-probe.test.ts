@@ -26,10 +26,10 @@ afterEach(() => {
 function load(root: string) {
   const priorDialog = vi.fn(), dialog = { showSaveDialog: priorDialog };
   const executeJavaScript = vi.fn();
-  const module = { exports: {} as { shippingProbePhase(args: string[]): string | null; runShippingGpu2dProbe(ctx: unknown, testBuild: boolean): Promise<any>; shippingGpu2dMetadata(state: any): string; shippingGpu2dPendingFontFrame(control: any): any } };
+  const module = { exports: {} as { shippingProbePhase(args: string[]): string | null; runShippingGpu2dProbe(ctx: unknown, testBuild: boolean): Promise<any>; shippingGpu2dMetadata(state: any): string; shippingGpu2dPendingFontFrame(control: any): any; shippingGpu2dRenderOverlay(editor: import('../src/app/editor').Editor): import('../src/render/viewport').ViewportOverlay } };
   new Function('require', 'module', source)((name: string) => name === 'electron' ? { app: { getPath: () => root }, dialog } : originalRequire(name), module);
   const ctx = { mainWindow: { isDestroyed: () => false, webContents: { executeJavaScript } } };
-  return { phases: module.exports.shippingProbePhase, run: (testBuild = false) => module.exports.runShippingGpu2dProbe(ctx, testBuild), executeJavaScript, dialog, priorDialog, metadata: module.exports.shippingGpu2dMetadata, pendingFontFrame: module.exports.shippingGpu2dPendingFontFrame };
+  return { phases: module.exports.shippingProbePhase, run: (testBuild = false) => module.exports.runShippingGpu2dProbe(ctx, testBuild), executeJavaScript, dialog, priorDialog, metadata: module.exports.shippingGpu2dMetadata, pendingFontFrame: module.exports.shippingGpu2dPendingFontFrame, renderOverlay: module.exports.shippingGpu2dRenderOverlay };
 }
 function fixture(root: string) { const path = join(root, 'shipping-startup.dxf'); writeFileSync(path, GPU2D_STARTUP_DXF); return path; }
 const firstBytes = 'first fixed native DXF: fixed opaque GPU metadata 9007199254740993';
@@ -325,3 +325,41 @@ describe('real fixed native fixture import/edit/export/reopen (no Electron or CA
     expect(back.entities[3]).toMatchObject({ type: 'polyline', layer: '0', color: 4, points: [{ x: 3, y: -2 }, { x: 5, y: -1 }, { x: 3, y: 0 }], closed: false });
     expect(back.entities[4]).toMatchObject({ type: 'text', layer: '0', color: 2, position: { x: -4, y: -4 }, text: 'GPU 2D', height: 0.7, rotation: 0, align: 'left', widthFactor: 1, oblique: 0 });
   });});
+
+describe('fixed probe uses the real Editor and Viewport overlay seam (no GPU or Electron)', () => {
+  it('observes the real render overlay and retains the live LINE preview through its native pointer and cancel path', async () => {
+    vi.stubGlobal('requestAnimationFrame', () => 1); vi.stubGlobal('cancelAnimationFrame', () => {});
+    const { Editor } = await import('../src/app/editor');
+    const ed = new Editor({ getContext: () => ({}), getBoundingClientRect: () => ({ width: 800, height: 600, left: 0, top: 0 }), width: 0, height: 0 } as unknown as HTMLCanvasElement);
+    try {
+      const proof = load(profile()), original = ed.viewport.requestRender, ownedBefore = Object.hasOwn(ed.viewport, 'requestRender');
+      expect('state' in ed).toBe(false);
+      const snapshot = ed.doc.snapshot, revision = ed.doc.revision, overlay = proof.renderOverlay(ed);
+      expect(ed.viewport.requestRender).toBe(original); expect(Object.hasOwn(ed.viewport, 'requestRender')).toBe(ownedBefore);
+      expect(overlay.selection).toBe(ed.selection); expect(overlay.preview).toEqual([]); expect(overlay.ghost).toEqual([]);
+      ed.setHover('real-hover'); expect(proof.renderOverlay(ed)).toBe(overlay); expect(overlay.hover).toBe('real-hover');
+      ed.selection.clear(); overlay.cursor = null; overlay.hover = null; overlay.snap = null;
+      await ed.runCommand('LINE'); ed.submitInput('0,-5');
+      const point = ed.viewport.toScreen({ x: 3, y: -4 });
+      ed.onMouseMove({ clientX: point.x, clientY: point.y, buttons: 0, shiftKey: false, ctrlKey: false, altKey: false } as MouseEvent);
+      expect(ed.tool).not.toBeNull(); expect(proof.renderOverlay(ed)).toBe(overlay); expect(overlay.preview.length).toBeGreaterThan(0);
+      expect(overlay.preview[0]).toMatchObject({ type: 'line', a: { x: 0, y: -5 }, b: { x: 3, y: -4 } });
+      ed.cancel(); expect(proof.renderOverlay(ed)).toBe(overlay); expect(overlay.preview).toEqual([]); expect(overlay.ghost).toEqual([]);
+      expect(ed.doc.snapshot).toBe(snapshot); expect(ed.doc.revision).toBe(revision);
+    } finally { ed.viewport.dispose(); vi.unstubAllGlobals(); }
+  });
+
+  it('forwards and restores the actual viewport method and descriptor when render publication fails', async () => {
+    vi.stubGlobal('requestAnimationFrame', () => 1); vi.stubGlobal('cancelAnimationFrame', () => {});
+    const { Editor } = await import('../src/app/editor');
+    const ed = new Editor({ getContext: () => ({}), getBoundingClientRect: () => ({ width: 800, height: 600, left: 0, top: 0 }), width: 0, height: 0 } as unknown as HTMLCanvasElement);
+    try {
+      const proof = load(profile()), marker = new Error('actual viewport publication failed');
+      const failed = vi.fn(() => { throw marker; });
+      Object.defineProperty(ed.viewport, 'requestRender', { value: failed, configurable: true, writable: true, enumerable: true });
+      const descriptor = Object.getOwnPropertyDescriptor(ed.viewport, 'requestRender');
+      expect(() => proof.renderOverlay(ed)).toThrow(marker); expect(failed).toHaveBeenCalledOnce();
+      expect(Object.getOwnPropertyDescriptor(ed.viewport, 'requestRender')).toEqual(descriptor);
+    } finally { ed.viewport.dispose(); vi.unstubAllGlobals(); }
+  });
+});

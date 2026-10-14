@@ -215,6 +215,26 @@ function shippingGpu2dPendingFontFrame(control) {
     documentUnchanged: true, metricsPendingAtCapture: true };
 }
 
+/** Observe the actual Editor.render -> Viewport.requestRender overlay without a private-field assumption. */
+function shippingGpu2dRenderOverlay(editor) {
+  const viewport = editor.viewport, request = viewport.requestRender;
+  const descriptor = Object.getOwnPropertyDescriptor(viewport, 'requestRender');
+  /** @type {any} */
+  let overlay;
+  /** @this {any} */
+  const observe = function (...args) { overlay = args[0]; return Reflect.apply(request, this, args); };
+  Object.defineProperty(viewport, 'requestRender', { configurable: true, writable: true, value: observe });
+  try { editor.render(); }
+  finally {
+    if (descriptor) Object.defineProperty(viewport, 'requestRender', descriptor);
+    else delete viewport.requestRender;
+  }
+  if (!overlay || !Array.isArray(overlay.preview) || !Array.isArray(overlay.ghost) || overlay.selection !== editor.selection) {
+    throw new Error('GPU2D requires the actual rendered Editor overlay');
+  }
+  return overlay;
+}
+
 /** Fixed ordinary-entry acceptance; no supplied code or renderer test API. */
 async function shippingGpu2dRenderer(stage, fixture, output, previous) {
   const w = /** @type {any} */ (window);
@@ -288,10 +308,11 @@ async function shippingGpu2dRenderer(stage, fixture, output, previous) {
   } else {
     need(ed.doc.filePath === output && !ed.doc.dirty && semantic() === previous.semantic && metadata() === previous.metadata, 'GPU2D second save requires intact first reopen');
   }
+  const overlay = shippingGpu2dRenderOverlay(ed);
   const originalSettings = { background: vp.settings.background, gridVisible: vp.settings.gridVisible };
   vp.settings.background = '#212830'; vp.settings.gridVisible = false;
   vp.center = { x: 0, y: -1 }; vp.scale = 20; vp.twist = 0;
-  ed.selection.clear(); ed.state.cursor = null; ed.state.hover = null; ed.state.snap = null;
+  ed.selection.clear(); overlay.cursor = null; overlay.hover = null; overlay.snap = null;
   const comparisons = [], restores = [], counts = { draws: 0, uploads: 0, clear: 0, uploadBytes: 0 };
   // Populated by the real context hook during the ordinary command's render.
   /** @type {any} */ let gl;
@@ -337,7 +358,7 @@ async function shippingGpu2dRenderer(stage, fixture, output, previous) {
   const paint = () => { ed.render(); vp.renderCurrent(); };
   const pair = async (label, renderer, priorReference) => {
     const before = stamp(), liveTool = ed.tool;
-    const preview = ed.state.preview, ghost = ed.state.ghost;
+    const preview = overlay.preview, ghost = overlay.ghost;
     // The normal prompter cancels a live drawing tool before dispatching commands.
     // Only this fixed preview control invokes the existing registered callback directly.
     // Initial explicit GPU acceptance still uses the ordinary public command path.
@@ -345,7 +366,7 @@ async function shippingGpu2dRenderer(stage, fixture, output, previous) {
       if (label === 'preview') {
         need(liveTool && (preview.length || ghost.length), 'GPU2D reference requires its live actual preview');
         await ed.commands.get('GPURENDERER').run(ed, mode);
-        need(ed.tool === liveTool && ed.state.preview === preview && ed.state.ghost === ghost, 'GPU2D reference mode must preserve actual preview/ghost');
+        need(ed.tool === liveTool && overlay.preview === preview && overlay.ghost === ghost, 'GPU2D reference mode must preserve actual preview/ghost');
       } else await ed.runCommand('GPURENDERER ' + mode);
     };
     await select('CANVAS'); paint();
@@ -394,7 +415,7 @@ async function shippingGpu2dRenderer(stage, fixture, output, previous) {
     await ed.runCommand('LINE'); ed.submitInput('0,-5');
     const p = vp.toScreen({ x: 3, y: -4 }), rect = vp.canvas.getBoundingClientRect();
     vp.canvas.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: rect.left + p.x, clientY: rect.top + p.y }));
-    need(ed.tool && ed.state.preview.length > 0, 'GPU2D actual tool preview'); await pair('preview', 'canvas'); ed.cancel();
+    need(ed.tool && overlay.preview.length > 0, 'GPU2D actual tool preview'); await pair('preview', 'canvas'); ed.cancel();
     const layout = ed.doc.layouts[0];
     const viewport = { id: 'shipping-gpu-viewport', center: { x: 100, y: 75 }, width: 100, height: 70, view: { center: { x: 0, y: -1 }, scale: 4 }, layer: '0', on: true,
       clipBoundary: { id: 'shipping-gpu-clip', type: 'polyline', layer: '0', color: 7, points: [{ x: 50, y: 40 }, { x: 150, y: 40 }, { x: 135, y: 110 }, { x: 70, y: 100 }], closed: true } };
@@ -404,7 +425,7 @@ async function shippingGpu2dRenderer(stage, fixture, output, previous) {
     need(vp.layoutPainter && vp.fitRect, 'GPU2D actual clipped floating viewport'); await pair('viewport-clip', 'canvas');
     ed.doc.setSpace(undefined); need(ed.doc.undo(), 'GPU2D layout control undo');
     vp.center = { x: 0, y: -1 }; vp.scale = 20; vp.twist = 0;
-    ed.state.cursor = null; ed.state.hover = null; ed.state.snap = null;
+    overlay.cursor = null; overlay.hover = null; overlay.snap = null;
     // Tahoma is a real Windows face unused by this fixed fixture's earlier controls.
     // Already cached/unavailable resources fail this gate rather than becoming a claimed run.
     ed.doc.transactDrawing(state => ({ ...state, meta: { ...state.meta, textStyles: { ...state.meta?.textStyles, SHIPPING_NATIVE: { name: 'SHIPPING_NATIVE', font: 'tahoma.ttf', family: 'Tahoma', height: 0, widthFactor: 1, oblique: 0 } } }, entities: state.entities.map(entity => entity.type === 'text' ? { ...entity, style: 'SHIPPING_NATIVE' } : entity) }));
@@ -529,7 +550,7 @@ async function runShippingGpu2dProbe(ctx, testBuild) {
   };
   const hash = bytes => createHash('sha256').update(bytes).digest('hex');
   // Only these main-authored fixed helpers are serialized; callers cannot supply code.
-  const helpers = `const shippingGpu2dMetadata=(${shippingGpu2dMetadata.toString()});const shippingGpu2dPendingFontFrame=(${shippingGpu2dPendingFontFrame.toString()});`;
+  const helpers = `const shippingGpu2dMetadata=(${shippingGpu2dMetadata.toString()});const shippingGpu2dPendingFontFrame=(${shippingGpu2dPendingFontFrame.toString()});const shippingGpu2dRenderOverlay=(${shippingGpu2dRenderOverlay.toString()});`;
   try {
     const first = await win.webContents.executeJavaScript(`(() => {${helpers} return (${shippingGpu2dRenderer.toString()})('first',${JSON.stringify(fixture)},${JSON.stringify(output)},null);})()`);
     const firstSaved = fs.readFileSync(output);
@@ -622,4 +643,4 @@ async function runShippingProbe(ctx, phase, testBuild) {
     app.exit(1);
   }
 }
-module.exports = { runShippingProbe, shippingProbePhase, runShipping3dProbe, runShippingGpu2dProbe, shippingGpu2dMetadata, shippingGpu2dPendingFontFrame };
+module.exports = { runShippingProbe, shippingProbePhase, runShipping3dProbe, runShippingGpu2dProbe, shippingGpu2dMetadata, shippingGpu2dPendingFontFrame, shippingGpu2dRenderOverlay };

@@ -1,4 +1,4 @@
-# Windows production 2D GPU acceptance â€” bounded step 4
+# Windows production 2D GPU acceptance — bounded step 4
 
 Candidate branch: `feature/windows-gpu-production-acceptance`.
 Starting source: released `a580c9c6e27952c2b15e0a75b940facd3ec4f1fc` (v0.5.0).
@@ -12,8 +12,8 @@ The active 2D/3D follow-up owns its separate checkout and preferences/axis-label
 
 | Acceptance | Current status | Required evidence |
 | --- | --- | --- |
-| Production entry | Confirmed missing at baseline; implemented and focused-tested, native unrun | Ordinary build registers explicit GPU/CANVAS selection; fresh process is Canvas with no allocated GPU |
-| Developer isolation | Source reviewed; ordinary bundle/native proof unrun | No prototype global, fixture loaders, reset/demo UI or debug transport in ordinary build |
+| Production entry | Implemented; ordinary/default diagnostics pass in Windows CI; full candidate phase under correction | Ordinary build registers explicit GPU/CANVAS selection; fresh process is Canvas with no allocated GPU |
+| Developer isolation | Ordinary Windows CI default/diagnostics pass; no development globals or default backing | No prototype global, fixture loaders, reset/demo UI or debug transport in ordinary build |
 | Certified drawing | Strict fixed 20-pair native gate implemented; hardware unrun | Actual owner-created WebGL2 ink; strict native Canvas raster and coverage comparison |
 | Complete fallback | Native fixed controls implemented; hardware unrun; unit coverage retained | Unsupported geometry/fonts, grid, layouts/clipping, previews, unavailable/lost/failed context return complete exact Canvas without stale backing or data edits |
 | Edit and history | Native LINE edit/undo/redo gate implemented; hardware unrun | Visible line/block/attribute changes, exact undo/redo and current selection; drawing/history/dirty state unchanged by mode selection |
@@ -28,9 +28,9 @@ foreground misses <0.005; complete fallback uses exact RGBA. No accuracy, worklo
 render deadline or security gate is waived. Source-build evidence does not certify
 an installed or signed artifact. Missing licensed native fixtures remain explicit.
 
-Ownership: runtime controller/production selector and focused unit tests â€” controller
-agent; fixed main-authored probe/runner and confinement tests â€” probe agent; ordinary
-smoke/CI/checklist and branch integration â€” root; resource/policy audit â€” read-only agent.
+Ownership: runtime controller/production selector and focused unit tests — controller
+agent; fixed main-authored probe/runner and confinement tests — probe agent; ordinary
+smoke/CI/checklist and branch integration — root; resource/policy audit — read-only agent.
 No concurrent edits or commits to shared files. Private dependencies, npm cache,
 TEMP/TMP and test outputs stay in this worktree. Native app/GPU runs are coordinated
 with the active lead before the paired checkpoint.
@@ -63,3 +63,31 @@ source, ordinary `dist`, pinned Node/Electron and all private dependency bytes
 before/after. Process evidence is limited to observed live lineage and exact
 private executable/absolute Node-command ownership; polling does not certify
 arbitrary unobserved external descendants. No other owner's process is stopped.
+
+First broad checkpoint at `4fdb3d2`: 6,239 Windows tests passed, 38 skipped and
+2 failed. The native pin-budget test's fixed 100-character cap rejected this
+134-character logical fixture path before its intended native-pin assertion.
+Its test-only correction derives that cap from the actual fixture path, verifies
+native capture occurred and retains exact rejection/cleanup assertions; all
+47 tests pass. The unchanged 33-file IPC case passed its original 30-second
+limit in one short-private-TEMP targeted diagnostic. Path depth and reduced
+contention remain confounded; no production saving code or deadline changed.
+
+Both original push and PR CI runs had four passing jobs and one failed GPU job.
+Their preserved child logs identify `Cannot set properties of undefined
+(setting 'cursor')`: the probe used an invented Editor `state` property.
+The correction observes the actual render overlay through the existing viewport
+request seam, restores its descriptor and tests real Editor/Viewport forwarding.
+Bounded fixed main failure reasons are now surfaced in CI after complete raw
+stdout/stderr preservation. This was an early probe error; no successful GPU
+accuracy, physical-adapter or installed-artifact proof is inferred. Full source,
+fixture, security and deadline gates remain unchanged; corrected native acceptance
+and exact-head CI are required before this draft can be considered complete.
+
+The real-overlay corrective checkpoint passes 81 focused probe tests (65 GPU2D,
+16 existing 3D transport), strict probe checkJs, normal renderer/test TypeScript,
+scoped lint and diff checks. Its two added tests use actual Editor/Viewport code
+with minimal Canvas/RAF doubles, a real LINE command, pointer preview and cancel,
+and verify viewport-method descriptor restoration on publication failure.
+Four failure-visibility tests separately pass. These remain app-boundary tests;
+physical GPU, native fonts and full corrected CI are still acceptance gates.
