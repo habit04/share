@@ -15,7 +15,7 @@ import { annotationDisplay, colorDisplay, drawEntity, lineweightDisplay } from '
 import { setTextStyles, textStyleRegistry } from '../src/render/hershey';
 import * as hershey from '../src/render/hershey';
 import type { Gpu2DOverlay, Gpu2DView } from '../src/render/gpu-prototype/geometry2d';
-import { lowerStrokeScene, type LocalStrokePath, type LoweredStrokeScene } from '../src/render/gpu-prototype/stroke-scene';
+import { lowerStrokeScene, type LocalStrokePath, type LoweredStrokeScene, type StrokePaintOperation } from '../src/render/gpu-prototype/stroke-scene';
 
 const layer: Layer = { name: '0', color: 3, visible: true, locked: false, lineWeight: 0.5 };
 const view: Gpu2DView = { width: 320, height: 240, dpr: 1, scale: 10, center: { x: 0, y: 0 }, twist: 0, background: '#212830', lineweights: false };
@@ -24,9 +24,17 @@ const line = (id = 'line'): LineEntity => ({ id, type: 'line', layer: '0', color
 const text = (patch: Partial<TextEntity> = {}): TextEntity => ({ id: 'text', type: 'text', layer: '0', color: 'ByLayer', position: { x: 0, y: 0 }, text: 'Ag %%c', height: 1, rotation: 0, align: 'left', ...patch });
 const insert = (block: string, patch: Partial<InsertEntity> = {}): InsertEntity => ({ id: 'insert', type: 'insert', layer: '0', color: 'ByLayer', block, position: { x: 7, y: 11 }, scale: 2, rotation: 0, attributes: {}, ...patch });
 const drawing = (entities: readonly Entity[], blocks: Readonly<Record<string, BlockDef>> = {}, layers: readonly Layer[] = [layer]): DrawingState => ({ entities, blocks, layers, currentLayer: '0' });
-const accepted = (result: LoweredStrokeScene) => {
+type StrokeOnlyScene = Omit<Extract<LoweredStrokeScene, { ok: true }>, 'operations'> & {
+  readonly operations: readonly Extract<StrokePaintOperation, { kind: 'stroke' }>[];
+};
+const accepted = (result: LoweredStrokeScene): StrokeOnlyScene => {
   if (!result.ok) throw new Error(result.reason);
-  return result;
+  for (const operation of result.operations) {
+    expect(operation.kind).toBe('stroke');
+    if (operation.kind !== 'stroke') throw new Error('Existing fixture requires a stroke operation');
+  }
+  // Preserve the exact result/operation identities after validating every discriminator.
+  return result as StrokeOnlyScene;
 };
 const paths = (result: LoweredStrokeScene): readonly LocalStrokePath[] => accepted(result).operations.flatMap((operation) => operation.paths);
 const strokePoints = (result: LoweredStrokeScene): readonly (readonly Point[])[] => paths(result).map((path) => {

@@ -15,27 +15,39 @@ import { assertPrimitiveStrokePrecision, assertStrokePathPrecision, canvasPolyli
 import { sourcePrecisionCertificateError, sourceTopologyAdmissionError, isSourcePrecisionCertificateError, isSourceTopologyAdmissionError } from './stroke-precision-error';
 import { isImmutableData } from '../../core/immutable-data';
 import { lowerHatchStrokes } from './hatch-strokes';
+import { lowerDimensionStrokes } from './dimension-strokes';
+import { isNativeDimensionSourceCertificate, type NativeDimensionSourceCertificate } from './dimension-native-source';
+import { preflightDimensionPreparation } from './dimension-budget';
 
 export type LocalStrokeEntity = LineEntity | PolylineEntity | CircleEntity | ArcEntity;
 /** All coordinates are world doubles relative to the copied camera anchor. */
 export type LocalStrokePath =
-  | { readonly kind: 'entity'; readonly entity: LocalStrokeEntity }
+  | { readonly kind: 'entity'; readonly entity: LocalStrokeEntity; readonly originalWorldSource?: LocalStrokeEntity }
   | { readonly kind: 'path'; readonly points: readonly Point[]; readonly closed: boolean;
       /** Exact canonical WORLD endpoints for hatch provenance, already source-certified. */
       readonly worldPoints?: readonly [Point, Point] };
 
 /** Exactly one Canvas stroke: glyph subpaths must share a stencil/compositing batch. */
-export interface StrokePaintOperation {
+interface SharedPaintOperation {
   readonly ownerId: string;
   readonly paintId: string;
   readonly sourceId: string;
-  readonly paths: readonly LocalStrokePath[];
   /** Non-painted original hatch boundaries, in anchor-local doubles. */
   readonly sourcePoints?: readonly Point[];
   readonly color: readonly [number, number, number];
   readonly alpha: number;
   readonly widthCss: number;
 }
+
+export type StrokePaintOperation =
+  | (SharedPaintOperation & { readonly kind: 'stroke'; readonly paths: readonly LocalStrokePath[] })
+  | (SharedPaintOperation & {
+    readonly kind: 'fillTriangle';
+    readonly points: readonly [Point, Point, Point];
+    readonly originalWorldPoints: readonly [Point, Point, Point];
+    readonly dimensionSource: NativeDimensionSourceCertificate;
+    readonly partIndex: number;
+  });
 
 export interface StrokeSceneOptions {
   readonly minRatio?: number;
@@ -114,6 +126,7 @@ function primitiveProblem(entity: Entity, state: DrawingState): string | null {
   if (resolveAlpha(entity, state.layers) !== 1) return `Unsupported transparency (${entity.id})`;
   switch (entity.type) {
     case 'line': return null;
+    case 'dimension': return null;
     case 'hatch': return null; // Original-world phase, opacity and geometry are checked below.
     case 'text': return entity.bold ? `Unsupported bold stroke text (${entity.id})` : null;
     case 'circle': return entity.filled ? `Unsupported filled circle (${entity.id})` : null;
@@ -360,7 +373,73 @@ export function lowerStrokeScene(state: DrawingState, view: Gpu2DView, overlay: 
         if (problem) throw new Error(problem);
         let paths: LocalStrokePath[];
         let sourcePoints: readonly Point[] | undefined;
-        if (leaf.type === 'text') paths = textPaths(leaf, local, canvasLeaf as TextEntity, widthCss);
+        if (leaf.type === 'dimension') {
+          if (owner !== leaf) throw sourceTopologyAdmissionError('Unsupported Canvas stroke construction: dimension block descendants require Canvas');
+          if (!isImmutableData(leaf)) throw sourceTopologyAdmissionError('Unsupported Canvas stroke construction: dimension mutable source requires Canvas');
+          if (selected || hovered) throw sourceTopologyAdmissionError('Unsupported Canvas stroke construction: dimension highlight requires Canvas');
+          const budget = preflightDimensionPreparation(
+            leaf, Math.max(0, maxWork - work), Math.max(0, maxPoints - points), Math.max(0, maxEntities - operations.length),
+          );
+          spend(budget.work);
+          const lowered = lowerDimensionStrokes(leaf, state, {
+            anchor: view.center, widthCss, alpha: 1, nativeView: view, minRatio, maxRatio,
+            maxParts: budget.partBound, maxPoints: Math.max(0, maxPoints - points),
+            maxTextCharacters: Math.max(budget.inputCharacters, budget.outputCharacters), maxWork: budget.work,
+          });
+          if (!lowered.ok) {
+            if (isSourcePrecisionCertificateError(lowered.cause) || isSourceTopologyAdmissionError(lowered.cause)) throw lowered.cause;
+            throw new Error(lowered.reason, { cause: lowered.cause });
+          }
+          const certificate = lowered.nativeSourceCertificate;
+          if (!isNativeDimensionSourceCertificate(certificate) || lowered.preparationWork !== budget.work || certificate.source !== leaf || certificate.widthCss !== widthCss ||
+            certificate.view.center.x !== view.center.x || certificate.view.center.y !== view.center.y ||
+            certificate.view.scale !== view.scale || certificate.view.dpr !== view.dpr ||
+            certificate.view.width !== view.width || certificate.view.height !== view.height || certificate.view.twist !== view.twist ||
+            certificate.minRatio > minRatio || certificate.maxRatio < maxRatio) {
+            throw sourceTopologyAdmissionError('Unsupported Canvas stroke construction: dimension source certificate is missing or mismatched');
+          }
+          countPoints(lowered.pointCount);
+          spend(lowered.textCharacterCount);
+          if (!lowered.parts.length) {
+            operations.push({
+              kind: 'stroke', ownerId: owner.id, sourceId: leaf.id, paintId: owner.id + ':' + operations.length,
+              paths: [], sourcePoints: certificate.sourcePoints, color: rgb(resolveColor(leaf, state.layers)), widthCss, alpha: 1,
+            });
+          }
+          for (let index = 0; index < lowered.parts.length; index++) {
+            if (operations.length >= maxEntities) throw sourceTopologyAdmissionError('Stroke-scene expansion exceeds operation budget');
+            const part = lowered.parts[index]!;
+            const original = certificate.originalWorldParts[index]!;
+            if (certificate.localParts[index] !== part.source || original.type !== part.source.type || original.id !== part.source.id) {
+              throw sourceTopologyAdmissionError('Unsupported Canvas stroke construction: dimension original WORLD pairing changed');
+            }
+            const paint = {
+              ownerId: owner.id, sourceId: part.source.id, paintId: owner.id + ':' + operations.length,
+              ...(index === 0 ? { sourcePoints: certificate.sourcePoints } : {}),
+              color: rgb(part.colorCss), widthCss: part.widthCss, alpha: part.alpha,
+            };
+            if (part.kind === 'fillTriangle') {
+              if (original.type !== 'polyline' || !certificate.triangleCertificates[index]) {
+                throw sourceTopologyAdmissionError('Unsupported Canvas stroke construction: dimension fill source certificate is missing');
+              }
+              operations.push({
+                ...paint, kind: 'fillTriangle', points: part.points,
+                originalWorldPoints: [original.points[0]!, original.points[1]!, original.points[2]!],
+                dimensionSource: certificate, partIndex: index,
+              });
+            } else if (part.kind === 'text') {
+              if (original.type !== 'text') throw sourceTopologyAdmissionError('Unsupported Canvas stroke construction: dimension native TEXT pairing changed');
+              operations.push({ ...paint, kind: 'stroke', paths: textPaths(part.source, alreadyLocal, original, widthCss) });
+            } else {
+              if (original.type !== 'line' && original.type !== 'polyline' && original.type !== 'circle' && original.type !== 'arc') {
+                throw sourceTopologyAdmissionError('Unsupported Canvas stroke construction: dimension native stroke pairing changed');
+              }
+              operations.push({ ...paint, kind: 'stroke', paths: [{ kind: 'entity', entity: part.source, originalWorldSource: original }] });
+            }
+          }
+          continue;
+        }
+        else if (leaf.type === 'text') paths = textPaths(leaf, local, canvasLeaf as TextEntity, widthCss);
         else if (leaf.type === 'hatch') {
           // A transformed block copy would generate a different canonical world phase.
           // This increment admits only the original top-level immutable source.
@@ -390,7 +469,8 @@ export function lowerStrokeScene(state: DrawingState, view: Gpu2DView, overlay: 
           if (owner.type === 'insert' || leaf.type === 'polyline' || leaf.type === 'line') assertPrimitiveStrokePrecision(entity, canvasLeaf as LocalStrokeEntity, widthCss, view, maxRatio);
           paths = [{ kind: 'entity', entity }];
         } else throw new Error(`Unsupported entity: ${leaf.type} (${leaf.id})`);
-        operations.push({ ownerId: owner.id, sourceId: leaf.id, paintId: `${owner.id}:${operations.length}`, paths, ...(sourcePoints ? { sourcePoints } : {}), color: rgb(resolveColor(leaf, state.layers)), widthCss, alpha: selected || hovered ? 0.95 : 1 });
+        if (operations.length >= maxEntities) throw sourceTopologyAdmissionError('Stroke-scene expansion exceeds operation budget');
+        operations.push({ kind: 'stroke', ownerId: owner.id, sourceId: leaf.id, paintId: `${owner.id}:${operations.length}`, paths, ...(sourcePoints ? { sourcePoints } : {}), color: rgb(resolveColor(leaf, state.layers)), widthCss, alpha: selected || hovered ? 0.95 : 1 });
       }
       if (owner.type === 'insert' && sourceIndex !== canvasSources.length) throw new Error(`Canvas native preflight left unmatched block slots (${owner.id})`);
     }

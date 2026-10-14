@@ -15,7 +15,7 @@ const overlay = { selection: new Set<string>() };
 const line: LineEntity = { id: 'line', type: 'line', layer: '0', color: 'ByLayer', a: { x: -2, y: 0 }, b: { x: 2, y: 0 } };
 const text: TextEntity = { id: 'text', type: 'text', layer: '0', color: 1, position: { x: 0, y: 0 }, text: 'TAG A1', height: 1, rotation: 0, align: 'left' };
 const state = (entities: readonly Entity[]): DrawingState => ({ entities, layers: [layer], blocks: {}, currentLayer: '0' });
-const operation = (paths: readonly LocalStrokePath[], widthCss = 1): StrokePaintOperation => ({ ownerId: 'owner', sourceId: 'source', paintId: 'owner:0', paths, widthCss, alpha: 1, color: [1, 0, 0] });
+const operation = (paths: readonly LocalStrokePath[], widthCss = 1): StrokePaintOperation => ({ kind: 'stroke', ownerId: 'owner', sourceId: 'source', paintId: 'owner:0', paths, widthCss, alpha: 1, color: [1, 0, 0] });
 const path = (points: readonly Point[], closed = false): LocalStrokePath => ({ kind: 'path', points, closed });
 const count = (paths: readonly LocalStrokePath[], camera = { ...view, scale: 1 }, extent = { x: 5, y: 5 }, width = 1) => geometry.compiledStraightVertexLowerBound([operation(paths, width)], camera, extent);
 
@@ -77,6 +77,8 @@ function legacyCompiled(drawing: DrawingState, camera: Gpu2DView, ov = overlay) 
   const output: number[] = [], batches: geometry.StrokeBatch[] = [];
   const bounds = { min: { x: Infinity, y: Infinity }, max: { x: -Infinity, y: -Infinity } };
   for (const paint of lowered.operations) {
+    expect(paint.kind).toBe('stroke');
+    if (paint.kind !== 'stroke') throw new Error('Legacy reference requires a stroke operation');
     const first = output.length / geometry.GPU_ZOOM_VERTEX_STRIDE;
     for (const source of paint.paths) {
       const points = source.kind === 'path' ? source.points : source.entity.type === 'line' ? [source.entity.a, source.entity.b] : source.entity.type === 'polyline' ? source.entity.points : null;

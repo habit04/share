@@ -7,7 +7,7 @@ import { drawEntity, lineweightDisplay } from '../src/render/draw';
 import * as hershey from '../src/render/hershey';
 import { GPU_ZOOM_VERTEX_STRIDE, prepareCompiledZoom2D, prepareZoom2D, type Gpu2DView } from '../src/render/gpu-prototype/geometry2d';
 import { Gpu2DRenderer } from '../src/render/gpu-prototype/renderer2d';
-import { canvasWorldCoordinatePrecisionProblem, lowerStrokeScene, type LoweredStrokeScene } from '../src/render/gpu-prototype/stroke-scene';
+import { canvasWorldCoordinatePrecisionProblem, lowerStrokeScene, type LoweredStrokeScene, type StrokePaintOperation } from '../src/render/gpu-prototype/stroke-scene';
 import { nativeFloatCurveBound } from '../src/render/gpu-prototype/native-float-curve-bound';
 import { isSourcePrecisionCertificateError, isSourceTopologyAdmissionError } from '../src/render/gpu-prototype/stroke-precision-error';
 
@@ -20,7 +20,18 @@ const text = (patch: Partial<TextEntity> = {}): TextEntity => ({ id: 'text', typ
 const line = (patch: Partial<LineEntity> = {}): LineEntity => ({ id: 'line', type: 'line', layer: '0', color: 'ByLayer', a: { x: -1 / 64, y: 0 }, b: { x: 1 / 64, y: 0 }, ...patch });
 const insert = (name: string, patch: Partial<InsertEntity> = {}): InsertEntity => ({ id: 'owner', type: 'insert', layer: '0', color: 'ByLayer', block: name, position: { x: 0, y: 0 }, scale: 1, rotation: 0.31, attributes: {}, ...patch });
 const block = (name: string, entities: readonly Entity[], attributes: readonly AttributeDef[] = []): BlockDef => ({ name, entities, attributes, basePoint: { x: 0, y: 0 } });
-const accepted = (result: LoweredStrokeScene) => { if (!result.ok) throw new Error(result.reason); return result; };
+type StrokeOnlyScene = Omit<Extract<LoweredStrokeScene, { ok: true }>, 'operations'> & {
+  readonly operations: readonly Extract<StrokePaintOperation, { kind: 'stroke' }>[];
+};
+const accepted = (result: LoweredStrokeScene): StrokeOnlyScene => {
+  if (!result.ok) throw new Error(result.reason);
+  for (const operation of result.operations) {
+    expect(operation.kind).toBe('stroke');
+    if (operation.kind !== 'stroke') throw new Error('Existing fixture requires a stroke operation');
+  }
+  // Preserve the exact result/operation identities after validating every discriminator.
+  return result as StrokeOnlyScene;
+};
 
 /** Exercise the real Canvas wrapper and model its context rotation/save/restore. */
 function canvasPaths(state: DrawingState, camera: Gpu2DView): { paths: Point[][]; arcs: Array<{ center: Point; radius: number }> } {
