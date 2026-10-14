@@ -11,6 +11,17 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-14
+
+### Upgrade notes
+
+Major Windows x64 update with 2D compatibility, text and plotting improvements, safer
+save/recovery behavior, and optional experimental 3D modelling. Enable 3D under
+Options > Files > Experimental 3D and restart. Drawings containing 3D models save as
+JCad DXF; DWG saving for those drawings remains guarded. Canvas is the default 2D
+renderer. GPU diagnostics are included; the experimental 2D GPU renderer remains
+development-only. macOS and Linux desktop updates remain paused at v0.4.5.
+
 ### Added
 
 - Optional development GPU build adds bounded WebGL2 drawing coverage and GPU diagnostics.
@@ -1263,7 +1274,8 @@ First release.
 
 - Renamed the application to JCad Electrical.
 
-[Unreleased]: https://github.com/habit04/share/compare/v0.4.9...HEAD
+[Unreleased]: https://github.com/habit04/share/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/habit04/share/compare/v0.4.9...v0.5.0
 [0.4.9]: https://github.com/habit04/share/compare/v0.4.8...v0.4.9
 [0.4.8]: https://github.com/habit04/share/compare/v0.4.7...v0.4.8
 [0.4.7]: https://github.com/habit04/share/compare/v0.4.6...v0.4.7
