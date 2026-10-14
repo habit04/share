@@ -4,6 +4,7 @@ import type { EditorEvent } from '../src/app/editor/types';
 import type { Viewport, ViewportOverlay } from '../src/render/viewport';
 import { Drawing } from '../src/core/document';
 import { installGpuPrototype } from '../src/app/gpu-prototype';
+import { emptyGpuDiagnostics, gpuDiagnosticsLines, setDiagnosticRenderer } from '../src/app/gpu-diagnostics';
 
 const gpu = vi.hoisted(() => ({ render: vi.fn((..._args: unknown[]) => ({ rendered: true })), created: vi.fn(), dispose: vi.fn() }));
 vi.mock('../src/render/gpu-prototype/renderer2d', () => ({
@@ -49,13 +50,18 @@ function fixture() {
     emit: (event: EditorEvent) => { for (const fn of events.get(event) ?? []) fn(); } };
 }
 
-afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
+const rendererLine = () => gpuDiagnosticsLines(emptyGpuDiagnostics()).find((line) => line.startsWith('JCad renderer:'));
+
+afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); setDiagnosticRenderer(() => 'Canvas 2D'); });
 
 describe('experimental GPU integration with the modelling viewport', () => {
   it('keeps Canvas as default and passes the actual per-drawing lookup to GPU admission', () => {
+    setDiagnosticRenderer(() => 'WebGL2 experimental 3D modelling viewport');
     const f = fixture(); installGpuPrototype(f.editor);
     expect(f.render()).toBe(false); expect(gpu.created).not.toHaveBeenCalled();
+    expect(rendererLine()).toBe('JCad renderer: Canvas 2D');
     f.api().setMode('gpu'); expect(f.render()).toBe(true);
+    expect(rendererLine()).toBe('JCad renderer: WebGL2 drawing base scene + Canvas 2D editing overlays (experimental)');
     expect(gpu.render.mock.calls[0]?.[3]).toBe(f.doc.lookupBlock);
     f.api().dispose();
   });
@@ -66,12 +72,28 @@ describe('experimental GPU integration with the modelling viewport', () => {
     expect(f.elements[0]!.style.display).toBe('block');
     const submitted = gpu.render.mock.calls.length;
     active = true; f.emit('log');
+    expect(rendererLine()).toBe('JCad renderer: WebGL2 experimental 3D modelling viewport');
     expect(f.elements[0]!.style.display).toBe('none');
     expect(f.elements[1]!.style.visibility).toBe('hidden');
     expect(f.api().status()).toMatchObject({ rendered: false, reason: 'Experimental 3D viewport active' });
     expect(f.render()).toBe(false); expect(gpu.render).toHaveBeenCalledTimes(submitted);
     active = false; f.emit('view');
+    expect(rendererLine()).toBe('JCad renderer: Canvas 2D');
     expect(f.elements[1]!.style.visibility).toBe(''); expect(f.render()).toBe(true);
+    expect(rendererLine()).toBe('JCad renderer: WebGL2 drawing base scene + Canvas 2D editing overlays (experimental)');
+    f.api().dispose();
+  });
+
+  it('reports Canvas when a requested GPU scene is refused and when GPU mode is disabled', () => {
+    const f = fixture(); installGpuPrototype(f.editor);
+    f.api().setMode('gpu');
+    gpu.render.mockReturnValueOnce({ rendered: false });
+    expect(f.render()).toBe(false);
+    expect(rendererLine()).toBe('JCad renderer: Canvas 2D');
+    expect(f.render()).toBe(true);
+    expect(rendererLine()).toContain('WebGL2 drawing base scene');
+    f.api().setMode('canvas'); expect(f.render()).toBe(false);
+    expect(rendererLine()).toBe('JCad renderer: Canvas 2D');
     f.api().dispose();
   });
 

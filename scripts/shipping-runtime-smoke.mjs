@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { verifyExecutableFuses } from './electron-fuse-policy.mjs';
-import { needsPortableDwgExport, needsPortableDwgSave, needsRotatedLayoutViewports, needsDwgMetadataPreservation, metadataProbeSucceeded, METADATA_SMOKE_FIXTURES, METADATA_SMOKE_FLAGS } from './packaged-smoke-policy.mjs';
+import { needsPortableDwgExport, needsPortableDwgSave, needsRotatedLayoutViewports, needsDwgMetadataPreservation, needsExperimental3d, experimental3dProbeSucceeded, metadataProbeSucceeded, METADATA_SMOKE_FIXTURES, METADATA_SMOKE_FLAGS } from './packaged-smoke-policy.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
 const source = process.argv[2] === '--source';
@@ -18,10 +18,13 @@ const expectedVersion = process.env.JCAD_E2E_EXPECT_VERSION || JSON.parse(readFi
 const out = resolve(process.env.JCAD_E2E_OUT || join(repo, 'packaged-smoke-output')); mkdirSync(out, { recursive:true });
 const scratchParent = realpathSync.native(tmpdir());
 const profile = mkdtempSync(join(scratchParent, 'jcad-shipping-smoke-'));
+let threeDProfile = '';
 function cleanProfile() {
-  const checked = realpathSync.native(profile);
-  if (dirname(checked) !== scratchParent || !basename(checked).startsWith('jcad-shipping-smoke-')) throw new Error('Unexpected shipping smoke profile');
-  rmSync(checked, { recursive:true, force:true, maxRetries:3 });
+  for (const owned of [profile, threeDProfile].filter(Boolean)) {
+    const checked = realpathSync.native(owned);
+    if (dirname(checked) !== scratchParent || !basename(checked).startsWith('jcad-shipping-smoke-')) throw new Error('Unexpected shipping smoke profile');
+    rmSync(checked, { recursive:true, force:true, maxRetries:3 });
+  }
 }
 const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE; delete env.VITE_DEV_SERVER_URL;
 const linuxArgs = process.platform === 'linux' ? ['--no-sandbox'] : [];
@@ -95,14 +98,39 @@ w.webContents.session.flushStorageData(); w.destroy(); app.quit();
   }
   const errors = join(profile, 'error.log');
   assert.ok(!existsSync(errors) || readFileSync(errors, 'utf8').trim() === '', 'No main-process errors');
+  let experimental3d = null;
+  if (needsExperimental3d(expectedVersion)) {
+    // A second fresh profile proves default-off Options, persistence and a real process restart;
+    // the original first/second/DWG profile and its native metadata fixed points stay independent.
+    threeDProfile = mkdtempSync(join(scratchParent, 'jcad-shipping-smoke-'));
+    const threeDFixture = join(threeDProfile, 'shipping-startup.dxf');
+    writeFileSync(threeDFixture, '0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nLINE\n8\n0\n10\n10\n20\n10\n11\n20\n21\n20\n0\nENDSEC\n0\nEOF\n', { flag:'wx' });
+    let enabled = null;
+    for (const phase of ['3d-enable', '3d']) {
+      const output = run(executable, [...appArgs, `--probe-startup=${phase}`, `--user-data-dir=${threeDProfile}`, ...linuxArgs, realpathSync.native(threeDFixture)], phase === '3d' ? 120_000 : 90_000);
+      const line = output.split(/\r?\n/).find(entry => entry.startsWith('SHIPPING_PROBE_OK '));
+      assert.ok(line, `Missing successful shipping 3D result (${phase})`);
+      const result = JSON.parse(line.slice('SHIPPING_PROBE_OK '.length));
+      assert.equal(result.phase, phase); assert.equal(result.version, expectedVersion); assert.equal(result.packaged, !source); assert.equal(result.testBuild, false);
+      if (phase === '3d-enable') {
+        assert.equal(result.optionPersisted, true); assert.equal(result.restartRequired, true); assert.equal(result.beforeRenderer, 'Canvas 2D');
+        enabled = result;
+      } else {
+        assert.equal(experimental3dProbeSucceeded(result), true, 'Actual 3D viewport/worker, exact DXF reopens/backup, DWG refusal and Canvas diagnostics are mandatory');
+        experimental3d = { enabled, ...result };
+      }
+    }
+    const threeDErrors = join(threeDProfile, 'error.log');
+    assert.ok(!existsSync(threeDErrors) || readFileSync(threeDErrors, 'utf8').trim() === '', 'No 3D main-process errors');
+  }
   // The CLI debugger is not an alternative way to run the production app.
   if (!source) {
     const denied = spawnSync(executable, ['--remote-debugging-port=0', `--user-data-dir=${profile}`, ...linuxArgs], { cwd:repo, env, encoding:'utf8', windowsHide:true, timeout:15_000, maxBuffer:1024 * 1024 });
     assert.equal(denied.error, undefined); assert.equal(denied.status, 2); assert.match(denied.stdout || '', /SHIPPING_DEBUG_DISABLED/);
   }
-  const record = { mode:source ? 'source-probe-development' : 'shipping-no-inspection', expectedVersion, executable, fuses, launches, portableDwg, remoteDebugRejected:!source, noMainErrors:true };
+  const record = { mode:source ? 'source-probe-development' : 'shipping-no-inspection', expectedVersion, executable, fuses, launches, portableDwg, experimental3d, remoteDebugRejected:!source, noMainErrors:true };
   writeFileSync(join(out, 'shipping-runtime-result.json'), `${JSON.stringify(record, null, 2)}\n`);
-  console.log(`${source ? 'Source probe validation (no shipping fuse/signature evidence)' : 'Exact shipping runtime smoke'}: startup, DXF open/save/backup/reopen${portableDwg?.saveDwg ? ', DWG Save As/save/backup/reopen' : ''}${portableDwg?.viewportRotation ? ', rotated layout viewports' : ''}${portableDwg?.metadataSaveReopen ? ', three native metadata fixtures with connected copies and exact literals' : ''}, secure origin, two-launch migration, private persistent storage and clean exit passed.`);
+  console.log(`${source ? 'Source probe validation (no shipping fuse/signature evidence)' : 'Exact shipping runtime smoke'}: startup, DXF open/save/backup/reopen${portableDwg?.saveDwg ? ', DWG Save As/save/backup/reopen' : ''}${portableDwg?.viewportRotation ? ', rotated layout viewports' : ''}${portableDwg?.metadataSaveReopen ? ', three native metadata fixtures with connected copies and exact literals' : ''}${experimental3d ? ', opted-in WebGL2 3D/Manifold worker, exact DXF first/second saves and guarded DWG refusal' : ''}, secure origin, two-launch migration, private persistent storage and clean exit passed.`);
 } finally {
   // Preserve only fixed, generated smoke artifacts for native-reader diagnosis. The private
   // profile is still removed, and ordinary user files can never be selected by this probe.
@@ -118,6 +146,13 @@ w.webContents.session.flushStorageData(); w.destroy(); app.quit();
     if (existsSync(file)) {
       const stat = lstatSync(file);
       if (stat.isFile() && !stat.isSymbolicLink() && dirname(realpathSync.native(file)) === realpathSync.native(profile)) copyFileSync(file, join(out, name));
+    }
+  }
+  if (threeDProfile) for (const name of ['shipping-3d-output.dxf', 'shipping-3d-output.dxf.bak']) {
+    const file = join(threeDProfile, name);
+    if (existsSync(file)) {
+      const stat = lstatSync(file);
+      if (stat.isFile() && !stat.isSymbolicLink() && dirname(realpathSync.native(file)) === realpathSync.native(threeDProfile)) copyFileSync(file, join(out, name));
     }
   }
   cleanProfile();

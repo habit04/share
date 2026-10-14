@@ -1,5 +1,7 @@
 import type { SpawnSyncReturns } from 'node:child_process';
 export function needsPackagedOrigin(version: string): boolean;
+export function needsExperimental3d(version: string): boolean;
+export function experimental3dProbeSucceeded(record: unknown): boolean;
 export function needsPortableDwgExport(version: string, platform?: string): boolean;
 export function needsPortableDwgSave(version: string, platform?: string): boolean;
 export function needsRotatedLayoutViewports(version: string, platform?: string): boolean;

@@ -1,5 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { needsPackagedOrigin, needsPortableDwgExport, needsPortableDwgSave, needsRotatedLayoutViewports, needsDwgMetadataPreservation, metadataProbeSucceeded, METADATA_SMOKE_FIXTURES, METADATA_SMOKE_FLAGS, processResult, childSucceeded, dwgProbeSucceeded, validateSmokeArchitecture, macDmgTargets } from '../scripts/packaged-smoke-policy.mjs';
+import { needsPackagedOrigin, needsExperimental3d, experimental3dProbeSucceeded, needsPortableDwgExport, needsPortableDwgSave, needsRotatedLayoutViewports, needsDwgMetadataPreservation, metadataProbeSucceeded, METADATA_SMOKE_FIXTURES, METADATA_SMOKE_FLAGS, processResult, childSucceeded, dwgProbeSucceeded, validateSmokeArchitecture, macDmgTargets } from '../scripts/packaged-smoke-policy.mjs';
+
+describe('installed experimental 3D shipping gate', () => {
+  it('requires every 0.5 prerelease and later release while preserving historical smoke support', () => {
+    for (const version of ['0.5.0', 'v0.5.0-alpha.1', '0.5.1', '0.6.0', '1.0.0', '1.0.0-rc.1', '2.0.0']) expect(needsExperimental3d(version), version).toBe(true);
+    for (const version of ['0.4.9', '0.4.99', 'v0.4.9-beta.1', '0.3.0']) expect(needsExperimental3d(version), version).toBe(false);
+    expect(() => needsExperimental3d('invalid')).toThrow(/Invalid packaged smoke version/);
+  });
+  it('requires actual render/worker/restart/save/refusal evidence and exact first-save backup hashes', () => {
+    const flags = ['optionRestarted', 'webgl2', 'visibleInk', 'gpuPicked', 'kernelWorker', 'dxfSaveAsReopened', 'dwgRefused', 'canvasRestored', 'workerDisposed', 'dxfSecondSaveReopened', 'backupExact', 'sourceUnchanged'];
+    const valid = { ...Object.fromEntries(flags.map(key => [key, true])), phase: '3d', testBuild: false, kernelName: 'Manifold 3.5.4 (worker)', workers: 1, unionVolume: 1.5, secondSaveEntities: 2, beforeRenderer: 'Canvas 2D', activeRenderer: 'WebGL2 experimental 3D modelling viewport', afterRenderer: 'Canvas 2D', capabilities: { version: 'WebGL 2.0 (OpenGL ES 3.0 Chromium)', maxTextureSize: 16384 }, sourceSha256: '0'.repeat(64), firstSaveSha256: '1'.repeat(64), outputSha256: '2'.repeat(64), backupSha256: '1'.repeat(64) };
+    expect(experimental3dProbeSucceeded(valid)).toBe(true);
+    for (const key of flags) for (const value of [false, undefined, 'true']) expect(experimental3dProbeSucceeded({ ...valid, [key]: value }), key).toBe(false);
+    for (const changed of [
+      { phase: '3d-enable' }, { testBuild: true }, { kernelName: 'Manifold 3.5.4 (in-process)' }, { workers: 0 }, { workers: 2 },
+      { unionVolume: NaN }, { unionVolume: Infinity }, { unionVolume: 1 }, { secondSaveEntities: 1 },
+      { beforeRenderer: 'GPU' }, { activeRenderer: 'Canvas 2D' }, { afterRenderer: valid.activeRenderer },
+      { capabilities: { version: 'WebGL 1.0', maxTextureSize: 16384 } }, { capabilities: { version: 'WebGL 2.0', maxTextureSize: 0 } },
+      { sourceSha256: '' }, { firstSaveSha256: 'broken' }, { backupSha256: valid.outputSha256 }, { outputSha256: valid.firstSaveSha256 },
+    ]) expect(experimental3dProbeSucceeded({ ...valid, ...changed }), JSON.stringify(changed)).toBe(false);
+    expect(experimental3dProbeSucceeded(null)).toBe(false);
+    expect(experimental3dProbeSucceeded({})).toBe(false);
+  });
+});
 
 describe('portable DWG shipping gate', () => {
   it('requires fixed metadata preservation evidence in Windows 0.4.9 and keeps old/platform-paused installers testable', () => {

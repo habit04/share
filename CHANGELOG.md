@@ -11,6 +11,17 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-14
+
+### Upgrade notes
+
+Major Windows x64 update with 2D compatibility, text and plotting improvements, safer
+save/recovery behavior, and optional experimental 3D modelling. Enable 3D under
+Options > Files > Experimental 3D and restart. Drawings containing 3D models save as
+JCad DXF; DWG saving for those drawings remains guarded. Canvas is the default 2D
+renderer. GPU diagnostics are included; the experimental 2D GPU renderer remains
+development-only. macOS and Linux desktop updates remain paused at v0.4.5.
+
 ### Added
 
 - Optional development GPU build adds bounded WebGL2 drawing coverage and GPU diagnostics.
@@ -89,6 +100,9 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Fixed
 
+- GPU diagnostics report the active experimental 3D viewport and return to Canvas 2D
+  when it closes. The development GPU renderer keeps its own actual-use reporting.
+
 - Experimental GPU aligned dimensions retain their exact Canvas text orientation during
   camera rebasing after native DXF reopen. This prevents a two-step floating-point angle
   difference from causing unnecessary Canvas fallback, while preserving strict source,
@@ -154,11 +168,12 @@ messages). The date of each version is the date of the commit that set that vers
   without requiring DWG-reader side caches. Strict metadata comparisons detect reordered,
   removed or changed links; binary roundtrip and independent postflight remain mandatory.
 
-- Development source combines completed PR #9 metadata/reference support with the Windows
+- This release combines completed PR #9 metadata/reference support with the Windows
   2D and reliability corrections. Graph-aware project preparation and session restore checks
   protect tabs, history and source proofs before mutations. Complex linetype edits, anonymous
   shape styles and viewport clip identities retain their newer compatibility behavior.
-  Combined validation is separate from the released v0.4.9 evidence; no installer is included.
+  Combined validation is separate from the released v0.4.9 evidence. The Windows installer
+  is built and checked through this version's release pipeline.
 
 - Legacy TABLESTYLE conversion checks retained row formats, inherited overrides, links,
   colors, grids and margins before choosing a modern native representation. Unsupported
@@ -1263,7 +1278,8 @@ First release.
 
 - Renamed the application to JCad Electrical.
 
-[Unreleased]: https://github.com/habit04/share/compare/v0.4.9...HEAD
+[Unreleased]: https://github.com/habit04/share/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/habit04/share/compare/v0.4.9...v0.5.0
 [0.4.9]: https://github.com/habit04/share/compare/v0.4.8...v0.4.9
 [0.4.8]: https://github.com/habit04/share/compare/v0.4.7...v0.4.8
 [0.4.7]: https://github.com/habit04/share/compare/v0.4.6...v0.4.7
