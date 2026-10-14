@@ -41,17 +41,39 @@ async function shipping3dRenderer(phase, fixture, output) {
     return expected;
   };
   const beforeRenderer = await rendererLabel('Canvas 2D');
-  if (phase === '3d-enable') {
-    need(ed.settings.experimental3d === false && !w.jcad3d, 'Fresh profile must begin with experimental 3D off');
+  const options3d = async () => {
     await ed.runCommand('OPTIONS');
     const modal = document.querySelector('.modal');
-    const labels = Array.from(modal?.querySelectorAll('label.dlg-check') || []).filter(label => /\b3D\b/.test(label.textContent || ''));
-    need(labels.length === 1, 'Options must expose exactly one experimental 3D setting');
+    const marked = Array.from(modal?.querySelectorAll('label.dlg-check[data-setting="experimental3d"]') || []);
+    // Historical installers had one English 3D checkbox without the stable setting key.
+    const labels = marked.length ? marked : Array.from(modal?.querySelectorAll('label.dlg-check') || []).filter(label => /\b3D\b/.test(label.textContent || ''));
+    need(labels.length === 1, 'Options must expose exactly one 3D tools setting');
     const checkbox = labels[0].querySelector('input[type="checkbox"]');
-    need(checkbox && !/** @type {HTMLInputElement} */ (checkbox).checked, 'Experimental 3D option must default off');
-    /** @type {HTMLElement} */ (checkbox).click();
+    need(checkbox, '3D tools checkbox missing');
     const ok = modal?.querySelector('.modal-footer button.primary');
     need(ok, 'Options acceptance control missing');
+    return { modal, checkbox, ok };
+  };
+  if (phase === '3d-default') {
+    const c = w.jcad3d;
+    need(ed.settings.experimental3d === true && c && ['BOX', '3DMODE', '3DVIEW', 'UNION'].every(name => ed.commands.has(name)), 'Fresh profile must make 3D tools available');
+    need(!c.active && !c.viewport && !c.kernelStarted && document.querySelectorAll('canvas.viewport3d').length === 0 && ed.viewport.canvas.style.visibility !== 'hidden', 'Default 3D tools must keep Canvas active without a 3D context or kernel');
+    need(ed.settings.importForeign3d === false, 'Foreign 3D import must remain off by default');
+    const { modal, checkbox, ok } = await options3d();
+    need(/** @type {HTMLInputElement} */ (checkbox).checked, 'Fresh 3D tools option must be checked');
+    const foreign = modal?.querySelector('label.dlg-check[data-setting="importForeign3d"] input[type="checkbox"]');
+    need(foreign && !/** @type {HTMLInputElement} */ (foreign).checked, 'Foreign 3D import option must be unchecked');
+    /** @type {HTMLElement} */ (checkbox).click();
+    /** @type {HTMLElement} */ (ok).click();
+    need(ed.settings.experimental3d === false && JSON.parse(localStorage.getItem('jcad.settings.v2') || '{}').experimental3d === false && ed.settings.importForeign3d === false, 'Options did not persist explicitly disabled 3D tools');
+    need(w.jcad3d === c && !c.active && !c.viewport && !c.kernelStarted && document.querySelectorAll('canvas.viewport3d').length === 0 && ed.viewport.canvas.style.visibility !== 'hidden', 'Disabling 3D tools must leave the current inactive controller and Canvas unchanged until restart');
+    return { phase, version: info.version, packaged: info.packaged, toolsAvailable: true, controllerInstalled: true, controllerInactive: true, canvasDefault: true, no3dCanvas: true, kernelUnstarted: true, foreignImportDisabled: true, optionInitiallyChecked: true, disabledPersisted: true, controllerStillInactive: true, restartRequired: true, beforeRenderer };
+  }
+  if (phase === '3d-enable') {
+    need(ed.settings.experimental3d === false && !w.jcad3d, 'Restarted profile must begin with experimental 3D off');
+    const { checkbox, ok } = await options3d();
+    need(!/** @type {HTMLInputElement} */ (checkbox).checked, 'Experimental 3D option must be off before enabling');
+    /** @type {HTMLElement} */ (checkbox).click();
     /** @type {HTMLElement} */ (ok).click();
     need(ed.settings.experimental3d === true && JSON.parse(localStorage.getItem('jcad.settings.v2') || '{}').experimental3d === true && !w.jcad3d, 'Options did not persist 3D for the next real launch');
     return { phase, version: info.version, packaged: info.packaged, optionPersisted: true, restartRequired: true, beforeRenderer };
@@ -134,7 +156,7 @@ async function shipping3dSecondSave(output, signature) {
 
 /** @param {import('./context.cjs').MainContext} ctx */
 async function runShipping3dProbe(ctx, phase, testBuild) {
-  if (!['3d-enable', '3d'].includes(phase) || testBuild) throw new Error('3D probe requires a fixed shipping phase');
+  if (!['3d-default', '3d-enable', '3d'].includes(phase) || testBuild) throw new Error('3D probe requires a fixed shipping phase');
   const win = ctx.mainWindow;
   if (!win || win.isDestroyed()) throw new Error('No renderer window');
   const namedProfile = app.getPath('userData'), profile = fs.realpathSync.native(namedProfile);
@@ -143,7 +165,7 @@ async function runShipping3dProbe(ctx, phase, testBuild) {
   if (stat.isSymbolicLink()) throw new Error('3D probe refuses a linked fixture');
   if (!stat.isFile() || stat.size <= 0 || stat.size > 4096 || fs.realpathSync.native(fixture) !== fixture) throw new Error('3D probe requires its bounded regular authored DXF');
   const sourceBytes = fs.readFileSync(fixture), output = path.join(profile, 'shipping-3d-output.dxf'), refusal = path.join(profile, 'shipping-3d-refusal.dwg');
-  if (phase === '3d-enable') return { ...await win.webContents.executeJavaScript(`(${shipping3dRenderer.toString()})('3d-enable',${JSON.stringify(fixture)},${JSON.stringify(output)})`), testBuild };
+  if (phase === '3d-default' || phase === '3d-enable') return { ...await win.webContents.executeJavaScript(`(${shipping3dRenderer.toString()})(${JSON.stringify(phase)},${JSON.stringify(fixture)},${JSON.stringify(output)})`), testBuild };
   for (const file of [output, output + '.bak', refusal, refusal + '.bak']) {
     try { fs.lstatSync(file); throw new Error('3D probe may not use a pre-existing destination'); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -174,17 +196,17 @@ async function runShipping3dProbe(ctx, phase, testBuild) {
 function shippingProbePhase(args) {
   const flags = args.filter((arg) => typeof arg === 'string' && arg.startsWith('--probe-startup='));
   if (!flags.length) return null;
-  if (flags.length !== 1 || !/^--probe-startup=(first|second|dwg|3d-enable|3d)$/.test(flags[0])) throw new Error('Invalid startup probe phase');
+  if (flags.length !== 1 || !/^--probe-startup=(first|second|dwg|3d-default|3d-enable|3d)$/.test(flags[0])) throw new Error('Invalid startup probe phase');
   return flags[0].slice('--probe-startup='.length);
 }
 
 /** @param {import('./context.cjs').MainContext} ctx */
 async function runShippingProbe(ctx, phase, testBuild) {
-  if (!['first', 'second', 'dwg', '3d-enable', '3d'].includes(phase)) throw new Error('Invalid startup probe phase');
+  if (!['first', 'second', 'dwg', '3d-default', '3d-enable', '3d'].includes(phase)) throw new Error('Invalid startup probe phase');
   // The application's existing 60-second startup deadline remains authoritative for 3D too.
   const timer = setTimeout(() => { process.stdout.write('SHIPPING_PROBE_FAIL timed out\n'); app.exit(1); }, phase === '3d' ? 60_000 : 45_000);
   try {
-    if (phase === '3d-enable' || phase === '3d') {
+    if (phase === '3d-default' || phase === '3d-enable' || phase === '3d') {
       const record = await runShipping3dProbe(ctx, phase, testBuild);
       process.stdout.write(`SHIPPING_PROBE_OK ${JSON.stringify(record)}\n`);
       clearTimeout(timer);

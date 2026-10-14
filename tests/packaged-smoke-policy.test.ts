@@ -1,5 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { needsPackagedOrigin, needsExperimental3d, experimental3dProbeSucceeded, needsPortableDwgExport, needsPortableDwgSave, needsRotatedLayoutViewports, needsDwgMetadataPreservation, metadataProbeSucceeded, METADATA_SMOKE_FIXTURES, METADATA_SMOKE_FLAGS, processResult, childSucceeded, dwgProbeSucceeded, validateSmokeArchitecture, macDmgTargets } from '../scripts/packaged-smoke-policy.mjs';
+import { needsPackagedOrigin, needsExperimental3d, needsDefault3dTools, default3dToolsProbeSucceeded, experimental3dProbeSucceeded, needsPortableDwgExport, needsPortableDwgSave, needsRotatedLayoutViewports, needsDwgMetadataPreservation, metadataProbeSucceeded, METADATA_SMOKE_FIXTURES, METADATA_SMOKE_FLAGS, processResult, childSucceeded, dwgProbeSucceeded, validateSmokeArchitecture, macDmgTargets } from '../scripts/packaged-smoke-policy.mjs';
+
+describe('installed default-on 3D tools gate', () => {
+  it('requires lazy default-on tools from 0.5.1 including prereleases and preserves historical opt-in smoke', () => {
+    for (const version of ['0.5.1', 'v0.5.1-alpha.1', '0.5.2', '0.6.0', '1.0.0-rc.1', '1.0.0', '2.0.0']) expect(needsDefault3dTools(version), version).toBe(true);
+    for (const version of ['0.5.0', 'v0.5.0-alpha.1', '0.4.99', '0.3.0']) expect(needsDefault3dTools(version), version).toBe(false);
+    expect(() => needsDefault3dTools('invalid')).toThrow(/Invalid packaged smoke version/);
+  });
+  it('requires every default/lazy resource/foreign import/persisted opt-out flag in the fixed phase', () => {
+    const flags = ['toolsAvailable', 'controllerInstalled', 'controllerInactive', 'canvasDefault', 'no3dCanvas', 'kernelUnstarted', 'foreignImportDisabled', 'optionInitiallyChecked', 'disabledPersisted', 'controllerStillInactive', 'restartRequired'];
+    const valid = { ...Object.fromEntries(flags.map(key => [key, true])), phase: '3d-default', testBuild: false, beforeRenderer: 'Canvas 2D' };
+    expect(default3dToolsProbeSucceeded(valid)).toBe(true);
+    for (const key of flags) for (const value of [false, undefined, 'true']) expect(default3dToolsProbeSucceeded({ ...valid, [key]: value }), key).toBe(false);
+    for (const change of [{ phase: '3d-enable' }, { testBuild: true }, { testBuild: undefined }, { beforeRenderer: 'WebGL2 experimental 3D modelling viewport' }]) expect(default3dToolsProbeSucceeded({ ...valid, ...change })).toBe(false);
+    expect(default3dToolsProbeSucceeded(null)).toBe(false);
+    expect(default3dToolsProbeSucceeded({})).toBe(false);
+  });
+});
 
 describe('installed experimental 3D shipping gate', () => {
   it('requires every 0.5 prerelease and later release while preserving historical smoke support', () => {

@@ -17,6 +17,20 @@ export function needsExperimental3d(version) {
   return major > 0 || minor >= 5;
 }
 
+/** New default-on tools must be lazy; the published 0.5.0 opt-in installer remains testable. */
+export function needsDefault3dTools(version) {
+  const parsed = versionTools.parseVersion(version);
+  if (!parsed) throw new Error(`Invalid packaged smoke version: ${version}`);
+  const [major, minor, patch] = parsed.parts;
+  return major > 0 || minor > 5 || (minor === 5 && patch >= 1);
+}
+
+/** Fresh-profile evidence must show available tools, inactive resources and persisted opt-out. */
+export function default3dToolsProbeSucceeded(record) {
+  const flags = ['toolsAvailable', 'controllerInstalled', 'controllerInactive', 'canvasDefault', 'no3dCanvas', 'kernelUnstarted', 'foreignImportDisabled', 'optionInitiallyChecked', 'disabledPersisted', 'controllerStillInactive', 'restartRequired'];
+  return !!record && flags.every(key => record[key] === true) && record.phase === '3d-default' && record.testBuild === false && record.beforeRenderer === 'Canvas 2D';
+}
+
 /** Installed evidence must cover the real opt-in restart, rendering, worker and both saves. */
 export function experimental3dProbeSucceeded(record) {
   const flags = ['optionRestarted', 'webgl2', 'visibleInk', 'gpuPicked', 'kernelWorker', 'dxfSaveAsReopened', 'dwgRefused', 'canvasRestored', 'workerDisposed', 'dxfSecondSaveReopened', 'backupExact', 'sourceUnchanged'];

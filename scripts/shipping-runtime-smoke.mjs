@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { verifyExecutableFuses } from './electron-fuse-policy.mjs';
-import { needsPortableDwgExport, needsPortableDwgSave, needsRotatedLayoutViewports, needsDwgMetadataPreservation, needsExperimental3d, experimental3dProbeSucceeded, metadataProbeSucceeded, METADATA_SMOKE_FIXTURES, METADATA_SMOKE_FLAGS } from './packaged-smoke-policy.mjs';
+import { needsPortableDwgExport, needsPortableDwgSave, needsRotatedLayoutViewports, needsDwgMetadataPreservation, needsExperimental3d, needsDefault3dTools, default3dToolsProbeSucceeded, experimental3dProbeSucceeded, metadataProbeSucceeded, METADATA_SMOKE_FIXTURES, METADATA_SMOKE_FLAGS } from './packaged-smoke-policy.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
 const source = process.argv[2] === '--source';
@@ -99,20 +99,26 @@ w.webContents.session.flushStorageData(); w.destroy(); app.quit();
   const errors = join(profile, 'error.log');
   assert.ok(!existsSync(errors) || readFileSync(errors, 'utf8').trim() === '', 'No main-process errors');
   let experimental3d = null;
+  let default3dTools = null;
   if (needsExperimental3d(expectedVersion)) {
-    // A second fresh profile proves default-off Options, persistence and a real process restart;
+    // A separate fresh profile proves tool defaults, Options persistence and actual restarts;
     // the original first/second/DWG profile and its native metadata fixed points stay independent.
     threeDProfile = mkdtempSync(join(scratchParent, 'jcad-shipping-smoke-'));
     const threeDFixture = join(threeDProfile, 'shipping-startup.dxf');
     writeFileSync(threeDFixture, '0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nLINE\n8\n0\n10\n10\n20\n10\n11\n20\n21\n20\n0\nENDSEC\n0\nEOF\n', { flag:'wx' });
     let enabled = null;
-    for (const phase of ['3d-enable', '3d']) {
+    const defaultToolsRequired = source || needsDefault3dTools(expectedVersion);
+    default3dTools = { required: defaultToolsRequired, evidence: null };
+    for (const phase of [...(defaultToolsRequired ? ['3d-default'] : []), '3d-enable', '3d']) {
       const output = run(executable, [...appArgs, `--probe-startup=${phase}`, `--user-data-dir=${threeDProfile}`, ...linuxArgs, realpathSync.native(threeDFixture)], phase === '3d' ? 120_000 : 90_000);
       const line = output.split(/\r?\n/).find(entry => entry.startsWith('SHIPPING_PROBE_OK '));
       assert.ok(line, `Missing successful shipping 3D result (${phase})`);
       const result = JSON.parse(line.slice('SHIPPING_PROBE_OK '.length));
       assert.equal(result.phase, phase); assert.equal(result.version, expectedVersion); assert.equal(result.packaged, !source); assert.equal(result.testBuild, false);
-      if (phase === '3d-enable') {
+      if (phase === '3d-default') {
+        assert.equal(default3dToolsProbeSucceeded(result), true, 'Fresh 3D tools must stay on Canvas with no context/worker, foreign import off, and an explicit persisted opt-out');
+        default3dTools.evidence = result;
+      } else if (phase === '3d-enable') {
         assert.equal(result.optionPersisted, true); assert.equal(result.restartRequired, true); assert.equal(result.beforeRenderer, 'Canvas 2D');
         enabled = result;
       } else {
@@ -128,9 +134,9 @@ w.webContents.session.flushStorageData(); w.destroy(); app.quit();
     const denied = spawnSync(executable, ['--remote-debugging-port=0', `--user-data-dir=${profile}`, ...linuxArgs], { cwd:repo, env, encoding:'utf8', windowsHide:true, timeout:15_000, maxBuffer:1024 * 1024 });
     assert.equal(denied.error, undefined); assert.equal(denied.status, 2); assert.match(denied.stdout || '', /SHIPPING_DEBUG_DISABLED/);
   }
-  const record = { mode:source ? 'source-probe-development' : 'shipping-no-inspection', expectedVersion, executable, fuses, launches, portableDwg, experimental3d, remoteDebugRejected:!source, noMainErrors:true };
+  const record = { mode:source ? 'source-probe-development' : 'shipping-no-inspection', expectedVersion, executable, fuses, launches, portableDwg, default3dTools, experimental3d, remoteDebugRejected:!source, noMainErrors:true };
   writeFileSync(join(out, 'shipping-runtime-result.json'), `${JSON.stringify(record, null, 2)}\n`);
-  console.log(`${source ? 'Source probe validation (no shipping fuse/signature evidence)' : 'Exact shipping runtime smoke'}: startup, DXF open/save/backup/reopen${portableDwg?.saveDwg ? ', DWG Save As/save/backup/reopen' : ''}${portableDwg?.viewportRotation ? ', rotated layout viewports' : ''}${portableDwg?.metadataSaveReopen ? ', three native metadata fixtures with connected copies and exact literals' : ''}${experimental3d ? ', opted-in WebGL2 3D/Manifold worker, exact DXF first/second saves and guarded DWG refusal' : ''}, secure origin, two-launch migration, private persistent storage and clean exit passed.`);
+  console.log(`${source ? 'Source probe validation (no shipping fuse/signature evidence)' : 'Exact shipping runtime smoke'}: startup, DXF open/save/backup/reopen${portableDwg?.saveDwg ? ', DWG Save As/save/backup/reopen' : ''}${portableDwg?.viewportRotation ? ', rotated layout viewports' : ''}${portableDwg?.metadataSaveReopen ? ', three native metadata fixtures with connected copies and exact literals' : ''}${default3dTools?.required ? ', default-on lazy 3D tools and persisted opt-out' : ''}${experimental3d ? ', opted-in WebGL2 3D/Manifold worker, exact DXF first/second saves and guarded DWG refusal' : ''}, secure origin, two-launch migration, private persistent storage and clean exit passed.`);
 } finally {
   // Preserve only fixed, generated smoke artifacts for native-reader diagnosis. The private
   // profile is still removed, and ordinary user files can never be selected by this probe.
