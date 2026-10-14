@@ -42,11 +42,13 @@ export interface Distance3 {
 
 /** Distance, deltas and angles from `a` to `b` measured in `frame` (pure). */
 export function measureDistance(frame: Frame3, a: Vec3, b: Vec3): Distance3 {
-  const la = worldToPlane(frame, a), lb = worldToPlane(frame, b);
-  const delta = sub3(lb, la);
+  // Project the displacement once: separately projecting absolute points can lose
+  // a small, representable component when the frame origin or another axis is large.
+  const worldDelta = sub3(b, a);
+  const delta = { x: dot3(worldDelta, frame.xAxis), y: dot3(worldDelta, frame.yAxis), z: dot3(worldDelta, frame.zAxis) };
   const planar = Math.hypot(delta.x, delta.y);
   return {
-    distance: len3(delta),
+    distance: len3(worldDelta),
     delta,
     planar,
     angleInPlane: Math.atan2(delta.y, delta.x),
@@ -58,14 +60,24 @@ export function measureDistance(frame: Frame3, a: Vec3, b: Vec3): Distance3 {
 export function distanceReport(ctx: ToolContext, m: Distance3): string[] {
   const elev = (m.angleFromPlane * 180) / Math.PI;
   const p = auprec(ctx);
-  // Format first, then drop the sign of a value that rounds to zero: a threshold test against the
-  // double 0.5e-p misses the one value equal to it (which toFixed rounds toward zero at p = 4..7).
+  // Format first: a numeric half-unit comparison can miss an exact boundary
+  // value that toFixed rounds to signed zero. Other boundaries round away.
   const fixed = elev.toFixed(p);
   const elevText = /^-0(\.0*)?$/.test(fixed) ? fixed.slice(1) : fixed;
+  const zero = fl(ctx, 0);
+  const shownDelta = [m.delta.x, m.delta.y, m.delta.z].map(value => {
+    const text = fl(ctx, value);
+    return text === '-' + zero ? zero : text;
+  });
+  // A near-normal direction has no reportable XY angle when BOTH printed XY
+  // components are zero. Keep the actual deltas: scientific units can expose tiny
+  // genuine components, indistinguishable from rotation residue without provenance.
+  const normal = Math.abs(elev).toFixed(p) === (90).toFixed(p);
+  const inPlane = normal && shownDelta[0] === zero && shownDelta[1] === zero ? 0 : m.angleInPlane;
   const planeName = ctx.constructionPlaneName ?? 'World';
   return [
-    `Distance = ${fl(ctx, m.distance)}, Angle in XY Plane = ${formatAngle(m.angleInPlane, p)}, Angle from XY Plane = ${elevText}`,
-    `Delta X = ${fl(ctx, m.delta.x)}, Delta Y = ${fl(ctx, m.delta.y)}, Delta Z = ${fl(ctx, m.delta.z)}`,
+    `Distance = ${fl(ctx, m.distance)}, Angle in XY Plane = ${formatAngle(inPlane, p)}, Angle from XY Plane = ${elevText}`,
+    `Delta X = ${shownDelta[0]}, Delta Y = ${shownDelta[1]}, Delta Z = ${shownDelta[2]}`,
     `Planar distance (XY plane of the ${planeName} construction plane) = ${fl(ctx, m.planar)}`,
   ];
 }
@@ -86,6 +98,7 @@ export const dist3dTool = (name = '3DDIST'): Script3DTool => script3d(name, dist
 
 /** Volume, surface area and centroid of a closed outward mesh (pure). */
 export interface MassProperties {
+  /** Signed volume; numerically unresolved cancellation is reported as zero. */
   readonly volume: number;
   readonly area: number;
   /** Volume centroid (world). For a zero-volume mesh, the vertex average. */
@@ -95,17 +108,24 @@ export interface MassProperties {
 /**
  * Mass properties by the divergence theorem: signed tetrahedra (o, a, b, c) for volume and
  * centroid, with o the first vertex (avoids cancellation far from the origin).
+ * A cancelling sum within its floating-point arithmetic bound uses the vertex
+ * average instead. This depends on actual determinant products, not a creator's
+ * size/aspect-ratio admission rule, so well-resolved thin imported solids survive.
  */
 export function meshMassProperties(mesh: Mesh3D): MassProperties {
   const n = meshVertexCount(mesh);
   if (n === 0) return { volume: 0, area: 0, centroid: { x: 0, y: 0, z: 0 } };
   const o = meshVertex(mesh, 0);
-  let six = 0, area = 0;
+  let six = 0, area = 0, absoluteProducts = 0, absoluteVolumes = 0, triangles = 0;
   let cx = 0, cy = 0, cz = 0;
   for (const { a, b, c } of meshTriangles(mesh)) {
     const ea = sub3(a, o), eb = sub3(b, o), ec = sub3(c, o);
     const v6 = dot3(ea, cross3(eb, ec));
     six += v6;
+    absoluteProducts += Math.abs(ea.x * eb.y * ec.z) + Math.abs(ea.x * eb.z * ec.y)
+      + Math.abs(ea.y * eb.z * ec.x) + Math.abs(ea.y * eb.x * ec.z)
+      + Math.abs(ea.z * eb.x * ec.y) + Math.abs(ea.z * eb.y * ec.x);
+    absoluteVolumes += Math.abs(v6); triangles++;
     // Tetra centroid relative to o is (ea + eb + ec) / 4.
     cx += v6 * (ea.x + eb.x + ec.x);
     cy += v6 * (ea.y + eb.y + ec.y);
@@ -113,10 +133,16 @@ export function meshMassProperties(mesh: Mesh3D): MassProperties {
     area += len3(cross3(sub3(b, a), sub3(c, a))) / 2;
   }
   const volume = six / 6;
-  if (Math.abs(six) <= 1e-300) {
+  const roundoff = Number.EPSILON / 2;
+  const gamma = (operations: number) => operations * roundoff / (1 - operations * roundoff);
+  // Eight operations cover local subtraction/product/determinant arithmetic;
+  // the triangle-count term covers summing the signed determinants. Inflate the
+  // positive magnitude accumulators by their own summation error as well.
+  const error = (gamma(8) * absoluteProducts + gamma(triangles) * absoluteVolumes) / (1 - gamma(6 * triangles));
+  if (six === 0 || Number.isFinite(six) && Number.isFinite(error) && Math.abs(six) <= error) {
     let sum = { x: 0, y: 0, z: 0 };
     for (let i = 0; i < n; i++) sum = add3(sum, meshVertex(mesh, i));
-    return { volume, area, centroid: scale3(sum, 1 / n) };
+    return { volume: 0, area, centroid: scale3(sum, 1 / n) };
   }
   return { volume, area, centroid: add3(o, { x: cx / (4 * six), y: cy / (4 * six), z: cz / (4 * six) }) };
 }
