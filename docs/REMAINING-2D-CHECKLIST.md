@@ -10,6 +10,12 @@ handoff `dc89bb0cbec839d489dce578034736c7cdb77dac` after clean gates. Both GPU
 first-attempt CI runs and actual Intel/NVIDIA native checks pass. The remaining
 partial features below are deferred; Canvas remains the default renderer.
 
+`0447081` clears the final prerequisite: 4,394 local tests/28 existing skips,
+static/build, 32 actual Windows source workflows, ten genuine native cases with
+complete first/second metadata fixed points, and all four fresh CI jobs. Stable
+`8dfe1caa` integration is now underway on this feature branch; 3D/GPU adoption
+waits for its combined validation. No release branch, signing or installer changes.
+
 Latest gate: published `0982bda` clears all four CI jobs, 4,352 local tests (28
 existing skips), static/build checks and 32 actual Windows source workflows.
 The genuine native save gate exposed layout media/limits and overall-viewport

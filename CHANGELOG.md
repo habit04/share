@@ -210,6 +210,58 @@ messages). The date of each version is the date of the commit that set that vers
   selection. Atomic writes and image permissions reject a differently spelled sibling folder
   outside the selected project, while each real file keeps its own exact previous-file backup.
 
+## [0.4.9] - 2026-10-13
+
+### Upgrade notes
+
+Windows installer publication requires a signed package and fresh Windows installation
+checks without AutoCAD.
+
+- This update targets Windows x64 and requires no installed AutoCAD. Its bounded metadata
+  coverage includes named VIEW cameras and native FIELD relationships. Full camera coordinates
+  are retained; paper-space, tilted, reversed and perspective cameras cannot be restored faithfully
+  in the 2D editor. A future 3D editor is separate work.
+- Explicit legacy TABLESTYLE definitions retained from DXF refuse DWG export until their full
+  properties can be proven equivalent to AC1032. Save those drawings as DXF; native modern
+  table-style preservation does not establish conversion of legacy definitions.
+
+### Added
+
+- Retained CAD objects now have document identities and typed references. Exposed dictionaries,
+  XRECORD data, application records, reactors, extension dictionaries and XDATA travel with
+  edits, undo and saving. Integer and binary values remain exact; arbitrary strings are opaque.
+- COPY, MIRROR, ARRAY and clipboard copies remap references within each copy set and clone
+  owned metadata. Missing hard dependencies refuse the operation; cross-document soft references
+  that cannot be resolved are removed with a specific message.
+- Native FIELD/FIELDLIST objects retain expressions, child fields, ordered reference vectors,
+  evaluator settings and cached values. JCad reevaluates supported filename/date/drawing-property
+  expressions and available supported sheet values. Other evaluators, including object-property
+  expressions, keep their imported display/cache even after geometry changes. UPDATEFIELD reports
+  retained caches. Manual text overrides remove only the affected owned FIELD tree; Undo restores it.
+
+### Fixed
+
+- Named VIEW records preserve camera target, direction, display center, width, height, twist,
+  lens and clipping settings. Planar Restore uses the source camera angle and coordinates;
+  model view rotation survives document tabs and layout transitions.
+- The Windows DWG reader exposes bounded native DXF metadata with an exact object inventory,
+  verifies source coverage and reports fallback imports when the projection is incomplete.
+- Independent source checks verify all 58 VISUALSTYLE properties, every ordered TABLESTYLE
+  override format, and stored DWG creation/update clocks and timers in the three fixtures.
+- Portable DWG saving checks source schema/identity coverage, exact opaque strings and its typed
+  metadata/reference snapshot. A mandatory independent LibreDWG postflight then compares emitted
+  DWG metadata with source DXF before replacing a destination: retained OBJECTS records, full VIEW
+  cameras, common reactor/extension/XDATA data and nonvolatile headers with logical reference targets.
+  Incomplete projection, unsupported schemas, read/write errors or changed values refuse output.
+- Independent AutoCAD-authored fixtures cover full named cameras, parent/child and object-reference
+  FIELDs, exact 64-bit XRECORD integers/binary and Unicode strings with literal escape text.
+  Fixed installed probes require connected copy, atomic hard-reference delete refusal and normal
+  DWG Save As/Save/fresh reopen checks for all three fixtures on Windows 0.4.9 and later.
+
+These changes do not add a general 3D editor, native dynamic-block behavior or every proprietary
+CAD class. Unknown or unencodable retained data can prevent DWG saving; keep the original and use
+DXF when the portable writer cannot prove preservation.
+
 ## [0.4.8] - 2026-10-12
 
 ### Upgrade notes
@@ -1171,7 +1223,8 @@ First release.
 
 - Renamed the application to JCad Electrical.
 
-[Unreleased]: https://github.com/habit04/share/compare/v0.4.8...HEAD
+[Unreleased]: https://github.com/habit04/share/compare/v0.4.9...HEAD
+[0.4.9]: https://github.com/habit04/share/compare/v0.4.8...v0.4.9
 [0.4.8]: https://github.com/habit04/share/compare/v0.4.7...v0.4.8
 [0.4.7]: https://github.com/habit04/share/compare/v0.4.6...v0.4.7
 [0.4.6]: https://github.com/habit04/share/compare/v0.4.5...v0.4.6

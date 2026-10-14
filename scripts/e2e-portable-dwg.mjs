@@ -118,9 +118,15 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
     const explicitSourceVersion = await page.evaluate(() => window.editor.doc.snapshot.cadGraph?.sourceVersion);
     assert.equal(explicitSourceVersion, 'AC1032', 'Reopened native DWG retains its AC1032 metadata source version');
     const explicitDxf = join(directory, 'explicit-dxf-copy.dxf');
+    const expectedDxf = await signature();
+    const dxfSourceIds = await page.evaluate(() => window.editor.doc.entities.map(entity => entity.id));
+    const sourceDwg = readFileSync(working), sourceBackup = readFileSync(working + '.bak');
     await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), explicitDxf);
     assert.equal(await page.evaluate(() => window.editor.saveFile(true, 'dxf')), true, 'Explicit DXF export from DWG uses DXF Save As');
-    const explicitHeaders = [...readFileSync(explicitDxf, 'utf8').matchAll(/^[ \t]*0[ \t]*\r?\nSECTION[ \t]*\r?\n[ \t]*2[ \t]*\r?\nHEADER[ \t]*\r?\n([\s\S]*?)^[ \t]*0[ \t]*\r?\nENDSEC[ \t]*\r?$/gm)];
+    const dxfBytes = readFileSync(explicitDxf), dxfText = dxfBytes.toString('utf8');
+    assert.match(dxfText, /^0\r?\nSECTION\r?\n2\r?\nHEADER\r?\n/, 'Explicit DXF begins with a HEADER section');
+    assert.match(dxfText, /\r?\n0\r?\nEOF\s*$/, 'Explicit DXF ends with the complete EOF record');
+    const explicitHeaders = [...dxfText.matchAll(/^[ \t]*0[ \t]*\r?\nSECTION[ \t]*\r?\n[ \t]*2[ \t]*\r?\nHEADER[ \t]*\r?\n([\s\S]*?)^[ \t]*0[ \t]*\r?\nENDSEC[ \t]*\r?$/gm)];
     assert.equal(explicitHeaders.length, 1, 'Explicit DXF contains exactly one HEADER section');
     const explicitHeaderPairs = explicitHeaders[0][1].split(/\r?\n/);
     assert.equal(explicitHeaderPairs.pop(), '', 'Explicit DXF HEADER ends with a complete group pair');
@@ -133,8 +139,18 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
       }
     }
     assert.deepEqual(explicitVersions, ['AC1032'], 'Explicit DXF has one exact retained HEADER.$ACADVER');
-    assert.equal(await page.evaluate(() => window.editor.doc.filePath), explicitDxf);
-    check(true, 'Normal DWG Save As and loss-free in-place Save preserve semantics and exact backups, retained page settings are kept, and explicit DXF stays DXF');
+    assert.deepEqual(await page.evaluate(() => ({ path: window.editor.doc.filePath, dirty: window.editor.doc.dirty })),
+      { path: explicitDxf, dirty: false }, 'DXF Save As becomes the clean working file');
+    assert.equal(await page.evaluate(p => window.editor.openFile(p), explicitDxf), true, 'Explicit DXF reopens from disk through real IPC');await closeReports();
+    assert.deepEqual(await page.evaluate(() => ({ schema: window.editor.doc.snapshot.cadGraph?.schema,
+      format: window.editor.doc.snapshot.cadGraph?.sourceFormat, version: window.editor.doc.snapshot.cadGraph?.sourceVersion })),
+      { schema: 1, format: 'DXF', version: explicitSourceVersion }, 'Fresh DXF parser retains the exact source header version');
+    assert.ok(await page.evaluate(ids => window.editor.doc.entities.every(entity => !ids.includes(entity.id)), dxfSourceIds), 'DXF reopen parses fresh entities rather than showing the saved tab');
+    approximate(await signature(), expectedDxf, 'Explicit DXF semantic round trip');
+    assert.deepEqual(readFileSync(explicitDxf), dxfBytes, 'Fresh DXF read leaves the saved file unchanged');
+    assert.deepEqual(readFileSync(working), sourceDwg, 'Explicit DXF Save As preserves the prior DWG');
+    assert.deepEqual(readFileSync(working + '.bak'), sourceBackup, 'Explicit DXF Save As preserves the prior DWG backup');
+    check(true, 'Normal DWG Save As and loss-free in-place Save preserve semantics and exact backups, retained page settings are kept, and explicit DXF preserves AC1032 through a fresh semantic reopen');
     // A real unsupported-data import still requires consent. The native dialog is
     // the existing E2E picker double; reader, source proof, save admission and
     // atomic DXF write remain the actual production paths on private fixture bytes.

@@ -56,6 +56,33 @@ function withHelper(edit: (workflow: any, job: any) => void): string {
   });
 }
 
+function withCi(edit: (workflow: any) => void): string {
+  const dir = mkdtempSync(join(scratch, 'ci-'));
+  cpSync(join(root, '.github', 'workflows'), dir, { recursive: true });
+  const file = join(dir, 'ci.yml');
+  const workflow = yaml.load(readFileSync(file, 'utf8')) as any;
+  edit(workflow);
+  writeFileSync(file, yaml.dump(workflow));
+  return dir;
+}
+
+describe('accepted native metadata fixture workflow', () => {
+  it.each(['missing gate', 'skip condition', 'continue on error', 'no Node 24', 'excluded Node 24', 'missing reports'])('rejects %s', change => {
+    const result = check(withCi(workflow => {
+      const job = workflow.jobs.test;
+      const gate = job.steps.find((step: any) => step.run?.includes('validate-vendored-metadata.mjs'));
+      if (change === 'missing gate') gate.run = 'echo skipped';
+      else if (change === 'skip condition') gate.if = false;
+      else if (change === 'continue on error') gate['continue-on-error'] = true;
+      else if (change === 'no Node 24') job.strategy.matrix.node = [22];
+      else if (change === 'excluded Node 24') job.strategy.matrix.exclude = [{ node: 24 }];
+      else job.steps.find((step: any) => step.with?.name === 'native-metadata-fixtures').with.path = 'absent/';
+    }));
+    expect(result.code).toBe(1);
+    expect(result.out).toMatch(/native metadata/);
+  });
+});
+
 describe('signed native-helper build-only workflow', () => {
   it('requires an explicit manual input, read-only permissions and exact SHA metadata without entering publication', () => {
     const workflow = yaml.load(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')) as any;

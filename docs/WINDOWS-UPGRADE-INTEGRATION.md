@@ -9,6 +9,16 @@ runs and actual Intel/NVIDIA native gates pass. PR #16 contains the earlier GPU
 stack; integrate that leaf once, preserving Canvas as default and newer PR #11 fixes.
 Delivered 3D source remains `a4d5526380c844a93821fd7d61317856c715e5cb`.
 
+The pre-integration checkpoint `0447081` is fully green: 4,394 local tests (28
+existing skips), all static/build checks, 32 actual Windows source-app workflows,
+ten genuine native cases including full first/second metadata fixed points, and
+[all four exact-head CI jobs](https://github.com/habit04/share/actions/runs/38507044631).
+Windows CI includes 54 Rust tests, three CLI tests and 242 Electron checks with live
+No/Yes loss consent. Stable `8dfe1caa` integration has now begun on this feature
+branch. Conflicts are reviewed against that verified spine, preserving later
+fixes and adding the stable native metadata acceptance gates. The merge candidate
+requires fresh validation before adoption of 3D/GPU; no release merge is authorized.
+
 The published `0982bda` baseline clears all four exact-head CI jobs, all three
 TypeScript projects, broad lint, fixture/build checks, 4,352 local tests (28 existing
 skips) and 32 actual Windows source-desktop workflows. The authenticated native

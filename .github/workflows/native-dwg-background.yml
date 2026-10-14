@@ -56,7 +56,9 @@ jobs:
           test -f tests/fixtures/interchange/r2018-mtext-background.expected.json
           test -f tests/fixtures/interchange/r2018-portable-appearance.dwg
           test -f tests/fixtures/interchange/r2018-native-shipping.dwg
-          node --test scripts/native-dwg-build/tooling.test.mjs
+          test -f tests/fixtures/interchange/r2018-views-fields.dwg
+          test -f tests/fixtures/interchange/r2018-views-fields.expected.json
+          node --test scripts/native-dwg-build/tooling.test.mjs scripts/native-dwg-build/metadata-tools.test.mjs
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y autoconf automake libtool build-essential pkg-config python3 git zlib1g-dev texinfo
           mkdir -p "$NATIVE_ARTIFACT/factory"
@@ -123,6 +125,12 @@ jobs:
         run: |
           set -euo pipefail
           timeout 90s node scripts/native-dwg-build/validate-appearance-fixture.mjs "$NATIVE_ARTIFACT/factory/libredwg-web.js" "$NATIVE_ARTIFACT/factory/libredwg-web.wasm" tests/fixtures/interchange/r2018-portable-appearance.dwg tests/fixtures/interchange/r2018-portable-appearance.expected.json tests/fixtures/interchange/r2018-native-shipping.dwg tests/fixtures/interchange/r2018-native-shipping.expected.json "$NATIVE_ARTIFACT/appearance-report.json"
+      - name: Exact native VIEW FIELD and typed metadata oracle gate
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 90s node scripts/native-dwg-build/validate-metadata-fixture.mjs "$NATIVE_ARTIFACT/factory/libredwg-web.js" "$NATIVE_ARTIFACT/factory/libredwg-web.wasm" tests/fixtures/interchange/r2018-views-fields.dwg tests/fixtures/interchange/r2018-views-fields.expected.json "$NATIVE_ARTIFACT/metadata-report.json"
       - name: Package corresponding source, license, checked patch and SHA256 provenance
         shell: bash
         run: |

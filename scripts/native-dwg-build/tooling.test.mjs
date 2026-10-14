@@ -123,6 +123,11 @@ test('native candidate upload is gated by exact color and MINSERT acceptance', (
 test('metadata provenance requires the independent native oracle before writing accepted evidence', () => {
   // Development adopts completed source/bundle evidence, not release workflow
   // changes. The existing color/MINSERT and compiler workflow checks stay intact.
+  const workflow = readFileSync(new URL('../../.github/workflows/native-dwg-background.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /timeout 90s node scripts\/native-dwg-build\/validate-metadata-fixture\.mjs/);
+  assert.ok(workflow.indexOf('Exact native VIEW FIELD and typed metadata oracle gate') > workflow.indexOf('Exact native color reference and MINSERT attribute gate'));
+  assert.ok(workflow.indexOf('Exact native VIEW FIELD and typed metadata oracle gate') < workflow.indexOf('Package corresponding source'));
+  assert.match(workflow, /r2018-views-fields\.dwg.*r2018-views-fields\.expected\.json.*metadata-report\.json/);
   const provenance = readFileSync(new URL('./write-provenance.mjs', import.meta.url), 'utf8');
   assert.match(provenance, /validateMetadataReport\(metadata, metadataExpected, metadataOriginalDxf, nativeDateOracle\)/);
   assert.match(provenance, /metadata\.factorySha256, fixture\.factorySha256/);
@@ -131,6 +136,11 @@ test('metadata provenance requires the independent native oracle before writing 
 });
 
 test('accepted-runtime validator requires all three independent metadata fixtures without rebuilding', () => {
+  const workflow = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /name: Accepted native reader matches all three independent metadata fixtures\r?\n {8}if: matrix\.node == 24\r?\n {8}run: \|/);
+  assert.match(workflow, /node --test scripts\/native-dwg-build\/tooling\.test\.mjs scripts\/native-dwg-build\/metadata-tools\.test\.mjs/);
+  assert.match(workflow, /node scripts\/native-dwg-build\/validate-vendored-metadata\.mjs native-metadata-output/);
+  assert.match(workflow, /name: native-metadata-fixtures\r?\n {10}path: native-metadata-output\/\r?\n {10}if-no-files-found: error/);
   const gate = readFileSync(new URL('./validate-vendored-metadata.mjs', import.meta.url), 'utf8');
   for (const stem of ['r2018-views-fields', 'r2018-field-object-reference', 'r2018-unicode-metadata']) assert.ok(gate.includes(`'${stem}'`));
   assert.match(gate, /repairPolicy: 'metadata-graph'/);

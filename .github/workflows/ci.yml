@@ -34,6 +34,17 @@ jobs:
       - run: npm run lint
       - name: Type check (renderer + tests, Electron main / preload, scripts)
         run: npm run typecheck:all
+      - name: Accepted native reader matches all three independent metadata fixtures
+        if: matrix.node == 24
+        run: |
+          node --test scripts/native-dwg-build/tooling.test.mjs scripts/native-dwg-build/metadata-tools.test.mjs
+          node scripts/native-dwg-build/validate-vendored-metadata.mjs native-metadata-output
+      - uses: actions/upload-artifact@v4
+        if: matrix.node == 24
+        with:
+          name: native-metadata-fixtures
+          path: native-metadata-output/
+          if-no-files-found: error
       # Reduce competing geometry/metadata work without changing any test deadline or assertion.
       - run: npm test -- --maxWorkers=2
         env:
