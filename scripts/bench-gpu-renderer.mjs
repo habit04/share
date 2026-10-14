@@ -14,6 +14,7 @@ import { analyzeFallbackRestoration } from './gpu-fallback-restoration.mjs';
 import { matchesBenchmarkFallbackReason, mixedSchematicFallbackReasons } from './gpu-benchmark-fallback.mjs';
 import { observeActualGpuAdmission } from './gpu-benchmark-admission.mjs';
 import { validateNativeHatches } from './gpu-hatch-validation.mjs';
+import { validateNativeDimensions } from './gpu-dimension-validation.mjs';
 
 const cliArgs = process.argv.slice(2);
 assert.ok(cliArgs.length <= 1 && cliArgs.every((argument) => argument === '--high-performance'), 'Usage: node scripts/bench-gpu-renderer.mjs [--high-performance]');
@@ -2010,6 +2011,10 @@ try {
   activeFixture = 'hatch-untimed-correctness';
   await validateNativeHatches({ page, app, root, out, profile, pairAtCurrent, prototypeContext, missedForeground, result });
   activeFixture = beforeHatchFixture;
+  const beforeDimensionFixture = activeFixture;
+  activeFixture = 'dimension-untimed-correctness';
+  await validateNativeDimensions({ page, app, root, out, profile, pairAtCurrent, prototypeContext, missedForeground, result });
+  activeFixture = beforeDimensionFixture;
   // Lose the actual device after a proved zoom-cache hit, then verify the restored
   // scene at that same camera before the pre-existing repeated recovery checks.
   await page.evaluate(() => { window.gpuPrototype.setMode('canvas'); window.editor.viewport.twist = 0; window.gpuPrototype.loadFixture('direct-arc-lineweights-control'); });
