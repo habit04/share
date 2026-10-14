@@ -315,9 +315,9 @@ describe('desktop DWG process and IPC limits', () => {
 
   it.each(['out-of-order', 'wrong-type', 'oversized'])(
     'the actual controller refuses malformed input chunks (%s)', async (failure) => {
-      const child = launchNodeProcess(join(realScriptsDir, 'dwg-process.mjs'), { env: { ...process.env, NODE_OPTIONS: '' } });
+      const child = launchNodeProcess(join(realScriptsDir, 'dwg-process.mjs'), { env: { ...process.env, NODE_OPTIONS: '', TZ: 'UTC' } });
       const [ready] = await once(child, 'message');
-      expect(ready).toEqual({ type: 'ready', protocol: 1, pid: child.pid });
+      expect(ready).toEqual({ type: 'ready', protocol: 1, pid: child.pid, timezone: 'UTC', timezoneOffsetMinutes: 0 });
       const ack = once(child, 'message');
       child.postMessage({ type: 'input-start', id: 1, byteLength: 2 * 1024 * 1024, resourceLimits: WORKER_RESOURCE_LIMITS });
       expect((await ack)[0]).toEqual({ type: 'input-ack', id: 1, offset: 0 });
