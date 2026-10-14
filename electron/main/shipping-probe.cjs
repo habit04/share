@@ -7,6 +7,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { createHash } = require('node:crypto');
 const { runShippingDwgProbe } = require('./shipping-dwg-probe.cjs');
+const { runShippingGpuShxProbe } = require('./shipping-gpu-shx-probe.cjs');
 
 /** Fixed renderer code, serialized by the main process; never supplied by a CLI argument. */
 async function shipping3dRenderer(phase, fixture, output) {
@@ -565,13 +566,13 @@ async function runShippingGpu2dProbe(ctx, testBuild) {
 function shippingProbePhase(args) {
   const flags = args.filter((arg) => typeof arg === 'string' && arg.startsWith('--probe-startup='));
   if (!flags.length) return null;
-  if (flags.length !== 1 || !/^--probe-startup=(first|second|dwg|3d-enable|3d|gpu2d)$/.test(flags[0])) throw new Error('Invalid startup probe phase');
+  if (flags.length !== 1 || !/^--probe-startup=(first|second|dwg|3d-enable|3d|gpu2d|gpu2d-shx)$/.test(flags[0])) throw new Error('Invalid startup probe phase');
   return flags[0].slice('--probe-startup='.length);
 }
 
 /** @param {import('./context.cjs').MainContext} ctx */
 async function runShippingProbe(ctx, phase, testBuild) {
-  if (!['first', 'second', 'dwg', '3d-enable', '3d', 'gpu2d'].includes(phase)) throw new Error('Invalid startup probe phase');
+  if (!['first', 'second', 'dwg', '3d-enable', '3d', 'gpu2d', 'gpu2d-shx'].includes(phase)) throw new Error('Invalid startup probe phase');
   // The application's existing 60-second startup deadline remains authoritative for 3D too.
   const timer = setTimeout(() => { process.stdout.write('SHIPPING_PROBE_FAIL timed out\n'); app.exit(1); }, phase === '3d' ? 60_000 : 45_000);
   try {
@@ -581,6 +582,11 @@ async function runShippingProbe(ctx, phase, testBuild) {
       clearTimeout(timer);
       app.quit();
       return;
+    }
+    if (phase === 'gpu2d-shx') {
+      const record = await runShippingGpuShxProbe(ctx, testBuild, shippingGpu2dRenderOverlay);
+      process.stdout.write('SHIPPING_PROBE_OK ' + JSON.stringify(record) + '\n');
+      clearTimeout(timer); app.quit(); return;
     }
     if (phase === 'gpu2d') {
       const record = await runShippingGpu2dProbe(ctx, testBuild);

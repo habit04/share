@@ -56,9 +56,11 @@ function transport(root: string, damage = '') {
 }
 
 describe('fixed ordinary GPU2D main transport confinement', () => {
-  it('adds only the enumerated gpu2d phase and rejects supplied code, suffixes and duplicates', () => {
+  it('admits the fixed GPU phases and rejects supplied code, suffixes and duplicates', () => {
     const f = load(profile());
     expect(f.phases(['--probe-startup=gpu2d'])).toBe('gpu2d');
+    expect(f.phases(['--probe-startup=gpu2d-shx'])).toBe('gpu2d-shx');
+    for (const args of [['--probe-startup=gpu2d-shx;eval(1)'], ['--probe-startup=gpu2d-shx\n'], ['--probe-startup=gpu2d-shx', '--probe-startup=gpu2d']]) expect(() => f.phases(args)).toThrow(/Invalid startup probe phase/);
     for (const args of [['--probe-startup=gpu2d;eval(1)'], ['--probe-startup=gpu2d\n'], ['--probe-startup=gpu2d', '--probe-startup=first']]) expect(() => f.phases(args)).toThrow(/Invalid startup probe phase/);
   });
   it('refuses ordinary profile and test build before renderer execution', async () => {
