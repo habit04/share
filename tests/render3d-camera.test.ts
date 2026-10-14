@@ -88,6 +88,10 @@ describe('Camera3D basis and presets', () => {
     expect(parseViewPreset('plan')).toBe('top');
     expect(parseViewPreset('sideways')).toBeNull();
   });
+
+  it('does not take "constructor" for a preset name (3DVIEW constructor threw a TypeError); other prototype names stay null', () => {
+    for (const text of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf', 'iso', '']) expect(parseViewPreset(text)).toBeNull();
+  });
 });
 
 describe('Camera3D navigation', () => {

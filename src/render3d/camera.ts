@@ -83,11 +83,14 @@ export const VIEW_PRESETS = {
 
 export type ViewPresetName = keyof typeof VIEW_PRESETS;
 
+/** Short forms of preset names accepted from user input (a Map: a plain object would answer for "constructor"). */
+const PRESET_ALIASES: ReadonlyMap<string, ViewPresetName> = new Map([['sw', 'swIso'], ['se', 'seIso'], ['ne', 'neIso'], ['nw', 'nwIso'], ['plan', 'top']]);
+
 /** Preset name for user input ("swiso", "SW", "top", case-insensitive), or null. */
 export function parseViewPreset(text: string): ViewPresetName | null {
   const t = text.trim().toLowerCase().replace(/[\s_-]+/g, '');
-  const alias: Record<string, ViewPresetName> = { sw: 'swIso', se: 'seIso', ne: 'neIso', nw: 'nwIso', plan: 'top' };
-  if (alias[t]) return alias[t];
+  const alias = PRESET_ALIASES.get(t);
+  if (alias) return alias;
   for (const name of Object.keys(VIEW_PRESETS) as ViewPresetName[]) if (name.toLowerCase() === t || name.toLowerCase() === `${t}iso`) return name;
   return null;
 }
