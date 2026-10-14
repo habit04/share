@@ -1,5 +1,10 @@
 # Windows 2D and reliability implementation checklist
 
+Current source-only continuation: [PR #18/#19 integration checkpoint](WINDOWS-SOURCE-INTEGRATION.md)
+records the accepted heads, demonstrated seams, validation and remaining gates. It uses the same
+owned worktree on `integration/windows-pr18-pr19-source`; both accepted branches are preserved.
+The long roadmap remains paused. Older checkpoints below retain their historical attribution.
+
 Baseline: `83aedbcc7b145ff87293a35d9001cb56f127a2b0` (Windows v0.4.8).
 Worktree: `C:\Users\justi\Chad\jcad-2d-reliability`, branch `feature/remaining-2d-reliability`.
 This work began as Windows development integration. The completed combined upgrade shipped as

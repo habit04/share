@@ -13,6 +13,8 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Added
 
+- Offer explicit `GPURENDERER GPU` / `GPURENDERER CANVAS` selection in the ordinary Windows
+  build. Canvas remains the default and complete fallback for unsupported drawing content.
 - Label the 3D orientation indicator with upright X, Y and Z letters, keeping end-on axes and
   overlapping projected directions readable during orbit and on high-DPI displays.
 - Make experimental 3D tools available by default for new profiles while keeping the initial
