@@ -1,6 +1,6 @@
 // Fixed diagnostics for the exact shipping executable. No supplied JavaScript, remote
 // debugging transport or renderer IPC endpoint; only fixed, enumerated probe phases.
-/* global window, document, localStorage, location, isSecureContext, WebGL2RenderingContext, crypto */
+/* global window, document, localStorage, location, isSecureContext, WebGL2RenderingContext, HTMLCanvasElement, ImageData, MouseEvent, crypto */
 const { app, session, dialog } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -171,16 +171,386 @@ async function runShipping3dProbe(ctx, phase, testBuild) {
   } finally { dialog.showSaveDialog = previousDialog; }
 }
 
+/** Pure owner-bound signature; native ids/handles may change on each fresh import. */
+function shippingGpu2dMetadata(state) {
+  const spans = [];
+  for (const node of state.cadGraph?.nodes || []) {
+    for (let at = 0; at < node.groups.length; at++) {
+      if (node.groups[at][0] !== 1001 || node.groups[at][1] !== 'SHIPPING_GPU') continue;
+      const anchor = node.anchor;
+      const ordinal = anchor?.kind === 'entity' ? state.entities.findIndex(entity => entity.id === anchor.id) : -1;
+      const owner = ordinal >= 0 ? state.entities[ordinal] : null;
+      if (anchor?.kind !== 'entity' || anchor.part !== undefined || ordinal !== 0
+        || owner?.type !== 'line' || node.type !== 'LINE' || owner.cadIdentity !== node.id) {
+        throw new Error('GPU2D SHIPPING_GPU metadata must belong to its original LINE owner at ordinal zero');
+      }
+      let end = at + 1;
+      while (end < node.groups.length && node.groups[end][0] !== 1001) end++;
+      spans.push({ owner: { kind: 'entity', ordinal: 0, type: 'line' }, groups: node.groups.slice(at, end) });
+      at = end - 1;
+    }
+  }
+  return JSON.stringify(spans);
+}
+
+/** Pure fixed synchronous pending-font proof; a thenable selector is not admitted. */
+function shippingGpu2dPendingFontFrame(control) {
+  const select = mode => {
+    const result = control.select(mode);
+    if (result && typeof result.then === 'function') throw new Error('GPU2D pending font selector must remain synchronous');
+  };
+  control.assertPending('before-reference');
+  select('CANVAS'); control.paint();
+  control.assertPending('at-reference');
+  const referencePng = control.capture('canvas');
+  control.assertPending('after-reference');
+  control.resetCounts(); control.assertPending('after-counter-reset');
+  select('GPU'); control.paint();
+  control.assertPending('at-actual');
+  const actualPng = control.capture('canvas');
+  control.assertPending('after-actual');
+  const glCalls = { ...control.counts() };
+  control.assertPending('after-count-capture');
+  return { label: 'native-font-before', renderer: 'canvas', referencePng, actualPng, glCalls,
+    documentUnchanged: true, metricsPendingAtCapture: true };
+}
+
+/** Fixed ordinary-entry acceptance; no supplied code or renderer test API. */
+async function shippingGpu2dRenderer(stage, fixture, output, previous) {
+  const w = /** @type {any} */ (window);
+  /** @type {(ok: unknown, message: string) => asserts ok} */
+  const need = (ok, message) => { if (!ok) throw new Error(message); };
+  const wait = async (predicate, message, ms = 5000) => {
+    const deadline = Date.now() + ms;
+    while (!predicate()) { need(Date.now() < deadline, message); await new Promise(resolve => setTimeout(resolve, 20)); }
+  };
+  need(stage === 'first' || stage === 'second', 'Fixed GPU2D renderer stage');
+  await wait(() => w.editor?.doc.filePath && w.jcad && localStorage.getItem('jcad-origin-migrated') === '1', 'GPU2D private drawing did not become ready', 30000);
+  const ed = w.editor, vp = ed.viewport;
+  need(isSecureContext && location.href === 'jcad://app/index.html' && crypto.subtle, 'GPU2D requires secure ordinary entry');
+  need(!w.gpuPrototype && !document.querySelector('[data-gpu-prototype]') && !ed.commands.has('GPU3DDEMO'), 'GPU2D cannot use development globals or demo commands');
+  need(ed.commands.has('GPURENDERER') && !ed.settings.experimental3d && !w.jcad3d, 'Ordinary GPU command and default-off 3D are required');
+  const info = await w.jcad.appInfo();
+  // Bind the complete application span to the original semantic LINE owner.
+  const metadata = () => shippingGpu2dMetadata(ed.doc.snapshot);
+  const expectedXdata = JSON.stringify([{ owner: { kind: 'entity', ordinal: 0, type: 'line' },
+    groups: [[1001, 'SHIPPING_GPU'], [1000, 'fixed opaque GPU metadata 9007199254740993'], [1070, '7']] }]);
+  // These five fixed native primitives have explicit authored geometry/appearance.
+  // Normalize only documented omission defaults; imported ids/handles may be regenerated.
+  const semantic = () => JSON.stringify(ed.doc.snapshot.entities.map(entity => {
+    const common = { type: entity.type, layer: entity.layer, color: entity.color,
+      trueColor: entity.trueColor ?? null, colorName: entity.colorName ?? null,
+      transparency: entity.transparency ?? null, linetype: entity.linetype ?? 'ByLayer',
+      lineWeight: entity.lineWeight ?? null, ltscale: entity.ltscale ?? 1 };
+    switch (entity.type) {
+      case 'line': return { ...common, a: entity.a, b: entity.b };
+      case 'circle': return { ...common, center: entity.center, radius: entity.radius, filled: !!entity.filled };
+      case 'arc': return { ...common, center: entity.center, radius: entity.radius, startAngle: entity.startAngle, endAngle: entity.endAngle };
+      case 'polyline': return { ...common, points: entity.points, closed: !!entity.closed, filled: !!entity.filled,
+        bulges: entity.points.map((_, i) => entity.bulges?.[i] ?? 0), width: entity.width ?? 0,
+        widths: entity.widths ?? null, widthFrame: entity.widthFrame ?? null };
+      case 'text': return { ...common, position: entity.position, text: entity.text, height: entity.height,
+        rotation: entity.rotation, align: entity.align, style: entity.style ?? 'Standard',
+        widthFactor: entity.widthFactor ?? 1, oblique: entity.oblique ?? 0,
+        justification: entity.justification ?? null, alignmentPoint: entity.alignmentPoint ?? null,
+        firstAlignmentPoint: entity.firstAlignmentPoint ?? null, field: entity.field ?? null };
+      default: throw new Error('Unexpected fixed GPU2D saved primitive: ' + entity.type);
+    }
+  }));
+  const stamp = () => ({ state: ed.doc.snapshot, revision: ed.doc.revision, dirty: ed.doc.dirty, binding: ed.doc.filePath, undo: ed.doc.history().undo.length, redo: ed.doc.history().redo.length });
+  const sameStamp = old => ed.doc.snapshot === old.state && ed.doc.revision === old.revision && ed.doc.dirty === old.dirty && ed.doc.filePath === old.binding && ed.doc.history().undo.length === old.undo && ed.doc.history().redo.length === old.redo;
+  const rendererLabel = async expected => {
+    await ed.runCommand('ABOUT');
+    await wait(() => document.querySelector('section[aria-label="GPU diagnostics"] pre')?.textContent?.includes('JCad renderer: ' + expected), 'GPU2D About renderer mismatch');
+    const close = document.querySelector('section[aria-label="GPU diagnostics"]')?.closest('.modal')?.querySelector('.modal-close');
+    need(close, 'GPU2D About close control'); /** @type {HTMLElement} */ (close).click();
+    await ed.runCommand('REPORTBUG');
+    const preview = document.querySelector('.report-preview');
+    need(preview?.textContent?.includes('JCad renderer: ' + expected), 'GPU2D problem-report renderer mismatch');
+    const reportClose = preview?.closest('.modal')?.querySelector('.modal-close'); need(reportClose, 'GPU2D report close control');
+    /** @type {HTMLElement} */ (reportClose).click();
+    return expected;
+  };
+  if (stage === 'first') {
+    need(ed.doc.filePath.replace(/\\/g, '/') === fixture.replace(/\\/g, '/') && ed.doc.entities.length === 1 && !ed.doc.dirty, 'GPU2D needs its clean handed-over authored DXF');
+    need(metadata() === expectedXdata, 'GPU2D complete native XDATA was not retained');
+    need(!document.querySelector('canvas[data-gpu-candidate="2d"]'), 'Fresh default must allocate no drawing GPU backing');
+    await rendererLabel('Canvas 2D');
+    need(!document.querySelector('canvas[data-gpu-candidate="2d"]'), 'Diagnostics must not activate drawing GPU');
+    const first = ed.doc.snapshot.entities[0];
+    ed.doc.transactDrawing(state => ({ ...state, entities: [
+      { ...first, a: { x: -6, y: 2 }, b: { x: 6, y: 2 } },
+      { id: 'shipping-gpu-circle', type: 'circle', layer: '0', color: 3, center: { x: -3, y: -1 }, radius: 1.5 },
+      { id: 'shipping-gpu-arc', type: 'arc', layer: '0', color: 1, center: { x: 1, y: -1 }, radius: 1.5, startAngle: 0, endAngle: Math.PI * 1.5 },
+      { id: 'shipping-gpu-polyline', type: 'polyline', layer: '0', color: 4, points: [{ x: 3, y: -2 }, { x: 5, y: -1 }, { x: 3, y: 0 }], closed: false },
+      { id: 'shipping-gpu-text', type: 'text', layer: '0', color: 2, position: { x: -4, y: -4 }, text: 'GPU 2D', height: 0.7, rotation: 0, align: 'left' },
+    ] }));
+  } else {
+    need(ed.doc.filePath === output && !ed.doc.dirty && semantic() === previous.semantic && metadata() === previous.metadata, 'GPU2D second save requires intact first reopen');
+  }
+  const originalSettings = { background: vp.settings.background, gridVisible: vp.settings.gridVisible };
+  vp.settings.background = '#212830'; vp.settings.gridVisible = false;
+  vp.center = { x: 0, y: -1 }; vp.scale = 20; vp.twist = 0;
+  ed.selection.clear(); ed.state.cursor = null; ed.state.hover = null; ed.state.snap = null;
+  const comparisons = [], restores = [], counts = { draws: 0, uploads: 0, clear: 0, uploadBytes: 0 };
+  // Populated by the real context hook during the ordinary command's render.
+  /** @type {any} */ let gl;
+  /** @type {any} */ let canvas;
+  const originalGetContext = HTMLCanvasElement.prototype.getContext;
+  const attach = (candidate, context) => {
+    if (gl) { need(gl === context && canvas === candidate, 'One owned GPU2D context'); return; }
+    gl = context; canvas = candidate;
+    need(gl instanceof WebGL2RenderingContext && !gl.isContextLost(), 'Actual production WebGL2 is required');
+    for (const name of ['drawArrays', 'drawElements', 'bufferData', 'bufferSubData', 'clear']) {
+      const original = gl[name];
+      const wrapped = function (...args) {
+        if (name.startsWith('draw')) counts.draws++;
+        else if (name === 'clear') counts.clear++;
+        else { counts.uploads++; const data = args[name === 'bufferData' ? 1 : 2]; counts.uploadBytes += typeof data === 'number' ? data : data?.byteLength || 0; }
+        return Reflect.apply(original, gl, args);
+      };
+      gl[name] = wrapped; restores.push(() => { if (gl[name] === wrapped) gl[name] = original; });
+    }
+  };
+  /** @this {HTMLCanvasElement} */
+  const wrappedGetContext = function (...args) {
+    const context = Reflect.apply(originalGetContext, this, args);
+    if (args[0] === 'webgl2' && this.matches('canvas[data-gpu-candidate="2d"]')) attach(this, context);
+    return context;
+  };
+  HTMLCanvasElement.prototype.getContext = wrappedGetContext;
+  const resetCounts = () => { for (const key of Object.keys(counts)) counts[key] = 0; };
+  const capture = renderer => {
+    const width = vp.canvas.width, height = vp.canvas.height;
+    need(width > 0 && height > 0 && width <= 4096 && height <= 4096 && width * height <= 4000000, 'GPU2D readback pixel budget');
+    if (renderer === 'canvas') { need(!canvas || canvas.style.display === 'none', 'Complete Canvas must hide GPU backing'); return vp.canvas.toDataURL('image/png'); }
+    need(gl && canvas?.style.display === 'block' && canvas.width === width && canvas.height === height && !gl.isContextLost(), 'Actual visible complete GPU backing');
+    const pixels = new Uint8Array(width * height * 4), flipped = new Uint8ClampedArray(pixels.length);
+    gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    need(gl.getError() === gl.NO_ERROR, 'Actual GPU2D readback failed');
+    for (let row = 0; row < height; row++) flipped.set(pixels.subarray(row * width * 4, (row + 1) * width * 4), (height - 1 - row) * width * 4);
+    const image = document.createElement('canvas'); image.width = width; image.height = height;
+    const ctx = image.getContext('2d'); need(ctx, 'GPU2D composition context');
+    ctx.putImageData(new ImageData(flipped, width, height), 0, 0); ctx.drawImage(vp.canvas, 0, 0);
+    return image.toDataURL('image/png');
+  };
+  const paint = () => { ed.render(); vp.renderCurrent(); };
+  const pair = async (label, renderer, priorReference) => {
+    const before = stamp(), liveTool = ed.tool;
+    const preview = ed.state.preview, ghost = ed.state.ghost;
+    // The normal prompter cancels a live drawing tool before dispatching commands.
+    // Only this fixed preview control invokes the existing registered callback directly.
+    // Initial explicit GPU acceptance still uses the ordinary public command path.
+    const select = async mode => {
+      if (label === 'preview') {
+        need(liveTool && (preview.length || ghost.length), 'GPU2D reference requires its live actual preview');
+        await ed.commands.get('GPURENDERER').run(ed, mode);
+        need(ed.tool === liveTool && ed.state.preview === preview && ed.state.ghost === ghost, 'GPU2D reference mode must preserve actual preview/ghost');
+      } else await ed.runCommand('GPURENDERER ' + mode);
+    };
+    await select('CANVAS'); paint();
+    const referencePng = priorReference || capture('canvas');
+    resetCounts(); await select('GPU'); paint();
+    // The existing immediate viewport seam completes the real requested frame in this task.
+    const actualPng = capture(renderer), glCalls = { ...counts };
+    need(sameStamp(before), 'GPU2D mode/render changed drawing history or binding: ' + label);
+    comparisons.push({ label, renderer, referencePng, actualPng, glCalls, documentUnchanged: true });
+    return referencePng;
+  };
+  const savedError = ed.hooks.saveError;
+  ed.hooks.saveError = async error => { throw new Error('GPU2D real save failed: ' + error.message); };
+  try {
+    if (stage === 'second') {
+      if (!gl) { const candidate = /** @type {HTMLCanvasElement | null} */ (document.querySelector('canvas[data-gpu-candidate="2d"]')); if (candidate) attach(candidate, candidate.getContext('webgl2')); }
+      await ed.runCommand('LINE'); ed.submitInput('-6,-5'); ed.submitInput('6,-5'); ed.pressEnter();
+      need(!ed.tool && ed.doc.entities.length === 6, 'GPU2D ordinary second-save LINE');
+      await ed.runCommand('GPURENDERER CANVAS'); paint();
+      const reference = capture('canvas'), expected = semantic(), expectedMetadata = metadata();
+      need(await ed.saveFile(false) && !ed.doc.dirty, 'GPU2D ordinary second Save');
+      const saved = ed.doc.snapshot; need(await ed.openFile(output) && ed.doc.snapshot !== saved && !ed.doc.dirty, 'GPU2D fresh second DXF reopen');
+      vp.center = { x: 0, y: -1 }; vp.scale = 20; vp.twist = 0;
+      need(semantic() === expected && metadata() === expectedMetadata, 'GPU2D second reopen changed authored entities or XDATA');
+      await pair('second-dxf-reopen', 'gpu', reference);
+      return { comparisons, secondSaveReopened: true, metadataPreserved: true };
+    }
+    const expectedMetadata = metadata();
+    await pair('baseline', 'gpu');
+    need(gl && canvas, 'GPU2D baseline must create its owned actual context');
+    const debug = gl.getExtension('WEBGL_debug_renderer_info');
+    const adapter = { version: gl.getParameter(gl.VERSION), vendor: gl.getParameter(gl.VENDOR), renderer: gl.getParameter(gl.RENDERER), unmaskedVendor: debug ? gl.getParameter(debug.UNMASKED_VENDOR_WEBGL) : 'Unknown', unmaskedRenderer: debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : 'Unknown', maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE) };
+    const activeRenderer = await rendererLabel('WebGL2 drawing base scene + Canvas 2D editing overlays (experimental)');
+    await pair('warm', 'gpu');
+    need(comparisons[comparisons.length - 1].glCalls.uploads === 0, 'GPU2D warm scene must reuse actual GPU buffers');
+    vp.center = { x: 0.2, y: -1.1 }; await pair('pan', 'gpu');
+    vp.scale = 21; await pair('zoom', 'gpu'); vp.center = { x: 0, y: -1 }; vp.scale = 20;
+    const lineId = ed.doc.snapshot.entities[0].id;
+    ed.doc.transactDrawing(state => ({ ...state, entities: state.entities.map(entity => entity.id === lineId ? { ...entity, b: { x: 5, y: 3 } } : entity) }));
+    await pair('line-edit', 'gpu'); need(ed.doc.undo(), 'GPU2D LINE undo'); await pair('line-undo', 'gpu');
+    need(ed.doc.redo(), 'GPU2D LINE redo'); await pair('line-redo', 'gpu');
+    vp.settings.background = '#252a32'; await pair('display-change', 'gpu'); vp.settings.background = '#212830';
+    vp.settings.gridVisible = true; await pair('grid', 'canvas'); vp.settings.gridVisible = false;
+    ed.doc.addEntities([{ id: 'shipping-gpu-unsupported', type: 'ellipse', layer: '0', color: 6, center: { x: 0, y: -1 }, majorAxis: { x: 2, y: 0 }, ratio: 0.5, startParam: 0, endParam: Math.PI * 2 }]);
+    await pair('unsupported-entity', 'canvas'); need(ed.doc.undo(), 'GPU2D unsupported control undo');
+    await ed.runCommand('LINE'); ed.submitInput('0,-5');
+    const p = vp.toScreen({ x: 3, y: -4 }), rect = vp.canvas.getBoundingClientRect();
+    vp.canvas.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: rect.left + p.x, clientY: rect.top + p.y }));
+    need(ed.tool && ed.state.preview.length > 0, 'GPU2D actual tool preview'); await pair('preview', 'canvas'); ed.cancel();
+    const layout = ed.doc.layouts[0];
+    const viewport = { id: 'shipping-gpu-viewport', center: { x: 100, y: 75 }, width: 100, height: 70, view: { center: { x: 0, y: -1 }, scale: 4 }, layer: '0', on: true,
+      clipBoundary: { id: 'shipping-gpu-clip', type: 'polyline', layer: '0', color: 7, points: [{ x: 50, y: 40 }, { x: 150, y: 40 }, { x: 135, y: 110 }, { x: 70, y: 100 }], closed: true } };
+    ed.doc.transactDrawing(state => ({ ...state, layouts: [{ ...layout, pristine: false, viewports: [viewport] }], space: { layout: layout.name } }));
+    need(vp.layoutPainter, 'GPU2D real paper layout controller'); await pair('layout', 'canvas');
+    ed.doc.setSpace({ layout: layout.name, viewport: viewport.id });
+    need(vp.layoutPainter && vp.fitRect, 'GPU2D actual clipped floating viewport'); await pair('viewport-clip', 'canvas');
+    ed.doc.setSpace(undefined); need(ed.doc.undo(), 'GPU2D layout control undo');
+    vp.center = { x: 0, y: -1 }; vp.scale = 20; vp.twist = 0;
+    ed.state.cursor = null; ed.state.hover = null; ed.state.snap = null;
+    // Tahoma is a real Windows face unused by this fixed fixture's earlier controls.
+    // Already cached/unavailable resources fail this gate rather than becoming a claimed run.
+    ed.doc.transactDrawing(state => ({ ...state, meta: { ...state.meta, textStyles: { ...state.meta?.textStyles, SHIPPING_NATIVE: { name: 'SHIPPING_NATIVE', font: 'tahoma.ttf', family: 'Tahoma', height: 0, widthFactor: 1, oblique: 0 } } }, entities: state.entities.map(entity => entity.type === 'text' ? { ...entity, style: 'SHIPPING_NATIVE' } : entity) }));
+    const nativeGeometry = ed.doc.lookupBlock.textGeometry;
+    const nativeAppearance = nativeGeometry.resolve({ style: 'SHIPPING_NATIVE' });
+    const nativeStamp = stamp(), pendingEpoch = nativeGeometry.cacheKey;
+    const assertPending = phase => {
+      need(sameStamp(nativeStamp) && ed.doc.lookupBlock.textGeometry === nativeGeometry
+        && nativeGeometry.cacheKey === pendingEpoch && nativeAppearance.kind === 'canvas'
+        && nativeGeometry.advances('GPU 2D', 0.7, nativeAppearance) === null,
+      'GPU2D native font transition unrun/inconclusive: real uncached metrics must remain pending at ' + phase);
+    };
+    comparisons.push(shippingGpu2dPendingFontFrame({ assertPending,
+      select: mode => ed.commands.get('GPURENDERER').run(ed, mode), paint, capture,
+      resetCounts, counts: () => counts }));
+    // There has been no await since requesting the native resource. GPU remains selected
+    // across settlement, and this hook observes the ordinary resulting frame before manual paint.
+    let settledImage, settledCounts, settledEpoch, fontError, fontCaptureScheduled = false;
+    const nativeScene = vp.experimentalSceneRenderer;
+    need(nativeScene, 'GPU2D existing production scene hook is required for font settlement');
+    const settledScene = function (...args) {
+      const rendered = Reflect.apply(nativeScene, vp, args);
+      if (nativeGeometry.cacheKey !== pendingEpoch && !fontCaptureScheduled) {
+        fontCaptureScheduled = true;
+        queueMicrotask(() => {
+          try {
+            need(rendered === false && sameStamp(nativeStamp) && ed.doc.lookupBlock.textGeometry === nativeGeometry
+              && nativeGeometry.cacheKey !== pendingEpoch && nativeGeometry.advances('GPU 2D', 0.7, nativeAppearance)?.length === 6,
+            'GPU2D first automatic settled native-font frame must use genuine loaded metrics and complete Canvas without document changes');
+            need(Object.values(counts).every(value => value === 0), 'GPU2D native font settlement submitted partial GPU work');
+            settledEpoch = nativeGeometry.cacheKey;
+            settledImage = capture('canvas'); settledCounts = { ...counts };
+            need(nativeGeometry.cacheKey === settledEpoch && sameStamp(nativeStamp), 'GPU2D native font epoch/document changed during automatic capture');
+          } catch (error) { fontError = error; }
+        });
+      }
+      return rendered;
+    };
+    vp.experimentalSceneRenderer = settledScene;
+    const restoreNativeScene = () => { if (vp.experimentalSceneRenderer === settledScene) vp.experimentalSceneRenderer = nativeScene; };
+    restores.push(restoreNativeScene);
+    assertPending('before-transition-counter-reset'); resetCounts(); assertPending('after-transition-counter-reset');
+    await wait(() => settledImage || fontError, 'GPU2D genuine native font settlement/first automatic Canvas frame did not arrive');
+    if (fontError) throw fontError;
+    restoreNativeScene();
+    need(nativeGeometry.cacheKey === settledEpoch && sameStamp(nativeStamp), 'GPU2D settled native-font prerequisite changed before reference');
+    const selected = ed.commands.get('GPURENDERER').run(ed, 'CANVAS');
+    need(!selected || typeof selected.then !== 'function', 'GPU2D settled reference selector must remain synchronous');
+    paint();
+    need(nativeGeometry.cacheKey === settledEpoch && sameStamp(nativeStamp), 'GPU2D settled epoch/document changed at independent reference');
+    const settledReference = capture('canvas');
+    need(nativeGeometry.cacheKey === settledEpoch && sameStamp(nativeStamp), 'GPU2D settled epoch/document changed during independent reference');
+    comparisons.push({ label: 'native-font-after', renderer: 'canvas', referencePng: settledReference, actualPng: settledImage,
+      glCalls: settledCounts, documentUnchanged: true, metricsLoadedAtCapture: true, firstAutomaticFrame: true });
+    need(ed.doc.undo(), 'GPU2D native style control undo'); await pair('font-restored', 'gpu');
+    const ownedCanvas = canvas;
+    const extension = gl.getExtension('WEBGL_lose_context'); need(extension, 'GPU2D actual context loss extension');
+    const contextStamp = stamp();
+    let restoredImage, restoredCounts, restoreError, restorationSeen = false, captureScheduled = false;
+    const originalScene = vp.experimentalSceneRenderer;
+    need(originalScene, 'GPU2D existing production scene hook is required');
+    const onRestore = () => { restorationSeen = true; };
+    const restoredScene = function (...args) {
+      const rendered = Reflect.apply(originalScene, vp, args);
+      if (restorationSeen && rendered && !captureScheduled) {
+        captureScheduled = true;
+        // The real automatic RAF finishes Canvas overlays before this microtask.
+        // No extra frame is requested; readback still precedes compositor discard.
+        queueMicrotask(() => {
+          try { restoredImage = capture('gpu'); restoredCounts = { ...counts }; }
+          catch (error) { restoreError = error; }
+        });
+      }
+      return rendered;
+    };
+    vp.experimentalSceneRenderer = restoredScene;
+    restores.push(() => { if (vp.experimentalSceneRenderer === restoredScene) vp.experimentalSceneRenderer = originalScene; });
+    ownedCanvas.addEventListener('webglcontextrestored', onRestore, { once: true });
+    restores.push(() => ownedCanvas.removeEventListener('webglcontextrestored', onRestore));
+    extension.loseContext(); await wait(() => gl.isContextLost() && canvas.style.display === 'none', 'GPU2D loss did not expose complete Canvas');
+    const contextReference = await pair('context-lost', 'canvas'); resetCounts(); extension.restoreContext();
+    await wait(() => restoredImage || restoreError, 'GPU2D first automatic restored frame was not captured');
+    if (restoreError) throw restoreError;
+    need(sameStamp(contextStamp), 'GPU2D actual context loss/restoration changed drawing/history/binding');
+    comparisons.push({ label: 'context-restored', renderer: 'gpu', referencePng: contextReference, actualPng: restoredImage, glCalls: restoredCounts, documentUnchanged: true });
+    const expected = semantic(), metadataBeforeSave = metadata();
+    await ed.runCommand('GPURENDERER CANVAS'); paint(); const beforeSave = capture('canvas');
+    need(await ed.saveFile(true, 'dxf') && ed.doc.filePath === output && !ed.doc.dirty, 'GPU2D real DXF Save As');
+    const saved = ed.doc.snapshot; need(await ed.openFile(output) && ed.doc.snapshot !== saved && !ed.doc.dirty, 'GPU2D first fresh DXF reopen');
+    vp.center = { x: 0, y: -1 }; vp.scale = 20; vp.twist = 0;
+    need(semantic() === expected && metadata() === metadataBeforeSave && metadata() === expectedMetadata, 'GPU2D first reopen changed geometry or opaque metadata');
+    await pair('first-dxf-reopen', 'gpu', beforeSave);
+    return { phase: 'gpu2d', version: info.version, packaged: info.packaged, url: location.href, secure: true, defaultCanvas: true, noDefaultGpuAllocation: true, noRendererTestGlobals: true, explicitCommand: true, webgl2: true, visibleInk: true, beforeRenderer: 'Canvas 2D', activeRenderer, adapter, comparisons, semantic: expected, metadata: expectedMetadata,
+      firstSaveReopened: true, metadataPreserved: true, realContextLoss: true, automaticContextRestored: true, fontEpochChanged: true, fontDocumentUnchanged: true, displayInvalidated: true, editUndoRedo: true };
+  } finally {
+    ed.hooks.saveError = savedError;
+    if (HTMLCanvasElement.prototype.getContext === wrappedGetContext) HTMLCanvasElement.prototype.getContext = originalGetContext;
+    for (const restore of restores.reverse()) restore();
+    vp.settings.background = originalSettings.background; vp.settings.gridVisible = originalSettings.gridVisible;
+  }
+}
+
+/** Same bounded private-profile and exact-byte guarantees as existing shipping probes. */
+async function runShippingGpu2dProbe(ctx, testBuild) {
+  if (testBuild) throw new Error('GPU2D probe requires ordinary shipping entry');
+  const win = ctx.mainWindow; if (!win || win.isDestroyed()) throw new Error('No renderer window');
+  const named = app.getPath('userData'), profile = fs.realpathSync.native(named);
+  if (fs.lstatSync(named).isSymbolicLink() || path.dirname(profile) !== fs.realpathSync.native(os.tmpdir()) || !/^jcad-shipping-smoke-[A-Za-z0-9-]+$/.test(path.basename(profile))) throw new Error('GPU2D probe requires its temporary smoke profile');
+  const fixture = path.join(profile, 'shipping-startup.dxf'), stat = fs.lstatSync(fixture);
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.size <= 0 || stat.size > 4096 || fs.realpathSync.native(fixture) !== fixture) throw new Error('GPU2D probe requires its bounded regular authored DXF');
+  const source = fs.readFileSync(fixture), output = path.join(profile, 'shipping-gpu2d-output.dxf');
+  for (const file of [output, output + '.bak']) {
+    try { fs.lstatSync(file); throw new Error('GPU2D probe may not use a pre-existing destination'); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  const savedDialog = dialog.showSaveDialog; let picks = 0;
+  /** @param {Electron.BaseWindow | Electron.SaveDialogOptions} _window @param {Electron.SaveDialogOptions} [options] */
+  dialog.showSaveDialog = async (_window, options) => {
+    const picked = /** @type {Electron.SaveDialogOptions} */ (options || _window);
+    if (picked?.title !== 'Save Drawing As' || !picked.filters?.some(filter => filter.extensions.includes('dxf')) || picks++) throw new Error('Unexpected picker during fixed GPU2D probe');
+    return { canceled: false, filePath: output };
+  };
+  const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+  // Only these main-authored fixed helpers are serialized; callers cannot supply code.
+  const helpers = `const shippingGpu2dMetadata=(${shippingGpu2dMetadata.toString()});const shippingGpu2dPendingFontFrame=(${shippingGpu2dPendingFontFrame.toString()});`;
+  try {
+    const first = await win.webContents.executeJavaScript(`(() => {${helpers} return (${shippingGpu2dRenderer.toString()})('first',${JSON.stringify(fixture)},${JSON.stringify(output)},null);})()`);
+    const firstSaved = fs.readFileSync(output);
+    if (picks !== 1 || firstSaved.length <= 0 || firstSaved.length > 4 * 1024 * 1024 || !firstSaved.includes(Buffer.from('fixed opaque GPU metadata 9007199254740993'))) throw new Error('GPU2D first-save evidence failed');
+    const second = await win.webContents.executeJavaScript(`(() => {${helpers} return (${shippingGpu2dRenderer.toString()})('second',${JSON.stringify(fixture)},${JSON.stringify(output)},${JSON.stringify({ semantic: first.semantic, metadata: first.metadata })});})()`);
+    const final = fs.readFileSync(output), backup = fs.readFileSync(output + '.bak');
+    if (final.length <= 0 || final.length > 4 * 1024 * 1024 || final.equals(firstSaved) || !backup.equals(firstSaved) || !fs.readFileSync(fixture).equals(source)) throw new Error('GPU2D exact backup or original source preservation failed');
+    const { semantic: _semantic, metadata: _metadata, ...record } = first;
+    return { ...record, ...second, comparisons: [...first.comparisons, ...second.comparisons], testBuild, sourceUnchanged: true, backupExact: true, fixtureSha256: hash(source), firstSaveSha256: hash(firstSaved), outputSha256: hash(final), backupSha256: hash(backup) };
+  } finally { dialog.showSaveDialog = savedDialog; }
+}
 function shippingProbePhase(args) {
   const flags = args.filter((arg) => typeof arg === 'string' && arg.startsWith('--probe-startup='));
   if (!flags.length) return null;
-  if (flags.length !== 1 || !/^--probe-startup=(first|second|dwg|3d-enable|3d)$/.test(flags[0])) throw new Error('Invalid startup probe phase');
+  if (flags.length !== 1 || !/^--probe-startup=(first|second|dwg|3d-enable|3d|gpu2d)$/.test(flags[0])) throw new Error('Invalid startup probe phase');
   return flags[0].slice('--probe-startup='.length);
 }
 
 /** @param {import('./context.cjs').MainContext} ctx */
 async function runShippingProbe(ctx, phase, testBuild) {
-  if (!['first', 'second', 'dwg', '3d-enable', '3d'].includes(phase)) throw new Error('Invalid startup probe phase');
+  if (!['first', 'second', 'dwg', '3d-enable', '3d', 'gpu2d'].includes(phase)) throw new Error('Invalid startup probe phase');
   // The application's existing 60-second startup deadline remains authoritative for 3D too.
   const timer = setTimeout(() => { process.stdout.write('SHIPPING_PROBE_FAIL timed out\n'); app.exit(1); }, phase === '3d' ? 60_000 : 45_000);
   try {
@@ -190,6 +560,11 @@ async function runShippingProbe(ctx, phase, testBuild) {
       clearTimeout(timer);
       app.quit();
       return;
+    }
+    if (phase === 'gpu2d') {
+      const record = await runShippingGpu2dProbe(ctx, testBuild);
+      process.stdout.write(`SHIPPING_PROBE_OK ${JSON.stringify(record)}\n`);
+      clearTimeout(timer); app.quit(); return;
     }
     if (phase === 'dwg') {
       const record = await runShippingDwgProbe(ctx, testBuild);
@@ -247,4 +622,4 @@ async function runShippingProbe(ctx, phase, testBuild) {
     app.exit(1);
   }
 }
-module.exports = { runShippingProbe, shippingProbePhase, runShipping3dProbe };
+module.exports = { runShippingProbe, shippingProbePhase, runShipping3dProbe, runShippingGpu2dProbe, shippingGpu2dMetadata, shippingGpu2dPendingFontFrame };
