@@ -77,6 +77,10 @@ messages). The date of each version is the date of the commit that set that vers
   unmodeled limits/extents/UCS and the overall paper viewport's identity and camera
   data. Copied sheets use their own current page settings when explicitly edited.
 
+- Imported drawings keep unspecified annotation visibility defaults absent during
+  export, avoiding an unsolicited native dictionary entry on a subsequent DWG save.
+  Existing declarations, explicit edits and new drawing defaults remain supported.
+
 - TABLESTYLE postflight compares complete adjacent reactor/extension-dictionary
   blocks symmetrically while retaining owner, ordered references and opaque data.
   Malformed, duplicate, nested or interleaved common framing refuses.

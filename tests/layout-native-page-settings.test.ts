@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { Drawing, type DrawingState } from '../src/core/document';
 import { defaultLayout, paperFromSize, sheetSize } from '../src/core/layouts';
 import type { CadGroup, CadNode } from '../src/core/cad-graph';
@@ -20,6 +21,15 @@ const plotGroups = (node: CadNode) => {
   return node.groups.slice(at + 1, end);
 };
 const group = (node: CadNode, code: number) => plotGroups(node).find(([candidate]) => candidate === code)?.[1];
+const headerVariable = (state: DrawingState, name: string) => {
+  const header = state.cadGraph!.nodes.find(node => node.type === 'HEADER' && node.section === 'HEADER')!;
+  return header.groups.flatMap(([code, value], index) => code === 9 && value.trim() === name ? [header.groups[index + 1]!] : []);
+};
+const withoutAnnotationDefault = (text: string) => {
+  const pairs = tokenize(text), at = pairs.findIndex(pair => pair.code === 9 && pair.value === '$ANNOALLVISIBLE');
+  if (at >= 0) pairs.splice(at, 2);
+  return pairs.flatMap(pair => [String(pair.code), pair.value]).join('\r\n') + '\r\n';
+};
 
 /** Authored source DXF + DTO-shaped host double; these tests do not run a native DWG reader. */
 function reference(fields: Record<number, string | number> = {}, paperCircle = false): string {
@@ -63,6 +73,73 @@ function dto(text: string): DwgImportPayload {
 }
 
 describe('native layout physical page setup', () => {
+  it('keeps new-drawing annotation visibility defaults', () => {
+    expect(headerVariable(readDxf(writeDxf(new Drawing().snapshot)), '$ANNOALLVISIBLE')).toEqual([[70, '1']]);
+  });
+
+  it('does not materialize an absent annotation default through an authored retained-header import/rewrite', () => {
+    const text = withoutAnnotationDefault(reference());
+    const source = readDxf(text), imported = convertDwg(dto(text)).state;
+    for (const state of [source, imported]) {
+      expect(state.cadGraph!.nodes.some(node => node.type === 'HEADER')).toBe(true);
+      expect(state.header!.annoAllVisible).toBeUndefined();
+      expect(headerVariable(state, '$ANNOALLVISIBLE')).toEqual([]);
+      const once = writeDxf(state), back = readDxf(once);
+      expect(back.header!.annoAllVisible).toBeUndefined();
+      expect(headerVariable(back, '$ANNOALLVISIBLE')).toEqual([]);
+      expect(writeDxf(back)).toBe(once);
+    }
+  });
+
+  it('keeps the native fixture variable dictionary unchanged when annotation visibility was never declared', () => {
+    const source = readDxf(readFileSync(new URL('./fixtures/interchange/r2018-minsert.dxf', import.meta.url), 'utf8'));
+    const variables = (state: DrawingState) => state.cadGraph!.nodes.find(node => node.type === 'DICTIONARY' && node.anchor?.kind === 'dictionary' && node.anchor.path.join('/') === 'AcDbVariableDictionary')!.groups.filter(([code]) => code === 3);
+    expect(variables(source)).toHaveLength(9);
+    expect(variables(source).some(([, name]) => name === 'ANNOALLVISIBLE')).toBe(false);
+    expect(headerVariable(source, '$ANNOALLVISIBLE')).toEqual([]);
+    const once = writeDxf(source), back = readDxf(once);
+    expect(variables(back)).toEqual(variables(source));
+    expect(headerVariable(back, '$ANNOALLVISIBLE')).toEqual([]);
+    expect(writeDxf(back)).toBe(once);
+  });
+
+  it.each([true, false])('keeps an exposed native dictionary annotation value%s without creating a second variable', visible => {
+    // Authored addition to the immutable native DXF reference, without a native reader double.
+    const pairs = tokenize(readFileSync(new URL('./fixtures/interchange/r2018-minsert.dxf', import.meta.url), 'utf8'));
+    const start = pairs.findIndex((pair, index) => pair.code === 0 && pair.value.trim() === 'DICTIONARY'
+      && pairs.slice(index + 1, index + 6).some(pair => pair.code === 5 && pair.value.trim() === '179'));
+    const end = pairs.findIndex((pair, index) => index > start && pair.code === 0);
+    expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+    pairs.splice(end, 0, { code: 3, value: 'ANNOALLVISIBLE' }, { code: 350, value: '2FFFF' });
+    const sectionEnd = pairs.findIndex((pair, index) => index > end && pair.code === 0 && pair.value.trim() === 'ENDSEC');
+    const variable: CadGroup[] = [[0, 'DICTIONARYVAR'], [5, '2FFFF'], [330, '179'], [100, 'DictionaryVariables'], [280, '0'], [1, visible ? '1' : '0']];
+    pairs.splice(sectionEnd, 0, ...variable.map(([code, value]) => ({ code, value })));
+    const source = readDxf(pairs.flatMap(pair => [String(pair.code), pair.value]).join('\r\n') + '\r\n');
+    expect(source.header!.annoAllVisible).toBe(visible);
+    expect(headerVariable(source, '$ANNOALLVISIBLE')).toEqual([]);
+    const once = writeDxf(source), back = readDxf(once);
+    expect(headerVariable(back, '$ANNOALLVISIBLE')).toEqual([[70, visible ? '1' : '0']]);
+    const dictionary = back.cadGraph!.nodes.find(node => node.sourceHandle === '179')!;
+    expect(dictionary.groups.filter(([code]) => code === 3)).toHaveLength(10);
+    expect(dictionary.groups.filter(([code, value]) => code === 3 && value === 'ANNOALLVISIBLE')).toHaveLength(1);
+    expect(back.cadGraph!.nodes.find(node => node.sourceHandle === '2FFFF')!.groups).toContainEqual([1, visible ? '1' : '0']);
+    expect(writeDxf(back)).toBe(once);
+  });
+
+  it.each([true, false])('keeps retained annotation values and explicit%s edits, with undo/redo', visible => {
+    const present = readDxf(reference().replace(/\$ANNOALLVISIBLE\r\n70\r\n1\r\n/, `$ANNOALLVISIBLE\r\n70\r\n${visible ? 1 : 0}\r\n`));
+    expect(headerVariable(readDxf(writeDxf(present)), '$ANNOALLVISIBLE')).toEqual([[70, visible ? '1' : '0']]);
+    const doc = new Drawing(readDxf(withoutAnnotationDefault(reference()))), before = doc.snapshot;
+    doc.transact(state => ({ ...state, header: { ...state.header!, annoAllVisible: visible } }));
+    const edited = doc.snapshot, text = writeDxf(edited), back = readDxf(text);
+    expect(headerVariable(back, '$ANNOALLVISIBLE')).toEqual([[70, visible ? '1' : '0']]);
+    expect(back.header!.annoAllVisible === false).toBe(!visible);
+    expect(writeDxf(back)).toBe(text);
+    expect(doc.undo()).toBe(true); expect(doc.snapshot).toBe(before);
+    expect(headerVariable(readDxf(writeDxf(doc.snapshot)), '$ANNOALLVISIBLE')).toEqual([]);
+    expect(doc.redo()).toBe(true); expect(doc.snapshot).toBe(edited); expect(writeDxf(doc.snapshot)).toBe(text);
+  });
+
   it('hydrates physical paper through exact canonical layout and paper-owner handles, not drawing limits', () => {
     const payload = dto(reference({ 4: 'Device_Private_Media_11x17' }));
     payload.layouts = payload.layouts!.map(layout => ({ ...layout, handle: `000${layout.handle!.toLowerCase()}`, blockHandle: `000${layout.blockHandle.toLowerCase()}` }));

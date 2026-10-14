@@ -36,7 +36,7 @@ import {
 } from '../core/layouts';
 import type { ImportReportBuilder } from './import-report';
 import { importViewportView } from './viewport-view';
-import type { CadGroup } from '../core/cad-graph';
+import type { CadGraph, CadGroup } from '../core/cad-graph';
 
 export interface DxfSink {
   pair(code: number, value: string | number): void;
@@ -100,9 +100,16 @@ export function planLayouts(state: LayoutHost, w: DxfSink, paperSpaceRecord: str
 }
 
 /** Header variables: $CANNOSCALE / $ANNOALLVISIBLE (AutoCAD 2008+ names; older readers skip them). */
-export function writeLayoutHeader(hv: (name: string, code: number, value: string | number) => void, state: { header?: { cannoscale?: string; annoAllVisible?: boolean } }): void {
+export function writeLayoutHeader(hv: (name: string, code: number, value: string | number) => void, state: { header?: { cannoscale?: string; annoAllVisible?: boolean }; cadGraph?: CadGraph }): void {
   hv('$CANNOSCALE', 2, state.header?.cannoscale ?? '1:1');
-  hv('$ANNOALLVISIBLE', 70, state.header?.annoAllVisible === false ? 0 : 1);
+  const sourceHeader = state.cadGraph?.nodes.find(node => node.type === 'HEADER' && node.section === 'HEADER');
+  const retained = sourceHeader?.groups.some(([code, value]) => code === 9 && value.trim() === '$ANNOALLVISIBLE');
+  // Undefined still renders with annotation visibility on. Writing that default
+  // into an imported header that never declared it creates a native dictionary
+  // variable on the next DWG save; emit only new, retained or explicit settings.
+  if (!sourceHeader || retained || state.header?.annoAllVisible !== undefined) {
+    hv('$ANNOALLVISIBLE', 70, state.header?.annoAllVisible === false ? 0 : 1);
+  }
 }
 
 /** Extra BLOCK_RECORD rows for *Paper_Space0.. (the caller writes *Model_Space / *Paper_Space). */
