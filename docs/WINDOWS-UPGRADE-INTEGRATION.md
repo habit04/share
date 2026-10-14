@@ -26,6 +26,17 @@ receive a generated overall viewport; imported originals retain native camera
 properties. Existing unsafe metadata-dependent layout deletions still refuse
 atomically rather than dropping retained references.
 
+At `51f89ca`, both Node jobs and UI pass; Windows passes all 54 Rust tests,
+three CLI tests and four native portable roundtrips, then reaches a stale loss-modal
+expectation after safe native layouts are reported kept. The revised harness
+asserts source-bound report eligibility and adds a real unsupported DXF No/Yes
+consent, exact-backup and reopen control; 41 focused policy tests and scripts
+typecheck/lint pass. Genuine second-save verification separately found an invented
+`ANNOALLVISIBLE` dictionary entry. The export repair keeps absent imported defaults
+absent, with seven new regressions; new drawings, existing variables and explicit
+edits still emit their settings. Forty-two new regressions now pass. Fresh complete
+native/app/full-suite and exact-head CI gates remain required for these final fixes.
+
 The corrected `3c3592` diagnostic passes all four originals in UTC and Chicago:
 eight source/private-copy hashes stay unchanged, all 19 ABI facts and 28 typed
 fields match the complete 129-byte Aux section, and creation/update tuples match

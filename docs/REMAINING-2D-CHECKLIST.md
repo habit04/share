@@ -23,6 +23,13 @@ Copied sheets receive a generated overall viewport; imported originals retain
 their native overall camera and properties. Existing unsafe metadata-dependent
 layout deletions continue to refuse atomically.
 
+Final follow-up repairs: the second native save exposed an invented annotation
+dictionary entry; absent imported defaults now stay absent (seven new regressions).
+The Windows CI loss-modal test is bound to the real import report and retains a
+real unsupported DXF consent/backup/reopen control. Product safety policy and the
+full metadata verifier are unchanged. Fresh complete gates remain due; no stable,
+3D or GPU merge has been performed.
+
 The corrected original-reference diagnostic at `3c3592` now passes all eight native
 reads with unchanged originals/copies and complete typed/raw Aux agreement. The
 development repair sets a captured fixed-hour source creation context only

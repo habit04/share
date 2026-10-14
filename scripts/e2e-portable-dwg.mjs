@@ -15,6 +15,15 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
     for (let n = 0; n < 8 && await page.locator('.import-report-dialog').count(); n++) await page.locator('.import-report-dialog .modal-footer button').filter({ hasText: /^Close$/ }).first().click();
     assert.equal(await page.locator('.modal').count(), 0, 'No unexpected modal during portable DWG checks');
   };
+  const importSummary = () => page.evaluate(() => {
+    const state = window.editor.doc.snapshot;
+    const report = /** @type {import('../src/io/import-report').ImportReport | undefined} */ (state.meta?.importReport);
+    if (!report) return null;
+    const total = action => Object.values(report.counts).reduce((sum, counts) => sum + (counts[action] ?? 0), 0);
+    return { format: report.format, sourcePath: report.sourcePath, recovered: !!report.recovered, omitted: report.omitted,
+      dropped: total('dropped'), simplified: total('simplified'), unsupported: total('unsupported'), kept: total('kept'),
+      layoutsKept: report.counts.LAYOUT?.kept ?? 0, counts: report.counts };
+  });
   const signature = () => page.evaluate(() => {
     const ed = window.editor;
     // Match the independent native oracle: explicit RGB is authoritative and AutoCAD may
@@ -86,13 +95,24 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
     assert.equal(await page.evaluate(p => window.editor.openFile(p), working), true); await closeReports();
     approximate(await signature(), afterEdit, 'Normal DWG Save semantic reopen');
     assert.equal((await signature()).length, beforeSaveAs.length + 1);
+    // The actual retained native page/graph no longer supplies a loss report. Test
+    // the source-bound report eligibility instead of waiting for a warning that
+    // belongs only to dropped/simplified/unreadable source data.
+    const workingImport = await importSummary();
+    assert.ok(workingImport, 'Native working DWG has its actual import report');
+    assert.equal(workingImport.format, 'DWG');assert.equal(workingImport.sourcePath, working);
+    assert.equal(workingImport.recovered, false);assert.equal(workingImport.omitted, 0);
+    assert.equal(workingImport.dropped + workingImport.simplified + workingImport.unsupported, 0, 'Retained native metadata is not a source-loss condition');
+    assert.ok(workingImport.layoutsKept > 0, 'Physical native page settings are explicitly reported kept');
+    const beforeReviewedSave = readFileSync(working);
     await page.evaluate(() => window.editor.doc.addEntities([{ id: 'dwg-overwrite-consent-marker', type: 'line', layer: '0', color: 'ByLayer', a: { x: -33, y: -34 }, b: { x: -32, y: -31 } }]));
-    const overwrite = page.evaluate(() => window.editor.saveFile(false));
-    const warning = page.locator('.modal', { hasText: 'Save over the original file?' });
-    await warning.waitFor({ timeout: 10000 });
-    assert.match(await warning.innerText(), /properties JCad cannot read|object\(s\) JCad cannot keep/);
-    await warning.locator('button', { hasText: /^Yes$/ }).click();
-    assert.equal(await overwrite, true, 'Normal DWG source overwrite requires and accepts loss consent');
+    const reviewedSignature = await signature();
+    assert.equal(await page.evaluate(() => window.editor.saveFile(false)), true, 'Source-loss-free native DWG saves without a loss-consent prompt');
+    assert.deepEqual(readFileSync(working + '.bak'), beforeReviewedSave, 'Reviewed native overwrite keeps the exact prior working file');
+    assert.equal(await page.locator('.modal', { hasText: 'Save over the original file?' }).count(), 0);
+    assert.equal(await page.evaluate(() => window.editor.doc.dirty), false);
+    assert.equal(await page.evaluate(p => window.editor.openFile(p), working), true);await closeReports();
+    approximate(await signature(), reviewedSignature, 'Reviewed native source overwrite semantic reopen');
     // The reopened native drawing retains its metadata source version; DXF Save As
     // preserves AC1032 even when the modeled appearance alone needs only AC1015.
     const explicitSourceVersion = await page.evaluate(() => window.editor.doc.snapshot.cadGraph?.sourceVersion);
@@ -114,7 +134,53 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
     }
     assert.deepEqual(explicitVersions, ['AC1032'], 'Explicit DXF has one exact retained HEADER.$ACADVER');
     assert.equal(await page.evaluate(() => window.editor.doc.filePath), explicitDxf);
-    check(true, 'Normal DWG Save As and in-place Save preserve semantics and exact backups, source overwrite requires loss consent, and explicit DXF stays DXF');
+    check(true, 'Normal DWG Save As and loss-free in-place Save preserve semantics and exact backups, retained page settings are kept, and explicit DXF stays DXF');
+    // A real unsupported-data import still requires consent. The native dialog is
+    // the existing E2E picker double; reader, source proof, save admission and
+    // atomic DXF write remain the actual production paths on private fixture bytes.
+    const lossSource = join(directory, 'loss-consent-control.dxf');
+    copyFileSync(join(repo, 'tests', 'fixtures', 'unsupported-content.dxf'), lossSource);
+    const originalLossSource = readFileSync(lossSource);
+    await page.evaluate(() => window.editor.sessions.add());
+    await app.evaluate((_e, p) => globalThis.__e2e.openPaths.push(p), lossSource);
+    assert.equal(await page.evaluate(() => window.editor.openFile()), true, 'Real unsupported-data control opens');await closeReports();
+    const lossImport = await importSummary();
+    assert.equal(lossImport?.format, 'DXF');assert.equal(lossImport.sourcePath, lossSource);
+    assert.equal(lossImport.dropped + lossImport.simplified, 7, 'Actual fixture reader reports its seven source losses');
+    assert.equal(lossImport.counts.WIPEOUT.dropped, 1);assert.equal(lossImport.counts.MLINE.dropped, 1);
+    assert.equal(lossImport.counts['3DSOLID'].kept, 1, 'Safe opaque solid payload remains retained alongside the reported losses');
+    await page.evaluate(() => {
+      const ed = window.editor;
+      ed.doc.addEntities([{ id: 'loss-consent-control-marker', type: 'line', layer: '0', color: 'ByLayer', a: { x: -43, y: -44 }, b: { x: -42, y: -41 } }]);
+      /** @type {any} */ (window).__portableLossBefore = { state: ed.doc.snapshot, session: ed.sessions.activeId, history: ed.doc.history() };
+    });
+    assert.equal(await app.evaluate(() => globalThis.__e2e.savePaths.length), 0, 'No queued destination can accidentally accept the declined source overwrite');
+    const refusedOverwrite = page.evaluate(() => window.editor.saveFile(false));
+    const warning = page.locator('.modal', { hasText: 'Save over the original file?' });
+    await warning.waitFor({ timeout: 10000 });
+    assert.match(await warning.innerText(), /7 object\(s\) JCad cannot keep.*Save As to keep the original/s);
+    assert.deepEqual(readFileSync(lossSource), originalLossSource);assert.equal(existsSync(lossSource + '.bak'), false);
+    await warning.locator('button', { hasText: /^No$/ }).click();
+    assert.equal(await refusedOverwrite, false, 'No uses the canceled Save As picker, without granting source-loss consent');
+    assert.deepEqual(readFileSync(lossSource), originalLossSource);assert.equal(existsSync(lossSource + '.bak'), false);
+    assert.equal(await page.evaluate(() => {
+      const ed = window.editor, saved = /** @type {any} */ (window).__portableLossBefore, history = ed.doc.history();
+      return ed.doc.snapshot === saved.state && ed.doc.dirty && ed.doc.filePath.endsWith('loss-consent-control.dxf') && ed.sessions.activeId === saved.session
+        && ['undo', 'redo'].every(key => history[key].length === saved.history[key].length && history[key].every((state, index) => state === saved.history[key][index]));
+    }), true, 'Declined source overwrite leaves the edited document and undo history untouched');
+    const allowedOverwrite = page.evaluate(() => window.editor.saveFile(false));
+    await warning.waitFor({ timeout: 10000 });
+    assert.match(await warning.innerText(), /7 object\(s\) JCad cannot keep.*Save As to keep the original/s);
+    await warning.locator('button', { hasText: /^Yes$/ }).click();
+    assert.equal(await allowedOverwrite, true, 'Yes explicitly acknowledges the actual unsupported-data source loss');
+    assert.deepEqual(readFileSync(lossSource + '.bak'), originalLossSource, 'Consented write keeps the exact unsupported original in its backup');
+    assert.match(readFileSync(lossSource, 'utf8'), /mnnmi mi ofoo jl ofoo jl/, 'Safe opaque solid payload remains written back');
+    assert.equal(await page.evaluate(() => window.editor.doc.dirty), false);
+    assert.equal(await page.evaluate(p => window.editor.openFile(p), lossSource), true);await closeReports();
+    const controlReopened = await importSummary();assert.ok(controlReopened);
+    assert.equal(controlReopened.dropped + controlReopened.simplified, 0, 'Actual consented DXF reopens with its remaining content retained');
+    assert.equal(controlReopened.counts['3DSOLID'].kept, 1);
+    check(true, 'Actual unsupported-data source still requires No/Yes loss consent; No preserves source/history and Yes preserves exact backup and safe retained content');
     const prior = readFileSync(selectedTarget), backup = readFileSync(selectedTarget + '.bak');
     for (const [label, text] of [['malformed', 'not DXF'], ['unsupported 3D', '0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\n3DSOLID\n5\n101\n100\nAcDbEntity\n8\n0\n100\nAcDbModelerGeometry\n70\n1\n1\nunsupported ACIS\n0\nENDSEC\n0\nEOF\n']]) {
       const refused = await page.evaluate(([p, text]) => window.jcad.exportDwg(p, text).then(() => false, () => true), [selectedTarget, text]);
@@ -140,7 +206,7 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
     await page.evaluate(saved => {
       const ed = window.editor;
       for (let i = ed.sessions.count - 1; i >= 0; i--) if (!saved.ids.includes(ed.sessions.all[i].id)) ed.sessions.close(i);
-      ed.switchSession(ed.sessions.indexOfId(saved.active)); delete /** @type {any} */ (window).__portableBefore;
+      ed.switchSession(ed.sessions.indexOfId(saved.active)); delete /** @type {any} */ (window).__portableBefore; delete /** @type {any} */ (window).__portableLossBefore;
     }, beforeIds);
     await app.evaluate(() => globalThis.__e2e.messages.splice(0));
   }
