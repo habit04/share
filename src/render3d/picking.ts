@@ -14,8 +14,8 @@
  * This is the exact path and the fallback for the GPU id-buffer (`Viewport3D.pick`); both must
  * agree, which scripts/e2e-3d.mjs checks on a rendered scene.
  */
-import { type Aabb, type Ray, type Vec3, EPS3, add3, intersectRayAabb, intersectRayTriangle, scale3 } from '../model3d/math';
-import { type Mesh3D, flatNormals, meshTriangleCount, meshVertex } from '../model3d/mesh';
+import { type Aabb, type Ray, type Vec3, EPS3, add3, cross3, intersectRayAabb, intersectRayTriangle, normalize3, scale3, sub3 } from '../model3d/math';
+import { type Mesh3D, meshTriangleCount, meshVertex } from '../model3d/mesh';
 import type { Model3D, Solid3D } from '../model3d/types';
 
 /** Maximum triangles in a BVH leaf. */
@@ -199,7 +199,11 @@ export function pickSolid(solid: Solid3D, ray: Ray): PickHit | null {
   // The BVH root box is the solid's bounding box: `intersectMesh` rejects misses with it first.
   const hit = intersectMesh(solid.mesh, ray);
   if (!hit) return null;
-  const nrm = flatNormals(solid.mesh);
-  const normal = { x: nrm[hit.triangle * 3]!, y: nrm[hit.triangle * 3 + 1]!, z: nrm[hit.triangle * 3 + 2]! };
+  // Double precision from the hit triangle, as `faceRegion` computes it (`flatNormals` is Float32
+  // display data, a few 1e-8 rad off): a plane built on this normal holds the face to EPS3. The
+  // triangle test has already rejected degenerate triangles, so the cross product is non-zero.
+  const m = solid.mesh, i = hit.triangle * 3;
+  const a = meshVertex(m, m.indices[i]!), b = meshVertex(m, m.indices[i + 1]!), c = meshVertex(m, m.indices[i + 2]!);
+  const normal = normalize3(cross3(sub3(b, a), sub3(c, a)));
   return { id: solid.id, t: hit.t, point: add3(ray.origin, scale3(ray.dir, hit.t)), normal, triangle: hit.triangle };
 }

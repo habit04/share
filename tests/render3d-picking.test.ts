@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { BVH_LEAF_SIZE, intersectMesh, meshBvh, pickSolid, pickSolids } from '../src/render3d/picking';
-import { type Ray, type Vec3, WORLD_XY_FRAME, add3, dot3, frameFromPlane, intersectRayTriangle, normalize3, scale3, sub3, v3 } from '../src/model3d/math';
+import { type Ray, type Vec3, WORLD_XY_FRAME, add3, cross3, dot3, frameFromPlane, intersectRayTriangle, len3, normalize3, scale3, sub3, v3 } from '../src/model3d/math';
 import { invertWinding, meshTriangles, meshVertex, meshVertexCount } from '../src/model3d/mesh';
 import { boxMesh, primitiveMesh, sphereMesh } from '../src/model3d/primitives';
 import { newSolid } from '../src/model3d/model';
@@ -76,6 +76,21 @@ describe('pickSolids', () => {
     expect(dot3(b.normal, v3(0, 0, 1))).toBeCloseTo(-1, 12);
     const inside = pickSolid(box, { origin: v3(0, 0, 0.5), dir: v3(0, 0, 1) })!;
     expect(inside.t).toBeCloseTo(0.5, 12);
+  });
+
+  it('the hit normal is the unit normal of the hit triangle to double precision', () => {
+    // A side face with normal (0.6, 0.8, 0). Float32 display normals are a few 1e-8 off (2.4e-8
+    // here), which tilts a construction plane built on the pick off the face by more than EPS3
+    // across 1000 units.
+    const frame = { origin: v3(0, 0, 0), xAxis: v3(0.6, 0.8, 0), yAxis: v3(-0.8, 0.6, 0), zAxis: v3(0, 0, 1) };
+    const b = solid('b', { kind: 'box', frame, width: 1000, depth: 1000, height: 500 });
+    const hit = pickSolid(b, { origin: v3(3010, 3993, 250), dir: v3(-0.6, -0.8, 0) });
+    expect(hit).not.toBeNull();
+    const [p, q, r] = [0, 1, 2].map((k) => meshVertex(b.mesh, b.mesh.indices[hit!.triangle * 3 + k]!));
+    const exact = normalize3(cross3(sub3(q!, p!), sub3(r!, p!)));
+    expect(Math.abs(len3(hit!.normal) - 1)).toBeLessThanOrEqual(1e-12);
+    expect(len3(sub3(hit!.normal, exact))).toBeLessThanOrEqual(1e-12);
+    expect(len3(sub3(hit!.normal, v3(0.6, 0.8, 0)))).toBeLessThanOrEqual(1e-12);
   });
 
   it('skips solids on hidden layers', () => {
