@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import assert from 'node:assert/strict';
 import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, symlinkSync, copyFileSync, existsSync, openSync, ftruncateSync, closeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { METADATA_SMOKE_FIXTURES } from '../scripts/packaged-smoke-policy.mjs';
@@ -10,12 +11,21 @@ import { readDxf } from '../src/io/dxf';
 import { Drawing } from '../src/core/document';
 import { translateEntity } from '../src/core/entities';
 import { cadCloneBatch, cadTranslation } from '../src/tools/cad-edits';
+import { EntityClipboard } from '../src/ui/clipboard';
+import type { Editor } from '../src/app/editor';
+
+type MetadataSaveOrigin = { kind: 'imported-dwg' | 'authored-clipboard'; sessionId: number; contentGeneration: number; documentId: string | null; pages: string; importReport: string | null; nativeLayoutCount: number };
+const { captureMetadataSaveOrigin, metadataSavePreflight } = await import(pathToFileURL(resolve('scripts/e2e-cad-metadata.mjs')).href) as {
+  captureMetadataSaveOrigin(kind: MetadataSaveOrigin['kind']): MetadataSaveOrigin;
+  metadataSavePreflight(input: { path: string; origin: MetadataSaveOrigin }): boolean;
+};
 
 const sourceFile = resolve('electron/main/shipping-dwg-probe.cjs');
 const source = readFileSync(sourceFile, 'utf8');
 const originalRequire = createRequire(sourceFile);
 const roots: string[] = [];
 afterEach(() => {
+  vi.unstubAllGlobals();
   for (const root of roots.splice(0)) {
     expect(dirname(resolve(root))).toBe(resolve(tmpdir()));
     expect(root).toMatch(/jcad-(?:shipping-smoke|dwg-probe)-/);
@@ -33,6 +43,66 @@ function load(root: string, version = '0.4.8') {
   return { run: () => module.exports.runShippingDwgProbe({ mainWindow: { isDestroyed: () => false, webContents: { executeJavaScript } } }, false), dialog, executeJavaScript, renderer: module.exports.renderer, pins: module.exports.pins, normalReportExpected: module.exports.normalReportExpected };
 }
 describe('fixed DWG shipping probe confinement', () => {
+  const importedMetadata = (unsupported = 0) => {
+    const state = readDxf(readFileSync('tests/fixtures/interchange/r2018-field-object-reference.dxf', 'utf8'));
+    return { ...state, cadGraph: { ...state.cadGraph!, sourceFormat: 'DWG' as const }, meta: { ...state.meta, importReport: {
+      format: 'DWG', sourcePath: 'fixed-copy.dwg', counts: { LAYOUT: { kept: state.layouts!.length }, ...(unsupported ? { FIELD: { unsupported } } : {}) }, items: [], omitted: 0, notes: [],
+    } } };
+  };
+  const pageHost = (doc: Drawing) => {
+    const current = { id: 7, contentGeneration: 2 };
+    const ed = { doc, sessions: { current }, selection: new Set<string>(), log: vi.fn(), notify: vi.fn(), render: vi.fn(),
+      entitiesSelected: () => ed.doc.entities, cursorPosition: () => null };
+    vi.stubGlobal('window', { editor: ed });
+    return ed;
+  };
+  it('preserves authored clipboard provenance through Save As without inventing a DWG import report', () => {
+    // Actual Drawing/clipboard graph operations; the Save As binding is transport-doubled.
+    const sourceDoc = new Drawing(importedMetadata()), ed = pageHost(sourceDoc), clipboard = new EntityClipboard(ed as unknown as Editor);
+    expect(clipboard.copy()).toBe(true);
+    ed.doc = new Drawing(); clipboard.paste({ x: 0, y: 0 });
+    expect(ed.doc.entities).toHaveLength(4);
+    expect(ed.doc.snapshot.cadGraph!.sourceFormat).toBe('DWG');
+    expect(ed.doc.snapshot.cadGraph!.nodes.filter(node => node.type === 'FIELD')).toHaveLength(4);
+    expect(ed.doc.snapshot.meta?.importReport).toBeUndefined();
+    const before = ed.doc.snapshot, origin = captureMetadataSaveOrigin('authored-clipboard');
+    expect(origin.nativeLayoutCount).toBe(0);
+    ed.doc.filePath = 'pasted.dwg'; ed.doc.dirty = false;
+    expect(metadataSavePreflight({ path: 'pasted.dwg', origin })).toBe(false);
+    expect(ed.doc.snapshot).toBe(before);
+    expect(ed.doc.snapshot.meta?.importReport).toBeUndefined();
+    expect(ed.doc.history().undo).toHaveLength(1);
+  });
+  it.each([0, 1])('keeps imported page validation and exact source-loss eligibility with %s unrelated unsupported fields', unsupported => {
+    const doc = new Drawing(importedMetadata(unsupported)); pageHost(doc); doc.filePath = 'fixed-copy.dwg';
+    const origin = captureMetadataSaveOrigin('imported-dwg');
+    expect(metadataSavePreflight({ path: doc.filePath, origin })).toBe(unsupported > 0);
+    expect(() => captureMetadataSaveOrigin('authored-clipboard')).toThrow(/Unexpected metadata Save origin/);
+    doc.filePath = 'separate-copy.dwg';
+    expect(metadataSavePreflight({ path: doc.filePath, origin })).toBe(false);
+  });
+  it.each(['session', 'generation', 'document', 'paper', 'report'] as const)('refuses a changed captured %s basis instead of changing Save provenance', changed => {
+    const doc = new Drawing(importedMetadata()), ed = pageHost(doc); doc.filePath = 'fixed-copy.dwg';
+    const origin = captureMetadataSaveOrigin('imported-dwg');
+    if (changed === 'session') ed.sessions.current.id++;
+    else if (changed === 'generation') ed.sessions.current.contentGeneration++;
+    else doc.transactDrawing(state => changed === 'document' ? { ...state, cadGraph: { ...state.cadGraph!, documentId: 'different-document' } }
+      : changed === 'paper' ? { ...state, layouts: state.layouts!.map((layout, index) => index ? layout : { ...layout, paper: { ...layout.paper, width: layout.paper.width + 1 } }) }
+        : { ...state, meta: { ...state.meta, importReport: { ...(state.meta!.importReport as object), sourcePath: 'another-source.dwg' } } });
+    expect(() => metadataSavePreflight({ path: doc.filePath!, origin })).toThrow(/metadata Save origin changed/);
+  });
+  it('refuses imported provenance without its report and an authored origin with a retained native layout', () => {
+    const doc = new Drawing(importedMetadata()); pageHost(doc);
+    doc.transactDrawing(state => ({ ...state, meta: { ...state.meta, importReport: undefined } }));
+    expect(() => captureMetadataSaveOrigin('imported-dwg')).toThrow(/Unexpected metadata Save origin/);
+    expect(() => captureMetadataSaveOrigin('authored-clipboard')).toThrow(/Unexpected metadata Save origin/);
+  });
+  it('still refuses actual imported page loss even when that malformed report was captured before Save As', () => {
+    const state = importedMetadata(); state.meta.importReport.counts.LAYOUT.kept = 0;
+    const doc = new Drawing(state); pageHost(doc); doc.filePath = 'fixed-copy.dwg';
+    const origin = captureMetadataSaveOrigin('imported-dwg');
+    expect(() => metadataSavePreflight({ path: 'fixed-copy.dwg', origin })).toThrow(/lost native page settings/);
+  });
   it('resolves block anchors and still refuses orphaned or duplicate live identities', () => {
     const f = load(profile());
     const body = f.renderer.slice(f.renderer.indexOf('function entityShape(entity) {'), f.renderer.indexOf('function same(actual, expected, label) {'));

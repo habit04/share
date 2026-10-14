@@ -14,10 +14,22 @@ existing skips), all static/build checks, 32 actual Windows source-app workflows
 ten genuine native cases including full first/second metadata fixed points, and
 [all four exact-head CI jobs](https://github.com/habit04/share/actions/runs/38507044631).
 Windows CI includes 54 Rust tests, three CLI tests and 242 Electron checks with live
-No/Yes loss consent. Stable `8dfe1caa` integration has now begun on this feature
-branch. Conflicts are reviewed against that verified spine, preserving later
-fixes and adding the stable native metadata acceptance gates. The merge candidate
-requires fresh validation before adoption of 3D/GPU; no release merge is authorized.
+No/Yes loss consent. Completed stable `8dfe1caa` was merged into this feature branch
+at `29abcec`, preserving later fixes and adding its native metadata acceptance
+gates. All static/build checks and ten genuine native first/second-save cases pass.
+Its Node 22, Node 24 and UI CI jobs pass; Windows passes native build/test and the
+portable-save harness, then exposes an incorrect test precondition: a clipboard
+destination created with New Drawing has no imported-DWG page report. The probe
+must capture and verify that authored origin separately while retaining every
+genuine native-import page/loss check, exact metadata tree, backup and fresh reopen.
+
+The `29abcec` ordinary local suite records 4,425 passes, one large-PDF cleanup
+timeout and 29 skips; the added skip is an incoming symlink probe's explicit EPERM
+case. The unchanged PDF file suite subsequently passes 34/34 with its large case
+at 228 ms under the original 60-second body/10-second hook deadlines. The failed
+case reached zero-byte truncation; its later cleanup stall has no reproduced cause.
+Keep that failed evidence, correct the metadata probe, then run fresh full-source,
+app and exact-head CI gates before adopting 3D/GPU. No release merge is authorized.
 
 The published `0982bda` baseline clears all four exact-head CI jobs, all three
 TypeScript projects, broad lint, fixture/build checks, 4,352 local tests (28 existing

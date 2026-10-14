@@ -119,6 +119,57 @@ function same(actual, expected, label) {
   assert.deepEqual(actual, expected, label);
 }
 
+/** @typedef {{ kind: 'imported-dwg' | 'authored-clipboard', sessionId: number, contentGeneration: number, documentId: string | null, pages: string, importReport: string | null, nativeLayoutCount: number }} MetadataSaveOrigin */
+
+/** Capture actual page provenance before Save As; graph.sourceFormat alone can come from clipboard entities.
+ * This callback is serialized by Playwright and therefore has no module dependencies.
+ * @param {'imported-dwg' | 'authored-clipboard'} kind
+ * @returns {MetadataSaveOrigin}
+ */
+export function captureMetadataSaveOrigin(kind) {
+  const ed = window.editor, session = ed.sessions.current, state = ed.doc.snapshot;
+  const report = state.meta?.importReport, nativeLayoutCount = state.cadGraph?.nodes.filter(node => node.type === 'LAYOUT').length ?? 0;
+  const imported = kind === 'imported-dwg' && report?.format === 'DWG' && nativeLayoutCount > 0;
+  const authored = kind === 'authored-clipboard' && report === undefined && nativeLayoutCount === 0;
+  if (!imported && !authored) throw new Error('Unexpected metadata Save origin: ' + JSON.stringify({ kind, reportFormat: report?.format ?? null, sourcePath: report?.sourcePath ?? null, nativeLayoutCount, graphSourceFormat: state.cadGraph?.sourceFormat ?? null }));
+  return { kind, sessionId: session.id, contentGeneration: session.contentGeneration, documentId: state.cadGraph?.documentId ?? null,
+    pages: JSON.stringify(state.layouts ?? null), importReport: report === undefined ? null : JSON.stringify(report), nativeLayoutCount };
+}
+
+/** Validate the captured origin and derive actual source-loss consent before starting Save.
+ * This callback is serialized by Playwright and therefore has no module dependencies.
+ * @param {{ path: string, origin: MetadataSaveOrigin }} input
+ */
+export function metadataSavePreflight({ path, origin }) {
+  const ed = window.editor, session = ed.sessions.current, state = ed.doc.snapshot;
+  const report = state.meta?.importReport, nativeLayoutCount = state.cadGraph?.nodes.filter(node => node.type === 'LAYOUT').length ?? 0;
+  const imported = origin.kind === 'imported-dwg' && report?.format === 'DWG' && nativeLayoutCount > 0;
+  const authored = origin.kind === 'authored-clipboard' && report === undefined && nativeLayoutCount === 0;
+  const current = { sessionId: session.id, contentGeneration: session.contentGeneration, documentId: state.cadGraph?.documentId ?? null,
+    pages: JSON.stringify(state.layouts ?? null), importReport: report === undefined ? null : JSON.stringify(report), nativeLayoutCount };
+  if (ed.doc.filePath !== path || !imported && !authored
+    || current.sessionId !== origin.sessionId || current.contentGeneration !== origin.contentGeneration
+    || current.documentId !== origin.documentId || current.pages !== origin.pages
+    || current.importReport !== origin.importReport || current.nativeLayoutCount !== origin.nativeLayoutCount) {
+    throw new Error('In-place metadata Save origin changed: ' + JSON.stringify({ kind: origin.kind, path, currentPath: ed.doc.filePath, reportFormat: report?.format ?? null, sourcePath: report?.sourcePath ?? null, nativeLayoutCount, sessionId: session.id, contentGeneration: session.contentGeneration }));
+  }
+  if (imported) {
+    const counts = Object.values(report.counts ?? {});
+    if (report.recovered || report.omitted !== 0
+      || !counts.every(count => Object.values(count).every(value => Number.isInteger(value) && value >= 0))
+      || counts.reduce((sum, count) => sum + (count.dropped ?? 0) + (count.simplified ?? 0), 0) !== 0
+      || report.counts.LAYOUT?.kept !== state.layouts?.length || !report.counts.LAYOUT?.kept
+      || (report.counts.LAYOUT?.unsupported ?? 0) !== 0) {
+      throw new Error('In-place metadata Save has an unexpected import report or lost native page settings: ' + JSON.stringify({ kind: origin.kind, sourcePath: report.sourcePath, counts: report.counts, layouts: state.layouts?.length ?? 0 }));
+    }
+  }
+  const w = /** @type {any} */ (window);
+  w.__metadataSaving = { snapshot: state, session: session.id, path };
+  // Fixed paths are distinct regular files. A Save As state can still carry an
+  // original-source report; authored clipboard data is not an imported document.
+  return imported && report.sourcePath === path && Object.values(report.counts).reduce((sum, count) => sum + (count.unsupported ?? 0), 0) > 0;
+}
+
 /** @param {{ app: import('playwright').ElectronApplication, page: import('playwright').Page, repo: string, outDir: string, check: (ok: boolean, text: string) => void, current: boolean }} opts */
 export async function runCadMetadataChecks({ app, page, repo, outDir, check, current }) {
   if (process.platform !== 'win32' || !current) { check(true, 'CAD metadata DWG checks skipped explicitly: requires the current Windows edition'); return; }
@@ -194,32 +245,20 @@ export async function runCadMetadataChecks({ app, page, repo, outDir, check, cur
     }
     return result;
   };
-  const saveAs = async (path) => {
+  /** @param {string} path @param {'imported-dwg' | 'authored-clipboard'} [kind] */
+  const saveAs = async (path, kind = 'imported-dwg') => {
+    const origin = await page.evaluate(captureMetadataSaveOrigin, kind);
     const previous = Buffer.from('previous metadata destination ' + path); writeFileSync(path, previous);
     await app.evaluate((_electron, path) => globalThis.__e2e.savePaths.push(path), path);
     assert.equal(await page.evaluate(() => window.editor.saveFile(true)), true, 'Normal DWG Save As succeeds');
     assert.equal(readFileSync(path).subarray(0, 6).toString('ascii'), 'AC1032');
     assert.deepEqual(readFileSync(path + '.bak'), previous, 'Save As preserves exact previous destination bytes');
     assert.deepEqual(await page.evaluate(() => ({ path: window.editor.doc.filePath, dirty: window.editor.doc.dirty })), { path, dirty: false });
+    return origin;
   };
-  const saveInPlace = async (path) => {
-    const expectedConsent = await page.evaluate(path => {
-      const ed = window.editor;
-      if (ed.doc.filePath !== path) throw new Error('In-place metadata Save has an unexpected binding.');
-      const report = ed.doc.snapshot.meta?.importReport, counts = Object.values(report?.counts ?? {});
-      if (report?.format !== 'DWG' || report.recovered || report.omitted !== 0
-        || !counts.every(count => Object.values(count).every(value => Number.isInteger(value) && value >= 0))
-        || counts.reduce((sum, count) => sum + (count.dropped ?? 0) + (count.simplified ?? 0), 0) !== 0
-        || report.counts.LAYOUT?.kept !== ed.doc.snapshot.layouts?.length || !report.counts.LAYOUT?.kept
-        || (report.counts.LAYOUT?.unsupported ?? 0) !== 0) {
-        throw new Error('In-place metadata Save has an unexpected import report or lost native page settings.');
-      }
-      const w = /** @type {any} */ (window);
-      w.__metadataSaving = { snapshot: ed.doc.snapshot, session: ed.sessions.activeId, path };
-      // The fixed private paths are distinct regular files. A Save As state may
-      // still carry the original import report; only its source can need consent.
-      return report.sourcePath === path && counts.reduce((sum, count) => sum + (count.unsupported ?? 0), 0) > 0;
-    }, path);
+  /** @param {string} path @param {MetadataSaveOrigin} origin */
+  const saveInPlace = async (path, origin) => {
+    const expectedConsent = await page.evaluate(metadataSavePreflight, { path, origin });
     try {
       const saving = page.evaluate(() => window.editor.saveFile(false));
       if (expectedConsent) {
@@ -337,7 +376,7 @@ export async function runCadMetadataChecks({ app, page, repo, outDir, check, cur
     same(metadataSignature(state), copiedSignature, 'Copied native DWG Save As fresh reopen');
     const saveAsAnnotationSettings = state.annotationSettings, saveIds = state.entities.map(entity => entity.id);
     assert.deepEqual(saveAsAnnotationSettings, { cannoscale: '1:2', annoAllVisible: false }, 'Save As fresh reopen retains edited annotation settings');
-    await saveInPlace(copied);
+    await saveInPlace(copied, await page.evaluate(captureMetadataSaveOrigin, /** @type {MetadataSaveOrigin['kind']} */ ('imported-dwg')));
     assert.deepEqual(readFileSync(copied + '.bak'), firstBytes, 'In-place Save keeps byte-exact prior DWG');
     state = await open(copied); assert.ok(state.entities.every(entity => !saveIds.includes(entity.id)), 'In-place Save reopens fresh entities');
     same(metadataSignature(state), copiedSignature, 'Copied native DWG in-place Save fresh reopen');
@@ -356,8 +395,8 @@ export async function runCadMetadataChecks({ app, page, repo, outDir, check, cur
     same(metadataSignature(await inspect()), copiedSignature, 'FIELD override undo restores all native metadata');
     await page.evaluate(() => window.editor.doc.redo()); state = await inspect(); assert.equal(boundFields(state, text.id).length, 0);
     const overriddenSignature = metadataSignature(state);
-    await saveAs(overridden); const prior = readFileSync(overridden);
-    await saveInPlace(overridden); assert.deepEqual(readFileSync(overridden + '.bak'), prior);
+    const overriddenOrigin = await saveAs(overridden); const prior = readFileSync(overridden);
+    await saveInPlace(overridden, overriddenOrigin); assert.deepEqual(readFileSync(overridden + '.bak'), prior);
     const overrideIds = state.entities.map(entity => entity.id); state = await open(overridden);
     assert.ok(state.entities.every(entity => !overrideIds.includes(entity.id))); same(metadataSignature(state), overriddenSignature, 'FIELD override native DWG round trip');
     const literal = state.entities.find(entity => entity.type === 'mtext' && entity.position.x === 100);
@@ -391,8 +430,8 @@ export async function runCadMetadataChecks({ app, page, repo, outDir, check, cur
       const targets = objectFieldTargets(state); assert.equal(targets.length, 2); assert.equal(new Set(targets.map(line => line.cadIdentity)).size, 2);
       same(targets.map(line => line.a.x).sort((a, b) => a - b), [100, 130], name + ': copied FIELD refers to matching copied LINE');
       exactOpaque(state, expected); const signature = metadataSignature(state);
-      await saveAs(copy); const prior = readFileSync(copy);
-      await saveInPlace(copy); assert.deepEqual(readFileSync(copy + '.bak'), prior);
+      const copyOrigin = await saveAs(copy); const prior = readFileSync(copy);
+      await saveInPlace(copy, copyOrigin); assert.deepEqual(readFileSync(copy + '.bak'), prior);
       const ids = state.entities.map(entity => entity.id); state = await open(copy);
       assert.ok(state.entities.every(entity => !ids.includes(entity.id))); same(metadataSignature(state), signature, name + ': DWG Save As/Save/fresh reopen');
       exactOpaque(state, expected); assert.equal(objectFieldTargets(state).length, 2);
@@ -418,8 +457,8 @@ export async function runCadMetadataChecks({ app, page, repo, outDir, check, cur
       assert.equal(objectFieldTargets(state).length, 1);
       for (const text of state.entities.filter(entity => entity.type === 'mtext')) assert.equal(boundFields(state, text.id).length, 2);
       const pastedSignature = metadataSignature(state), pastedIds = state.entities.map(entity => entity.id);
-      await saveAs(pasted); const pastedPrior = readFileSync(pasted);
-      await saveInPlace(pasted); assert.deepEqual(readFileSync(pasted + '.bak'), pastedPrior);
+      const pastedOrigin = await saveAs(pasted, 'authored-clipboard'); const pastedPrior = readFileSync(pasted);
+      await saveInPlace(pasted, pastedOrigin); assert.deepEqual(readFileSync(pasted + '.bak'), pastedPrior);
       state = await open(pasted); assert.ok(state.entities.every(entity => !pastedIds.includes(entity.id)));
       same(metadataSignature(state), pastedSignature, name + ': cross-document FIELD paste DWG persistence');
       assert.equal(objectFieldTargets(state).length, 1);
