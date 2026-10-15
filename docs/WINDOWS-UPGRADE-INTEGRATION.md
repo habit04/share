@@ -11,14 +11,32 @@ no installer or release was authorized refer to their earlier source-only stages
 | Milestone | Status / evidence | Required completion |
 | --- | --- | --- |
 | Accepted combined source | COMPLETE at `5290c2b0af065d336bee57750e3ef70257ebad07`; 6,407 local passes, 38 conditional skips, both exact-head five-job CI runs green; source/native/hardware receipts in `WINDOWS-SOURCE-INTEGRATION.md` | Retain attribution; these are not v0.5.1 installer results |
-| Version and notes | v0.5.1 source `34cf871` passed all five jobs in both first-attempt CI runs `38670923802` / `38670926801`; local full suite 6,570 passed / 38 conditional skips, all types/lint/build checks passed | Fresh exact-head CI after the narrow unshipped PE-version verifier correction; Windows only, existing experimental 3D subset and Canvas default retained |
+| Version and notes | v0.5.1 source `d6a2e299` passed all five jobs in both first-attempt CI runs `38736097676` / `38736108652`; source tree `bd9477969ef06d7ad7ac7d91b2fb78b72cd07cab` equals the tested merge tree. Earlier `34cf871` local full suite: 6,570 passed / 38 conditional skips | Fresh exact-head CI after aligning default test concurrency with source CI; Windows only, existing experimental 3D subset and Canvas default retained |
 | Acceptance tooling | Static reviews clear at `34cf871`; real baseline extraction binds 205 files. Actual Windows apps use ProductVersion `0.5.x.0` and FileVersion `0.5.x`; the verifier correction separates app admission from strict installer versions, preserves raw facts and rejects nonzero revisions/wrong FileVersion | Before/after unit reproduction plus 31 upgrade regressions, 107 focused checks and all three TypeScript scopes pass; actual hosted installer execution remains required |
 | Final ordinary folder | PASSED at `34cf871`: native DWG save/backup/reopen, three metadata fixtures, migration/default-optout/restart, 3D worker/DXF save and guarded DWG refusal, GPU20/SHX26/transitions on Intel and NVIDIA | All 1,212 tracked inputs, 14,412 dependency files, helper/dist/build caches and 203 folder files retain exact before/after binding `c2a1910bcb033e193258db297baab08d086308a0346a3b8e63596fedc00970f4`; actual shipping fuses pass. Local unsigned folder proves behavior, not publisher/installer trust |
-| Signed installer build | UNRUN | Existing **Build installers** workflow on the versioned staging branch, empty tag, `require_signing=true`, `native_helper_only=false`; no workflow or credential changes |
+| Signed installer build | BLOCKED before signing: build-only run `38749202551` failed the preliminary Node 22/24 unit-test jobs; downstream test-build, signing, installer build and installed smoke checks were skipped | Correct the test-runner configuration difference, validate with unchanged assertions/deadlines and fresh CI, then use the existing **Build installers** workflow on the staging branch with empty tag, `require_signing=true`, `native_helper_only=false`; no workflow or credential changes |
 | Clean install and upgrade | UNRUN | Disposable hosted Windows only, no AutoCAD; exact installer/app/helper/uninstaller publisher, version, payload and installation identity; actual old-to-new installation over the same target/profile, unrelated settings, recovery copies, backups and reopened drawings preserved |
 | Physical GPU validation | PASSED for the unsigned final folder; UNRUN for the final signed candidate | Statically extract the signed installer without installing on the user's PC; match its entire payload to the CI installation, then serial Intel/NVIDIA GPU20, private genuine SHX26 and sealed GPU/3D transition checks. Hosted/software adapters have separate attribution |
-| Independent acceptance | Local folder static/native evidence PASS: 454 ASAR entries / 127 unpacked / zero links, 218 PNGs bound to raw reports and unchanged folder inputs. Numerical pixelmatch was producer-executed; reviewers did not repeat it | Final signed artifact/installer review remains pending. Synthetic recovery fixture retention and test-ASAR recovery UI stay separately attributed; no claim of old shipping-process dirty-autosave generation |
+| Independent acceptance | Local folder static/native evidence PASS: 454 ASAR entries / 127 unpacked / zero links, 218 PNGs bound to raw reports and unchanged folder inputs. The coordinating reviewer independently recomputed all 218 comparisons at their original limits; final manifest SHA-256 `2f6d889e9ec46acb2fb3287f699c03ce1c784a6269cdd6038b468b5be5ada0c5` | Final signed artifact/installer review remains pending. Synthetic recovery fixture retention and test-ASAR recovery UI stay separately attributed; no claim of old shipping-process dirty-autosave generation |
 | Merge and release | NOT STARTED | All required gates clear first; fresh merged/tagged-source release pipeline and downloaded artifact verification. Never use a `v*` tag ref for a build-only rehearsal |
+
+Build-only attempt `38749202551` retained two timeout failures on Node 22 (equal file names
+in separate project folders: 5 seconds; saving 512 project drawings: 15 seconds), plus the
+dense 3D polyface roundtrip's 5-second timeout on Node 24. There was no reported assertion
+mismatch; this is not proof that the application or installer passed. Source CI explicitly
+uses `npm test -- --maxWorkers=2`, while release checks use bare `npm test`. The Vite test
+configuration now gives the bare command the same two-worker default. Installed Vitest
+configuration probes verify that the resolved `forks` pool, isolation, test selection,
+5-second default deadline and 10-second hook deadline are unchanged, and an explicit
+one-worker CLI override still takes effect. The corrected bare `npm test` invocation passed
+locally: 6,574 tests passed, 38 conditional skips, zero failures, 167.30 seconds. All three
+TypeScript scopes and scoped lint passed; a separate production build reproduced all nine
+renderer output files byte-for-byte against the tested folder's frozen inputs. Contention remains a hypothesis until the
+corrected release run passes. Original failed-run logs are retained in
+`.codex-local/combined-package/signed-build-failed-d6a2e29-node{22,24}.log`; pre/post
+configuration and successful test receipts remain in the lead's private
+`.codex-local/combined-package/test-parallelism/` evidence directory;
+no retries, relaxed assertions, increased timeouts or release-workflow changes are used.
 
 Retained rollback installer v0.5.0: SHA-256
 `116845741d59ec0df32a8ef3c29f4ce9f6f1dcfabcb5cadcf96e42d75b884828`,
