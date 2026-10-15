@@ -93,6 +93,9 @@ function cleanScratch() {
 try {
 if (process.platform === 'win32') {
   const installers = files.filter((f) => /\.exe$/i.test(f) && !/[\\/]win-unpacked[\\/]/i.test(f) && !/uninstall/i.test(basename(f)));
+  if (!installers.length && !existsSync(join(dir, 'win-unpacked', `${product}.exe`))) {
+    throw new Error(`packaged-smoke: no installer for ${process.platform} in ${dir}`);
+  }
   if (upgradeRequired) {
     if (installers.length !== 1 || basename(installers[0]) !== `jcad-electrical-${expectedVersion}-win-x64.exe`) {
       throw new Error('Windows installer acceptance requires exactly one versioned Windows x64 NSIS installer; a win-unpacked folder alone is insufficient.');
