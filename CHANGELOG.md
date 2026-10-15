@@ -11,10 +11,22 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-14
+
+### Upgrade notes
+
+- Windows x64 update from v0.5.0. Canvas remains the initial renderer; the experimental 2D GPU
+  candidate requires explicit selection and falls back to complete Canvas rendering.
+- New profiles have 3D tools available without starting a viewport or geometry kernel. Stored
+  opt-outs remain off, and foreign 3D import has its own preference. The existing tested 3D
+  subset remains experimental; paper-space layouts still use the 2D view.
+- Retain the v0.5.0 installer and a profile backup made before updating for rollback. v0.5.0
+  does not understand the separate foreign-import preference; restore the older profile too.
+
 ### Added
 
-- Offer explicit `GPURENDERER GPU` / `GPURENDERER CANVAS` selection in the ordinary Windows
-  build. Canvas remains the default and complete fallback for unsupported drawing content.
+- Offer an experimental 2D GPU candidate through explicit `GPURENDERER GPU` / `GPURENDERER CANVAS`
+  selection in the ordinary Windows build. Canvas remains the default and complete fallback.
 - Label the 3D orientation indicator with upright X, Y and Z letters, keeping end-on axes and
   overlapping projected directions readable during orbit and on high-DPI displays.
 - Make experimental 3D tools available by default for new profiles while keeping the initial
