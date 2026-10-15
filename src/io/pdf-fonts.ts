@@ -1,4 +1,5 @@
 import { supportsNativeTextRun, type NativeFontMetrics } from '../core/text-metrics';
+import { embeddableFontProgram } from './pdf-font-subset';
 
 /** Installed font programs live only in one captured plot, never in a DrawingState. */
 export interface PdfFontFace {
@@ -239,7 +240,11 @@ export function writePdfFontResources(registry: PdfFontRegistry, writer: PdfFont
     writer.set(parent, `<< /Type /Font /Subtype /Type0 /BaseFont /${base} /Encoding /Identity-H /DescendantFonts [${descendant} 0 R] /ToUnicode ${unicode} 0 R >>`);
     writer.set(descendant, `<< /Type /Font /Subtype /CIDFontType2 /BaseFont /${base} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ${descriptor} 0 R /CIDToGIDMap ${cidMap} 0 R /DW ${num(face.metrics.advances[0]! * em)} /W [1 [${widths}]] >>`);
     writer.set(descriptor, `<< /Type /FontDescriptor /FontName /${base} /Flags ${flags} /FontBBox [${face.metrics.fontBounds.map((n) => num(n * em)).join(' ')}] /ItalicAngle ${num(face.italicAngle)} /Ascent ${num(face.ascender * em)} /Descent ${num(face.descender * em)} /CapHeight ${num(face.metrics.capitalHeight * em)} /StemV ${num(50 + face.weight / 10)} /FontFile2 ${fontFile} 0 R >>`);
-    stream(fontFile, face.bytes, ` /Length1 ${face.bytes.byteLength}`);
+    // Priority 12.3: embed a GID-preserving subset of the used glyphs, unless the
+    // program's own OS/2 fsType forbids subsetting or subsetting cannot shrink it
+    // safely — both cases embed the whole program exactly as before.
+    const program = embeddableFontProgram(face.bytes, new Set([...used.codes.values()].map(({ glyph }) => glyph)));
+    stream(fontFile, program, ` /Length1 ${program.byteLength}`);
     const mapping = new Uint8Array((used.codes.size + 1) * 2);
     const entries: string[] = [];
     for (const [code, { cid, glyph }] of used.codes) {
