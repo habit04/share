@@ -7,10 +7,19 @@ priority 12, the font roadmap or certify an installed release.
 The Windows plot bridge reads only installed Windows Fonts files, through the same confined,
 bounded workers as metrics. Programs, permissions and geometry come from one race-checked file
 read. Standalone glyf fonts with installable/editable embedding permissions are accepted.
-A TrueType collection contributes the same face the metrics reader selects (face 0),
-extracted whole by `electron/ttc-extract.cjs`: table bytes are copied verbatim — glyphs,
-metrics, Unicode mappings and OS/2 permissions are preserved and nothing is subset —
-while directory checksums and the head checkSumAdjustment are recomputed for the
+A TrueType collection contributes the face selected for the requested family and
+style: face identities (family name and OS/2 selection bold/italic flags) are probed
+from the name and OS/2 tables only, the matching face is then parsed in full and
+extracted whole by `electron/ttc-extract.cjs`, so metrics, glyph mappings, embedding
+permissions and the embedded program all come from that one face. Selection is
+deterministic: a requested family restricts candidates to that family's faces, a
+requested bold/italic must match the face flags exactly, an unspecified style
+prefers the family's regular face, and a request naming neither family nor style
+keeps face 0. When no face of the family carries the requested style, or no face
+carries the requested family, the previous explicit mismatch failure is reported
+unchanged. Standalone files are unaffected. Extracted table bytes are copied
+verbatim — glyphs, metrics, Unicode mappings and OS/2 permissions are preserved and
+nothing is subset — while directory checksums and the head checkSumAdjustment are recomputed for the
 standalone layout. The extractor is pure and bounded (64 faces, 128 tables, 64 MiB of
 output) and validates collection headers, face offsets and table ranges before copying.
 OS/2 permission versions are interpreted explicitly; full programs satisfy no-subsetting flags.
@@ -34,7 +43,24 @@ follows the [Adobe PDF reference](https://opensource.adobe.com/dc-acrobat-sdk-do
 Unsupported/missing faces or unsupported runs use the existing Helvetica/stroke fallback and
 the plot log reports substitutions. Browser plots keep their existing path. CFF,
 variable/color fonts, uncertain glyph origins, contextual shaping, font subsetting and
-preview/print-only embedding remain open. Real SHX decoding is priority 21. Native tall-glyph
+preview/print-only embedding remain open. Within collection-face selection, what
+remains open is acceptance, not selection. Two refusal causes are confirmed on
+Windows by the lead and are classified separately from collection defects:
+
+- Cambria face 0 (`cambria.ttc`) is refused with "the native capital A glyph must
+  have a known origin and positive yMax", reproduced on the pristine base and on
+  the candidate. It is a per-face data gate in the shared metrics reader, not a
+  collection defect; the gate now applies to the selected face exactly as it did
+  to face 0, and the refusal still ends in the reported fallback.
+- SimSun (`simsun.ttc`, family SimSun, regular) is refused with "glyph point work
+  exceeds the safe limit" through both the metrics and PDF readers on Windows,
+  while Canvas renders the same font. This is a separate cause: the reader
+  eagerly computes bounds for every glyph and this face's total point work passes
+  the safe-work limit. It is remaining 12.1-adjacent work under separate
+  investigation. The point-work limit is a resource safeguard; it is not raised
+  here, and no lazy glyph-work change is made in this milestone.
+
+Real SHX decoding is priority 21. Native tall-glyph
 MTEXT line leading remains approximate even when its font is embedded.
 
 ## Validation
@@ -52,6 +78,19 @@ MTEXT line leading remains approximate even when its font is embedded.
   Restricted and malformed cases use a stubbed save bridge and verify logged fallback.
   They do not perform independent PDF text extraction or exercise the native worker IPC/Plot
   dialog route.
+- Collection-face selection adds eleven regression tests over authored multi-face
+  collections whose faces differ by family and style: bold and cross-family metrics
+  selection (identity proven by subfamily, capital height and win descent),
+  permission checks on the selected face in both directions (a restricted selected
+  face refuses; a restricted face 0 does not block an editable selected face), and
+  preserved face-0/explicit-failure behavior for unspecified and unmatched
+  requests. Ten of the eleven failed on the pre-selection code. One synthetic
+  end-to-end artifact (bold MTEXT run over a two-face collection) was additionally
+  validated outside the writer with pypdf and Poppler: the embedded FontFile2
+  program is byte-identical to the extracted bold face, its BaseFont is the bold
+  face's PostScript name, and both tools extract the plotted text. These are
+  Linux/headless checks over authored fixtures; native Windows Plot/IPC acceptance
+  of selected collection faces remains pending with the lead.
 - 36 resource tests and 17 integration tests use authored font fixtures. They check Unicode/CID
   mapping, program identity, permissions, capture isolation, font budgeting, placement, fallback,
   shared pages and legacy output. No third-party font programs or reference PDFs are tracked.

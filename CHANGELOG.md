@@ -11,6 +11,15 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+### Added
+
+- Windows font metrics and vector PDF embedding now select the TrueType collection
+  face matching the requested family and style (priority 12.1), instead of always
+  using face 0. Metrics, glyph mappings, embedding permissions and the embedded
+  program all come from the selected face; requests naming no family or style keep
+  face 0, and unmatched family/style requests keep the existing explicit failures.
+  Native Windows Plot/IPC acceptance of selected faces remains pending.
+
 ## [0.5.2] - 2026-10-15
 
 ### Upgrade notes
