@@ -17,6 +17,8 @@ export interface NativeFontFixtureOptions {
   composite?: boolean;
   compositeFlags?: number;
   extraGlyphs?: readonly Buffer[];
+  /** Additional single-code BMP cmap format 4 segments: [codepoint, glyph] pairs, codes >= 0x100, non-overlapping. */
+  cmapExtra?: readonly (readonly [number, number])[];
   bitmapGlyphRange?: readonly [number, number];
 }
 
@@ -46,17 +48,48 @@ export function compositeGlyph(child: number, box: Box, flags = 2): Buffer {
   return data;
 }
 
-function cmap4(rangeOffset: boolean, missingB: boolean): Buffer {
-  const data = Buffer.alloc(rangeOffset ? 44 : 40);
-  data.writeUInt16BE(4, 0); data.writeUInt16BE(data.length, 2); data.writeUInt16BE(6, 6);
-  data.writeUInt16BE(4, 8); data.writeUInt16BE(1, 10); data.writeUInt16BE(2, 12);
-  [32, 66, 0xffff].forEach((value, i) => data.writeUInt16BE(value, 14 + i * 2));
-  [32, 65, 0xffff].forEach((value, i) => data.writeUInt16BE(value, 22 + i * 2));
-  [-31, rangeOffset ? 1 : -63, 1].forEach((value, i) => data.writeInt16BE(value, 28 + i * 2));
+function cmap4(rangeOffset: boolean, missingB: boolean, extra: readonly (readonly [number, number])[] = []): Buffer {
+  const segments = [
+    { start: 32, end: 32, delta: -31, range: false },
+    { start: 65, end: 66, delta: rangeOffset ? 1 : -63, range: rangeOffset },
+    ...extra.map(([code, glyph]) => ({ start: code, end: code, delta: glyph - code, range: false })),
+    { start: 0xffff, end: 0xffff, delta: 1, range: false },
+  ].sort((a, b) => a.end - b.end);
+  const count = segments.length, segBytes = count * 2;
+  const data = Buffer.alloc(16 + count * 8 + (rangeOffset ? 4 : 0));
+  const selector = Math.floor(Math.log2(count)), searchRange = 2 ** selector * 2;
+  data.writeUInt16BE(4, 0); data.writeUInt16BE(data.length, 2);
+  data.writeUInt16BE(segBytes, 6); data.writeUInt16BE(searchRange, 8); data.writeUInt16BE(selector, 10); data.writeUInt16BE(segBytes - searchRange, 12);
+  segments.forEach((segment, i) => data.writeUInt16BE(segment.end, 14 + i * 2));
+  segments.forEach((segment, i) => data.writeUInt16BE(segment.start, 16 + segBytes + i * 2));
+  segments.forEach((segment, i) => data.writeInt16BE(segment.delta, 16 + segBytes * 2 + i * 2));
+  segments.forEach((segment, i) => data.writeUInt16BE(segment.range ? 4 : 0, 16 + segBytes * 3 + i * 2));
   if (rangeOffset) {
-    data.writeUInt16BE(4, 36);
-    data.writeUInt16BE(1, 40);
-    data.writeUInt16BE(missingB ? 0 : 2, 42);
+    const glyphAt = 16 + segBytes * 4;
+    data.writeUInt16BE(1, glyphAt);
+    data.writeUInt16BE(missingB ? 0 : 2, glyphAt + 2);
+  }
+  return data;
+}
+
+/**
+ * One contour whose points all sit on one corner of the stored box: real point
+ * work for the parser's decode/validate pass, at minimal byte cost, because a
+ * zero-delta flag run encodes 256 points in two bytes. A glyph holds at most
+ * 65,536 points (uint16 contour endpoints), so over-cap faces are assembled
+ * from many such glyphs rather than one huge glyph.
+ */
+export function manyPointGlyph(points: number, box: Box = [0, 0, 100, 100]): Buffer {
+  if (!Number.isInteger(points) || points < 1 || points > 65536) throw new Error('Invalid many-point glyph size');
+  const runs = Math.ceil(points / 256), data = Buffer.alloc(14 + runs * 2);
+  data.writeInt16BE(1, 0);
+  box.forEach((value, index) => data.writeInt16BE(value, 2 + index * 2));
+  data.writeUInt16BE(points - 1, 10);
+  data.writeUInt16BE(0, 12);
+  let position = 14;
+  for (let remaining = points; remaining > 0; remaining -= 256) {
+    data[position++] = 0x39; // on-curve, repeat-run, zero x/y deltas
+    data[position++] = Math.min(remaining, 256) - 1;
   }
   return data;
 }
@@ -130,7 +163,7 @@ export function nativeFontFixture(options: NativeFontFixtureOptions = {}): Buffe
     if (options.shortLoca) loca.writeUInt16BE(position / 2, i * 2); else loca.writeUInt32BE(position, i * 4);
     position += glyphs[i]?.length ?? 0;
   }
-  const sub4 = cmap4(!!options.rangeOffset, !!options.missingB), sub12 = options.format12 || options.onlyFormat12 ? cmap12() : null;
+  const sub4 = cmap4(!!options.rangeOffset, !!options.missingB, options.cmapExtra ?? []), sub12 = options.format12 || options.onlyFormat12 ? cmap12() : null;
   const encodingCount = options.onlyFormat12 ? 1 : sub12 ? 2 : 1, headerLength = 4 + encodingCount * 8, cmap = Buffer.alloc(headerLength + (options.onlyFormat12 ? 0 : sub4.length) + (sub12?.length ?? 0));
   cmap.writeUInt16BE(encodingCount, 2);
   if (!options.onlyFormat12) { cmap.writeUInt16BE(3, 4); cmap.writeUInt16BE(1, 6); cmap.writeUInt32BE(headerLength, 8); sub4.copy(cmap, headerLength); }
