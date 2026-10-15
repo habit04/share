@@ -56,7 +56,7 @@ function directory(bytes: Uint8Array): Map<string, TableRange> {
 
 function table(tables: Map<string, TableRange>, tag: string, length: number): TableRange {
   const found = tables.get(tag);
-  if (!found || found.length < length) fail(`missing or truncated ${tag} table`);
+  if (!found || found.length < length) return fail(`missing or truncated ${tag} table`);
   return found;
 }
 
