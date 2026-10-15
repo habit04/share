@@ -1,5 +1,117 @@
 # Windows JCad upgrade: verified work and integration plan
 
+## Current v0.5.1 acceptance stage
+
+The long feature roadmap remains paused. The integration lead owns the existing
+`integration/windows-pr18-pr19-source` branch and isolated worktree. Direct human approval
+in the linked coordination session authorizes package validation, then installer validation,
+then merge/publication only after the required gates pass. Historical statements below that
+no installer or release was authorized refer to their earlier source-only stages.
+
+| Milestone | Status / evidence | Required completion |
+| --- | --- | --- |
+| Accepted combined source | COMPLETE at `5290c2b0af065d336bee57750e3ef70257ebad07`; 6,407 local passes, 38 conditional skips, both exact-head five-job CI runs green; source/native/hardware receipts in `WINDOWS-SOURCE-INTEGRATION.md` | Retain attribution; these are not v0.5.1 installer results |
+| Version and notes | v0.5.1 source `8ae7e64` passed all five jobs in both first-attempt CI runs `38763383194` / `38763389203`; source tree `380bb28de1fe334a1d6e65829e6469e94ca98e61` equals the tested merge tree. Earlier bare local full suite: 6,574 passed / 38 conditional skips | Fresh exact-head CI after the registry-adapter correction; Windows only, existing experimental 3D subset and Canvas default retained |
+| Acceptance tooling | Static reviews clear at `34cf871`; real baseline extraction binds 205 files. Actual Windows apps use ProductVersion `0.5.x.0` and FileVersion `0.5.x`; the verifier correction separates app admission from strict installer versions, preserves raw facts and rejects nonzero revisions/wrong FileVersion | Before/after unit reproduction plus 31 upgrade regressions, 107 focused checks and all three TypeScript scopes pass; actual hosted installer execution remains required |
+| Final ordinary folder | PASSED at `34cf871`: native DWG save/backup/reopen, three metadata fixtures, migration/default-optout/restart, 3D worker/DXF save and guarded DWG refusal, GPU20/SHX26/transitions on Intel and NVIDIA | All 1,212 tracked inputs, 14,412 dependency files, helper/dist/build caches and 203 folder files retain exact before/after binding `c2a1910bcb033e193258db297baab08d086308a0346a3b8e63596fedc00970f4`; actual shipping fuses pass. Local unsigned folder proves behavior, not publisher/installer trust |
+| Signed installer build | PASSED at `8ae7e64` in build-only run `38766877671`: both release checks, Windows test build, signed NSIS build and artifact verification passed. Downloaded installer: 154,124,520 bytes, SHA-256 `f1f90acd4b3c3df821f8da86bb690a566edc2eec18a8981e4edc9edffd705d60`, Authenticode Valid from Justin Rodriguez, exact v0.5.1; local provenance equals CI's verified aggregate | Correct the upgrade registry adapter and rerun the existing **Build installers** workflow after fresh CI; staging branch, empty tag, `require_signing=true`, `native_helper_only=false`; no workflow or credential changes |
+| Clean install and upgrade | PARTIAL: `38766877671` actually installed the candidate on disposable hosted Windows. Fixed shipping runtime/DWG/migration/3D gates and both hosted software GPU checks passed. Upgrade preflight then failed `Installed uninstall registration identity missing`; old-to-new upgrade and rollback remain UNRUN | Disposable hosted Windows only, no AutoCAD; exact installer/app/helper/uninstaller publisher, version, payload and installation identity; actual old-to-new installation over the same target/profile, unrelated settings, recovery copies, backups and reopened drawings preserved |
+| Physical GPU validation | PASSED for the unsigned final folder; UNRUN for the final signed candidate | Statically extract the signed installer without installing on the user's PC; match its entire payload to the CI installation, then serial Intel/NVIDIA GPU20, private genuine SHX26 and sealed GPU/3D transition checks. Hosted/software adapters have separate attribution |
+| Independent acceptance | Local folder static/native evidence PASS: 454 ASAR entries / 127 unpacked / zero links, 218 PNGs bound to raw reports and unchanged folder inputs. The coordinating reviewer independently recomputed all 218 comparisons at their original limits; final manifest SHA-256 `2f6d889e9ec46acb2fb3287f699c03ce1c784a6269cdd6038b468b5be5ada0c5` | Final signed artifact/installer review remains pending. Synthetic recovery fixture retention and test-ASAR recovery UI stay separately attributed; no claim of old shipping-process dirty-autosave generation |
+| Merge and release | NOT STARTED | All required gates clear first; fresh merged/tagged-source release pipeline and downloaded artifact verification. Never use a `v*` tag ref for a build-only rehearsal |
+
+Build-only attempt `38749202551` retained two timeout failures on Node 22 (equal file names
+in separate project folders: 5 seconds; saving 512 project drawings: 15 seconds), plus the
+dense 3D polyface roundtrip's 5-second timeout on Node 24. There was no reported assertion
+mismatch; this is not proof that the application or installer passed. Source CI explicitly
+uses `npm test -- --maxWorkers=2`, while release checks use bare `npm test`. The Vite test
+configuration now gives the bare command the same two-worker default. Installed Vitest
+configuration probes verify that the resolved `forks` pool, isolation, test selection,
+5-second default deadline and 10-second hook deadline are unchanged, and an explicit
+one-worker CLI override still takes effect. The corrected bare `npm test` invocation passed
+locally: 6,574 tests passed, 38 conditional skips, zero failures, 167.30 seconds. All three
+TypeScript scopes and scoped lint passed; a separate production build reproduced all nine
+renderer output files byte-for-byte against the tested folder's frozen inputs. Both corrected
+release unit-test jobs subsequently passed on Node 22 and 24 in `38757062942`, with their
+original deadlines; the later image-name failure is a separate pre-install guard defect.
+Original failed-run logs are retained in
+`.codex-local/combined-package/signed-build-failed-d6a2e29-node{22,24}.log`; pre/post
+configuration and successful test receipts remain in the lead's private
+`.codex-local/combined-package/test-parallelism/` evidence directory;
+no retries, relaxed assertions, increased timeouts or release-workflow changes are used.
+
+The signed installer's complete 205-file payload was statically extracted and inventoried
+without executing it; inventory SHA-256 is
+`3cec5e9bc899e1362ea7f701d55084265ac4ffe8258ddd0f3f2a06bb5c58573f` and the actual six
+shipping fuses pass. This is distinct from the tested 203-file unsigned folder. Its hosted
+independent static review passed at frozen `705670c`, binding all 454 ASAR entries,
+127 unpacked entries, 18 production package versions and classified signing/build/archive
+metadata differences to the tested reference and source. Receipt SHA-256:
+`dbc6d15a53f06bf400eb9298fb0cf145344f6d564fbed07b8829c621758bd354`.
+This review did not reconstruct the absent original native crate or run the application.
+The hosted smoke run then rejected `win25-vs2026` against the old `^win\d+$` guard. The raw assertion
+value and setup image agree; GitHub's [official image configuration](https://github.com/actions/runner-images/blob/main/helpers/GenerateResourcesAndImage.ps1)
+maps Windows 2025 / Visual Studio 2026 to that exact value. Admission now adds only this
+literal variant while preserving the earlier Windows identifiers and every platform,
+architecture, hosted-runner, repository, workflow/job, source/run, account and private-path
+requirement. A red regression reproduced the failure before repair. The 33 upgrade,
+63 payload, 7 renderer-hardening and 32 packaged-smoke/fuse-policy checks now pass (135
+total); all three TypeScript scopes and scoped lint pass. Host identifiers with altered
+case, suffixes, whitespace or missing trust markers still fail closed. Actual hosted
+installation, upgrade and restored-profile rollback remain unrun until the corrected gate
+passes. No local native validation of this signed payload has started.
+
+The next build-only run `38766877671` accepted the corrected hosted image and actually
+installed the signed candidate. Its ordinary shipping runtime and both fixed hosted GPU
+checks passed. The outer smoke wrapper's generic failure label does not identify the failed
+stage: `upgrade/windows-upgrade-result.json` and `packaged-smoke-result.json` record an
+upgrade-preflight registry failure, before baseline acquisition or upgrade/rollback operations.
+The filtered empty inventory is not evidence that NSIS failed to register the application.
+The pinned builder defaults DisplayName to `JCad Electrical ${version}` and stores
+InstallLocation in `Software\\c1233997-d5fc-5715-924c-8a725ad91ad6`, separately from its
+uninstall key. The adapter had expected the plain product name and read the wrong key.
+It now enumerates all four views, pairs the fixed application key within the same hive/view,
+and admits only the pinned app key, exact plain or versioned name, baseline/candidate
+version and exact owned absolute path. Missing paired keys, unknown JCad registrations,
+conflicting paths and duplicate or moved identities still fail; icons and registry command
+strings never supply ownership. Multiple legitimate view rows remain supported.
+
+The original production predicate was reproduced over an in-memory NSIS-format fixture:
+it hid the versioned registration and returned no uninstall-key InstallLocation. The corrected
+query passes Windows PowerShell's actual parser and runs unchanged except for its registry
+factory against private in-memory keys; all four views complete and the paired application
+path is selected. These are fixture checks, not actual upgrade/rollback results. The 38
+upgrade, 63 payload, 7 renderer-hardening and 32 packaged-smoke/fuse-policy checks pass
+(140 total), as do all three TypeScript scopes and scoped lint. An independent read-only
+review clears the UUID derivation, same-view pairing and preserved admission guards.
+The initial sandbox-only targeted attempt retained three filesystem-permission failures;
+the full focused suite passes with private worktree TEMP and normal Windows filesystem
+semantics. No assertions, deadlines, installer configuration or workflows changed.
+
+The latest signed payload's independent static delta review binds 205 files, 454 ASAR
+entries, 127 unpacked entries and 18 production package versions; receipt SHA-256
+`3b07cc3dec72b38861470267d81eb25f6eb20b90ab5d28e1ec68056f67787162`.
+Its inventory SHA-256 is `3c7c36a7c5a027f224bb9712fc7f5d02ea0543d06aca09ea80d21e124bf82342`.
+Signed-candidate physical GPU gates remain held until actual hosted upgrade and restored-
+profile rollback pass. No installer has run on the user's PC; no merge, tag or publication
+has occurred. Earlier signed-payload and guard receipts above remain historical evidence.
+
+Retained rollback installer v0.5.0: SHA-256
+`116845741d59ec0df32a8ef3c29f4ce9f6f1dcfabcb5cadcf96e42d75b884828`,
+154,080,840 bytes, Authenticode Valid from Justin Rodriguez. It has not been executed on
+the user's PC. Rollback also needs the pre-upgrade private profile snapshot: v0.5.0 does
+not understand the separate foreign-import preference. Preserve both pre-upgrade and
+post-upgrade profiles before testing a downgrade. Restored-profile rollback is distinct
+from universal installer-only preference compatibility.
+
+Production inspection fuses remain disabled. Broad crash/project recovery UI checks use
+the separately labelled unpublished test ASAR. Genuine SHX programs remain private and
+are never uploaded or bundled. Existing GPU accuracy limits, native metadata fixed points,
+timeouts and save refusals stay intact. No user installation, profile or original drawing
+is part of these tests. Full AutoCAD 3D parity and the remaining feature list are separate work.
+
+## Historical integration checkpoints
+
 Current integration checkpoint: #24 is complete and frozen; the long 2D roadmap
 is paused. One lead owns the combined candidate on this branch. The linked
 "JCad integration coordination" session owns the final GPU handoff and has been

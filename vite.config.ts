@@ -40,6 +40,8 @@ export default defineConfig(({ command, mode }) => {
     define: { __APP_VERSION__: JSON.stringify(pkg.version), __JCAD_WEB__: JSON.stringify(web), __JCAD_GPU_EXPERIMENTAL__: JSON.stringify(mode === 'gpu-experimental') },
     build: { outDir: mode === 'site' ? 'site-dist/app' : 'dist', emptyOutDir: true, target: 'chrome120' },
     server: { port: mode === 'gpu-experimental' ? 5189 : 5173, strictPort: true },
-    test: { environment: 'node', include: ['tests/**/*.test.ts'] },
+    // Keep bare `npm test` (release checks) at the same concurrency as source CI.
+    // Geometry and project-save regressions retain their original deadlines and isolation.
+    test: { environment: 'node', include: ['tests/**/*.test.ts'], maxWorkers: 2 },
   };
 });

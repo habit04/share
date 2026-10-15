@@ -35,8 +35,9 @@ afterEach(() => {
 });
 
 describe('experimental 3D flag', () => {
-  it('is off by default, and then changes nothing: same ribbon, same command list', () => {
+  it('an explicit opt-out changes nothing: same ribbon, same command list', () => {
     const ed = new Editor(canvas());
+    ed.settings = { ...ed.settings, experimental3d: false };
     expect(ed.settings.experimental3d).toBe(false);
     const ribbonBefore = JSON.stringify(RIBBON);
     const tabsBefore = RIBBON.length;
@@ -47,6 +48,18 @@ describe('experimental 3D flag', () => {
     expect(RIBBON.some((t) => t.name === '3D')).toBe(false);
     expect([...ed.commands.keys()].sort()).toEqual(commandsBefore);
     for (const c of THREE_D_COMMANDS) expect(ed.commands.has(c), c).toBe(false);
+  });
+
+  it('makes tools available by default without creating a viewport or starting the kernel', () => {
+    const ed = new Editor(canvas());
+    expect(ed.settings.experimental3d).toBe(true);
+    expect(ed.settings.importForeign3d).toBe(false);
+    const c = installExperimental3d(ed)!;
+    expect(c.active).toBe(false);
+    expect(c.viewport).toBeNull();
+    expect(c.kernelStarted).toBe(false);
+    expect(RIBBON.some((tab) => tab.name === '3D')).toBe(true);
+    expect(ed.commands.has('3DVIEW')).toBe(true);
   });
 
   it('when on, registers the 3D commands and appends the 3D ribbon tab once', () => {

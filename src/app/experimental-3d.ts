@@ -949,7 +949,7 @@ function sameMarker(a: { point: Vec3; kind: Snap3DKind } | null, b: { point: Vec
 }
 
 /** Register the 3D commands on `editor`. */
-function registerCommands(editor: Editor, c: Experimental3d): void {
+function registerCommands(editor: Editor, c: Experimental3d, registered3dTools: WeakSet<Tool>): void {
   const reg = (name: string, aliases: string[], description: string, run: (ed: Editor, arg?: string) => void | Promise<void>, startsTool = false) =>
     editor.register({ name, aliases, description, run, startsTool });
   reg('3DMODE', [], 'Experimental: switch model space between the 2D view and the 3D viewport', () => {
@@ -978,7 +978,9 @@ function registerCommands(editor: Editor, c: Experimental3d): void {
   // (on the WCS XY plane, z = 0).
   const tool = (name: string, aliases: string[], description: string, make: (arg?: string) => Tool) =>
     reg(name, aliases, `Experimental: ${description}`, (ed, arg) => {
-      void ed.startTool(make(arg));
+      const instance = make(arg);
+      registered3dTools.add(instance);
+      void ed.startTool(instance);
     });
   tool('BOX', [], 'solid box [Center/Cube/Length/2Point]', boxTool);
   tool('WEDGE', ['WE'], 'solid wedge [Center/Cube/Length/2Point]', wedgeTool);
@@ -1012,11 +1014,12 @@ function registerCommands(editor: Editor, c: Experimental3d): void {
 }
 
 /**
- * "Select objects:" keywords with the flag on: ALL also takes the visible solids and 3D dimensions,
- * and a solid's or 3D dimension's id (as `jcad3d.solidIds()` / `dimensionIds()` list them) takes
- * it. Everything else goes to the 2D handler.
+ * "Select objects:" keywords with the flag on: ALL also takes visible solids and 3D dimensions
+ * while the 3D view or an explicitly registered 3D tool is active. Generic 2D commands must not
+ * select retained objects the 2D view does not display. A typed solid or dimension id still
+ * expresses an intentional selection in either view.
  */
-function extendSelectionKeywords(editor: Editor): void {
+function extendSelectionKeywords(editor: Editor, controller: Experimental3d, registered3dTools: WeakSet<Tool>): void {
   const base = editor.selectionKeyword;
   editor.selectionKeyword = (text, ids) => {
     const handled = base ? base(text, ids) : false;
@@ -1026,6 +1029,7 @@ function extendSelectionKeywords(editor: Editor): void {
     const dims = model3dOf(state).dimensions ?? [];
     if (t.toUpperCase() === 'ALL') {
       if (!base) for (const e of editor.doc.entities) ids.add(e.id);
+      if (!controller.active && !(editor.tool && registered3dTools.has(editor.tool))) return true;
       const hidden = hiddenLayerNames(state.layers);
       for (const s of solids) if (!hidden.has(s.layer)) ids.add(s.id);
       for (const d of dims) if (!hidden.has(d.layer)) ids.add(d.id);
@@ -1052,9 +1056,10 @@ export function installExperimental3d(editor: Editor): Experimental3d | null {
   // was loaded with; never re-read later.
   const testHooks = kernelTestHooksRequested();
   c.kernelFactory = () => createDefaultKernel({ testHooks });
-  registerCommands(editor, c);
+  const registered3dTools = new WeakSet<Tool>();
+  registerCommands(editor, c, registered3dTools);
   editor.toolContextExtension = (ctx) => extendContext3d(ctx, c.source);
-  extendSelectionKeywords(editor);
+  extendSelectionKeywords(editor, c, registered3dTools);
   // Outside 3D mode nothing else ends the kernel's life, so a Boolean run from the 2D view releases
   // its worker and WebAssembly memory as soon as its command ends (3D mode disposes it on exit).
   editor.on('tool', () => {

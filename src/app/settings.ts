@@ -77,10 +77,12 @@ export interface UserSettings {
   language: LanguageSetting;
   // --- Experimental
   /**
-   * Experimental 3D modelling (unfinished; off by default). Gates the 3D commands and view while
-   * the feature is incomplete; a drawing's 3D content is kept whatever this setting says.
+   * Make experimental 3D tools available at startup. On by default; the initial view stays 2D
+   * and creates no 3D renderer or kernel. A drawing's 3D content is kept either way.
    */
   experimental3d: boolean;
+  /** Interpret foreign polyfaces and tilted dimensions as editable 3D; separate from tool availability. */
+  importForeign3d: boolean;
 }
 
 export const SETTINGS_KEY = 'jcad.settings.v2';
@@ -139,7 +141,8 @@ export const DEFAULT_SETTINGS: UserSettings = {
   commandWindowVisible: true,
   recentInput: [],
   language: 'auto',
-  experimental3d: false,
+  experimental3d: true,
+  importForeign3d: false,
 };
 
 const RANGES: Partial<Record<keyof UserSettings, [number, number]>> = {
@@ -192,6 +195,9 @@ export function normalizeSettings(input: unknown): UserSettings {
       out[key] = typeof v === 'string' && ENUMS[key]?.includes(v) ? v : def;
     }
   }
+  // Older explicit opt-ins also enabled foreign 3D import. Preserve that choice without
+  // applying it to new profiles or overwriting an explicit new import preference.
+  if (!Object.prototype.hasOwnProperty.call(src, 'importForeign3d') && src.experimental3d === true) out.importForeign3d = true;
   return out as unknown as UserSettings;
 }
 

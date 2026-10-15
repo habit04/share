@@ -24,12 +24,12 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
       dropped: total('dropped'), simplified: total('simplified'), unsupported: total('unsupported'), kept: total('kept'),
       layoutsKept: report.counts.LAYOUT?.kept ?? 0, counts: report.counts };
   });
-  // This fixed control's foreign polyface is retained raw with Experimental 3D off.
+  // This fixed control's foreign polyface is retained raw with foreign 3D import off.
   // All original pairs stay exact. Compare raw source data before No, then check
   // only the proven model-owner rebind and absent structural follower owners on reopen.
   const lossPolyface = (requireOwners = false) => page.evaluate(requireOwners => {
     const ed = window.editor, graph = ed.doc.snapshot.cadGraph;
-    if (!graph || ed.settings.experimental3d) throw new Error('The loss control requires the default-off retained source graph.');
+    if (!graph || (ed.settings.experimental3d && ed.settings.importForeign3d)) throw new Error('The loss control requires the foreign-import-off retained source graph.');
     const model = graph.nodes.find(node => node.type === 'BLOCK_RECORD' && node.groups.some(([code, value]) => code === 2 && value === '*Model_Space'));
     const handles = ['107', '108', '109', '10A', '10B', '10C'];
     const ordered = graph.nodes.filter(node => handles.includes(node.sourceHandle));

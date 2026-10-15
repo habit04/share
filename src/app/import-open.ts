@@ -13,8 +13,8 @@ export type Confirm = (title: string, message: string) => Promise<boolean>;
 /**
  * Read a DXF file for OPEN. A file that ends early asks "open what was readable?" and, on yes,
  * opens the readable part marked as recovered; null = the user declined. Other damage throws
- * the reader's DxfReadError (its message says what and where). `model3d` is the experimental 3D
- * setting: polyface meshes of other programs become mesh solids only when it is on (JCad's own 3D
+ * the reader's DxfReadError (its message says what and where). `model3d` is the foreign 3D import
+ * preference: polyface meshes of other programs become mesh solids only when it is on (JCad's own 3D
  * solids are read either way; see io/dxf/mesh3d-read.ts).
  */
 export async function readDxfForOpen(text: string, path: string | null, confirm: Confirm, model3d = false): Promise<DrawingState | null> {

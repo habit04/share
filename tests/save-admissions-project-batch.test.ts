@@ -117,8 +117,17 @@ describe.runIf(process.platform === 'win32')('Native project manifest and cohere
   it('shares aggregate input and native-pin character budgets across parents', async () => {
     const f = await setup(2, { maxBatchInputBytes: 10 }), parent = f.issue(); await f.bind(parent, [f.files[0]!]);
     const other = {}, second = f.host.issueProjectBatch(other); await expect(f.host.bindProjectBatch(second, other, [f.files[1]!])).rejects.toMatchObject({ code: 'ERR_SAVE_BATCH_LIMIT' });
-    const limited = await setup(1, { maxBatchPinChars: 100 }); await expect(limited.bind(limited.issue())).rejects.toMatchObject({ code: 'ERR_SAVE_BATCH_LIMIT' });
-    expect(limited.host.stats().batchPinChars).toBe(0);
+    // Admit the logical fixture path even in a deep worktree, then exhaust the
+    // retained native-pin budget. mkdtemp appends exactly six characters.
+    const logicalChars = path.join(privateRoot, 'case-XXXXXX', 'Source0.dxf').length;
+    const identity = createWindowsPathIdentity();
+    const capture = vi.fn((file: string, root: string) => identity.captureWriteTarget(file, root));
+    const limited = await setup(1, { maxBatchPinChars: logicalChars, identity: { ...identity, captureWriteTarget: capture } });
+    expect(limited.files[0]!.length).toBe(logicalChars);
+    await expect(limited.bind(limited.issue())).rejects.toMatchObject({ code: 'ERR_SAVE_BATCH_LIMIT' });
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(capture).toHaveBeenCalledWith(limited.files[0], limited.root);
+    expect(limited.host.stats()).toMatchObject({ batchPinChars: 0, batchParents: 0, batchChildren: 0, batchInputBytes: 0, ledger: 0 });
   });
   it.each(['edit', 'replace', 'case'])('refuses original source %s between manifest and held-reader allocation', async (change) => {
     const f = await setup(1), parent = f.issue(), manifest = await f.bind(parent), reader = vi.fn();

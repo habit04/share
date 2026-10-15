@@ -1,9 +1,14 @@
 # Experimental 3D viewport (milestone 2)
 
-Status: **experimental, off by default.** Everything here is inert unless
-**Options > Files > Experimental: 3D modelling (restart required)** (setting `experimental3d`)
-was on when the app started. With the flag off no 3D command is registered, the ribbon has no 3D
-tab, no canvas or WebGL context is created (`tests/experimental-3d-flag.test.ts`).
+Status: **experimental, tools available by default for new profiles.** Drawings start in the
+2D Canvas view; the 3D canvas and kernel are created only when needed. The 3D ribbon is ready
+without an opt-in restart. Existing explicit opt-outs remain respected. Disable tools under
+**Options > Files > Experimental: 3D modelling (restart required)** (setting `experimental3d`).
+With tools disabled no 3D command or ribbon is registered (`tests/experimental-3d-flag.test.ts`).
+Foreign 3D mesh/dimension import is a separate, optional setting (`importForeign3d`), off for
+new profiles. Previous explicit 3D opt-ins retain their import behavior. Own JCad 3D content is
+always preserved. Generic 2D selection does not include retained 3D objects hidden from Canvas;
+active 3D views and explicit 3D commands can select them.
 
 ## Using it
 
@@ -22,7 +27,8 @@ middle double-click zooms extents, left click selects the solid under the cursor
 a click on empty space clears; ids go into `editor.selection`), rollover highlights the solid
 under the cursor. The ribbon tab **3D** has View (Top, Front, Right, SW Iso, SE Iso, Perspective,
 Orbit, Zoom Extents, 3D Mode) and Test (3D Demo). A label at the top right names the view and
-projection; a WCS triad sits at the lower left (X red, Y green, Z blue).
+projection; a WCS triad sits at the lower left with upright **X** (red), **Y** (green) and **Z**
+(blue) labels. Labels remain visible for end-on axes and separate when projected tips overlap.
 
 ## Code map
 

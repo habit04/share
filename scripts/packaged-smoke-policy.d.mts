@@ -1,6 +1,10 @@
 import type { SpawnSyncReturns } from 'node:child_process';
 export function needsPackagedOrigin(version: string): boolean;
 export function needsExperimental3d(version: string): boolean;
+export function needsDefault3dTools(version: string): boolean;
+export function requiresShippingFuses(version: string, options?: { platform?: string; explicit?: boolean }): boolean;
+export function shipping3dProbePhases(version: string, options?: { source?: boolean }): string[];
+export function default3dToolsProbeSucceeded(record: unknown): boolean;
 export function experimental3dProbeSucceeded(record: unknown): boolean;
 export function needsPortableDwgExport(version: string, platform?: string): boolean;
 export function needsPortableDwgSave(version: string, platform?: string): boolean;

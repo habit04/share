@@ -103,11 +103,14 @@ describe('Electron fuses (package.json build.electronFuses, scripts/electron-fus
   it('the packaged smoke test verifies shipping fuses before fixed probes and never unlocks inspection', () => {
     const smoke = readFileSync(join(root, 'scripts', 'packaged-smoke.mjs'), 'utf8');
     const check = smoke.indexOf("await verifyExecutableFuses(t.executable, 'shipping')");
+    const dwg = smoke.indexOf('const probe = spawnSync(t.executable, probeArgs');
     const runtime = smoke.indexOf("join(repo, 'scripts', 'shipping-runtime-smoke.mjs')");
     expect(check).toBeGreaterThan(0);
+    expect(dwg).toBeGreaterThan(check);
     expect(runtime).toBeGreaterThan(check);
     expect(smoke).not.toMatch(/allowInspectForTests|flipFuses/);
     expect(smoke).toContain("JCAD_SMOKE_REQUIRE_SHIPPING === '1'");
-    expect(smoke).toContain('const ok = probeOk && childSucceeded(runtime);');
+    expect(smoke).toMatch(/(?:const|let) ok = probeOk && childSucceeded\(runtime\);/);
+    expect(smoke).toContain('requiresShippingFuses(expectedVersion');
   });
 });

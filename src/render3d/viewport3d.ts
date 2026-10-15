@@ -44,6 +44,7 @@ import { type GridSpec, type Rgba, LineBatchBuilder, gridLines, gridSpec, parseC
 import { emitDrawingUnderlay, hiddenLayerNames } from './scene-sink';
 import { type Dimension3DHit, dimension3dGeometry, dimensionInFront, pickDimension3DHit, visibleDimensions3D } from './dimension3d-scene';
 import { GRIP_EDGE_RGBA, GRIP_FILL_RGBA, type MarkerKind, SNAP_MARKER_RGBA, type Segment2, gripSegments, markerSegments } from './markers';
+import { AXIS_TRIAD, TRIAD_PAD_PX, TRIAD_PX, axisTriadLabels } from './axis-triad';
 
 /** What changes between frames without changing the document. */
 export interface Viewport3DOverlay {
@@ -92,9 +93,6 @@ const AMBIENT = 0.35;
 /** Ghost (preview) solids: face opacity and edge colour. */
 const GHOST_ALPHA = 0.3;
 const GHOST_EDGE: Rgba = [1, 0.85, 0.35, 0.9];
-/** Corner triad size in CSS pixels. */
-const TRIAD_PX = 76;
-
 export class Viewport3D {
   readonly canvas: HTMLCanvasElement;
   readonly device: GpuDevice;
@@ -515,9 +513,7 @@ export class Viewport3D {
   private ensureTriad(): LineBatchGpu | null {
     if (this.triad) return this.triad;
     const b = new LineBatchBuilder();
-    b.add(v3(0, 0, 0), v3(1, 0, 0), [0.95, 0.3, 0.3, 1]);
-    b.add(v3(0, 0, 0), v3(0, 1, 0), [0.35, 0.9, 0.35, 1]);
-    b.add(v3(0, 0, 0), v3(0, 0, 1), [0.4, 0.55, 1, 1]);
+    for (const axis of AXIS_TRIAD) b.add(v3(0, 0, 0), axis.direction, axis.color);
     this.triad = this.uploadLines(b.build());
     return this.triad;
   }
@@ -663,14 +659,23 @@ export class Viewport3D {
       }
     }
 
-    // Screen-space marks on top of everything: grips of the selected solid, the 3D snap marker.
+    // Upright axis labels share the existing persistent screen-space marker buffer.
+    const triadSize = Math.round(TRIAD_PX * this.dpr), triadPad = Math.round(TRIAD_PAD_PX * this.dpr);
+    const axisLabels = axisTriadLabels(cam, triadSize / this.dpr);
+    // Screen-space marks on top of everything: axis labels, grips and the 3D snap marker.
     const grips = ov.grips3d ?? [];
     const snap = ov.snap3d ?? null;
-    if (grips.length || snap) {
+    if (axisLabels.length || grips.length || snap) {
       const mb = new LineBatchBuilder();
       const add = (segs: readonly Segment2[], c: Rgba) => {
         for (const [x1, y1, x2, y2] of segs) mb.add(v3(x1, H - y1, 0), v3(x2, H - y2, 0), c);
       };
+      for (const label of axisLabels) {
+        add(label.segments.map(([x1, y1, x2, y2]) => [
+          triadPad + x1 * this.dpr, H - triadPad - triadSize + y1 * this.dpr,
+          triadPad + x2 * this.dpr, H - triadPad - triadSize + y2 * this.dpr,
+        ] as const), label.color);
+      }
       const h = Math.max(1, Math.round((ov.gripSize ?? 4) * this.dpr));
       for (const gp of grips) {
         const s = projectToScreen(cam, gp, W, H);
@@ -713,8 +718,7 @@ export class Viewport3D {
     // WCS triad in the lower-left corner: orientation only, fixed size.
     const triad = this.ensureTriad();
     if (triad) {
-      const size = Math.round(TRIAD_PX * this.dpr), pad = Math.round(10 * this.dpr);
-      gl.viewport(pad, pad, size, size);
+      gl.viewport(triadPad, triadPad, triadSize, triadSize);
       gl.disable(gl.DEPTH_TEST);
       const b = cameraBasis(cam);
       const view = mat4LookAt(scale3(eyeDirection(cam), 3), v3(0, 0, 0), b.up);

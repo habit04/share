@@ -84,6 +84,23 @@ the text the release workflow publishes before the **Verified build** list.
 The manual **Packaged smoke test (existing release)** workflow re-runs the packaged checks
 against the Windows installer attached to any published release (for example after a runner image or
 OS update); checks for features newer than that release are skipped.
+
+From Windows v0.5.1, installer acceptance requires the reviewed disposable GitHub-hosted Windows
+job. Before the first NSIS launch it refuses existing JCad registrations/processes, verifies the
+installer's actual publisher/version and statically inventories its complete payload. The installed
+application and native helper must have valid publisher signatures, and shipping fuses must pass
+before either executable runs. A folder alone or an older local installation cannot satisfy this
+installer gate. Unsigned build-only artifacts do not clear this installed acceptance; use
+`require_signing=true` for the release rehearsal. Local ordinary-folder checks remain separate through
+`shipping-runtime-smoke.mjs <exact-executable>` and do not establish installer or publisher trust.
+
+The hosted gate also runs the fixed GPU and GPU/3D phases, an actual upgrade from the hash-pinned
+published v0.5.0 installer, and rollback with restored pre-upgrade private profiles. Its GPU receipts
+remain under the uploaded per-installer output. Physical Intel/NVIDIA and genuine private SHX checks
+are separately attributed and bound to the same signed payload. See
+[WINDOWS-UPGRADE-INTEGRATION.md](WINDOWS-UPGRADE-INTEGRATION.md) for the current execution status;
+implemented tooling alone is not a completed native gate.
+
 The secure-origin migration gate applies from 0.4.1, including prereleases. It uses stock Electron
 only to seed an isolated legacy profile, then launches the installed application twice. The
 output includes `origin-migration.log`, per-installer `packaged-smoke-result.json` and an aggregate

@@ -174,8 +174,18 @@ export function optionsDialog(editor: Editor, initialTab = 0, restore?: UserSett
       dlgRow(t('options.files.standard'), selectInput([['JIC', t('options.files.jic')], ['IEC', t('options.files.iec')]], cur().symbolStandard, (v) => set({ symbolStandard: v as 'JIC' | 'IEC' }))),
     ]),
     dlgGroup(t('options.experimental.group'), [
-      dlgCheck(t('options.experimental.3d'), cur().experimental3d, (v) => set({ experimental3d: v })),
+      (() => {
+        const control = dlgCheck(t('options.experimental.3d'), cur().experimental3d, (v) => set({ experimental3d: v }));
+        control.dataset.setting = 'experimental3d';
+        return control;
+      })(),
       note(t('options.experimental.3dNote')),
+      (() => {
+        const control = dlgCheck(t('options.experimental.importForeign3d'), cur().importForeign3d, (v) => set({ importForeign3d: v }));
+        control.dataset.setting = 'importForeign3d';
+        return control;
+      })(),
+      note(t('options.experimental.importForeign3dNote')),
     ]),
     dlgGroup(t('options.files.recent'), [
       (() => {

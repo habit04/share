@@ -1,7 +1,7 @@
 // End-to-end check of the experimental 3D viewport (docs/3D-VIEWPORT.md): serve the built renderer
-// (dist/), enable `experimental3d` in localStorage before the page loads, open /?demo in headless
+// (dist/), use the default available 3D tools, open /?demo in headless
 // Chromium with SwiftShader WebGL2, and check:
-//   - the 3D ribbon tab and window.jcad3d exist only because the flag is on;
+//   - a fresh profile exposes the 3D ribbon and controller without activating a renderer;
 //   - 3DMODE creates the WebGL canvas, 3DDEMO + 3DVIEW swiso render non-background pixels;
 //   - clicking the projected centre of the demo box selects it (Shift adds, empty click clears),
 //     hover highlights it;
@@ -60,16 +60,6 @@ const errors = [];
 page.on('pageerror', (e) => errors.push(`page error: ${e.message}`));
 page.on('console', (m) => {
   if (m.type() === 'error') errors.push(`console error: ${m.text()}`);
-});
-// The flag must be on before the app reads its settings at startup.
-await page.addInitScript(() => {
-  try {
-    const key = 'jcad.settings.v2';
-    const cur = JSON.parse(localStorage.getItem(key) || '{}');
-    if (!cur.experimental3d) localStorage.setItem(key, JSON.stringify({ ...cur, experimental3d: true }));
-  } catch {
-    /* storage blocked: the checks below fail */
-  }
 });
 await page.goto(`http://127.0.0.1:${port}/?demo&norecover`);
 await page.waitForFunction(() => !!(/** @type {any} */ (window).editor));
@@ -159,7 +149,8 @@ async function solidsArea() {
 
 try {
   let st = await state();
-  check(st.hasHandle, 'window.jcad3d debug handle exists with the flag on');
+  check(st.hasHandle, 'window.jcad3d exists with tools available by default');
+  check(await page.evaluate(() => window.editor.settings.experimental3d === true && window.editor.settings.importForeign3d === false && !(/** @type {any} */ (window).jcad3d.kernelStarted)), 'fresh profile exposes 3D tools without foreign import or a kernel');
   check(await page.locator('.ribbon-tab', { hasText: /^3D$/ }).count() === 1, '3D ribbon tab is shown');
   check(st.canvases === 0, 'no WebGL canvas before 3DMODE');
 

@@ -1,10 +1,9 @@
 import type { Editor } from './editor';
-import { Gpu2DRenderer, emptyGpu2DRenderResult, type Gpu2DRenderResult } from '../render/gpu-prototype/renderer2d';
+import { createGpu2dController } from './gpu-2d-candidate';
 import { mountGpuDemo } from '../render/gpu-prototype/demo3d';
 import { modal, button } from '../ui/dialogkit';
 import { lineweightDisplay } from '../render/draw';
 import { bigDrawing } from '../../tests/helpers/big-drawing';
-import { setDiagnosticRenderer } from './gpu-diagnostics';
 import type { DrawingState } from '../core/document';
 import { DEFAULT_HEADER } from '../core/document';
 import type { BlockDef, Entity, TextEntity } from '../core/entities';
@@ -162,75 +161,24 @@ function compoundFixture(name: string): { state: DrawingState; center: Point; sc
 /** Inert in default builds; all state is ephemeral and outside Drawing/saving. */
 export function installGpuPrototype(editor: Editor, active3d: () => boolean = () => false): void {
   const view = editor.viewport;
-  const canvas = document.createElement('canvas');
-  canvas.dataset.gpuPrototype = '2d';
-  Object.assign(canvas.style, { position: 'absolute', inset: '0', width: '100%', height: '100%', pointerEvents: 'none', display: 'none' });
-  view.canvas.before(canvas);
-  let mode: 'canvas' | 'gpu' = 'canvas';
-  let renderer: Gpu2DRenderer | null = null;
-  let lossControl: WEBGL_lose_context | null = null;
-  let resettingRenderer = false;
-  let last: Gpu2DRenderResult = emptyGpu2DRenderResult('Canvas 2D selected');
+  const core = createGpu2dController(editor, active3d, { developmentCanvas: true });
+  const setMode = core.setMode;
   let fixtureMetadata: FixtureMetadata | null = null;
   const indicator = document.createElement('button');
   indicator.dataset.gpuPrototype = 'indicator';
   indicator.textContent = 'Experimental: Canvas 2D';
   indicator.title = 'Toggle experimental GPU / Canvas renderer. Unsupported views use Canvas automatically.';
   Object.assign(indicator.style, { position: 'absolute', left: '12px', top: '12px', zIndex: '3', background: '#26384a', color: '#fff', padding: '6px', border: '1px solid #6a7c8a' });
+  indicator.style.visibility = active3d() ? 'hidden' : '';
   view.canvas.parentElement!.append(indicator);
+  const unsubscribeIndicator = core.subscribe(({ mode, rendered, reason, active3d: active }) => {
+    indicator.style.visibility = active ? 'hidden' : '';
+    indicator.textContent = rendered ? 'Experimental: WebGL2' : 'Experimental: Canvas 2D' + (mode === 'gpu' ? ' fallback' : '');
+    indicator.title = rendered ? 'Drawing base scene: WebGL2; grid, cursor and editing overlays: Canvas 2D' : reason ?? 'Canvas 2D selected';
+  });
+  indicator.addEventListener('click', () => setMode(core.state().mode === 'canvas' ? 'gpu' : 'canvas'));
   let demoHandle: ReturnType<typeof mountGpuDemo> | null = null;
-  setDiagnosticRenderer(() => active3d() ? 'WebGL2 experimental 3D modelling viewport' : mode === 'gpu' && last.rendered && renderer?.device.state === 'ready' ? 'WebGL2 drawing base scene + Canvas 2D editing overlays (experimental)' : 'Canvas 2D');
-  let in3d = active3d();
-  const sync3dMode = () => {
-    const next = active3d();
-    indicator.style.visibility = next ? 'hidden' : '';
-    if (next) {
-      canvas.style.display = 'none';
-      last = emptyGpu2DRenderResult('Experimental 3D viewport active');
-    }
-    if (next !== in3d) {
-      in3d = next;
-      editor.render();
-    }
-  };
-  // 3D activation logs after installing its viewport; deactivation emits view
-  // after restoring Canvas. Hide the old GPU backing before another 2D frame.
-  const unsubscribe3d = [editor.on('log', sync3dMode), editor.on('view', sync3dMode)];
-  sync3dMode();
-  const setMode = (next: 'canvas' | 'gpu') => {
-    // Mode toggles retry admission, while retaining any valid prepared/uploaded
-    // scene so Canvas reference comparisons do not force an unrelated rebuild.
-    if (mode !== next) renderer?.clearRefusalCache();
-    mode = next;
-    editor.render();
-  };
-  indicator.addEventListener('click', () => setMode(mode === 'canvas' ? 'gpu' : 'canvas'));
-  view.experimentalSceneRenderer = (vp, overlay) => {
-    const reject = (reason: string, metrics = emptyGpu2DRenderResult(reason)) => {
-      canvas.style.display = 'none';
-      last = { ...metrics, rendered: false, reason };
-      indicator.textContent = `Experimental: Canvas 2D${mode === 'gpu' ? ' fallback' : ''}`;
-      indicator.title = reason;
-      return false;
-    };
-    if (active3d()) return reject('Experimental 3D viewport active');
-    if (mode !== 'gpu') return reject('Canvas 2D selected');
-    if (vp.settings.gridVisible) return reject('Grid visible: Canvas 2D preserves grid/geometry compositing order (F7 toggles grid)');
-    if (vp.layoutPainter || vp.underlay || vp.fitRect) return reject('Layouts and underlays use Canvas 2D');
-    if (overlay.preview.length || overlay.ghost.length) return reject('Tool previews use Canvas 2D');
-    try {
-      renderer ??= new Gpu2DRenderer(canvas, () => { if (!resettingRenderer) editor.render(); });
-      last = renderer.render(editor.doc.snapshot, { width: vp.width, height: vp.height, dpr: vp.dpr, scale: vp.scale, center: vp.center, twist: vp.twist, background: vp.settings.background, lineweights: lineweightDisplay.enabled }, { selection: overlay.selection, hover: overlay.hover, solidSelection: vp.settings.selectionEffect === 'solid' }, editor.doc.lookupBlock);
-      if (!last.rendered) return reject(last.reason ?? 'GPU rendering unavailable', last);
-      canvas.style.display = 'block';
-      indicator.textContent = 'Experimental: WebGL2';
-      indicator.title = 'Drawing base scene: WebGL2; grid, cursor and editing overlays: Canvas 2D';
-      return true;
-    } catch {
-      return reject('GPU initialization or rendering failed; the full view uses Canvas 2D');
-    }
-  };
-  editor.register({ name: 'GPURENDERER', aliases: [], description: 'Experimental development renderer: Canvas / GPU', run: (_ed, arg) => { setMode(arg?.trim().toLowerCase() === 'canvas' ? 'canvas' : arg?.trim().toLowerCase() === 'gpu' ? 'gpu' : mode === 'canvas' ? 'gpu' : 'canvas'); } });
+  editor.register({ name: 'GPURENDERER', aliases: [], description: 'Experimental development renderer: Canvas / GPU', run: (_ed, arg) => { setMode(arg?.trim().toLowerCase() === 'canvas' ? 'canvas' : arg?.trim().toLowerCase() === 'gpu' ? 'gpu' : core.state().mode === 'canvas' ? 'gpu' : 'canvas'); } });
   editor.register({ name: 'GPU3DDEMO', aliases: [], description: 'Experimental demonstration meshes (no document changes)', run: () => {
     const m = modal('Experimental GPU 3D demonstration', 920, 'dark');
     const container = document.createElement('div');
@@ -249,16 +197,7 @@ export function installGpuPrototype(editor: Editor, active3d: () => boolean = ()
     setMode,
     // Cold-frame measurement resets only the owner-created experimental 2D context resources.
     // Do this before starting the benchmark timer; setMode then renders the actual first frame.
-    reset2DRenderer: () => {
-      const previous = renderer;
-      renderer = null;
-      lossControl = null;
-      resettingRenderer = true;
-      try { previous?.dispose(); }
-      finally { resettingRenderer = false; }
-      last = emptyGpu2DRenderResult('Experimental renderer reset');
-      canvas.style.display = 'none';
-    },
+    reset2DRenderer: core.reset2DRenderer,
     loadFixture: (name: string) => {
       fixtureMetadata = null;
       const base = bigDrawing(name === 'dense-lines' ? 38000 : 5000, name === 'mixed-schematic' ? 1000 : 0, name === 'mixed-schematic' ? 500 : 0);
@@ -408,12 +347,12 @@ export function installGpuPrototype(editor: Editor, active3d: () => boolean = ()
       editor.viewport.renderCurrent();
     },
     fixtureMetadata: () => fixtureMetadata,
-    status: () => ({ mode, ...last, device: renderer?.device.state ?? 'not-created', capabilities: renderer?.device.capabilities() ?? null, demo: demoHandle?.status() ?? null }),
-    renderStats: () => ({ ...last }),
-    renderNow: () => { editor.viewport.renderCurrent(); return { ...last }; },
-    completed: () => renderer?.device.completed() ?? Promise.resolve(null),
-    loseContext: () => { lossControl = renderer?.device.gl.getExtension('WEBGL_lose_context') ?? null; lossControl?.loseContext(); },
-    restoreContext: () => lossControl?.restoreContext(),
-    dispose: () => { for (const off of unsubscribe3d) off(); demoHandle?.dispose(); demoHandle = null; if (mode !== 'canvas') renderer?.clearRefusalCache(); mode = 'canvas'; renderer?.dispose(); renderer = null; canvas.style.display = 'none'; view.experimentalSceneRenderer = null; canvas.remove(); indicator.remove(); editor.render(); },
+    status: () => ({ ...core.status(), demo: demoHandle?.status() ?? null }),
+    renderStats: core.renderStats,
+    renderNow: core.renderNow,
+    completed: core.completed,
+    loseContext: core.loseContext,
+    restoreContext: core.restoreContext,
+    dispose: () => { unsubscribeIndicator(); demoHandle?.dispose(); demoHandle = null; core.dispose(); indicator.remove(); },
   } });
 }

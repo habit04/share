@@ -14,6 +14,7 @@ import { resetModellingDefaults } from '../src/tools3d/primitives';
 import { resetSweepDefaults } from '../src/tools3d/sweeps';
 import { EraseTool } from '../src/tools/modify';
 import { fakeContext } from './fake-context';
+import { fakeViewport3d } from './helpers/fake-viewport3d';
 
 let Editor: typeof EditorType;
 let installExperimental3d: typeof InstallType;
@@ -246,6 +247,7 @@ describe('modelling commands typed at the command line', () => {
 
   it('ALL at "Select objects:" takes the solids; ERASE removes them in one step, 2D-only ERASE is unchanged', () => {
     const { ed, c } = editor3d();
+    c.viewport = fakeViewport3d(ed.doc);
     ed.doc.addEntities([{ id: 'l1', type: 'line', layer: '0', color: 'ByLayer', a: { x: 0, y: 0 }, b: { x: 1, y: 0 } }]);
     void ed.runCommand('BOX');
     type(ed, '0,0', '1,1', '1');
@@ -312,6 +314,7 @@ describe('modelling commands typed at the command line', () => {
 
   it('flag off: no context extension, no 3D commands, ERASE as before', () => {
     const ed = new Editor(canvas());
+    ed.settings = { ...ed.settings, experimental3d: false };
     expect(installExperimental3d(ed)).toBeNull();
     expect(ed.toolContextExtension).toBeNull();
     const ctx = ed.toolContext();

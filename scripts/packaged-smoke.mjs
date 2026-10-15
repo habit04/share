@@ -22,8 +22,10 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import { needsPackagedOrigin, processResult, childSucceeded, dwgProbeSucceeded, validateSmokeArchitecture, macDmgTargets } from './packaged-smoke-policy.mjs';
+import { needsPackagedOrigin, requiresShippingFuses, processResult, childSucceeded, dwgProbeSucceeded, validateSmokeArchitecture, macDmgTargets } from './packaged-smoke-policy.mjs';
 import { verifyExecutableFuses } from './electron-fuse-policy.mjs';
+import { assertWindowsUpgradeHost, assertCleanWindowsUpgradeHostBeforeInstall, needsWindowsUpgradeSmoke, verifyWindowsUpgradeInstaller, verifyWindowsShippingPayloadTrust, runWindowsUpgradeSmoke } from './windows-upgrade-smoke.mjs';
+import { extractWindowsInstallerPayload, verifyInstalledWindowsPayload } from './windows-payload-proof.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
 const dir = resolve(process.argv[2] || join(repo, 'release'));
@@ -33,6 +35,7 @@ const product = 'JCad Electrical';
 const executableName = 'jcad-electrical'; // package.json "name": the Linux binary
 const expectedVersion = process.env.JCAD_E2E_EXPECT_VERSION || JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')).version;
 const originRequired = needsPackagedOrigin(expectedVersion);
+const upgradeRequired = needsWindowsUpgradeSmoke(expectedVersion);
 const expectedArch = process.env.JCAD_SMOKE_EXPECT_ARCH || '';
 const nativeOnly = process.env.JCAD_SMOKE_NATIVE_ONLY === '1';
 validateSmokeArchitecture(process.arch, expectedArch, nativeOnly);
@@ -66,8 +69,10 @@ function waitFor(file, ms = 60_000) {
   return existsSync(file);
 }
 
-/** @type {Array<{ label: string, executable: string }>} */
+/** @type {Array<{ label: string, executable: string, installer?: string, payloadProof?: import('./windows-payload-proof.mjs').WindowsPayloadProof }>} */
 const targets = [];
+/** @type {string[]} */
+const payloadScratchRoots = [];
 const files = walk(dir);
 const scratchParent = realpathSync.native(tmpdir());
 const tmp = mkdtempSync(join(scratchParent, 'jcad-smoke-'));
@@ -77,22 +82,54 @@ function cleanScratch() {
     const checked = realpathSync.native(tmp);
     if (dirname(checked) !== scratchParent || !basename(checked).startsWith('jcad-smoke-')) throw new Error('Unexpected packaged smoke temporary path');
     rmSync(checked, { recursive:true, force:true, maxRetries:3 });
+    for (const payloadRoot of payloadScratchRoots) {
+      const checkedPayload = realpathSync.native(payloadRoot);
+      if (dirname(checkedPayload) !== scratchParent || !/^jcad-windows-payload-[A-Za-z0-9-]+$/.test(basename(checkedPayload))) throw new Error('Unexpected installer payload scratch path');
+      rmSync(checkedPayload, { recursive:true, force:true, maxRetries:3 });
+    }
   } catch (error) { console.warn(`Could not remove smoke temporary directory: ${error.message}`); }
 }
 
 try {
 if (process.platform === 'win32') {
-  for (const exe of files.filter((f) => /\.exe$/i.test(f) && !/[\\/]win-unpacked[\\/]/i.test(f) && !/uninstall/i.test(basename(f)))) {
+  const installers = files.filter((f) => /\.exe$/i.test(f) && !/[\\/]win-unpacked[\\/]/i.test(f) && !/uninstall/i.test(basename(f)));
+  if (!installers.length && !existsSync(join(dir, 'win-unpacked', `${product}.exe`))) {
+    throw new Error(`packaged-smoke: no installer for ${process.platform} in ${dir}`);
+  }
+  if (upgradeRequired) {
+    if (installers.length !== 1 || basename(installers[0]) !== `jcad-electrical-${expectedVersion}-win-x64.exe`) {
+      throw new Error('Windows installer acceptance requires exactly one versioned Windows x64 NSIS installer; a win-unpacked folder alone is insufficient.');
+    }
+    const cleanHost = assertCleanWindowsUpgradeHostBeforeInstall({ repo, outDir:outRoot });
+    writeFileSync(join(outRoot, 'clean-install-host.json'), `${JSON.stringify(cleanHost, null, 2)}\n`);
+  }
+  for (const exe of installers) {
+    let payloadProof;
+    if (upgradeRequired) {
+      // Same-app-ID NSIS changes registration/shortcuts even with /D. New upgrade validation
+      // is allowed only on the disposable hosted Windows runner, never this user's installation.
+      assertWindowsUpgradeHost({ platform:process.platform, arch:process.arch, env:process.env });
+      verifyWindowsUpgradeInstaller(exe, expectedVersion);
+      payloadProof = await extractWindowsInstallerPayload({ installer:exe, expectedVersion, scratchParent });
+      payloadScratchRoots.push(payloadProof.extractionRoot);
+    }
     const target = join(tmp, basename(exe, '.exe').replace(/[^A-Za-z0-9._-]/g, '-'));
     // NSIS: /S silent, /D=<folder> must come last and unquoted.
     run(exe, ['/S', `/D=${target}`], { windowsVerbatimArguments: true, shell: false });
     // electron-builder's installer honours /D; its per-user default folder (<LocalAppData>\Programs\<package
     // name> for a one-click installer) is only a fallback in case a future template stops doing so.
     const programs = join(process.env.LOCALAPPDATA || '', 'Programs');
-    const candidates = [join(target, `${product}.exe`), join(programs, executableName, `${product}.exe`), join(programs, product, `${product}.exe`)];
+    const candidates = upgradeRequired ? [join(target, `${product}.exe`)]
+      : [join(target, `${product}.exe`), join(programs, executableName, `${product}.exe`), join(programs, product, `${product}.exe`)];
     const app = candidates.find((c) => waitFor(c, c === candidates[0] ? 60_000 : 5_000));
     if (!app) throw new Error(`the installer ${basename(exe)} did not install ${candidates.join(' or ')}`);
-    targets.push({ label: `${basename(exe)} (installed)`, executable: app });
+    if (payloadProof) {
+      const payload = await verifyInstalledWindowsPayload({ executable:app, payloadProof });
+      const trust = verifyWindowsShippingPayloadTrust({ executable:app, expectedVersion });
+      await verifyExecutableFuses(app, 'shipping');
+      writeFileSync(join(outRoot, 'clean-install-payload-trust.json'), `${JSON.stringify({ payload, trust }, null, 2)}\n`);
+    }
+    targets.push({ label: `${basename(exe)} (installed)`, executable: app, installer:exe, payloadProof });
   }
   const unpacked = join(dir, 'win-unpacked', `${product}.exe`);
   if (existsSync(unpacked)) targets.push({ label: 'win-unpacked', executable: unpacked });
@@ -132,6 +169,9 @@ if (process.platform === 'win32') {
 }
 
 if (targets.length === 0) throw new Error(`packaged-smoke: no installer for ${process.platform} in ${dir}`);
+if (upgradeRequired && !targets.some(target => target.installer && target.payloadProof)) {
+  throw new Error('Windows installer acceptance requires an installed signed candidate and payload proof; a win-unpacked folder alone is insufficient. Use shipping-runtime-smoke.mjs for separate folder validation.');
+}
 
 const summary = [];
 const results = [];
@@ -140,6 +180,7 @@ for (const t of targets) {
   console.log(`\n=== ${t.label}: ${t.executable}`);
   const out = join(outRoot, t.label.replace(/[^A-Za-z0-9._-]+/g, '-'));
   mkdirSync(out, { recursive: true });
+  if (t.payloadProof) writeFileSync(join(out, 'installer-payload-proof.json'), `${JSON.stringify(t.payloadProof, null, 2)}\n`);
   if (!existsSync(t.executable)) {
     summary.push(`FAIL ${t.label}: executable missing (${t.executable})`);
     const result = { label: t.label, expectedVersion, ok: false, probe: { ok: false, result: 'not run: executable missing', output: '' }, e2e: 'not run: executable missing', origin: { required: originRequired, result: 'not run: executable missing' } };
@@ -148,6 +189,11 @@ for (const t of targets) {
     failed += 1;
     continue;
   }
+  // Establish shipping policy before executing any installed application probe. A new
+  // Windows candidate cannot fall through to an inspection-enabled legacy driver.
+  let shipping = false;
+  try { await verifyExecutableFuses(t.executable, 'shipping'); shipping = true; }
+  catch (error) { if (requiresShippingFuses(expectedVersion, { explicit:process.env.JCAD_SMOKE_REQUIRE_SHIPPING === '1' })) throw error; }
   // 1. The headless DWG probe: LibreDWG (worker thread, unpacked from the asar) in the packaged layout.
   const probeArgs = ['--probe-dwg', join(repo, 'fixtures', 'example_2000.dwg')];
   if (process.platform === 'linux') probeArgs.push('--no-sandbox');
@@ -155,18 +201,34 @@ for (const t of targets) {
   const probeLine = `${probe.stdout || ''}`.split(/\r?\n/).find((l) => l.startsWith('PROBE_')) ?? `(no output; exit ${probe.status}${probe.error ? `, ${probe.error.message}` : ''})`;
   const probeOk = dwgProbeSucceeded(probe, probeLine, expectedVersion);
   console.log(`${probeOk ? 'ok  ' : 'FAIL'} --probe-dwg: ${probeLine} (${processResult(probe)})`);
-  // The current release gate requires disabled inspection. Older published builds
-  // remain testable through the legacy driver; they are explicitly reported as legacy.
-  let shipping = false;
-  try { await verifyExecutableFuses(t.executable, 'shipping'); shipping = true; }
-  catch (error) { if (process.env.JCAD_SMOKE_REQUIRE_SHIPPING === '1') throw error; }
   if (shipping) {
     const runtime = spawnSync(process.execPath, [join(repo, 'scripts', 'shipping-runtime-smoke.mjs'), t.executable], {
       stdio:'inherit', env:{ ...process.env, JCAD_E2E_OUT:out }, timeout:4 * 60 * 1000, windowsHide:true,
     });
-    const ok = probeOk && childSucceeded(runtime);
+    let ok = probeOk && childSucceeded(runtime);
+    let supplemental = null;
+    if (ok && upgradeRequired && t.installer && t.payloadProof) {
+      try {
+        for (const script of ['shipping-gpu-2d-smoke.mjs', 'shipping-gpu-3d-smoke.mjs']) {
+          // Actual installed executable, original fixed limits and shipping fuses. The hosted
+          // adapter is recorded without claiming the private physical Intel/NVIDIA coverage.
+          const output = run(process.execPath, [join(repo, 'scripts', script), t.executable], {
+            cwd:repo, timeout:120_000, env:{ ...process.env, JCAD_E2E_OUT:out },
+          });
+          writeFileSync(join(out, script.replace(/\.mjs$/, '.log')), output);
+        }
+        const payloadProof = t.payloadProof;
+        const upgrade = await runWindowsUpgradeSmoke({ candidateInstaller:t.installer, installedExecutable:t.executable,
+          expectedVersion, outDir:join(out, 'upgrade'), repo,
+          verifyInstalledPayload: executable => verifyInstalledWindowsPayload({ executable, payloadProof }) });
+        supplemental = { installedGpu:true, installedGpu3dTransitions:true, upgrade };
+      } catch (error) {
+        ok = false;
+        supplemental = { error:error instanceof Error ? error.message : String(error) };
+      }
+    }
     if (!ok) failed += 1;
-    const result = { label:t.label, expectedVersion, mode:'shipping-no-inspection', ok, probe:{ ok:probeOk, result:processResult(probe), output:probeLine }, shippingRuntime:processResult(runtime) };
+    const result = { label:t.label, expectedVersion, mode:'shipping-no-inspection', ok, probe:{ ok:probeOk, result:processResult(probe), output:probeLine }, shippingRuntime:processResult(runtime), supplemental };
     results.push(result);
     writeFileSync(join(out, 'packaged-smoke-result.json'), `${JSON.stringify(result, null, 2)}\n`);
     summary.push(`${ok ? 'ok  ' : 'FAIL'} ${t.label}: shipping fuses, DWG probe and fixed runtime/restart probes ${processResult(runtime)}`);

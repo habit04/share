@@ -17,12 +17,22 @@ try {
   writeFileSync(resolve(root, 'e2e-output/gpu-default/default-launch.json'), JSON.stringify({ applicationLaunchMs: performance.now() - started, note: 'One fresh application process; OS caches not purged.' }, null, 2));
   assert.equal(await page.evaluate(() => !!window.gpuPrototype), false);
   assert.equal(await page.locator('[data-gpu-prototype]').count(), 0);
-  assert.equal(await page.evaluate(() => window.editor.commands.has('GPURENDERER')), false);
+  assert.equal(await page.evaluate(() => window.editor.commands.has('GPURENDERER')), true);
+  assert.equal(await page.locator('canvas[data-gpu-candidate]').count(), 0);
+  const unchanged = await page.evaluate(() => {
+    const e = window.editor, before = e.doc.snapshot;
+    e.runCommand('GPURENDERER');
+    e.runCommand('GPURENDERER invalid');
+    e.runCommand('GPURENDERER CANVAS');
+    return e.doc.snapshot === before;
+  });
+  assert.equal(unchanged, true);
+  assert.equal(await page.locator('canvas[data-gpu-candidate]').count(), 0);
   assert.equal(await page.evaluate(() => window.editor.commands.has('GPU3DDEMO')), false);
   const count = await page.evaluate(() => window.editor.doc.entities.length);
   await page.evaluate(() => { const e = window.editor; e.runCommand('LINE'); e.submitInput('0,0'); e.submitInput('10,10'); e.submitInput(''); });
   assert.equal(await page.evaluate(() => window.editor.doc.entities.length), count + 1);
-  console.log('Default build: no experimental GPU UI/device or commands, 2D LINE works.');
+  console.log('Ordinary build: Canvas default, explicit candidate command, no developer globals/demo or allocated GPU, 2D LINE works.');
 } finally {
   await app.evaluate(({ app }) => app.exit(0)).catch(() => {});
   await app.close().catch(() => {});
