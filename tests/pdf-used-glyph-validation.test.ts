@@ -123,8 +123,8 @@ describe('used-glyph point validation (SimSun-shaped faces)', () => {
     expect(metrics.capitalHeight).toBe(730);
     expect(metrics.cmap[0x41]).toBe(2);
     expect(metrics.cmap[FIRST_HEAVY_CODE]).toBe(5);
-    expect(metrics.glyphBoundsKnown[2]).toBe(true);
-    for (let glyph = 5; glyph < 5 + HEAVY_GLYPHS; glyph++) expect(metrics.glyphBoundsKnown[glyph]).toBe(false);
+    expect(metrics.glyphBoundsKnown![2]).toBe(true);
+    for (let glyph = 5; glyph < 5 + HEAVY_GLYPHS; glyph++) expect(metrics.glyphBoundsKnown![glyph]).toBe(false);
     // Advances and cmap are header data: identical to a light fixture's parse.
     const light = parseFontMetrics(nativeFontFixture({ family: 'Simsunlike' }));
     expect(metrics.advances.slice(0, 5)).toEqual(light.advances);
@@ -133,9 +133,9 @@ describe('used-glyph point validation (SimSun-shaped faces)', () => {
 
   it('validates exactly the one heavy glyph the used set names', () => {
     const metrics = parseFontMetrics(HEAVY, { usedCodepoints: [0x20, 0x41, FIRST_HEAVY_CODE] });
-    expect(metrics.glyphBoundsKnown[5]).toBe(true);
+    expect(metrics.glyphBoundsKnown![5]).toBe(true);
     expect(metrics.glyphBounds[5]).toEqual([0, 0, 100, 100]);
-    expect(metrics.glyphBoundsKnown[6]).toBe(false);
+    expect(metrics.glyphBoundsKnown![6]).toBe(false);
   });
 
   it('still refuses when the used set itself exceeds the unchanged cap', () => {
@@ -145,35 +145,35 @@ describe('used-glyph point validation (SimSun-shaped faces)', () => {
   it('validates the component closure of a used composite glyph', () => {
     const metrics = parseFontMetrics(HEAVY_COMPOSITE, { usedCodepoints: [0x20, 0x41, 0x4e60] });
     const composite = 5 + HEAVY_GLYPHS;
-    expect(metrics.glyphBoundsKnown[composite]).toBe(true);
-    expect(metrics.glyphBoundsKnown[5]).toBe(true);
-    expect(metrics.glyphBoundsKnown[6]).toBe(false);
+    expect(metrics.glyphBoundsKnown![composite]).toBe(true);
+    expect(metrics.glyphBoundsKnown![5]).toBe(true);
+    expect(metrics.glyphBoundsKnown![6]).toBe(false);
   });
 
   it('leaves an unused composite glyph unvalidated with its closure', () => {
     const metrics = parseFontMetrics(HEAVY_COMPOSITE, { usedCodepoints: [0x20, 0x41, 0x42] });
-    expect(metrics.glyphBoundsKnown[5 + HEAVY_GLYPHS]).toBe(false);
-    expect(metrics.glyphBoundsKnown[5]).toBe(false);
+    expect(metrics.glyphBoundsKnown![5 + HEAVY_GLYPHS]).toBe(false);
+    expect(metrics.glyphBoundsKnown![5]).toBe(false);
   });
 
   it('always validates capital A, even when the used set omits it', () => {
     const metrics = parseFontMetrics(HEAVY, { usedCodepoints: [0x42] });
-    expect(metrics.glyphBoundsKnown[2]).toBe(true);
+    expect(metrics.glyphBoundsKnown![2]).toBe(true);
     expect(metrics.capitalHeight).toBe(730);
-    expect(metrics.glyphBoundsKnown[3]).toBe(true);
-    expect(metrics.glyphBoundsKnown[4]).toBe(false);
+    expect(metrics.glyphBoundsKnown![3]).toBe(true);
+    expect(metrics.glyphBoundsKnown![4]).toBe(false);
   });
 
   it('keeps ordinary faces fully validated when no used set is given, and marks only unused glyphs when one is', () => {
     const light = nativeFontFixture();
     const eager = parseFontMetrics(light);
-    expect(eager.glyphBoundsKnown.every(Boolean)).toBe(true);
+    expect(eager.glyphBoundsKnown!.every(Boolean)).toBe(true);
     const partial = parseFontMetrics(light, { usedCodepoints: [0x42] });
-    expect(partial.glyphBoundsKnown[2]).toBe(true);
-    expect(partial.glyphBoundsKnown[3]).toBe(true);
-    expect(partial.glyphBoundsKnown[4]).toBe(false);
+    expect(partial.glyphBoundsKnown![2]).toBe(true);
+    expect(partial.glyphBoundsKnown![3]).toBe(true);
+    expect(partial.glyphBoundsKnown![4]).toBe(false);
     // The empty space glyph has no points to validate; it stays known either way.
-    expect(partial.glyphBoundsKnown[1]).toBe(true);
+    expect(partial.glyphBoundsKnown![1]).toBe(true);
   });
 
   it('rejects malformed used sets at the parser boundary', () => {
@@ -191,8 +191,8 @@ describe('used-glyph point validation (SimSun-shaped faces)', () => {
     await expect(readWindowsFontMetrics({ ...request, usedCodepoints: [0x20, 0x41, 0x42] }, { fontsDirectory }))
       .rejects.toThrow(/glyph point work exceeds the safe limit/);
     const data = await readWindowsFontData({ ...request, usedCodepoints: [0x20, 0x41, 0x42] }, { fontsDirectory });
-    expect(data.metrics.glyphBoundsKnown[5]).toBe(false);
-    expect(data.metrics.glyphBoundsKnown[2]).toBe(true);
+    expect(data.metrics.glyphBoundsKnown![5]).toBe(false);
+    expect(data.metrics.glyphBoundsKnown![2]).toBe(true);
   });
 
   it('reader level: embedding permissions are not bypassed by a used set', async () => {
@@ -205,7 +205,7 @@ describe('used-glyph point validation (SimSun-shaped faces)', () => {
     const face = await readWindowsPdfFont({ font: 'simsunlike.ttf', family: 'Simsunlike', usedCodepoints: [0x20, 0x41, 0x42] }, { fontsDirectory: editableDirectory });
     expect(face.postscriptName).toBe('Simsunlike-Regular');
     expect(face.bytes).toEqual(editable);
-    expect(face.metrics.glyphBoundsKnown[5]).toBe(false);
+    expect(face.metrics.glyphBoundsKnown![5]).toBe(false);
   });
 });
 
