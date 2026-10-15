@@ -8,7 +8,28 @@ const os = require('node:os');
 const { createHash } = require('node:crypto');
 const { runShippingDwgProbe } = require('./shipping-dwg-probe.cjs');
 const { runShippingGpuShxProbe } = require('./shipping-gpu-shx-probe.cjs');
+const { runShippingGpu3dProbe } = require('./shipping-gpu-3d-probe.cjs');
 const { shippingGpuAssertLazy3d } = require('./shipping-gpu-lazy-3d.cjs');
+
+/** Fixed, bounded preference evidence for private clean-install/upgrade probes only.
+ * @param {any} w @param {Pick<Document, 'querySelectorAll'>} dom @param {Pick<Storage, 'getItem'>} storage
+ */
+function shippingStartupSettingsEvidence(w, dom, storage) {
+  const ed = w.editor, settings = ed.settings, c = w.jcad3d;
+  const no3dCanvas = dom.querySelectorAll('canvas.viewport3d').length === 0;
+  return {
+    experimental3d: settings.experimental3d,
+    importForeign3d: typeof settings.importForeign3d === 'boolean' ? settings.importForeign3d : null,
+    gridVisible: settings.gridVisible, crosshairSize: settings.crosshairSize, modelBackground: settings.modelBackground,
+    autosaveMinutes: settings.autosaveMinutes, units: settings.units, unitSuffix: settings.unitSuffix,
+    precision: settings.precision, language: settings.language,
+    upgradeSentinel: storage.getItem('jcad-upgrade-sentinel')?.slice(0, 128) ?? null,
+    controllerInstalled: !!c, controllerInactive: !c || c.active === false,
+    no3dCanvas, kernelUnstarted: !c || c.kernelStarted === false,
+    canvasDefault: (!c || c.active === false) && no3dCanvas && ed.viewport.canvas.style.visibility !== 'hidden'
+      && dom.querySelectorAll('canvas[data-gpu-candidate="2d"]').length === 0,
+  };
+}
 
 /** Fixed renderer code, serialized by the main process; never supplied by a CLI argument. */
 async function shipping3dRenderer(phase, fixture, output) {
@@ -590,18 +611,25 @@ async function runShippingGpu2dProbe(ctx, testBuild) {
 function shippingProbePhase(args) {
   const flags = args.filter((arg) => typeof arg === 'string' && arg.startsWith('--probe-startup='));
   if (!flags.length) return null;
-  if (flags.length !== 1 || !/^--probe-startup=(first|second|dwg|3d-default|3d-enable|3d|gpu2d|gpu2d-shx)$/.test(flags[0])) throw new Error('Invalid startup probe phase');
+  if (flags.length !== 1 || !/^--probe-startup=(first|second|dwg|3d-default|3d-enable|3d|gpu2d|gpu2d-shx|gpu2d-3d)$/.test(flags[0])) throw new Error('Invalid startup probe phase');
   return flags[0].slice('--probe-startup='.length);
 }
 
 /** @param {import('./context.cjs').MainContext} ctx */
 async function runShippingProbe(ctx, phase, testBuild) {
-  if (!['first', 'second', 'dwg', '3d-default', '3d-enable', '3d', 'gpu2d', 'gpu2d-shx'].includes(phase)) throw new Error('Invalid startup probe phase');
+  if (!['first', 'second', 'dwg', '3d-default', '3d-enable', '3d', 'gpu2d', 'gpu2d-shx', 'gpu2d-3d'].includes(phase)) throw new Error('Invalid startup probe phase');
   // The application's existing 60-second startup deadline remains authoritative for 3D too.
   const timer = setTimeout(() => { process.stdout.write('SHIPPING_PROBE_FAIL timed out\n'); app.exit(1); }, phase === '3d' ? 60_000 : 45_000);
   try {
     if (phase === '3d-default' || phase === '3d-enable' || phase === '3d') {
       const record = await runShipping3dProbe(ctx, phase, testBuild);
+      process.stdout.write(`SHIPPING_PROBE_OK ${JSON.stringify(record)}\n`);
+      clearTimeout(timer);
+      app.quit();
+      return;
+    }
+    if (phase === 'gpu2d-3d') {
+      const record = await runShippingGpu3dProbe(ctx, testBuild);
       process.stdout.write(`SHIPPING_PROBE_OK ${JSON.stringify(record)}\n`);
       clearTimeout(timer);
       app.quit();
@@ -657,7 +685,8 @@ async function runShippingProbe(ctx, phase, testBuild) {
         if (!ed.doc.entities.some(entity => entity.id === 'shipping-smoke-line' || (entity.type === 'line' && entity.a.x === 0 && entity.a.y === 0 && entity.b.x === 3 && entity.b.y === 4))) throw new Error('Saved drawing did not reopen');
       }
       if (!isSecureContext || !crypto.subtle || location.href !== 'jcad://app/index.html' || localStorage.getItem('jcad-origin-migrated') !== '1') throw new Error('Secure origin, crypto or migration marker failed');
-      return { version:info.version, packaged:info.packaged, url:location.href, secure:true, bridge:true, preference, migrated:'1', before, entities:ed.doc.entities.length, saved, dirty:ed.doc.dirty };
+      const settingsEvidence = (${shippingStartupSettingsEvidence.toString()})(window, document, localStorage);
+      return { version:info.version, packaged:info.packaged, url:location.href, secure:true, bridge:true, preference, migrated:'1', before, entities:ed.doc.entities.length, saved, dirty:ed.doc.dirty, settingsEvidence };
     })()`);
     const storagePath = session.defaultSession.storagePath;
     const record = { ...result, phase, testBuild, persistent:session.defaultSession.isPersistent(), privateSessionData:fs.realpathSync.native(app.getPath('sessionData')) === profile, privateStorage:typeof storagePath === 'string' && fs.realpathSync.native(storagePath) === profile, migrationMarker:fs.existsSync(path.join(profile, 'renderer-origin-migrated')) };
@@ -673,4 +702,4 @@ async function runShippingProbe(ctx, phase, testBuild) {
     app.exit(1);
   }
 }
-module.exports = { runShippingProbe, shippingProbePhase, runShipping3dProbe, runShippingGpu2dProbe, shippingGpu2dMetadata, shippingGpu2dPendingFontFrame, shippingGpu2dRenderOverlay };
+module.exports = { runShippingProbe, shippingProbePhase, runShipping3dProbe, runShippingGpu2dProbe, shippingGpu2dMetadata, shippingGpu2dPendingFontFrame, shippingGpu2dRenderOverlay, shippingStartupSettingsEvidence };

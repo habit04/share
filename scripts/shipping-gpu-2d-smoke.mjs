@@ -170,7 +170,7 @@ export async function runShippingGpu2dSmoke(args = process.argv.slice(2)) {
   assert.ok(existsSync(executable), 'Acceptance executable exists');
   const expectedVersion = process.env.JCAD_E2E_EXPECT_VERSION || JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')).version;
   const runId = 'run-' + new Date().toISOString().replace(/[:.]/g, '-') + '-' + randomUUID().slice(0, 8);
-  const out = join(repo, 'e2e-output', 'gpu-production', runId); mkdirSync(out, { recursive: true });
+  const out = join(resolve(process.env.JCAD_E2E_OUT || join(repo, 'e2e-output')), 'gpu-production', runId); mkdirSync(out, { recursive: true });
   const scratch = realpathSync.native(tmpdir()), profile = mkdtempSync(join(scratch, 'jcad-shipping-smoke-'));
   const fixture = join(profile, 'shipping-startup.dxf');
   writeFileSync(fixture, GPU2D_STARTUP_DXF, { flag: 'wx' });

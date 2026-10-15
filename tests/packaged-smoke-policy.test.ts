@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { shipping3dProbePhases } from '../scripts/packaged-smoke-policy.mjs';
+import { requiresShippingFuses, shipping3dProbePhases } from '../scripts/packaged-smoke-policy.mjs';
+
+describe('new Windows installer shipping policy', () => {
+  it('cannot fall through to inspection-based legacy checks when the explicit environment flag is absent', () => {
+    for (const version of ['0.5.1', '0.5.1-alpha.1', '0.6.0', '1.0.0']) {
+      expect(requiresShippingFuses(version, { platform:'win32' })).toBe(true);
+    }
+    expect(requiresShippingFuses('0.5.0', { platform:'win32' })).toBe(false);
+    expect(requiresShippingFuses('0.5.0', { platform:'win32', explicit:true })).toBe(true);
+    for (const platform of ['darwin', 'linux']) expect(requiresShippingFuses('0.5.1', { platform })).toBe(false);
+    expect(() => requiresShippingFuses('invalid', { platform:'win32' })).toThrow(/Invalid packaged smoke version/);
+  });
+});
 import { needsPackagedOrigin, needsExperimental3d, needsDefault3dTools, default3dToolsProbeSucceeded, experimental3dProbeSucceeded, needsPortableDwgExport, needsPortableDwgSave, needsRotatedLayoutViewports, needsDwgMetadataPreservation, metadataProbeSucceeded, METADATA_SMOKE_FIXTURES, METADATA_SMOKE_FLAGS, processResult, childSucceeded, dwgProbeSucceeded, validateSmokeArchitecture, macDmgTargets } from '../scripts/packaged-smoke-policy.mjs';
 
 describe('installed default-on 3D tools gate', () => {

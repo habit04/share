@@ -25,6 +25,11 @@ export function needsDefault3dTools(version) {
   return major > 0 || minor > 5 || (minor === 5 && patch >= 1);
 }
 
+/** Historical inspection builds remain testable; new Windows installer acceptance fails closed. */
+export function requiresShippingFuses(version, { platform = process.platform, explicit = false } = {}) {
+  return explicit || (platform === 'win32' && needsDefault3dTools(version));
+}
+
 /** Source candidates always prove lazy defaults, persisted opt-out and separate restart launches. */
 export function shipping3dProbePhases(version, { source = false } = {}) {
   if (!needsExperimental3d(version)) return [];
