@@ -1,5 +1,11 @@
 # Windows combined source checkpoint
 
+This records the completed `5290c2b` source milestone. The subsequently approved Windows
+v0.5.1 package, installer and conditional release stage is tracked at the top of
+[WINDOWS-UPGRADE-INTEGRATION.md](WINDOWS-UPGRADE-INTEGRATION.md). Its execution evidence
+must name the new versioned source and actual artifact; the historical source results below
+are not installer acceptance.
+
 Development branch: `integration/windows-pr18-pr19-source`, in the existing
 `C:\Users\justi\Chad\jcad-2d-reliability` worktree. The long feature roadmap remains paused.
 

@@ -1,5 +1,41 @@
 # Windows JCad upgrade: verified work and integration plan
 
+## Current v0.5.1 acceptance stage
+
+The long feature roadmap remains paused. The integration lead owns the existing
+`integration/windows-pr18-pr19-source` branch and isolated worktree. Direct human approval
+in the linked coordination session authorizes package validation, then installer validation,
+then merge/publication only after the required gates pass. Historical statements below that
+no installer or release was authorized refer to their earlier source-only stages.
+
+| Milestone | Status / evidence | Required completion |
+| --- | --- | --- |
+| Accepted combined source | COMPLETE at `5290c2b0af065d336bee57750e3ef70257ebad07`; 6,407 local passes, 38 conditional skips, both exact-head five-job CI runs green; source/native/hardware receipts in `WINDOWS-SOURCE-INTEGRATION.md` | Retain attribution; these are not v0.5.1 installer results |
+| Version and notes | PREPARED: package/lock and CHANGELOG v0.5.1; Windows only; 3D remains the existing experimental subset, Canvas stays default | Fresh complete checks and CI on the final committed source |
+| Acceptance tooling | IN REVIEW: fixed sealed GPU/3D transition phase, exact NSIS payload binding, pre-install clean-host and signature checks, actual v0.5.0 upgrade/restored-profile rollback | Targeted negative tests, all type/lint checks, actual static extraction and native execution; mock tests alone do not clear this row |
+| Final ordinary folder | UNRUN; the earlier v0.5.0-labelled folder was packaging preflight only | Bind final source/dist/dependencies/helper/EXE/ASAR/fuses before and after private native DWG, settings, 3D and GPU checks |
+| Signed installer build | UNRUN | Existing **Build installers** workflow on the versioned staging branch, empty tag, `require_signing=true`, `native_helper_only=false`; no workflow or credential changes |
+| Clean install and upgrade | UNRUN | Disposable hosted Windows only, no AutoCAD; exact installer/app/helper/uninstaller publisher, version, payload and installation identity; actual old-to-new installation over the same target/profile, unrelated settings, recovery copies, backups and reopened drawings preserved |
+| Physical GPU validation | UNRUN for the final signed candidate | Statically extract the signed installer without installing on the user's PC; match its entire payload to the CI installation, then serial Intel/NVIDIA GPU20, private genuine SHX26 and sealed GPU/3D transition checks. Hosted/software adapters have separate attribution |
+| Independent acceptance | PENDING | Frozen-source and receipt review; classify actual native results separately from synthetic fixtures and test-ASAR recovery UI. Do not claim an actual old-version-produced recovery case from a seeded fixture |
+| Merge and release | NOT STARTED | All required gates clear first; fresh merged/tagged-source release pipeline and downloaded artifact verification. Never use a `v*` tag ref for a build-only rehearsal |
+
+Retained rollback installer v0.5.0: SHA-256
+`116845741d59ec0df32a8ef3c29f4ce9f6f1dcfabcb5cadcf96e42d75b884828`,
+154,080,840 bytes, Authenticode Valid from Justin Rodriguez. It has not been executed on
+the user's PC. Rollback also needs the pre-upgrade private profile snapshot: v0.5.0 does
+not understand the separate foreign-import preference. Preserve both pre-upgrade and
+post-upgrade profiles before testing a downgrade. Restored-profile rollback is distinct
+from universal installer-only preference compatibility.
+
+Production inspection fuses remain disabled. Broad crash/project recovery UI checks use
+the separately labelled unpublished test ASAR. Genuine SHX programs remain private and
+are never uploaded or bundled. Existing GPU accuracy limits, native metadata fixed points,
+timeouts and save refusals stay intact. No user installation, profile or original drawing
+is part of these tests. Full AutoCAD 3D parity and the remaining feature list are separate work.
+
+## Historical integration checkpoints
+
 Current integration checkpoint: #24 is complete and frozen; the long 2D roadmap
 is paused. One lead owns the combined candidate on this branch. The linked
 "JCad integration coordination" session owns the final GPU handoff and has been
