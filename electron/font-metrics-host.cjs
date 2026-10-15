@@ -1,14 +1,22 @@
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 
+/** Matches the captured-PDF per-face CID cap in src/io/pdf-fonts.ts. */
+const MAX_USED_CODEPOINTS = 65534;
+
 /** Only bounded font descriptors, never a renderer-supplied path or file buffer. */
 function fontRequest(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid font metric request.');
   if (typeof value.font !== 'string' || value.font.length > 256 || /[\u0000-\u001f]/.test(value.font)) throw new Error('Invalid font name.');
   if (value.family !== undefined && (typeof value.family !== 'string' || value.family.length > 256 || /[\u0000-\u001f]/.test(value.family))) throw new Error('Invalid font family.');
   for (const key of ['bold', 'italic']) if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new Error('Invalid font face.');
+  if (value.usedCodepoints !== undefined && (!Array.isArray(value.usedCodepoints) || value.usedCodepoints.length > MAX_USED_CODEPOINTS
+    || value.usedCodepoints.some((code) => !Number.isInteger(code) || code < 0 || code > 0x10ffff))) throw new Error('Invalid used codepoints.');
+  // Deduplicated and sorted host-side so the pending-request key distinguishes used sets exactly.
+  const usedCodepoints = value.usedCodepoints === undefined ? undefined : [...new Set(value.usedCodepoints)].sort((a, b) => a - b);
   return { font: value.font, ...(value.family !== undefined ? { family: value.family } : {}),
-    ...(value.bold !== undefined ? { bold: value.bold } : {}), ...(value.italic !== undefined ? { italic: value.italic } : {}) };
+    ...(value.bold !== undefined ? { bold: value.bold } : {}), ...(value.italic !== undefined ? { italic: value.italic } : {}),
+    ...(usedCodepoints !== undefined ? { usedCodepoints } : {}) };
 }
 
 /** Parsing runs outside Electron's main thread, with two workers and bounded waiters. */
@@ -53,6 +61,9 @@ function createFontMetricsHost({ workerFactory = (request) => new Worker(path.jo
       let request;
       try { request = fontRequest(value); } catch (error) { return Promise.reject(error); }
       if (pdf) request = { ...request, usage: 'pdf' };
+      // Used sets belong to captured-PDF reads only; screen metrics requests keep
+      // the eager whole-face behaviour even if a caller supplies one.
+      else delete request.usedCodepoints;
       if (disposed) return Promise.reject(new Error('Font metric reader is closed.'));
       const key = JSON.stringify(request), existing = pending.get(key);
       if (existing) return existing;

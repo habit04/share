@@ -11,12 +11,14 @@ const MAX_FONT_BYTES = 64 * 1024 * 1024;
 const MAX_FACES = 64;
 const MAX_TABLES = 128;
 const MAX_GLYPH_POINTS = 2_000_000;
+/** Matches the captured-PDF per-face CID cap in src/io/pdf-fonts.ts. */
+const MAX_USED_CODEPOINTS = 65534;
 const MAX_BITMAP_STRIKES = 128;
 
 /** @typedef {[number, number, number, number]} FontBounds */
 /** @typedef {[number, number, number]} CmapGroup */
 /** @typedef {{ family: string, subfamily: string, unitsPerEm: number, capitalHeight: number, winDescent: number, fontBounds: FontBounds, advances: number[], glyphBounds: FontBounds[], glyphBoundsKnown: boolean[], cmap: number[], groups: CmapGroup[], fsType: number, bold: boolean, italic: boolean }} NativeFontMetrics */
-/** @typedef {{ font: string, family?: string, bold?: boolean, italic?: boolean }} FontMetricsRequest */
+/** @typedef {{ font: string, family?: string, bold?: boolean, italic?: boolean, usedCodepoints?: number[] }} FontMetricsRequest */
 
 /** @returns {never} */
 function fail(message) { throw new Error(`Font metrics: ${message}`); }
@@ -257,18 +259,27 @@ function fontNames(data) {
   return { family, subfamily };
 }
 
-/** Validate glyph records and resolve the supported unhinted horizontal phantom origins. */
-function glyphMetrics(glyf, offsets, glyphCount, bearings) {
+/**
+ * Validate glyph records and resolve the supported unhinted horizontal phantom origins.
+ * When `validatedSeeds` is given (a captured-PDF used set), the point decode below runs
+ * only for those glyphs and their composite closure; every other simple glyph keeps its
+ * header box and is marked unknown, the state consumers already fall back on. Without a
+ * seed set every glyph is decoded, exactly as before, under the same point cap.
+ * @param {Set<number> | undefined} validatedSeeds
+ */
+function glyphMetrics(glyf, offsets, glyphCount, bearings, validatedSeeds) {
   /** @type {FontBounds[]} */
   const boxes = [];
   /** @type {number[][]} */
   const children = [];
+  /** @type {({ points: number, contours: number } | null)[]} */
+  const simple = [];
   const metricOwners = new Int32Array(glyphCount).fill(-1);
   const known = new Array(glyphCount).fill(true);
-  let pointWork = 0, componentWork = 0;
+  let componentWork = 0;
   for (let glyph = 0; glyph < glyphCount; glyph++) {
     const start = offsets[glyph], end = offsets[glyph + 1], length = end - start;
-    if (!length) { boxes.push([0, 0, 0, 0]); children.push([]); continue; }
+    if (!length) { boxes.push([0, 0, 0, 0]); children.push([]); simple.push(null); continue; }
     const data = glyf.subarray(start, end);
     need(data, 0, 10, 'glyph header');
     const contours = data.readInt16BE(0);
@@ -276,7 +287,7 @@ function glyphMetrics(glyf, offsets, glyphCount, bearings) {
     /** @type {number[]} */
     const components = [];
     if (contours >= 0) {
-      if (!contours) { boxes[boxes.length - 1] = [0, 0, 0, 0]; children.push(components); continue; }
+      if (!contours) { boxes[boxes.length - 1] = [0, 0, 0, 0]; children.push(components); simple.push(null); continue; }
       need(data, 10, contours * 2 + 2, 'glyph contour endpoints');
       let last = -1;
       for (let i = 0; i < contours; i++) {
@@ -284,35 +295,8 @@ function glyphMetrics(glyf, offsets, glyphCount, bearings) {
         if (endpoint <= last) fail('invalid glyph contour endpoint order');
         last = endpoint;
       }
-      const points = last + 1;
-      pointWork += points;
-      if (pointWork > MAX_GLYPH_POINTS) fail('glyph point work exceeds the safe limit');
-      const instructionsAt = 10 + contours * 2, instructions = data.readUInt16BE(instructionsAt);
-      let position = instructionsAt + 2 + instructions, seen = 0, coordinateBytes = 0;
-      const flags = new Uint8Array(points);
-      need(data, instructionsAt + 2, instructions, 'glyph instructions');
-      while (seen < points) {
-        need(data, position, 1, 'glyph flags');
-        const flag = data[position++];
-        if (flag & 0x80) fail('unsupported reserved glyph flag');
-        let run = 1;
-        if (flag & 8) { need(data, position, 1, 'glyph flag repeat'); run += data[position++]; }
-        if (run > points - seen) fail('glyph flag repeat exceeds point count');
-        flags.fill(flag, seen, seen + run);
-        coordinateBytes += run * ((flag & 2 ? 1 : flag & 16 ? 0 : 2) + (flag & 4 ? 1 : flag & 32 ? 0 : 2));
-        seen += run;
-      }
-      need(data, position, coordinateBytes, 'glyph coordinates');
-      const box = boxes[boxes.length - 1];
-      for (let axis = 0; axis < 2; axis++) {
-        let coordinate = 0;
-        for (const flag of flags) {
-          const short = !!(flag & (axis ? 4 : 2)), sameOrPositive = !!(flag & (axis ? 32 : 16));
-          if (short) coordinate += (sameOrPositive ? 1 : -1) * data[position++];
-          else if (!sameOrPositive) { coordinate += data.readInt16BE(position); position += 2; }
-          if (coordinate < box[axis] || coordinate > box[axis + 2]) fail('glyph coordinates exceed their stored bounding box');
-        }
-      }
+      // The point decode itself is deferred to the validated second pass below.
+      simple.push({ points: last + 1, contours });
     } else {
       let position = 10, flags, hasInstructions = false;
       do {
@@ -342,8 +326,58 @@ function glyphMetrics(glyf, offsets, glyphCount, bearings) {
         position += 4 + payload;
       } while (flags & 32);
       if (hasInstructions) { need(data, position, 2, 'composite glyph instruction count'); need(data, position + 2, data.readUInt16BE(position), 'composite glyph instructions'); }
+      simple.push(null);
     }
     children.push(components);
+  }
+  // Second pass: the point decode-and-validate work, charged against the unchanged
+  // cap. With a seed set the validated set is its composite closure; glyphs outside
+  // it are never decoded and are marked unknown above their (untrusted) header box.
+  /** @type {Set<number> | null} */
+  let validated = null;
+  if (validatedSeeds) {
+    validated = new Set(validatedSeeds);
+    const pending = [...validated];
+    while (pending.length) {
+      const parent = /** @type {number} */ (pending.pop());
+      for (const child of children[parent] ?? []) if (!validated.has(child)) { validated.add(child); pending.push(child); }
+    }
+  }
+  let pointWork = 0;
+  for (let glyph = 0; glyph < glyphCount; glyph++) {
+    const info = simple[glyph];
+    if (!info) continue;
+    if (validated && !validated.has(glyph)) { known[glyph] = false; continue; }
+    const points = info.points;
+    pointWork += points;
+    if (pointWork > MAX_GLYPH_POINTS) fail('glyph point work exceeds the safe limit');
+    const data = glyf.subarray(offsets[glyph], offsets[glyph + 1]);
+    const instructionsAt = 10 + info.contours * 2, instructions = data.readUInt16BE(instructionsAt);
+    let position = instructionsAt + 2 + instructions, seen = 0, coordinateBytes = 0;
+    const flags = new Uint8Array(points);
+    need(data, instructionsAt + 2, instructions, 'glyph instructions');
+    while (seen < points) {
+      need(data, position, 1, 'glyph flags');
+      const flag = data[position++];
+      if (flag & 0x80) fail('unsupported reserved glyph flag');
+      let run = 1;
+      if (flag & 8) { need(data, position, 1, 'glyph flag repeat'); run += data[position++]; }
+      if (run > points - seen) fail('glyph flag repeat exceeds point count');
+      flags.fill(flag, seen, seen + run);
+      coordinateBytes += run * ((flag & 2 ? 1 : flag & 16 ? 0 : 2) + (flag & 4 ? 1 : flag & 32 ? 0 : 2));
+      seen += run;
+    }
+    need(data, position, coordinateBytes, 'glyph coordinates');
+    const box = boxes[glyph];
+    for (let axis = 0; axis < 2; axis++) {
+      let coordinate = 0;
+      for (const flag of flags) {
+        const short = !!(flag & (axis ? 4 : 2)), sameOrPositive = !!(flag & (axis ? 32 : 16));
+        if (short) coordinate += (sameOrPositive ? 1 : -1) * data[position++];
+        else if (!sameOrPositive) { coordinate += data.readInt16BE(position); position += 2; }
+        if (coordinate < box[axis] || coordinate > box[axis + 2]) fail('glyph coordinates exceed their stored bounding box');
+      }
+    }
   }
   const status = new Uint8Array(glyphCount);
   const depths = new Uint16Array(glyphCount);
@@ -440,8 +474,44 @@ function selectCollectionFace(data, expectedFamily, request) {
   return (pool.find((entry) => !entry.identity.bold && !entry.identity.italic) ?? pool[0]).index;
 }
 
-/** @param {Buffer | Uint8Array} bytes @param {{ faceIndex?: number }} [options] @returns {NativeFontMetrics} */
-function parseFontMetrics(bytes, { faceIndex = 0 } = {}) {
+/** Binary-search the supplementary cmap groups, which are stored sorted by range start. @param {CmapGroup[]} groups @param {number} code */
+function groupGlyph(groups, code) {
+  let lo = 0, hi = groups.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1, group = /** @type {CmapGroup} */ (groups[mid]);
+    if (code < group[0]) hi = mid - 1;
+    else if (code > group[1]) lo = mid + 1;
+    else return group[2] + code - group[0];
+  }
+  return 0;
+}
+
+/**
+ * Resolve a bounded captured-PDF used-codepoint set to this face's glyph ids.
+ * Capital A is always seeded: the native capital-height gate below must keep a
+ * validated glyph whether or not a plotted run used it. Unmapped codepoints name
+ * no glyph and are ignored; the set never widens any other validation or budget.
+ * @param {{ cmap: number[], groups: CmapGroup[] }} mapping @param {Iterable<number> | undefined} usedCodepoints
+ * @returns {Set<number> | undefined}
+ */
+function usedGlyphSeeds(mapping, usedCodepoints) {
+  if (usedCodepoints === undefined) return undefined;
+  if (!usedCodepoints || typeof usedCodepoints[Symbol.iterator] !== 'function') fail('invalid used codepoint set');
+  const glyphs = new Set();
+  let count = 0;
+  for (const code of usedCodepoints) {
+    if (++count > MAX_USED_CODEPOINTS) fail('used codepoint set exceeds the safe limit');
+    if (!Number.isInteger(code) || code < 0 || code > 0x10ffff) fail('invalid used codepoint');
+    const glyph = code <= 0xffff ? mapping.cmap[code] : groupGlyph(mapping.groups, code);
+    if (glyph) glyphs.add(glyph);
+  }
+  const glyphA = mapping.cmap[0x41];
+  if (glyphA) glyphs.add(glyphA);
+  return glyphs;
+}
+
+/** @param {Buffer | Uint8Array} bytes @param {{ faceIndex?: number, usedCodepoints?: Iterable<number> }} [options] @returns {NativeFontMetrics} */
+function parseFontMetrics(bytes, { faceIndex = 0, usedCodepoints } = {}) {
   if (!(bytes instanceof Uint8Array) || bytes.byteLength > MAX_FONT_BYTES || bytes.byteLength < 12) fail('font must contain 12 bytes to 64 MiB');
   if (!Number.isInteger(faceIndex) || faceIndex < 0 || faceIndex >= MAX_FACES) fail('invalid font face index');
   const data = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength), tables = directory(data, faceIndex);
@@ -464,11 +534,15 @@ function parseFontMetrics(bytes, { faceIndex = 0 } = {}) {
     if (offset > glyf.length || i && offset < offsets[i - 1]) fail('invalid loca glyph offset');
     offsets[i] = offset;
   }
+  // The cmap is resolved before glyph validation so a captured-PDF used set can
+  // name the glyphs it needs; it depends only on the cmap table and glyph count.
+  const mapping = characterMap(table(tables, 'cmap', 4), glyphCount);
+  const validatedSeeds = usedGlyphSeeds(mapping, usedCodepoints);
   // Origin-adjusted unhinted control bounds retain visible Y overflow. Windows TEXTBOX
   // clipping and device hinting differ; neither is used to crop rendered/selected ink.
-  const { glyphBounds, glyphBoundsKnown } = glyphMetrics(glyf, offsets, glyphCount, bearings);
+  const { glyphBounds, glyphBoundsKnown } = glyphMetrics(glyf, offsets, glyphCount, bearings, validatedSeeds);
   maskBitmapGlyphs(tables, glyphCount, glyphBoundsKnown);
-  const mapping = characterMap(table(tables, 'cmap', 4), glyphCount), names = fontNames(table(tables, 'name', 6));
+  const names = fontNames(table(tables, 'name', 6));
   const glyphA = mapping.cmap[0x41], capitalHeight = glyphBounds[glyphA][3], selection = os2.readUInt16BE(62);
   if (!glyphA || capitalHeight <= 0 || !glyphBoundsKnown[glyphA]) fail('the native capital A glyph must have a known origin and positive yMax');
   return { ...names, unitsPerEm, capitalHeight, winDescent: os2.readUInt16BE(76), fontBounds: bounds(head, 36, 'font bounding box'), advances, glyphBounds, glyphBoundsKnown, ...mapping, fsType: os2.readUInt16BE(8), bold: !!(selection & 32), italic: !!(selection & (1 | 512)) };
@@ -499,6 +573,7 @@ function fontRequest(request) {
   if (!request || typeof request !== 'object' || typeof request.font !== 'string' || !request.font || request.font.length > 160) fail('a bounded font filename or known Windows family is required');
   if (request.family !== undefined && (typeof request.family !== 'string' || !request.family.trim() || request.family.length > 256 || /[\u0000-\u001f\u007f]/.test(request.family))) fail('invalid requested font family');
   for (const flag of ['bold', 'italic']) if (request[flag] !== undefined && typeof request[flag] !== 'boolean') fail(`invalid requested ${flag} flag`);
+  if (request.usedCodepoints !== undefined && (!Array.isArray(request.usedCodepoints) || request.usedCodepoints.length > MAX_USED_CODEPOINTS || request.usedCodepoints.some((code) => !Number.isInteger(code) || code < 0 || code > 0x10ffff))) fail('invalid used codepoint set');
   const name = request.font;
   if (name.trim() !== name || /[<>:"/\\|?*\u0000-\u001f\u007f]/.test(name) || /[. ]$/.test(name) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) fail('font must be a safe literal basename');
   const known = FAMILIES.find((family) => familyKey(family[0]) === familyKey(name) || family.slice(1).some((filename) => filename && filename.toLowerCase() === name.toLowerCase()));
@@ -511,7 +586,7 @@ function fontRequest(request) {
     filename = known[1 + (bold ? 1 : 0) + (italic ? 2 : 0)];
     if (!filename) fail('the requested family has no known installed variant for these style flags');
   }
-  return { filename, expectedFamily: request.family ?? known?.[0] };
+  return { filename, expectedFamily: request.family ?? known?.[0], usedCodepoints: request.usedCodepoints };
 }
 
 /** @param {string} root @param {string} child */
@@ -531,7 +606,7 @@ function unchanged(a, b) { return sameFile(a, b) && a.size === b.size && a.mtime
  * @returns {Promise<{ metrics: NativeFontMetrics & { resolvedFilename: string, faceIndex: number }, bytes: Uint8Array }>}
  */
 async function readWindowsFontData(request, { fontsDirectory } = {}) {
-  const { filename, expectedFamily } = fontRequest(request);
+  const { filename, expectedFamily, usedCodepoints } = fontRequest(request);
   if (fontsDirectory === undefined) {
     if (process.platform !== 'win32') fail('installed Windows font metrics are unavailable on this platform');
     fontsDirectory = path.join(process.env.WINDIR || process.env.SystemRoot || 'C:\\Windows', 'Fonts');
@@ -556,7 +631,7 @@ async function readWindowsFontData(request, { fontsDirectory } = {}) {
     // A collection contributes the face selected for this family/style request;
     // metrics, cmap and permissions all come from that one face.
     const faceIndex = selectCollectionFace(data, expectedFamily, request);
-    const metrics = parseFontMetrics(data, { faceIndex });
+    const metrics = parseFontMetrics(data, { faceIndex, usedCodepoints });
     if (expectedFamily && familyKey(metrics.family) !== familyKey(expectedFamily)) fail('installed font family does not match the requested family');
     if (request.bold !== undefined && metrics.bold !== request.bold || request.italic !== undefined && metrics.italic !== request.italic) fail('installed font style does not match the requested style flags');
     return { metrics: { ...metrics, resolvedFilename: path.basename(resolved), faceIndex }, bytes: data };
@@ -564,10 +639,16 @@ async function readWindowsFontData(request, { fontsDirectory } = {}) {
 }
 
 /**
- * Metadata-only callers never receive the installed font program.
+ * Metadata-only callers never receive the installed font program, and never a
+ * used set: screen metrics keep the eager whole-face validation, so an over-cap
+ * face keeps falling back to Canvas there exactly as before. Used sets exist
+ * only on the captured-PDF read (readWindowsPdfFont via readWindowsFontData).
  * @param {FontMetricsRequest} request @param {{ fontsDirectory?: string }} [options]
  * @returns {Promise<NativeFontMetrics & { resolvedFilename: string, faceIndex: number }>}
  */
-async function readWindowsFontMetrics(request, options) { return (await readWindowsFontData(request, options)).metrics; }
+async function readWindowsFontMetrics(request, options) {
+  const stripped = request && typeof request === 'object' ? { ...request, usedCodepoints: undefined } : request;
+  return (await readWindowsFontData(/** @type {FontMetricsRequest} */ (stripped), options)).metrics;
+}
 
-module.exports = { parseFontMetrics, readWindowsFontMetrics, readWindowsFontData, MAX_FONT_BYTES };
+module.exports = { parseFontMetrics, readWindowsFontMetrics, readWindowsFontData, MAX_FONT_BYTES, MAX_USED_CODEPOINTS };

@@ -55,6 +55,10 @@ function postscriptName(data) {
  * @param {{ fontsDirectory?: string }} [options]
  */
 async function readWindowsPdfFont(request, options) {
+  // A captured-PDF request may carry usedCodepoints: the metrics parse then
+  // point-validates only the plotted glyphs (plus their composite closure and
+  // capital A) and marks the rest unknown. The permission gate below still
+  // reads the whole selected face's real OS/2, and the whole program embeds.
   const { metrics, bytes } = await readWindowsFontData(request, options);
   const source = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   // A collection embeds the exact face the metrics reader selected for this
