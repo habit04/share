@@ -21,6 +21,12 @@ messages). The date of each version is the date of the commit that set that vers
   Regular faces are preferred for unspecified style flags regardless of collection
   order. Windows source Plot/IPC checks cover regular, bold and cross-family faces;
   packaged-app acceptance remains pending.
+- Captured vector PDF export now point-validates only the glyphs a plot uses (plus their
+  composite components and capital A), so large CJK faces such as SimSun — refused before
+  because their whole-face outline point total exceeds the unchanged safety budget — can
+  embed for the text a drawing actually contains. Glyphs outside the plotted set are
+  marked unvalidated and any run reaching them uses the reported fallback; screen font
+  metrics are unchanged and still fall back to Canvas for these faces.
 
 ## [0.5.2] - 2026-10-15
 

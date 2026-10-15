@@ -34,6 +34,21 @@ are limited to eight faces, 64 MiB per face and 128 MiB total. Source font files
 STYLE references are never rewritten. A later font read or tab change cannot alter prior faces,
 the captured drawing or its output filename.
 
+Glyph point validation on the captured-PDF path is scoped to the glyphs a plot actually
+uses. The capture walk already visits every plotted string; its codepoints travel with the
+PDF font request (bounded at 65,534 per face, validated at the host boundary), and the
+metrics parse then decodes and validates outline points only for those glyphs, their
+composite components and the capital-A glyph the native height gate requires. Every other
+glyph keeps its advances, cmap entry and header box, but is marked as having unknown bounds,
+so any run that reaches it falls back with a report instead of trusting it. The 2,000,000
+point budget is unchanged and now applies to the validated set: a plot whose used glyphs
+genuinely exceed it still refuses. This admits SimSun-class CJK faces — whose whole-face
+point total exceeds the budget although no drawing uses more than a fraction of their
+glyphs — to captured PDF export, with the whole selected program still embedded and its
+OS/2 permissions still gating the face. Screen/interactive metrics are unchanged: they
+keep the eager whole-face validation, so these faces continue to render on screen through
+the existing Canvas fallback, and no budget was raised anywhere.
+
 Used faces become full FontFile2 programs, Type0 Identity-H fonts and CIDFontType2 descendants.
 CIDToGIDMap and ToUnicode keep glyph identity, including distinct Unicode aliases and supported
 supplementary characters. Native unkerned advances, capital-A height, bearings, FIT/ALIGNED,
