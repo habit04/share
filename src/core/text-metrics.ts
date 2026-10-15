@@ -88,6 +88,8 @@ export interface NativeFontMetrics {
   readonly winDescent?: number;
   readonly bold: boolean;
   readonly italic: boolean;
+  /** Index of the selected face within a TrueType collection file; 0 for standalone fonts. */
+  readonly faceIndex?: number;
   readonly filename?: string;
   readonly resolvedFilename?: string;
 }

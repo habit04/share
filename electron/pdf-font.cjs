@@ -57,10 +57,11 @@ function postscriptName(data) {
 async function readWindowsPdfFont(request, options) {
   const { metrics, bytes } = await readWindowsFontData(request, options);
   const source = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  // A collection embeds the same face the metrics reader selected (face 0), extracted
-  // whole. Tables are copied verbatim, so the permission checks below read the real OS/2.
+  // A collection embeds the exact face the metrics reader selected for this
+  // family/style request (metrics.faceIndex), extracted whole. Tables are copied
+  // verbatim, so the permission checks below read that same face's real OS/2.
   const collection = source.readUInt32BE(0) === 0x74746366;
-  const data = collection ? extractTtcFace(source, 0) : source, signature = data.readUInt32BE(0);
+  const data = collection ? extractTtcFace(source, metrics.faceIndex ?? 0) : source, signature = data.readUInt32BE(0);
   if (signature !== 0x00010000 && signature !== 0x74727565) fail('standalone TrueType glyf outlines are required');
   // The shared metadata parser validated all SFNT table ranges, overlaps and formats.
   const tables = new Map();

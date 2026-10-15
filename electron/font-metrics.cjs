@@ -382,6 +382,59 @@ function glyphMetrics(glyf, offsets, glyphCount, bearings) {
   };
 }
 
+/**
+ * Lightweight per-face identity probe for a TrueType collection: family name and
+ * OS/2 selection bold/italic flags. Only table directories, the name table and the
+ * OS/2 header are read — the full glyph/cmap parse runs on the selected face alone.
+ * Faces that cannot be probed (unsupported structures) are skipped by selection; the
+ * full parse of the fallback face reports the original error for such a face.
+ * The collection header validation mirrors directory(), bounded by MAX_FACES.
+ * @param {Buffer} data @returns {Array<{ family: string, bold: boolean, italic: boolean } | null> | null} null when not a collection
+ */
+function collectionFaceIdentities(data) {
+  if (data.toString('latin1', 0, 4) !== 'ttcf') return null;
+  const version = data.readUInt32BE(4), count = data.readUInt32BE(8);
+  if (version !== 0x00010000 && version !== 0x00020000 || !count || count > MAX_FACES) return null;
+  /** @type {Array<{ family: string, bold: boolean, italic: boolean } | null>} */
+  const identities = [];
+  for (let faceIndex = 0; faceIndex < count; faceIndex++) {
+    try {
+      const tables = directory(data, faceIndex), { family } = fontNames(table(tables, 'name', 6)), os2 = table(tables, 'OS/2', 78), selection = os2.readUInt16BE(62);
+      identities.push({ family, bold: !!(selection & 32), italic: !!(selection & (1 | 512)) });
+    } catch { identities.push(null); }
+  }
+  return identities;
+}
+
+/**
+ * Deterministic collection-face selection for one metrics request, derived only
+ * from the existing font/family/bold/italic request fields (no request-shape change):
+ * - Candidates are the collection's probed faces. When an expected family is known,
+ *   only faces of that family are candidates; when none matches, face 0 is kept so
+ *   the existing family-mismatch failure is reported unchanged.
+ * - A requested bold/italic must match the face flags exactly. When no face of the
+ *   family has the requested style, the family's regular face (else its first face)
+ *   is parsed so the existing explicit style-mismatch failure is reported.
+ * - When style is unspecified, the regular face of the requested family is
+ *   preferred; a request naming neither family nor style keeps face 0, as before.
+ * @param {Buffer} data @param {string | undefined} expectedFamily @param {FontMetricsRequest} request @returns {number}
+ */
+function selectCollectionFace(data, expectedFamily, request) {
+  const identities = collectionFaceIdentities(data);
+  if (!identities) return 0;
+  /** @type {{ identity: { family: string, bold: boolean, italic: boolean }, index: number }[]} */
+  const pool = [];
+  identities.forEach((identity, index) => {
+    if (identity !== null && (expectedFamily === undefined || familyKey(identity.family) === familyKey(expectedFamily))) pool.push({ identity, index });
+  });
+  if (!pool.length) return 0;
+  const { bold, italic } = request;
+  const matches = pool.filter((entry) => (bold === undefined || entry.identity.bold === bold) && (italic === undefined || entry.identity.italic === italic));
+  if (expectedFamily === undefined && bold === undefined && italic === undefined) return 0;
+  if (matches.length) return matches[0].index;
+  return (pool.find((entry) => !entry.identity.bold && !entry.identity.italic) ?? pool[0]).index;
+}
+
 /** @param {Buffer | Uint8Array} bytes @param {{ faceIndex?: number }} [options] @returns {NativeFontMetrics} */
 function parseFontMetrics(bytes, { faceIndex = 0 } = {}) {
   if (!(bytes instanceof Uint8Array) || bytes.byteLength > MAX_FONT_BYTES || bytes.byteLength < 12) fail('font must contain 12 bytes to 64 MiB');
@@ -470,7 +523,7 @@ function unchanged(a, b) { return sameFile(a, b) && a.size === b.size && a.mtime
  * for private tests/main-process configuration; it must never be accepted from renderer IPC.
  * @param {FontMetricsRequest} request
  * @param {{ fontsDirectory?: string }} [options]
- * @returns {Promise<{ metrics: NativeFontMetrics & { resolvedFilename: string }, bytes: Uint8Array }>}
+ * @returns {Promise<{ metrics: NativeFontMetrics & { resolvedFilename: string, faceIndex: number }, bytes: Uint8Array }>}
  */
 async function readWindowsFontData(request, { fontsDirectory } = {}) {
   const { filename, expectedFamily } = fontRequest(request);
@@ -495,17 +548,20 @@ async function readWindowsFontData(request, { fontsDirectory } = {}) {
       offset += read.bytesRead;
     }
     if (!unchanged(before, await handle.stat({ bigint: true })) || !samePath(root, await fs.realpath(fontsDirectory)) || !samePath(resolved, await fs.realpath(candidate)) || !unchanged(before, await fs.stat(resolved, { bigint: true }))) fail('font file or path changed while reading');
-    const metrics = parseFontMetrics(data);
+    // A collection contributes the face selected for this family/style request;
+    // metrics, cmap and permissions all come from that one face.
+    const faceIndex = selectCollectionFace(data, expectedFamily, request);
+    const metrics = parseFontMetrics(data, { faceIndex });
     if (expectedFamily && familyKey(metrics.family) !== familyKey(expectedFamily)) fail('installed font family does not match the requested family');
     if (request.bold !== undefined && metrics.bold !== request.bold || request.italic !== undefined && metrics.italic !== request.italic) fail('installed font style does not match the requested style flags');
-    return { metrics: { ...metrics, resolvedFilename: path.basename(resolved) }, bytes: data };
+    return { metrics: { ...metrics, resolvedFilename: path.basename(resolved), faceIndex }, bytes: data };
   } finally { await handle.close(); }
 }
 
 /**
  * Metadata-only callers never receive the installed font program.
  * @param {FontMetricsRequest} request @param {{ fontsDirectory?: string }} [options]
- * @returns {Promise<NativeFontMetrics & { resolvedFilename: string }>}
+ * @returns {Promise<NativeFontMetrics & { resolvedFilename: string, faceIndex: number }>}
  */
 async function readWindowsFontMetrics(request, options) { return (await readWindowsFontData(request, options)).metrics; }
 
