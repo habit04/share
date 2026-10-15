@@ -9,6 +9,7 @@ import { plotLayoutsOrVector } from '../src/app/plot-vector';
 import { vectorPdf, vectorPdfCompressed, renderPdfPages, drawingContext, type PdfPageSpec, type PdfDrawingContext } from '../src/io/pdf-vector';
 import { parsePdfBasics, dictValue, pageContents, pageFonts, parseContentStream, type PdfBasics } from './helpers/pdf';
 import { pdfFontFixture } from './helpers/pdf-font-fixture';
+import { embeddableFontProgram } from '../src/io/pdf-font-subset';
 import { fontTable } from './helpers/native-font-fixture';
 
 const style = (name = 'FACE', font = 'arial.ttf', widthFactor = 1, oblique = 0) => ({ name, font, bigFont: '', flags: 0, height: 0, widthFactor, oblique, generation: 0 });
@@ -58,7 +59,7 @@ describe('captured vector PDF font integration', () => {
     expect(result.geometry!.measure('A', 730, appearance).advance).toBe(650);
     expect(result.fonts!.encode(pdfFontKey(appearance), 'A')!.advance).toBe(650);
     const pdf = parsePdfBasics(await vectorPdfCompressed([page(doc.entities)], context, plotStyle, 'Snapshot', (data) => new Uint8Array(deflateSync(data))));
-    expect(pdf.errors).toEqual([]); expect(embeddedPrograms(pdf)).toContainEqual(original);
+    expect(pdf.errors).toEqual([]); expect(embeddedPrograms(pdf)).toContainEqual(embeddableFontProgram(original, new Set([2, 3])));
     expect(embeddedPrograms(pdf)).not.toContainEqual(new Uint8Array(first.bytes));
   });
 
