@@ -55,6 +55,13 @@ supplementary characters. Native unkerned advances, capital-A height, bearings, 
 width factor, oblique and rotation drive PDF text. Resources are shared across pages. The format
 follows the [Adobe PDF reference](https://opensource.adobe.com/dc-acrobat-sdk-docs/pdfstandards/pdfreference1.5_v6.pdf).
 
+Embedded programs are subset at write time by `src/io/pdf-font-subset.ts` (priority 12.3):
+a GID-preserving glyf subset keeps the used glyphs, GID 0 and composite components
+byte-identical and empties the rest, so CIDToGIDMap, ToUnicode, widths and glyph metrics are
+unchanged. Programs whose OS/2 fsType sets the no-subsetting bit are embedded whole, as are
+programs subsetting cannot shrink or safely rebuild. The embedded `cmap` is kept verbatim
+in this slice (trimming it is a named follow-up); CFF subsetting waits on CFF embedding (12.2).
+
 Unsupported/missing faces or unsupported runs use the existing Helvetica/stroke fallback and
 the plot log reports substitutions. Browser plots keep their existing path. CFF,
 variable/color fonts, uncertain glyph origins, contextual shaping, font subsetting and
@@ -112,6 +119,15 @@ MTEXT line leading remains approximate even when its font is embedded.
 - 36 resource tests and 17 integration tests use authored font fixtures. They check Unicode/CID
   mapping, program identity, permissions, capture isolation, font budgeting, placement, fallback,
   shared pages and legacy output. No third-party font programs or reference PDFs are tracked.
+- Subsetting (12.3) adds 9 unit tests and 6 writer tests over authored fixtures: composite
+  closure including nested composites, cycle rejection with whole-font fallback, Unicode
+  aliases, supplementary glyphs, the no-subsetting bit, malformed programs and size
+  reduction (a 45-glyph authored fixture embeds 1,008 bytes instead of 2,432 when one glyph
+  is used). Independent Linux/headless pypdf and Poppler checks on a generated subset/whole
+  pair extract identical text (`AB`), report the same CID TrueType/Identity-H font with
+  ToUnicode, render byte-identical pages, and show FontFile2 at 784 bytes (subset) vs 812
+  bytes (whole) for the five-glyph fixture. Native Windows Plot/IPC acceptance of subset
+  output remains with the lead, as for the rest of this document.
 - Separate private production-reader/PDF-writer contract artifacts passed independent pypdf and
   Poppler checks: authored `A` + U+20000 + `B`, and installed Nirmala UI collection face 0 `AB`.
   Checks followed FontFile2 descriptor links, program identity and CIDToGID mappings, extracted

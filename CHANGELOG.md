@@ -27,6 +27,11 @@ messages). The date of each version is the date of the commit that set that vers
   embed for the text a drawing actually contains. Glyphs outside the plotted set are
   marked unvalidated and any run reaching them uses the reported fallback; screen font
   metrics are unchanged and still fall back to Canvas for these faces.
+- Vector PDF export now subsets embedded TrueType (glyf) font programs to the glyphs each
+  plot actually uses (priority 12.3). Subsetting preserves glyph IDs, metrics, Unicode
+  mappings and embedding permissions; programs that forbid subsetting in their OS/2 fsType,
+  programs that cannot be made smaller, and programs that fail subset validation are
+  embedded whole exactly as before. CFF subsetting remains open with CFF embedding (12.2).
 
 ## [0.5.2] - 2026-10-15
 
