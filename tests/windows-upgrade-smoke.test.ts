@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { assertCleanWindowsUpgradeInventory, assertOwnedUpgradePath, assertStableWindowsUpgradeRegistration, assertUpgradeProbe, assertUpgradeSignature, assertWindowsShippingPayloadTrust, assertWindowsUpgradeHost, assertWindowsUpgradeRecoveryFixture, executeWindowsUpgradeSequence, inventoryUpgradeTree, isolatedWindowsPowerShellEnvironment, needsWindowsUpgradeSmoke, seedWindowsUpgradeRecoveryFixture, WINDOWS_UPGRADE_BASELINE, WINDOWS_UPGRADE_CASES, WINDOWS_UPGRADE_RECOVERY_INPUTS, type UpgradeCase, type UpgradeDriver, type UpgradeSnapshot } from '../scripts/windows-upgrade-smoke.mjs';
+import { assertCleanWindowsUpgradeInventory, assertOwnedUpgradePath, assertStableWindowsUpgradeRegistration, assertUpgradeProbe, assertUpgradeSignature, assertWindowsApplicationVersion, assertWindowsInstallerVersion, assertWindowsShippingPayloadTrust, assertWindowsUpgradeHost, assertWindowsUpgradeRecoveryFixture, executeWindowsUpgradeSequence, inventoryUpgradeTree, isolatedWindowsPowerShellEnvironment, needsWindowsUpgradeSmoke, seedWindowsUpgradeRecoveryFixture, WINDOWS_UPGRADE_BASELINE, WINDOWS_UPGRADE_CASES, WINDOWS_UPGRADE_RECOVERY_INPUTS, type UpgradeCase, type UpgradeDriver, type UpgradeSnapshot } from '../scripts/windows-upgrade-smoke.mjs';
 import { readDxf } from '../src/io/dxf';
 
 const hosted = { platform: 'win32', arch: 'x64', env: { GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', RUNNER_OS: 'Windows', GITHUB_REPOSITORY: 'habit04/share', GITHUB_JOB: 'packaged-smoke', GITHUB_WORKFLOW_REF: 'habit04/share/.github/workflows/release.yml@refs/heads/integration/windows-pr18-pr19-source', GITHUB_RUN_ID: '123456', GITHUB_SHA: 'a'.repeat(40), ImageOS: 'win25', USERNAME: 'runneradmin', USERPROFILE: 'C:\\Users\\runneradmin', RUNNER_TEMP: 'D:\\a\\_temp' } };
@@ -49,9 +49,37 @@ describe('Windows upgrade execution admission', () => {
     for (const key of Object.keys(clean)) { const changed: Record<string, unknown> = { ...clean }; delete changed[key]; expect(() => assertCleanWindowsUpgradeInventory(changed), key).toThrow(); }
     for (const changed of [{ queryCompleted: false }, { registryViews: 2 }, { registryViews: '4' }, { uninstallEntries: -1 }, { uninstallEntries: NaN }, { installedJcad: {} }, { runningJcad: {} }, { installedJcad: [{ name: 'JCad Electrical', location: 'C:\\Users\\someone\\Programs\\jcad-electrical' }] }, { runningJcad: [{ Name: 'JCad Electrical.exe', ProcessId: 12 }] }, { runningJcad: [{ Name: 'JcadDwgWriter.exe', ProcessId: 44 }] }]) expect(() => assertCleanWindowsUpgradeInventory({ ...clean, ...changed })).toThrow();
   });
+  it('accepts the real old/new application PE version shapes while retaining both raw values', () => {
+    for (const version of ['0.5.0', '0.5.1']) for (const productVersion of [version, version + '.0']) {
+      const record = { version: productVersion, fileVersion: version }, before = { ...record };
+      expect(() => assertWindowsApplicationVersion(record, version)).not.toThrow();
+      expect(record).toEqual(before);
+    }
+  });
+  it('rejects wrong application revisions, suffixes, missing fields and mismatched FileVersion', () => {
+    const record = { version: '0.5.1.0', fileVersion: '0.5.1' };
+    for (const version of ['0.5.0', '0.5.0.0', '0.5.1.1', '0.5.1.0.0', 'v0.5.1', '0.5.10', '0.5.1-rc.1', '0.5.1+build.1', ' 0.5.1', '0.5.1 ', '', null, undefined]) expect(() => assertWindowsApplicationVersion({ ...record, version }, '0.5.1')).toThrow();
+    for (const fileVersion of ['0.5.0', '0.5.1.0', 'v0.5.1', '0.5.10', '0.5.1-rc.1', ' 0.5.1', '0.5.1 ', '', null, undefined]) expect(() => assertWindowsApplicationVersion({ ...record, fileVersion }, '0.5.1')).toThrow();
+    for (const input of [null, {}, false]) expect(() => assertWindowsApplicationVersion(input, '0.5.1')).toThrow();
+  });
+  it('does not extend the fourth-component exception to prerelease or build strings', () => {
+    for (const version of ['0.5.1-rc.1', '0.5.1+build.1']) {
+      expect(() => assertWindowsApplicationVersion({ version, fileVersion: version }, version)).not.toThrow();
+      expect(() => assertWindowsApplicationVersion({ version: version + '.0', fileVersion: version }, version)).toThrow();
+    }
+  });
+  it('keeps installers on the exact ProductVersion policy, including rejection of app-style tuples', () => {
+    for (const version of ['0.5.0', '0.5.1']) {
+      expect(() => assertWindowsInstallerVersion({ version, fileVersion: version }, version)).not.toThrow();
+      for (const rawVersion of [version + '.0', version + '.1', 'v' + version, version + ' ', '0.5.2', undefined]) expect(() => assertWindowsInstallerVersion({ version: rawVersion, fileVersion: version }, version)).toThrow();
+    }
+  });
   it('requires both actual installed signatures and updater publisher before executable probes', () => {
-    const trusted = { expectedVersion: '0.5.1', updaterPublishers: ['Justin Rodriguez'], application: { ...signature, version: '0.5.1', sha256: 'a'.repeat(64), bytes: 100 }, helper: { ...signature, version: '0.1.0', sha256: 'b'.repeat(64), bytes: 40 } };
+    const trusted = { expectedVersion: '0.5.1', updaterPublishers: ['Justin Rodriguez'], application: { ...signature, version: '0.5.1.0', fileVersion: '0.5.1', sha256: 'a'.repeat(64), bytes: 100 }, helper: { ...signature, version: '0.1.0', sha256: 'b'.repeat(64), bytes: 40 } };
     expect(() => assertWindowsShippingPayloadTrust(trusted, '0.5.1')).not.toThrow();
+    const baseline = { ...trusted, expectedVersion: '0.5.0', application: { ...trusted.application, version: '0.5.0.0', fileVersion: '0.5.0' } };
+    expect(() => assertWindowsShippingPayloadTrust(baseline, '0.5.0')).not.toThrow();
+    for (const change of [{ version: '0.5.1.1' }, { fileVersion: '0.5.1.0' }, { fileVersion: '0.5.0' }, { fileVersion: undefined }]) expect(() => assertWindowsShippingPayloadTrust({ ...trusted, application: { ...trusted.application, ...change } }, '0.5.1')).toThrow();
     for (const role of ['application', 'helper'] as const) for (const change of [{ status: 'NotSigned' }, { status: 'UnknownError' }, { publisher: 'Someone Else' }, { thumbprint: '' }, { sha256: '' }, { bytes: 0 }]) expect(() => assertWindowsShippingPayloadTrust({ ...trusted, [role]: { ...trusted[role], ...change } }, '0.5.1')).toThrow();
     for (const change of [{ expectedVersion: '0.5.0' }, { updaterPublishers: ['Someone Else'] }, { updaterPublishers: ['Justin Rodriguez', 'Someone Else'] }, { updaterPublishers: [] }, { updaterPublishers: undefined }, { helper: undefined }, { application: { ...trusted.application, version: '0.5.0' } }]) expect(() => assertWindowsShippingPayloadTrust({ ...trusted, ...change }, '0.5.1')).toThrow();
     expect(() => assertWindowsShippingPayloadTrust(trusted, '0.5.1', 'Someone Else')).toThrow(/Configured publisher/);
@@ -88,7 +116,7 @@ describe('old save to new runtime compatibility assertions', () => {
   });
   it('rejects wrong binary/version/test mode/origin/entity count/dirty/migration evidence', () => {
     const settingsCase = WINDOWS_UPGRADE_CASES[0]!; const record = validProbe(settingsCase);
-    for (const changed of [{ phase: 'first' }, { version: '0.5.0' }, { packaged: false }, { testBuild: true }, { url: 'file:///index.html' }, { before: 1 }, { entities: 1 }, { dirty: true }, { saved: true }, ...['secure', 'bridge', 'persistent', 'privateSessionData', 'privateStorage', 'migrationMarker'].map(key => ({ [key]: false }))]) expect(() => assertUpgradeProbe({ ...record, ...changed }, { phase: 'second', version: '0.5.1', settingsCase, upgraded: true })).toThrow();
+    for (const changed of [{ phase: 'first' }, { version: '0.5.0' }, { version: '0.5.1.0' }, { packaged: false }, { testBuild: true }, { url: 'file:///index.html' }, { before: 1 }, { entities: 1 }, { dirty: true }, { saved: true }, ...['secure', 'bridge', 'persistent', 'privateSessionData', 'privateStorage', 'migrationMarker'].map(key => ({ [key]: false }))]) expect(() => assertUpgradeProbe({ ...record, ...changed }, { phase: 'second', version: '0.5.1', settingsCase, upgraded: true })).toThrow();
   });
   it('allows historical probes without claiming they emitted new settings evidence', () => {
     const settingsCase = WINDOWS_UPGRADE_CASES[1]!;

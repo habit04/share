@@ -105,18 +105,47 @@ export function assertUpgradeSignature(record, publisher = WINDOWS_UPGRADE_BASEL
   assert.match(record?.thumbprint || '', /^[a-f0-9]{40,64}$/i, 'Signer certificate identity is required');
 }
 
-/** Authenticate the installer before the caller's first clean-install execution. */
-export function verifyWindowsUpgradeInstaller(file, expectedVersion) {
+/** Installer PE ProductVersion remains exact; application tuple rules do not apply. */
+export function assertWindowsInstallerVersion(record, expectedVersion) {
+  assert.equal(record?.version, expectedVersion, 'Installer version identity differs');
+}
+
+/** Compare both raw application PE strings without normalizing arbitrary suffixes/revisions.
+ * Electron's stable Windows application ProductVersion may append one zero revision.
+ * FileVersion must still identify the exact semantic release; runtime probes stay exact.
+ */
+export function assertWindowsApplicationVersion(record, expectedVersion) {
+  assert.ok(typeof expectedVersion === 'string' && expectedVersion.length > 0, 'Expected application version is required');
+  const zeroRevision = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(expectedVersion) && record?.version === expectedVersion + '.0';
+  assert.ok(record?.version === expectedVersion || zeroRevision, 'Installed application ProductVersion differs');
+  assert.equal(record?.fileVersion, expectedVersion, 'Installed application FileVersion differs');
+}
+
+/** Read and authenticate raw PE identity before any installer/application execution. */
+function verifySignedWindowsVersionInfo(file) {
   assertWindowsUpgradeHost({ platform: process.platform, arch: process.arch, env: process.env });
-  assert.ok(lstatSync(file).isFile() && !lstatSync(file).isSymbolicLink(), 'Installer must be a regular file');
+  assert.ok(lstatSync(file).isFile() && !lstatSync(file).isSymbolicLink(), 'Signed executable must be a regular file');
   const literal = `'${realpathSync.native(file).replace(/'/g, "''")}'`;
-  const script = `$ErrorActionPreference='Stop'; $f=${literal}; $s=Get-AuthenticodeSignature -LiteralPath $f; if (!$s.SignerCertificate) { throw 'Missing signer certificate' }; $v=(Get-Item -LiteralPath $f).VersionInfo; @{status=[string]$s.Status;publisher=$s.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName,$false);thumbprint=$s.SignerCertificate.Thumbprint;version=$v.ProductVersion} | ConvertTo-Json -Compress`;
+  const script = `$ErrorActionPreference='Stop'; $f=${literal}; $s=Get-AuthenticodeSignature -LiteralPath $f; if (!$s.SignerCertificate) { throw 'Missing signer certificate' }; $v=(Get-Item -LiteralPath $f).VersionInfo; @{status=[string]$s.Status;publisher=$s.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName,$false);thumbprint=$s.SignerCertificate.Thumbprint;version=$v.ProductVersion;fileVersion=$v.FileVersion} | ConvertTo-Json -Compress`;
   const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { env: isolatedWindowsPowerShellEnvironment(), encoding: 'utf8', windowsHide: true, shell: false, timeout: 30_000, maxBuffer: 1024 * 1024 });
-  assert.ok(!result.error && result.status === 0 && !result.signal, `Installer signature verification failed: ${result.error?.message || result.signal || result.status}: ${result.stderr || ''}`);
+  assert.ok(!result.error && result.status === 0 && !result.signal, `Executable signature verification failed: ${result.error?.message || result.signal || result.status}: ${result.stderr || ''}`);
   const signature = JSON.parse(result.stdout.trim()); assertUpgradeSignature(signature);
-  assert.equal(signature.version, expectedVersion, 'Installer version identity differs');
   const data = readFileSync(file);
   return { ...signature, sha256: sha256(data), bytes: data.length };
+}
+
+/** Authenticate the installer before the caller's first clean-install execution. */
+export function verifyWindowsUpgradeInstaller(file, expectedVersion) {
+  const record = verifySignedWindowsVersionInfo(file);
+  assertWindowsInstallerVersion(record, expectedVersion);
+  return record;
+}
+
+/** Authenticate the application's distinct raw PE version representation. */
+export function verifyWindowsUpgradeApplication(file, expectedVersion) {
+  const record = verifySignedWindowsVersionInfo(file);
+  assertWindowsApplicationVersion(record, expectedVersion);
+  return record;
 }
 
 /** Pure signature/publisher/hash admission for the exact installed app and native helper.
@@ -131,14 +160,14 @@ export function assertWindowsShippingPayloadTrust(record, expectedVersion, confi
     assert.match(file?.sha256 || '', /^[a-f0-9]{64}$/, `${role}: exact signed bytes are required`);
     assert.ok(Number.isSafeInteger(file?.bytes) && file.bytes > 0, `${role}: signed file byte count is required`);
   }
-  assert.equal(record.application.version, expectedVersion, 'Installed application ProductVersion differs');
+  assertWindowsApplicationVersion(record.application, expectedVersion);
   // The independently versioned native helper must not be assigned the application's version.
 }
 
 /** Authenticate actual installed executables before any --probe-dwg/startup execution. */
 export function verifyWindowsShippingPayloadTrust({ executable, expectedVersion }) {
   assertWindowsUpgradeHost({ platform: process.platform, arch: process.arch, env: process.env });
-  const application = verifyWindowsUpgradeInstaller(executable, expectedVersion);
+  const application = verifyWindowsUpgradeApplication(executable, expectedVersion);
   const helper = join(dirname(executable), 'resources', 'dwg-writer', 'JcadDwgWriter.exe');
   assert.ok(lstatSync(helper).isFile() && !lstatSync(helper).isSymbolicLink(), 'The installed native helper must be a regular file');
   const updateFile = join(dirname(executable), 'resources', 'app-update.yml'), stat = lstatSync(updateFile);
@@ -433,8 +462,8 @@ export async function runWindowsUpgradeSmoke(options) {
       assertOwnedUpgradePath(executable, scratchParent, 'jcad-smoke-');
       const signed = signature(executable); assertUpgradeSignature(signed);
       const fuses = await verifyExecutableFuses(executable, 'shipping');
-      const info = JSON.parse(powershell(`$v = (Get-Item -LiteralPath ${psString(executable)}).VersionInfo; @{version=$v.ProductVersion;product=$v.ProductName} | ConvertTo-Json -Compress`));
-      assert.equal(info.version, version); assert.equal(info.product, 'JCad Electrical');
+      const info = JSON.parse(powershell(`$v = (Get-Item -LiteralPath ${psString(executable)}).VersionInfo; @{version=$v.ProductVersion;fileVersion=$v.FileVersion;product=$v.ProductName} | ConvertTo-Json -Compress`));
+      assertWindowsApplicationVersion(info, version); assert.equal(info.product, 'JCad Electrical');
       const updater = loadYaml(readFileSync(join(target, 'resources', 'app-update.yml'), 'utf8'));
       assert.ok(updater && typeof updater === 'object' && 'publisherName' in updater, 'Updater publisher identity missing');
       const publishers = typeof updater.publisherName === 'string' ? [updater.publisherName] : updater.publisherName;
@@ -442,7 +471,7 @@ export async function runWindowsUpgradeSmoke(options) {
       const payload = role === 'candidate' ? await options.verifyInstalledPayload(executable) : null;
       assert.ok(role !== 'candidate' || payload, 'Exact installed candidate payload proof is required');
       const trust = verifyWindowsShippingPayloadTrust({ executable, expectedVersion: version });
-      return { role, version, registry, product: info.product, signature: signed, updaterPublisher: publishers, fuses, payload, trust, executableSha256: sha256(readFileSync(executable)), installerSha256: sha256(readFileSync(installerFor(role))) };
+      return { role, version, registry, product: info.product, versionInfo: info, signature: signed, updaterPublisher: publishers, fuses, payload, trust, executableSha256: sha256(readFileSync(executable)), installerSha256: sha256(readFileSync(installerFor(role))) };
     },
     async uninstall(_role) {
       closed(); assertRegistry();

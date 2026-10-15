@@ -1,5 +1,8 @@
 export interface UpgradeCase { readonly name: string; readonly experimental3d: boolean; readonly importForeign3d: boolean }
 export interface UpgradeSignature { status: string; publisher: string; thumbprint: string }
+/** Raw PE string values, retained without semantic-version normalization. */
+export interface UpgradeVersionInfo { version: string; fileVersion: string }
+export interface UpgradeSignedExecutable extends UpgradeSignature, UpgradeVersionInfo { sha256: string; bytes: number }
 export interface UpgradeTree { files: Array<{ path: string; directory?: boolean; bytes?: number; sha256?: string }>; bytes: number; sha256: string }
 export interface UpgradeSnapshot extends UpgradeTree { label: string }
 export interface UpgradeDriver {
@@ -29,11 +32,14 @@ export function assertWindowsUpgradeRecoveryFixture(profile: string, proof: unkn
 export function assertWindowsUpgradeHost(context: { platform: string; arch: string; env: NodeJS.ProcessEnv }): void;
 export function needsWindowsUpgradeSmoke(version: string, platform?: string): boolean;
 export function assertUpgradeSignature(record: unknown, publisher?: string): void;
-export function verifyWindowsUpgradeInstaller(file: string, expectedVersion: string): UpgradeSignature & { version: string; sha256: string; bytes: number };
+export function assertWindowsInstallerVersion(record: unknown, expectedVersion: string): void;
+export function assertWindowsApplicationVersion(record: unknown, expectedVersion: string): void;
+export function verifyWindowsUpgradeInstaller(file: string, expectedVersion: string): UpgradeSignedExecutable;
+export function verifyWindowsUpgradeApplication(file: string, expectedVersion: string): UpgradeSignedExecutable;
 export function assertCleanWindowsUpgradeInventory(inventory: unknown): void;
 export function assertCleanWindowsUpgradeHostBeforeInstall(options: { repo: string; outDir: string }): { hostedWindows: boolean; sourceSha: string; runId: string; inventory: unknown; noAutoCadEvidence: string; scope: string };
 export function assertWindowsShippingPayloadTrust(record: unknown, expectedVersion: string, configuredPublisher?: string): void;
-export function verifyWindowsShippingPayloadTrust(options: { executable: string; expectedVersion: string }): { expectedVersion: string; updaterPublishers: unknown; application: UpgradeSignature & { version: string; sha256: string; bytes: number }; helper: UpgradeSignature & { sha256: string; bytes: number } };
+export function verifyWindowsShippingPayloadTrust(options: { executable: string; expectedVersion: string }): { expectedVersion: string; updaterPublishers: unknown; application: UpgradeSignedExecutable; helper: UpgradeSignature & { sha256: string; bytes: number } };
 export function assertStableWindowsUpgradeRegistration(entries: unknown, expected?: Array<{ hive: string; view: string; key: string }> | null): Array<{ hive: string; view: string; key: string }>;
 export function assertUpgradeProbe(record: unknown, options: { phase: string; version: string; settingsCase: UpgradeCase; upgraded?: boolean }): void;
 export function executeWindowsUpgradeSequence(options: { expectedVersion: string }, driver: UpgradeDriver): Promise<{
