@@ -20,6 +20,24 @@ describe('Windows upgrade execution admission', () => {
     expect(() => assertWindowsUpgradeHost({ ...hosted, env: { ...hosted.env, GITHUB_JOB: 'smoke', GITHUB_WORKFLOW_REF: 'habit04/share/.github/workflows/packaged-smoke.yml@refs/tags/v0.5.1' } })).not.toThrow();
     for (const changed of [{ GITHUB_JOB: 'smoke' }, { GITHUB_WORKFLOW_REF: 'habit04/share/.github/workflows/packaged-smoke.yml@refs/heads/main' }, { GITHUB_WORKFLOW_REF: 'habit04/share/.github/workflows/release.yml@arbitrary-path' }, { GITHUB_WORKFLOW_REF: 'another/share/.github/workflows/release.yml@refs/heads/main' }]) expect(() => assertWindowsUpgradeHost({ ...hosted, env: { ...hosted.env, ...changed } })).toThrow();
   });
+  it('accepts the observed official Windows VS2026 image and keeps earlier hosted images', () => {
+    for (const ImageOS of ['win22', 'win25', 'win25-vs2026']) {
+      expect(() => assertWindowsUpgradeHost({ ...hosted, env: { ...hosted.env, ImageOS } }), ImageOS).not.toThrow();
+      expect(() => assertWindowsUpgradeHost({ ...hosted, env: { ...hosted.env, ImageOS, GITHUB_JOB: 'smoke', GITHUB_WORKFLOW_REF: 'habit04/share/.github/workflows/packaged-smoke.yml@refs/tags/v0.5.1' } }), ImageOS).not.toThrow();
+    }
+  });
+  it('rejects altered Windows image identities and missing host markers for the VS2026 image', () => {
+    for (const ImageOS of ['', 'ubuntu24', 'windows-2025-vs2026', 'win22-vs2026', 'win2025-vs2026', 'win25-vs2027', 'win25-vs2026-extra', 'win25-vs2026/other', 'WIN25-vs2026', 'win25-vs2026 ', 'win25-vs2026\n', 'win25\n']) {
+      expect(() => assertWindowsUpgradeHost({ ...hosted, env: { ...hosted.env, ImageOS } }), JSON.stringify(ImageOS)).toThrow();
+    }
+    for (const key of Object.keys(hosted.env)) {
+      const env: NodeJS.ProcessEnv = { ...hosted.env, ImageOS: 'win25-vs2026' }; delete env[key];
+      expect(() => assertWindowsUpgradeHost({ ...hosted, env }), key).toThrow();
+    }
+    for (const changed of [{ RUNNER_ENVIRONMENT: 'self-hosted' }, { USERNAME: 'justi' }, { GITHUB_REPOSITORY: 'another/share' }, { GITHUB_JOB: 'build' }, { GITHUB_WORKFLOW_REF: 'another/share/.github/workflows/release.yml@refs/heads/main' }, { GITHUB_SHA: 'main' }, { GITHUB_RUN_ID: '../123' }]) {
+      expect(() => assertWindowsUpgradeHost({ ...hosted, env: { ...hosted.env, ImageOS: 'win25-vs2026', ...changed } })).toThrow();
+    }
+  });
   it('rejects missing or changed markers, developer accounts, other repositories and self-hosted runners', () => {
     for (const key of Object.keys(hosted.env)) {
       const env: NodeJS.ProcessEnv = { ...hosted.env }; delete env[key];

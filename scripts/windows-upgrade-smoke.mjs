@@ -87,7 +87,8 @@ export function assertWindowsUpgradeHost({ platform, arch, env }) {
   assert.ok(env.GITHUB_WORKFLOW_REF?.startsWith(prefix) && /^refs\/(?:heads|tags)\/.+$/.test(env.GITHUB_WORKFLOW_REF.slice(prefix.length)), 'Only the matching reviewed repository workflow may execute installers');
   assert.match(env.GITHUB_RUN_ID || '', /^\d+$/, 'A hosted run identity is required');
   assert.match(env.GITHUB_SHA || '', /^[a-f0-9]{40}$/, 'An exact hosted source commit is required');
-  assert.match(env.ImageOS || '', /^win\d+$/, 'A hosted Windows image identity is required');
+  // GitHub's Windows 2025 / Visual Studio 2026 image publishes this exact variant.
+  assert.match(env.ImageOS || '', /^(?:win\d+|win25-vs2026)$/, 'A hosted Windows image identity is required');
   assert.equal((env.USERNAME || '').toLowerCase(), 'runneradmin', 'Only the disposable hosted Windows account is permitted');
   assert.ok(env.RUNNER_TEMP && env.USERPROFILE, 'Hosted private paths are required');
 }
