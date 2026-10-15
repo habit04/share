@@ -19,6 +19,10 @@ export interface UpgradeDriver {
   restore(settingsCase: UpgradeCase, snapshot: UpgradeSnapshot): Promise<void>;
 }
 export const WINDOWS_UPGRADE_BASELINE: Readonly<{ version: '0.5.0'; publisher: 'Justin Rodriguez'; url: string; sha256: string; bytes: number }>;
+export const WINDOWS_UPGRADE_REGISTRATION: Readonly<{ key: string; installationKey: string }>;
+export const WINDOWS_UPGRADE_REGISTRY_QUERY: string;
+export interface UpgradeRegistration { hive: string; view: string; key: string; name: string; version: string; icon: string; installationKey: string; installationPresent: boolean; location: string }
+export function selectWindowsUpgradeRegistration(inventory: unknown, options: { target: string; candidateVersion: string }): UpgradeRegistration[];
 export const WINDOWS_UPGRADE_CASES: readonly UpgradeCase[];
 export const WINDOWS_UPGRADE_RECOVERY_INPUTS: readonly Readonly<{ file: string; lf: string; crlf: string }>[];
 export interface UpgradeRecoveryProof {

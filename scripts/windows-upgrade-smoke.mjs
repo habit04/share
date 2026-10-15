@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep, win32 } from 'node:path';
 import { tmpdir } from 'node:os';
 import { load as loadYaml } from 'js-yaml';
 import { verifyExecutableFuses } from './electron-fuse-policy.mjs';
@@ -15,6 +15,37 @@ export const WINDOWS_UPGRADE_BASELINE = Object.freeze({
   url: 'https://github.com/habit04/share/releases/download/v0.5.0/jcad-electrical-0.5.0-win-x64.exe',
   sha256: '116845741d59ec0df32a8ef3c29f4ce9f6f1dcfabcb5cadcf96e42d75b884828', bytes: 154080840,
 });
+// electron-builder's UUIDv5(com.jcad.electrical, 50e065bc-3134-11e6-9bab-38c9862bdaf3).
+// Both released v0.5.0 and the candidate use these keys without NSIS overrides.
+export const WINDOWS_UPGRADE_REGISTRATION = Object.freeze({
+  key: 'c1233997-d5fc-5715-924c-8a725ad91ad6',
+  installationKey: 'Software\\c1233997-d5fc-5715-924c-8a725ad91ad6',
+});
+/** Read every uninstall row and pair the application key within the same hive/view.
+ * The NSIS InstallLocation is stored in the application key, not the uninstall row.
+ * No registry command string or icon path is used to infer installation ownership.
+ */
+export const WINDOWS_UPGRADE_REGISTRY_QUERY = `$items=@(); $views=0
+foreach ($hive in @([Microsoft.Win32.RegistryHive]::CurrentUser,[Microsoft.Win32.RegistryHive]::LocalMachine)) {
+  foreach ($view in @([Microsoft.Win32.RegistryView]::Registry32,[Microsoft.Win32.RegistryView]::Registry64)) {
+    $base=[Microsoft.Win32.RegistryKey]::OpenBaseKey($hive,$view)
+    try {
+      $installation=$base.OpenSubKey('${WINDOWS_UPGRADE_REGISTRATION.installationKey}')
+      try {
+        $location=if ($installation) { [string]$installation.GetValue('InstallLocation') } else { '' }
+        $key=$base.OpenSubKey('Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall')
+        if ($key) { try { foreach ($name in $key.GetSubKeyNames()) {
+          $entry=$key.OpenSubKey($name)
+          if (!$entry) { throw 'Uninstall entry disappeared during identity inventory' }
+          try { $items+=@{hive=[string]$hive;view=[string]$view;key=$name;name=[string]$entry.GetValue('DisplayName');version=[string]$entry.GetValue('DisplayVersion');icon=[string]$entry.GetValue('DisplayIcon');installationKey='${WINDOWS_UPGRADE_REGISTRATION.installationKey}';installationPresent=[bool]$installation;location=$location} }
+          finally { $entry.Dispose() }
+        } } finally { $key.Dispose() } }
+      } finally { if ($installation) { $installation.Dispose() } }
+      $views++
+    } finally { $base.Dispose() }
+  }
+}
+ConvertTo-Json -InputObject @{queryCompleted=$true;registryViews=$views;entries=@($items)} -Depth 4 -Compress`;
 export const WINDOWS_UPGRADE_CASES = Object.freeze([
   Object.freeze({ name: 'explicit-3d-off', experimental3d: false, importForeign3d: false }),
   Object.freeze({ name: 'legacy-3d-on', experimental3d: true, importForeign3d: true }),
@@ -184,6 +215,32 @@ export function verifyWindowsShippingPayloadTrust({ executable, expectedVersion 
   const record = { expectedVersion, updaterPublishers, application, helper: { ...JSON.parse(result.stdout.trim()), sha256: sha256(data), bytes: data.length } };
   assertWindowsShippingPayloadTrust(record, expectedVersion, process.env.AZURE_PUBLISHER_NAME || WINDOWS_UPGRADE_BASELINE.publisher);
   return record;
+}
+
+/** Admit only the pinned NSIS application identity and its same-hive/view install path. */
+export function selectWindowsUpgradeRegistration(inventory, { target, candidateVersion }) {
+  assert.equal(inventory?.queryCompleted, true, 'Uninstall identity inventory must complete');
+  assert.equal(inventory?.registryViews, 4, 'Uninstall identity requires all four registry views');
+  assert.ok(Array.isArray(inventory?.entries) && inventory.entries.length <= 10000, 'Bounded uninstall identity inventory is required');
+  const fullyQualified = value => typeof value === 'string' && /^[A-Za-z]:[\\/]/.test(value) && !value.includes('\0');
+  assert.ok(fullyQualified(target), 'The owned installation target must be an absolute Windows path');
+  const owned = win32.resolve(target).toLowerCase();
+  const entries = inventory.entries.filter(entry => {
+    assert.ok(entry && typeof entry === 'object', 'Malformed uninstall identity row');
+    return /^\s*JCad\b/i.test(entry.name || '') || (typeof entry.key === 'string' && entry.key.toLowerCase() === WINDOWS_UPGRADE_REGISTRATION.key);
+  });
+  for (const entry of entries) {
+    assert.equal(typeof entry.key === 'string' && entry.key.toLowerCase(), WINDOWS_UPGRADE_REGISTRATION.key, 'JCad uninstall key differs from the pinned application');
+    assert.ok([WINDOWS_UPGRADE_BASELINE.version, candidateVersion].includes(entry.version), 'Unrecognized JCad registry version');
+    assert.ok(entry.name === 'JCad Electrical' || entry.name === `JCad Electrical ${entry.version}`, 'JCad display name differs from its registered version');
+    assert.equal(entry.installationKey, WINDOWS_UPGRADE_REGISTRATION.installationKey, 'Paired application registry key differs');
+    assert.equal(entry.installationPresent, true, 'Paired application installation key is missing');
+    assert.ok(fullyQualified(entry.location), 'Paired InstallLocation must be an absolute Windows path');
+    assert.equal(win32.resolve(entry.location).toLowerCase(), owned, 'A JCad installation exists outside the owned CI target');
+  }
+  // Also validates raw hive/view/key identities and duplicate rows before destructive work.
+  if (entries.length) assertStableWindowsUpgradeRegistration(entries);
+  return entries;
 }
 
 /** Keep the exact uninstall registration namespace stable across upgrade and rollback. */
@@ -416,12 +473,11 @@ export async function runWindowsUpgradeSmoke(options) {
     while (!predicate() && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
     assert.ok(predicate(), message);
   };
-  const registryInventory = () => JSON.parse(powershell(`$items = @(); foreach ($hive in @([Microsoft.Win32.RegistryHive]::CurrentUser,[Microsoft.Win32.RegistryHive]::LocalMachine)) { foreach ($view in @([Microsoft.Win32.RegistryView]::Registry32,[Microsoft.Win32.RegistryView]::Registry64)) { $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey($hive,$view); try { $key = $base.OpenSubKey('Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall'); if ($key) { try { foreach ($name in $key.GetSubKeyNames()) { $entry = $key.OpenSubKey($name); if (!$entry) { throw 'Uninstall entry disappeared during identity inventory' }; try { if ([string]$entry.GetValue('DisplayName') -eq 'JCad Electrical') { $items += @{hive=[string]$hive;view=[string]$view;key=$name;location=[string]$entry.GetValue('InstallLocation');version=[string]$entry.GetValue('DisplayVersion');icon=[string]$entry.GetValue('DisplayIcon')} } } finally { $entry.Dispose() } } } finally { $key.Dispose() } } } finally { $base.Dispose() } } }; ConvertTo-Json -InputObject @($items) -Compress`));
+  const registryInventory = () => selectWindowsUpgradeRegistration(JSON.parse(powershell(WINDOWS_UPGRADE_REGISTRY_QUERY)), { target, candidateVersion: options.expectedVersion });
   let registrationIdentity = null;
   const assertRegistry = (version = null) => {
     const entries = registryInventory();
     for (const entry of entries) {
-      assert.equal(resolve(entry.location).toLowerCase().replace(/[\\/]$/, ''), target.toLowerCase(), 'A JCad installation exists outside the owned CI target');
       if (version !== null) assert.equal(entry.version, version, 'Installer registry version differs');
     }
     if (version !== null) registrationIdentity = assertStableWindowsUpgradeRegistration(entries, registrationIdentity);

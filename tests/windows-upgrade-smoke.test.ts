@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { assertCleanWindowsUpgradeInventory, assertOwnedUpgradePath, assertStableWindowsUpgradeRegistration, assertUpgradeProbe, assertUpgradeSignature, assertWindowsApplicationVersion, assertWindowsInstallerVersion, assertWindowsShippingPayloadTrust, assertWindowsUpgradeHost, assertWindowsUpgradeRecoveryFixture, executeWindowsUpgradeSequence, inventoryUpgradeTree, isolatedWindowsPowerShellEnvironment, needsWindowsUpgradeSmoke, seedWindowsUpgradeRecoveryFixture, WINDOWS_UPGRADE_BASELINE, WINDOWS_UPGRADE_CASES, WINDOWS_UPGRADE_RECOVERY_INPUTS, type UpgradeCase, type UpgradeDriver, type UpgradeSnapshot } from '../scripts/windows-upgrade-smoke.mjs';
+import { createRequire } from 'node:module';
+import { assertCleanWindowsUpgradeInventory, assertOwnedUpgradePath, assertStableWindowsUpgradeRegistration, assertUpgradeProbe, assertUpgradeSignature, assertWindowsApplicationVersion, assertWindowsInstallerVersion, assertWindowsShippingPayloadTrust, assertWindowsUpgradeHost, assertWindowsUpgradeRecoveryFixture, executeWindowsUpgradeSequence, inventoryUpgradeTree, isolatedWindowsPowerShellEnvironment, needsWindowsUpgradeSmoke, seedWindowsUpgradeRecoveryFixture, selectWindowsUpgradeRegistration, WINDOWS_UPGRADE_BASELINE, WINDOWS_UPGRADE_CASES, WINDOWS_UPGRADE_RECOVERY_INPUTS, WINDOWS_UPGRADE_REGISTRATION, WINDOWS_UPGRADE_REGISTRY_QUERY, type UpgradeCase, type UpgradeDriver, type UpgradeSnapshot } from '../scripts/windows-upgrade-smoke.mjs';
 import { readDxf } from '../src/io/dxf';
 
 const hosted = { platform: 'win32', arch: 'x64', env: { GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', RUNNER_OS: 'Windows', GITHUB_REPOSITORY: 'habit04/share', GITHUB_JOB: 'packaged-smoke', GITHUB_WORKFLOW_REF: 'habit04/share/.github/workflows/release.yml@refs/heads/integration/windows-pr18-pr19-source', GITHUB_RUN_ID: '123456', GITHUB_SHA: 'a'.repeat(40), ImageOS: 'win25', USERNAME: 'runneradmin', USERPROFILE: 'C:\\Users\\runneradmin', RUNNER_TEMP: 'D:\\a\\_temp' } };
@@ -115,6 +116,64 @@ describe('Windows upgrade execution admission', () => {
     const original = { PATH: 'fixed-system-bin', SOURCE_SHA: 'a'.repeat(40), PSModulePath: 'PowerShell-7-only-modules', PSMODULEPATH: 'other-case-inherited-path' };
     expect(isolatedWindowsPowerShellEnvironment(original)).toEqual({ PATH: 'fixed-system-bin', SOURCE_SHA: 'a'.repeat(40) });
     expect(original.PSModulePath).toBe('PowerShell-7-only-modules'); expect(original.PSMODULEPATH).toBe('other-case-inherited-path');
+  });
+});
+
+describe('actual NSIS uninstall registration format', () => {
+  const target = 'D:\\a\\_temp\\jcad-smoke-registry-fixture\\app';
+  const options = { target, candidateVersion: '0.5.1' };
+  const entry = (version = '0.5.1') => ({ hive: 'CurrentUser', view: 'Registry64', key: WINDOWS_UPGRADE_REGISTRATION.key, name: `JCad Electrical ${version}`, version, icon: `${target}\\JCad Electrical.exe,0`, installationKey: WINDOWS_UPGRADE_REGISTRATION.installationKey, installationPresent: true, location: target });
+  const inventory = (entries: unknown[]) => ({ queryCompleted: true, registryViews: 4, entries });
+  it('binds the fixture to the pinned builder default, app ID and separate InstallLocation key', () => {
+    const pkg = JSON.parse(readFileSync(resolve('package.json'), 'utf8'));
+    const require = createRequire(import.meta.url), { UUID } = require('builder-util-runtime');
+    expect(pkg.build.appId).toBe('com.jcad.electrical'); expect(pkg.build.productName).toBe('JCad Electrical');
+    for (const key of ['guid', 'uninstallDisplayName', 'include', 'script']) expect(pkg.build.nsis?.[key]).toBeUndefined();
+    expect(UUID.v5(pkg.build.appId, UUID.parse('50e065bc-3134-11e6-9bab-38c9862bdaf3'))).toBe(WINDOWS_UPGRADE_REGISTRATION.key);
+    const builder = readFileSync(require.resolve('app-builder-lib/out/targets/nsis/NsisTarget.js'), 'utf8');
+    expect(builder).toContain('options.uninstallDisplayName || "${productName} ${version}"');
+    const nsis = readFileSync(resolve('node_modules/app-builder-lib/templates/nsis/include/installer.nsh'), 'utf8');
+    expect(nsis).toContain('WriteRegStr SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" InstallLocation "$INSTDIR"');
+    expect(nsis).not.toMatch(/WriteRegStr[^\r\n]*UNINSTALL_REGISTRY_KEY[^\r\n]*InstallLocation/);
+    expect(WINDOWS_UPGRADE_REGISTRY_QUERY).toContain("$location=if ($installation) { [string]$installation.GetValue('InstallLocation') }");
+    expect(WINDOWS_UPGRADE_REGISTRY_QUERY).not.toContain("$entry.GetValue('InstallLocation')");
+  });
+  it('admits both released versioned names and the exact legacy plain name', () => {
+    for (const version of ['0.5.0', '0.5.1']) {
+      const row = entry(version);
+      expect(selectWindowsUpgradeRegistration(inventory([row]), options)).toEqual([row]);
+      const legacy = { ...row, name: 'JCad Electrical' };
+      expect(selectWindowsUpgradeRegistration(inventory([legacy]), options)).toEqual([legacy]);
+    }
+    expect(selectWindowsUpgradeRegistration(inventory([{ ...entry(), name: 'Unrelated Application', key: 'unrelated-app', location: 'Z:\\other' }]), options)).toEqual([]);
+    expect(selectWindowsUpgradeRegistration(inventory([]), options)).toEqual([]);
+  });
+  it('uses only the paired application path and refuses missing or conflicting ownership', () => {
+    const row = { ...entry(), uninstallLocation: 'Z:\\untrusted', icon: 'Z:\\untrusted\\JCad Electrical.exe,0' };
+    expect(selectWindowsUpgradeRegistration(inventory([row]), options)).toEqual([row]);
+    for (const change of [{ installationPresent: false }, { installationPresent: undefined }, { installationKey: 'Software\\another-app' }, { installationKey: undefined }, { location: '' }, { location: undefined }, { location: 'D:relative-path' }, { location: '\\a\\_temp\\jcad-smoke-registry-fixture\\app' }, { location: target + '\\other' }, { location: 'Z:\\outside' }, { location: target + '\0' }]) {
+      expect(() => selectWindowsUpgradeRegistration(inventory([{ ...entry(), ...change }]), options), JSON.stringify(change)).toThrow();
+    }
+    const spelling = { ...entry(), location: target.toLowerCase() + '\\' };
+    expect(selectWindowsUpgradeRegistration(inventory([spelling]), options)).toEqual([spelling]);
+  });
+  it('refuses unknown JCad registrations and disguised pinned-key entries rather than hiding them', () => {
+    for (const change of [{ name: 'JCad Other Product' }, { name: 'JCad Electrical 0.5.0' }, { name: 'JCad Electrical 0.5.1 ' }, { name: ' JCad Electrical' }, { name: undefined }, { name: '' }, { name: 'Unrelated Application' }, { version: '0.5.1.0' }, { version: '0.5.2' }, { version: undefined }, { key: 'another-app' }, { key: undefined }]) {
+      expect(() => selectWindowsUpgradeRegistration(inventory([{ ...entry(), ...change }]), options), JSON.stringify(change)).toThrow();
+    }
+    expect(() => selectWindowsUpgradeRegistration(inventory([entry(), { ...entry(), name: 'JCad Other Product', key: 'other-app' }]), options)).toThrow();
+    expect(() => selectWindowsUpgradeRegistration(inventory([entry(), { ...entry(), hive: 'LocalMachine', location: 'Z:\\outside' }]), options)).toThrow();
+  });
+  it('requires completed four-view inventory, valid namespace and no duplicate identities', () => {
+    for (const change of [{ queryCompleted: false }, { queryCompleted: undefined }, { registryViews: 3 }, { registryViews: undefined }, { entries: undefined }, { entries: [null] }]) expect(() => selectWindowsUpgradeRegistration({ ...inventory([entry()]), ...change }, options)).toThrow();
+    for (const change of [{ hive: 'OtherHive' }, { hive: undefined }, { view: 'OtherView' }, { view: undefined }]) expect(() => selectWindowsUpgradeRegistration(inventory([{ ...entry(), ...change }]), options)).toThrow();
+    expect(() => selectWindowsUpgradeRegistration(inventory([entry(), entry()]), options)).toThrow(/Duplicate/);
+    const sharedViews = [entry(), { ...entry(), view: 'Registry32' }];
+    expect(selectWindowsUpgradeRegistration(inventory(sharedViews), options)).toEqual(sharedViews);
+    const baseline = sharedViews.map(row => ({ ...row, name: 'JCad Electrical 0.5.0', version: '0.5.0' }));
+    const stable = assertStableWindowsUpgradeRegistration(selectWindowsUpgradeRegistration(inventory(baseline), options));
+    expect(() => assertStableWindowsUpgradeRegistration(selectWindowsUpgradeRegistration(inventory(sharedViews), options), stable)).not.toThrow();
+    expect(() => assertStableWindowsUpgradeRegistration(selectWindowsUpgradeRegistration(inventory([entry()]), options), stable)).toThrow(/moved/);
   });
 });
 

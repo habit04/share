@@ -11,11 +11,11 @@ no installer or release was authorized refer to their earlier source-only stages
 | Milestone | Status / evidence | Required completion |
 | --- | --- | --- |
 | Accepted combined source | COMPLETE at `5290c2b0af065d336bee57750e3ef70257ebad07`; 6,407 local passes, 38 conditional skips, both exact-head five-job CI runs green; source/native/hardware receipts in `WINDOWS-SOURCE-INTEGRATION.md` | Retain attribution; these are not v0.5.1 installer results |
-| Version and notes | v0.5.1 source `705670c` passed all five jobs in both first-attempt CI runs `38753302762` / `38753308908`; source tree `df97d096660fb97d862d4541514c9680b6082b30` equals the tested merge tree. Bare local full suite: 6,574 passed / 38 conditional skips | Fresh exact-head CI after the narrow hosted-image admission correction; Windows only, existing experimental 3D subset and Canvas default retained |
+| Version and notes | v0.5.1 source `8ae7e64` passed all five jobs in both first-attempt CI runs `38763383194` / `38763389203`; source tree `380bb28de1fe334a1d6e65829e6469e94ca98e61` equals the tested merge tree. Earlier bare local full suite: 6,574 passed / 38 conditional skips | Fresh exact-head CI after the registry-adapter correction; Windows only, existing experimental 3D subset and Canvas default retained |
 | Acceptance tooling | Static reviews clear at `34cf871`; real baseline extraction binds 205 files. Actual Windows apps use ProductVersion `0.5.x.0` and FileVersion `0.5.x`; the verifier correction separates app admission from strict installer versions, preserves raw facts and rejects nonzero revisions/wrong FileVersion | Before/after unit reproduction plus 31 upgrade regressions, 107 focused checks and all three TypeScript scopes pass; actual hosted installer execution remains required |
 | Final ordinary folder | PASSED at `34cf871`: native DWG save/backup/reopen, three metadata fixtures, migration/default-optout/restart, 3D worker/DXF save and guarded DWG refusal, GPU20/SHX26/transitions on Intel and NVIDIA | All 1,212 tracked inputs, 14,412 dependency files, helper/dist/build caches and 203 folder files retain exact before/after binding `c2a1910bcb033e193258db297baab08d086308a0346a3b8e63596fedc00970f4`; actual shipping fuses pass. Local unsigned folder proves behavior, not publisher/installer trust |
-| Signed installer build | PASSED at `705670c` in build-only run `38757062942`: both release checks, Windows test build, signed NSIS build and artifact verification passed. Downloaded installer: 154,124,400 bytes, SHA-256 `69cc590bb0e21873a802088bb3c6db48a41bd2847a9b3cc8a35ff071bfd5904d`, Authenticode Valid from Justin Rodriguez, exact v0.5.1; local provenance equals CI's verified aggregate | Correct the pre-install image-name admission defect and rerun the existing **Build installers** workflow after fresh CI; staging branch, empty tag, `require_signing=true`, `native_helper_only=false`; no workflow or credential changes |
-| Clean install and upgrade | UNRUN: `38757062942` stopped at the hosted-image guard before any NSIS execution; its diagnostic records actual `ImageOS=win25-vs2026` | Disposable hosted Windows only, no AutoCAD; exact installer/app/helper/uninstaller publisher, version, payload and installation identity; actual old-to-new installation over the same target/profile, unrelated settings, recovery copies, backups and reopened drawings preserved |
+| Signed installer build | PASSED at `8ae7e64` in build-only run `38766877671`: both release checks, Windows test build, signed NSIS build and artifact verification passed. Downloaded installer: 154,124,520 bytes, SHA-256 `f1f90acd4b3c3df821f8da86bb690a566edc2eec18a8981e4edc9edffd705d60`, Authenticode Valid from Justin Rodriguez, exact v0.5.1; local provenance equals CI's verified aggregate | Correct the upgrade registry adapter and rerun the existing **Build installers** workflow after fresh CI; staging branch, empty tag, `require_signing=true`, `native_helper_only=false`; no workflow or credential changes |
+| Clean install and upgrade | PARTIAL: `38766877671` actually installed the candidate on disposable hosted Windows. Fixed shipping runtime/DWG/migration/3D gates and both hosted software GPU checks passed. Upgrade preflight then failed `Installed uninstall registration identity missing`; old-to-new upgrade and rollback remain UNRUN | Disposable hosted Windows only, no AutoCAD; exact installer/app/helper/uninstaller publisher, version, payload and installation identity; actual old-to-new installation over the same target/profile, unrelated settings, recovery copies, backups and reopened drawings preserved |
 | Physical GPU validation | PASSED for the unsigned final folder; UNRUN for the final signed candidate | Statically extract the signed installer without installing on the user's PC; match its entire payload to the CI installation, then serial Intel/NVIDIA GPU20, private genuine SHX26 and sealed GPU/3D transition checks. Hosted/software adapters have separate attribution |
 | Independent acceptance | Local folder static/native evidence PASS: 454 ASAR entries / 127 unpacked / zero links, 218 PNGs bound to raw reports and unchanged folder inputs. The coordinating reviewer independently recomputed all 218 comparisons at their original limits; final manifest SHA-256 `2f6d889e9ec46acb2fb3287f699c03ce1c784a6269cdd6038b468b5be5ada0c5` | Final signed artifact/installer review remains pending. Synthetic recovery fixture retention and test-ASAR recovery UI stay separately attributed; no claim of old shipping-process dirty-autosave generation |
 | Merge and release | NOT STARTED | All required gates clear first; fresh merged/tagged-source release pipeline and downloaded artifact verification. Never use a `v*` tag ref for a build-only rehearsal |
@@ -60,6 +60,41 @@ total); all three TypeScript scopes and scoped lint pass. Host identifiers with 
 case, suffixes, whitespace or missing trust markers still fail closed. Actual hosted
 installation, upgrade and restored-profile rollback remain unrun until the corrected gate
 passes. No local native validation of this signed payload has started.
+
+The next build-only run `38766877671` accepted the corrected hosted image and actually
+installed the signed candidate. Its ordinary shipping runtime and both fixed hosted GPU
+checks passed. The outer smoke wrapper's generic failure label does not identify the failed
+stage: `upgrade/windows-upgrade-result.json` and `packaged-smoke-result.json` record an
+upgrade-preflight registry failure, before baseline acquisition or upgrade/rollback operations.
+The filtered empty inventory is not evidence that NSIS failed to register the application.
+The pinned builder defaults DisplayName to `JCad Electrical ${version}` and stores
+InstallLocation in `Software\\c1233997-d5fc-5715-924c-8a725ad91ad6`, separately from its
+uninstall key. The adapter had expected the plain product name and read the wrong key.
+It now enumerates all four views, pairs the fixed application key within the same hive/view,
+and admits only the pinned app key, exact plain or versioned name, baseline/candidate
+version and exact owned absolute path. Missing paired keys, unknown JCad registrations,
+conflicting paths and duplicate or moved identities still fail; icons and registry command
+strings never supply ownership. Multiple legitimate view rows remain supported.
+
+The original production predicate was reproduced over an in-memory NSIS-format fixture:
+it hid the versioned registration and returned no uninstall-key InstallLocation. The corrected
+query passes Windows PowerShell's actual parser and runs unchanged except for its registry
+factory against private in-memory keys; all four views complete and the paired application
+path is selected. These are fixture checks, not actual upgrade/rollback results. The 38
+upgrade, 63 payload, 7 renderer-hardening and 32 packaged-smoke/fuse-policy checks pass
+(140 total), as do all three TypeScript scopes and scoped lint. An independent read-only
+review clears the UUID derivation, same-view pairing and preserved admission guards.
+The initial sandbox-only targeted attempt retained three filesystem-permission failures;
+the full focused suite passes with private worktree TEMP and normal Windows filesystem
+semantics. No assertions, deadlines, installer configuration or workflows changed.
+
+The latest signed payload's independent static delta review binds 205 files, 454 ASAR
+entries, 127 unpacked entries and 18 production package versions; receipt SHA-256
+`3b07cc3dec72b38861470267d81eb25f6eb20b90ab5d28e1ec68056f67787162`.
+Its inventory SHA-256 is `3c7c36a7c5a027f224bb9712fc7f5d02ea0543d06aca09ea80d21e124bf82342`.
+Signed-candidate physical GPU gates remain held until actual hosted upgrade and restored-
+profile rollback pass. No installer has run on the user's PC; no merge, tag or publication
+has occurred. Earlier signed-payload and guard receipts above remain historical evidence.
 
 Retained rollback installer v0.5.0: SHA-256
 `116845741d59ec0df32a8ef3c29f4ce9f6f1dcfabcb5cadcf96e42d75b884828`,
