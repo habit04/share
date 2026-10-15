@@ -26,6 +26,12 @@ messages). The date of each version is the date of the commit that set that vers
   and permissions, and rebuilds standalone checksums. Unsupported or restricted fonts keep
   the reported fallback; general collection-face selection and the rest of priority 12 remain open.
 
+### Security
+
+- Update the desktop runtime from Electron 44.7.0 to
+  [44.7.2](https://releases.electronjs.org/release/v44.7.2), including upstream ANGLE, Chromium,
+  PDFium and V8 security backports.
+
 ## [0.5.1] - 2026-10-14
 
 ### Upgrade notes
