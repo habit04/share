@@ -98,4 +98,7 @@ export interface FontMetricsRequest {
   readonly family?: string;
   readonly bold?: boolean;
   readonly italic?: boolean;
+  /** Captured-PDF reads only: codepoints of the plotted strings for this face,
+   * so the reader point-validates just those glyphs. Screen reads omit it. */
+  readonly usedCodepoints?: readonly number[];
 }

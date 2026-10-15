@@ -22,6 +22,7 @@ export async function capturedPdfLookup(state: DrawingState, reader?: PdfFontRea
   if (!reader) return { lookup: initialLookup, fonts: undefined, geometry: strokeGeometry, issues: [] as string[] };
   const styles = textStylesOf(state), metrics = new FontMetricsRegistry(), native = createTextGeometryContext(styles, metrics);
   const wanted = new Map<string, { face: Extract<TextAppearance, { kind: 'canvas' }>; request: FontMetricsRequest }>();
+  const usedByKey = new Map<string, Set<number>>();
   const discover = (input: Parameters<TextGeometryContext['resolve']>[0]) => {
     const face = native.resolve(input);
     if (face.kind === 'canvas') {
@@ -35,7 +36,25 @@ export async function capturedPdfLookup(state: DrawingState, reader?: PdfFontRea
     if (depth > 32) return;
     for (const e of entities) {
       if (hidden.has(e.layer) || state.layers.find((layer) => layer.name === e.layer)?.plot === false) continue;
-      if (e.type === 'text') { if (e.text.trim()) discover(e); }
+      if (e.type === 'text') {
+        if (e.text.trim()) {
+          const face = discover(e);
+          if (face.kind === 'canvas') {
+            // Accumulate the plotted strings' codepoints for this face: the PDF
+            // reader point-validates only those glyphs (plus closure and capital
+            // A). Anything this walk somehow misses stays unvalidated, and the
+            // writer falls back for that run instead of trusting it.
+            const key = pdfFontKey(face);
+            let used = usedByKey.get(key);
+            if (!used) usedByKey.set(key, used = new Set());
+            const plain = expandControlCodes(e.text.replace(/%%[uUoOkK]/g, ''));
+            for (const source of [e.text, plain]) for (const character of source) {
+              if (used.size >= 65534) break;
+              used.add(character.codePointAt(0)!);
+            }
+          }
+        }
+      }
       else if (e.type === 'insert') visit(explodeInsert(e, discoverLookup), hidden, depth + 1);
       else if (e.type === 'mtext') visit(mtextParts(e), hidden, depth + 1);
       else if (e.type === 'dimension') visit(dimensionParts(e), hidden, depth + 1);
@@ -57,7 +76,8 @@ export async function capturedPdfLookup(state: DrawingState, reader?: PdfFontRea
   for (const [key, { face, request }] of wanted) {
     if (faces.length >= 8) { issues.push(`Font ${request.family}: PDF font limit reached.`); continue; }
     try {
-      const result = await reader(request);
+      const used = usedByKey.get(key);
+      const result = await reader(used?.size ? { ...request, usedCodepoints: [...used].sort((a, b) => a - b) } : request);
       if (!result.font) { issues.push(`Font ${request.family}: ${result.problem || 'installed font unavailable'}`); continue; }
       if (!(result.font.bytes instanceof Uint8Array) || bytes + result.font.bytes.byteLength > 128 * 1024 * 1024) { issues.push(`Font ${request.family}: PDF font size limit reached.`); continue; }
       const candidate = { ...result.font, key };
