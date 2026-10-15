@@ -1,5 +1,6 @@
 /** Confined, read-only installed TrueType programs for one captured Windows PDF export. */
 const { readWindowsFontData } = require('./font-metrics.cjs');
+const { extractTtcFace } = require('./ttc-extract.cjs');
 
 /** @returns {never} */
 function fail(message) { throw new Error(`PDF font: ${message}`); }
@@ -55,8 +56,11 @@ function postscriptName(data) {
  */
 async function readWindowsPdfFont(request, options) {
   const { metrics, bytes } = await readWindowsFontData(request, options);
-  const data = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength), signature = data.readUInt32BE(0);
-  if (signature === 0x74746366) fail('TrueType collections are not supported for embedding');
+  const source = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  // A collection embeds the same face the metrics reader selected (face 0), extracted
+  // whole. Tables are copied verbatim, so the permission checks below read the real OS/2.
+  const collection = source.readUInt32BE(0) === 0x74746366;
+  const data = collection ? extractTtcFace(source, 0) : source, signature = data.readUInt32BE(0);
   if (signature !== 0x00010000 && signature !== 0x74727565) fail('standalone TrueType glyf outlines are required');
   // The shared metadata parser validated all SFNT table ranges, overlaps and formats.
   const tables = new Map();
@@ -76,7 +80,7 @@ async function readWindowsPdfFont(request, options) {
   if (ascender < 0 || descender > 0) fail('unsupported font vertical metrics');
   if (weight < 1 || weight > 1000 || Math.abs(italicAngle) > 90) fail('invalid font weight or italic angle');
   if (![0x00010000, 0x00020000, 0x00025000, 0x00030000].includes(post.readUInt32BE(0))) fail('unsupported post table version');
-  return { bytes, metrics, postscriptName: postscriptName(table('name', 6)), ascender, descender,
+  return { bytes: collection ? data : bytes, metrics, postscriptName: postscriptName(table('name', 6)), ascender, descender,
     italicAngle, weight, isFixedPitch: !!post.readUInt32BE(12), os2Version };
 }
 

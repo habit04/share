@@ -11,6 +11,13 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+### Added
+
+- Windows vector PDF export can embed face 0 of a permitted TrueType collection, using the
+  same face as installed-font metrics. Extraction preserves the full glyph program, mappings
+  and permissions, and rebuilds standalone checksums. Unsupported or restricted fonts keep
+  the reported fallback; general collection-face selection and the rest of priority 12 remain open.
+
 ## [0.5.1] - 2026-10-14
 
 ### Upgrade notes

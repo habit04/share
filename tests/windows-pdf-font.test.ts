@@ -4,7 +4,7 @@ import * as fs from 'node:fs/promises';
 import { constants, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fontCollection, fontTable, nativeFontFixture } from './helpers/native-font-fixture';
+import { fontCollection, fontCollectionV2, fontTable, nativeFontFixture } from './helpers/native-font-fixture';
 import type { NativeFontMetrics } from '../src/core/text-metrics';
 
 type Request = { font: string; family?: string; bold?: boolean; italic?: boolean };
@@ -15,6 +15,9 @@ const require = createRequire(import.meta.url);
 const { readWindowsPdfFont, pdfFontEmbeddingProblem } = require('../electron/pdf-font.cjs') as {
   readWindowsPdfFont(request: Request, options?: Options): Promise<Face>;
   pdfFontEmbeddingProblem(fsType: number, os2Version: number): string | null;
+};
+const { extractTtcFace } = require('../electron/ttc-extract.cjs') as {
+  extractTtcFace(input: Uint8Array, faceIndex?: number): Buffer;
 };
 const { readWindowsFontData, readWindowsFontMetrics, MAX_FONT_BYTES } = require('../electron/font-metrics.cjs') as {
   readWindowsFontData(request: Request, options?: Options): Promise<Data>;
@@ -164,11 +167,36 @@ describe('PDF source font descriptors from exact validated bytes', () => {
     const unsupported = pdfFixture(); unsupported.writeUInt32BE(0x00040000, fontTable(unsupported, 'post').offset);
     await expect(readFixture(unsupported)).rejects.toThrow('post table version');
   });
-  it('refuses collections while leaving metadata collection reads available', async () => {
+  it('extracts face 0 of a collection while metadata collection reads stay available', async () => {
     const fontsDirectory = await privateDirectory(), bytes = fontCollection(pdfFixture());
     await fs.writeFile(path.join(fontsDirectory, 'collection.ttc'), bytes);
     expect((await readWindowsFontMetrics({ font: 'collection.ttc' }, { fontsDirectory })).capitalHeight).toBe(730);
-    await expect(readWindowsPdfFont({ font: 'collection.ttc' }, { fontsDirectory })).rejects.toThrow('TrueType collections');
+    const face = await readWindowsPdfFont({ font: 'collection.ttc' }, { fontsDirectory });
+    expect(face.bytes).toEqual(extractTtcFace(bytes, 0));
+    expect(face.bytes).not.toEqual(bytes);
+    expect(Buffer.from(face.bytes).readUInt32BE(0)).toBe(0x00010000);
+    expect(face).toMatchObject({ postscriptName: 'JCadFixture-Regular', ascender: 1000, descender: -200, weight: 400, os2Version: 4 });
+    expect(face.metrics.capitalHeight).toBe(730);
+    expect(face.metrics.resolvedFilename).toBe('collection.ttc');
+  });
+  it('extracts face 0 of a v2 collection', async () => {
+    const fontsDirectory = await privateDirectory(), bytes = fontCollectionV2(pdfFixture());
+    await fs.writeFile(path.join(fontsDirectory, 'collection.ttc'), bytes);
+    const face = await readWindowsPdfFont({ font: 'collection.ttc' }, { fontsDirectory });
+    expect(face.bytes).toEqual(extractTtcFace(bytes, 0));
+    expect(face.postscriptName).toBe('JCadFixture-Regular');
+  });
+  it('embeds only face 0 when a later collection face is restricted', async () => {
+    const fontsDirectory = await privateDirectory();
+    const bytes = fontCollection(pdfFixture({ postscriptName: 'FaceZero' }), pdfFixture({ postscriptName: 'FaceOne', fsType: 2 }));
+    await fs.writeFile(path.join(fontsDirectory, 'collection.ttc'), bytes);
+    const face = await readWindowsPdfFont({ font: 'collection.ttc' }, { fontsDirectory });
+    expect(face.postscriptName).toBe('FaceZero');
+  });
+  it.each([[2, 'restricted'], [4, 'read-only'], [0x0208, 'bitmap-only']])('refuses collection face 0 with prohibited fsType %#', async (fsType, problem) => {
+    const fontsDirectory = await privateDirectory();
+    await fs.writeFile(path.join(fontsDirectory, 'collection.ttc'), fontCollection(pdfFixture({ fsType })));
+    await expect(readWindowsPdfFont({ font: 'collection.ttc' }, { fontsDirectory })).rejects.toThrow(problem);
   });
   it.each(['fvar', 'COLR', 'CPAL', 'CBDT', 'CBLC', 'sbix', 'SVG '])('refuses unsupported native font structure %s before exposing bytes', async (tag) => {
     const bytes = pdfFixture(); bytes.write(tag, fontTable(bytes, 'post').record, 'ascii');
