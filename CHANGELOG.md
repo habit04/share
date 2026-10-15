@@ -11,12 +11,26 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-15
+
+### Upgrade notes
+
+- Windows x64 patch update from v0.5.1. Eligible TrueType collection fonts can now be embedded
+  in vector PDFs. Support uses the collection's first face; the remaining PDF font roadmap
+  and native TTC Plot/IPC verification remain open.
+
 ### Added
 
 - Windows vector PDF export can embed face 0 of a permitted TrueType collection, using the
   same face as installed-font metrics. Extraction preserves the full glyph program, mappings
   and permissions, and rebuilds standalone checksums. Unsupported or restricted fonts keep
   the reported fallback; general collection-face selection and the rest of priority 12 remain open.
+
+### Security
+
+- Update the desktop runtime from Electron 44.7.0 to
+  [44.7.2](https://releases.electronjs.org/release/v44.7.2), including upstream ANGLE, Chromium,
+  PDFium and V8 security backports.
 
 ## [0.5.1] - 2026-10-14
 
@@ -1312,7 +1326,9 @@ First release.
 
 - Renamed the application to JCad Electrical.
 
-[Unreleased]: https://github.com/habit04/share/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/habit04/share/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/habit04/share/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/habit04/share/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/habit04/share/compare/v0.4.9...v0.5.0
 [0.4.9]: https://github.com/habit04/share/compare/v0.4.8...v0.4.9
 [0.4.8]: https://github.com/habit04/share/compare/v0.4.7...v0.4.8
