@@ -10,7 +10,7 @@ import { unionBounds, type Bounds, type Point } from '../core/geometry';
 import { prepareDrawingTransition, type DrawingState } from '../core/document';
 import { sealImmutableData } from '../core/immutable-data';
 import { validateAiDraftResponse } from './draft-plan';
-import type { AiPlan, AiPlanOperation } from './draft-plan';
+import { planOperationLabels, type AiPlan, type AiPlanOperation } from './draft-plan';
 import type { AiDraftCapture } from './draft-context';
 import { draftLayerProblem, draftTargetEligibility, cadAnchoredEntityIds } from './draft-eligibility';
 import { AI_DRAFT_MAX_COORDINATE } from './limits';
@@ -27,6 +27,8 @@ import { AI_DRAFT_MAX_COORDINATE } from './limits';
 export interface AiChangeEntry {
   readonly kind: 'create' | 'modify' | 'copy' | 'delete';
   readonly op: AiPlanOperation['op'];
+  /** Proposal-reference label ("Rectangle 1", "Circle 2") — display only, never an object id. */
+  readonly label: string;
   readonly summary: string;
   readonly targetIds: readonly string[];
   readonly createdIds: readonly string[];
@@ -154,7 +156,11 @@ function compileValidatedPlan(
     return entity;
   };
 
+  const opLabels = planOperationLabels(plan);
+  let opIndex = -1;
   for (const op of plan.operations) {
+    opIndex += 1;
+    const label = opLabels[opIndex]!;
     switch (op.op) {
       case 'createLine': {
         const layer = op.layer ?? capture.defaults.layer;
@@ -163,7 +169,7 @@ function compileValidatedPlan(
         const entity: LineEntity = { id: nextId(), type: 'line', layer, a: op.a, b: op.b, ...appearance };
         created.push(entity);
         const length = Math.hypot(op.b.x - op.a.x, op.b.y - op.a.y);
-        changes.push({ kind: 'create', op: op.op, summary: `Create line ${pt(op.a)} → ${pt(op.b)} on layer ${layer} (length ${len(length)})`, targetIds: [], createdIds: [entity.id], layer });
+        changes.push({ kind: 'create', op: op.op, label, summary: `Create line ${pt(op.a)} → ${pt(op.b)} on layer ${layer} (length ${len(length)})`, targetIds: [], createdIds: [entity.id], layer });
         break;
       }
       case 'createCircle': {
@@ -172,7 +178,7 @@ function compileValidatedPlan(
         if (problem) return fail(`Cannot create the circle: ${problem}.`);
         const entity: CircleEntity = { id: nextId(), type: 'circle', layer, center: op.center, radius: op.radius, ...appearance };
         created.push(entity);
-        changes.push({ kind: 'create', op: op.op, summary: `Create circle at ${pt(op.center)}, radius ${len(op.radius)}, on layer ${layer}`, targetIds: [], createdIds: [entity.id], layer });
+        changes.push({ kind: 'create', op: op.op, label, summary: `Create circle at ${pt(op.center)}, radius ${len(op.radius)}, on layer ${layer}`, targetIds: [], createdIds: [entity.id], layer });
         break;
       }
       case 'createRectangle': {
@@ -189,7 +195,7 @@ function compileValidatedPlan(
         const points = [corner(0, 0), corner(op.width, 0), corner(op.width, op.height), corner(0, op.height)];
         const entity: PolylineEntity = { id: nextId(), type: 'polyline', layer, points, closed: true, ...appearance };
         created.push(entity);
-        changes.push({ kind: 'create', op: op.op, summary: `Create rectangle ${len(op.width)} × ${len(op.height)} at ${pt(op.origin)}${op.rotationDeg ? `, rotated ${op.rotationDeg}°` : ''} on layer ${layer} (closed polyline, 4 vertices)`, targetIds: [], createdIds: [entity.id], layer });
+        changes.push({ kind: 'create', op: op.op, label, summary: `Create rectangle ${len(op.width)} × ${len(op.height)} at ${pt(op.origin)}${op.rotationDeg ? `, rotated ${op.rotationDeg}°` : ''} on layer ${layer} (closed polyline, 4 vertices)`, targetIds: [], createdIds: [entity.id], layer });
         break;
       }
       case 'move':
@@ -207,9 +213,9 @@ function compileValidatedPlan(
           }
         }
         if (op.op === 'move') {
-          changes.push({ kind: 'modify', op: op.op, summary: `Move ${op.targetIds.length} object(s) by (${len(op.dx)}, ${len(op.dy)}): ${op.targetIds.join(', ')}`, targetIds: op.targetIds, createdIds: [], layer: targetLayers(op.targetIds) });
+          changes.push({ kind: 'modify', op: op.op, label, summary: `Move ${op.targetIds.length} object(s) by (${len(op.dx)}, ${len(op.dy)}): ${op.targetIds.join(', ')}`, targetIds: op.targetIds, createdIds: [], layer: targetLayers(op.targetIds) });
         } else {
-          changes.push({ kind: 'copy', op: op.op, summary: `Copy ${op.targetIds.length} object(s) by (${len(op.dx)}, ${len(op.dy)}): ${op.targetIds.join(', ')}`, targetIds: op.targetIds, createdIds: copies.slice(-op.targetIds.length).map((c) => c.entity.id), layer: targetLayers(op.targetIds) });
+          changes.push({ kind: 'copy', op: op.op, label, summary: `Copy ${op.targetIds.length} object(s) by (${len(op.dx)}, ${len(op.dy)}): ${op.targetIds.join(', ')}`, targetIds: op.targetIds, createdIds: copies.slice(-op.targetIds.length).map((c) => c.entity.id), layer: targetLayers(op.targetIds) });
         }
         break;
       }
@@ -222,7 +228,7 @@ function compileValidatedPlan(
           if (sameGeometry(found, after)) return fail(`The rotation would not change object ${id}.`);
           modified.push({ id, before: found, after });
         }
-        changes.push({ kind: 'modify', op: op.op, summary: `Rotate ${op.targetIds.length} object(s) by ${op.angleDeg}° about ${pt(op.pivot)}: ${op.targetIds.join(', ')}`, targetIds: op.targetIds, createdIds: [], layer: targetLayers(op.targetIds) });
+        changes.push({ kind: 'modify', op: op.op, label, summary: `Rotate ${op.targetIds.length} object(s) by ${op.angleDeg}° about ${pt(op.pivot)}: ${op.targetIds.join(', ')}`, targetIds: op.targetIds, createdIds: [], layer: targetLayers(op.targetIds) });
         break;
       }
       case 'delete': {
@@ -231,7 +237,7 @@ function compileValidatedPlan(
           if ('error' in found) return fail(found.error);
           deleted.push({ id, before: found });
         }
-        changes.push({ kind: 'delete', op: op.op, summary: `Delete ${op.targetIds.length} object(s): ${op.targetIds.join(', ')}`, targetIds: op.targetIds, createdIds: [], layer: targetLayers(op.targetIds) });
+        changes.push({ kind: 'delete', op: op.op, label, summary: `Delete ${op.targetIds.length} object(s): ${op.targetIds.join(', ')}`, targetIds: op.targetIds, createdIds: [], layer: targetLayers(op.targetIds) });
         break;
       }
     }

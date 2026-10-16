@@ -12,6 +12,17 @@ import {
 } from './types';
 import { AI_DEFAULT_TIMEOUT_MS } from './limits';
 import { validateAiDraftResponse } from './draft-plan';
+import { buildRefineEnvelope } from './draft-refine';
+import type { AiDraftRefineRequest } from './types';
+
+/** How an in-flight refinement ends (milestone 4). */
+type RefineOutcome =
+  | { readonly type: 'success'; readonly requestId: string; readonly proposal: CompiledProposal }
+  | { readonly type: 'message'; readonly requestId: string; readonly kind: 'clarification' | 'unsupported'; readonly message: string }
+  | { readonly type: 'failure'; readonly message: string }
+  | { readonly type: 'cancelled' }
+  | { readonly type: 'stale' }
+  | { readonly type: 'dropped' };
 
 /**
  * Owns the Draft/Edit staging lifecycle (docs/AI-ASSISTANT-M3.md). A proposal
@@ -23,10 +34,24 @@ import { validateAiDraftResponse } from './draft-plan';
  * discards (never rebases) a stale proposal.
  */
 
+/**
+ * A follow-up instruction attached to a staged preview (milestone 4). While
+ * any follow-up is present and unresolved, Apply is blocked: the user must
+ * refine it into a new accepted preview or discard it (which re-validates
+ * the staged preview against fresh state before restoring applicability).
+ */
+export interface AiDraftFollowUp {
+  readonly text: string;
+  readonly phase: 'entered' | 'refining' | 'clarification' | 'unsupported' | 'failed';
+  readonly message?: string;
+}
+
 export type AiDraftStatus =
   | { readonly state: 'idle' }
   | { readonly state: 'generating'; readonly requestId: string }
-  | { readonly state: 'staged'; readonly requestId: string; readonly capture: AiDraftCapture; readonly proposal: CompiledProposal }
+  | { readonly state: 'staged'; readonly requestId: string; readonly capture: AiDraftCapture; readonly proposal: CompiledProposal;
+      /** Preview version within the session: 1 for the initial generation, +1 per accepted refinement. */
+      readonly version: number; readonly followUp: AiDraftFollowUp | null }
   | { readonly state: 'message'; readonly requestId: string; readonly kind: 'clarification' | 'unsupported'; readonly message: string }
   | { readonly state: 'invalidated'; readonly message: string }
   | { readonly state: 'error'; readonly requestId: string; readonly error: AiError };
@@ -54,6 +79,8 @@ export class AiDraftController {
   private pending: {
     requestId: string; abort: AbortController; timer: unknown; settled: boolean;
     finish: (status: AiDraftStatus, publish?: boolean) => void;
+    /** Milestone 4: set on refinement jobs so their settlement can be driven directly. */
+    refineSettle?: (outcome: RefineOutcome) => void;
   } | null = null;
   private applying = false;
   private disposed = false;
@@ -210,7 +237,7 @@ export class AiDraftController {
           try {
             if (!contextCurrent()) { pending.finish({ state: 'invalidated', message: STALE_MESSAGE }); return; }
           } catch (cause) { contextFailure(cause); return; }
-          pending.finish({ state: 'staged', requestId, capture, proposal: compiled.proposal });
+          pending.finish({ state: 'staged', requestId, capture, proposal: compiled.proposal, version: 1, followUp: null });
         }, (cause: unknown) => pending.finish({ state: 'error', requestId,
           error: cause instanceof AiError ? cause : new AiError('provider-failure', 'The draft provider failed.') }));
       } catch (cause) {
@@ -230,6 +257,9 @@ export class AiDraftController {
     if (this.applying) return this.currentStatus; // reentrant / double-click guard
     const staged = this.currentStatus;
     if (staged.state !== 'staged') return this.currentStatus;
+    // An unresolved follow-up blocks Apply: the user is looking at a
+    // preview that does not include what they just asked for.
+    if (staged.followUp) return this.currentStatus;
     this.applying = true;
     try {
       if (this.source.interactionBusy()) return this.currentStatus;
@@ -254,6 +284,201 @@ export class AiDraftController {
     // Consume the proposal: it can never be applied twice.
     if (!this.disposed) this.emit({ state: 'idle' });
     return this.currentStatus;
+  }
+
+  // ---- Milestone 4: follow-up refinement of the staged preview ----
+
+  /**
+   * Record follow-up text typed against the staged preview. Any unresolved
+   * follow-up blocks Apply. Editing the text while a refinement is in
+   * flight supersedes (cancels) that refinement; the previous preview and
+   * the new text are kept.
+   */
+  followUpEdited(text: string): void {
+    let staged = this.currentStatus;
+    if (staged.state !== 'staged') return;
+    if (staged.followUp?.phase === 'refining') {
+      this.cancelRefine();
+      staged = this.currentStatus;
+      if (staged.state !== 'staged') return;
+    }
+    const trimmed = typeof text === 'string' ? text.trim() : '';
+    const previous = staged.followUp;
+    if (!trimmed && (!previous || previous.phase === 'entered')) {
+      if (previous) this.emit({ ...staged, followUp: null });
+      return;
+    }
+    const keepPhase = previous && previous.phase !== 'entered' ? previous.phase : 'entered';
+    this.emit({
+      ...staged,
+      followUp: {
+        text: trimmed || previous?.text || '',
+        phase: keepPhase,
+        ...(keepPhase !== 'entered' && previous?.message ? { message: previous.message } : {}),
+      },
+    });
+  }
+
+  /** Cancel an in-flight refinement; the previous preview and follow-up text stay. */
+  cancelRefine(): void {
+    if (this.pending?.refineSettle) this.pending.refineSettle({ type: 'cancelled' });
+  }
+
+  /**
+   * Abandon the follow-up and return to the staged preview. Applicability
+   * is restored only after fresh document/configuration checks confirm the
+   * preview is still valid; if they fail, the whole session is stale and
+   * is invalidated instead of silently restored.
+   */
+  discardFollowUp(): AiDraftStatus {
+    const staged = this.currentStatus;
+    if (staged.state !== 'staged' || !staged.followUp) return this.currentStatus;
+    if (this.pending?.refineSettle) this.pending.refineSettle({ type: 'dropped' });
+    let stillValid = false;
+    try {
+      const now = draftBindingNow(this.source, this.configKeyNow?.() ?? staged.capture.binding.configKey);
+      stillValid = this.source.modelState() === staged.capture.state
+        && !this.source.interactionBusy()
+        && aiDraftBindingsEqual(now, staged.capture.binding);
+    } catch { stillValid = false; }
+    if (!stillValid) {
+      this.epoch += 1;
+      this.emit({ state: 'invalidated', message: STALE_MESSAGE });
+      return this.currentStatus;
+    }
+    const current = this.currentStatus;
+    if (current.state === 'staged') this.emit({ ...current, followUp: null });
+    return this.currentStatus;
+  }
+
+  /**
+   * Run ONE refinement request for the staged preview: the provider returns
+   * a complete replacement plan, which is compiled against the ORIGINAL
+   * capture (never the previous preview, never a newer drawing). Success
+   * replaces the staged proposal atomically and bumps the preview version;
+   * clarification, failure or cancellation preserve the previous preview
+   * with the follow-up left unresolved (Apply stays blocked).
+   */
+  async refine(followUpText: string, provider: AiDraftProvider, configKey: string): Promise<AiDraftStatus> {
+    if (this.disposed) return { state: 'error', requestId: '', error: new AiError('disposed', 'The AI assistant has been closed.') };
+    if (this.applying) return this.currentStatus;
+    const staged = this.currentStatus;
+    if (staged.state !== 'staged') return this.currentStatus;
+    if (this.pending?.refineSettle) {
+      // A newer refinement supersedes the pending one.
+      const superseded = this.pending;
+      superseded.refineSettle?.({ type: 'dropped' });
+      superseded.abort.abort();
+    }
+    if (this.source.interactionBusy()) return this.currentStatus;
+    if (!provider.refine) {
+      this.emit({ ...staged, followUp: { text: typeof followUpText === 'string' ? followUpText.trim() : '', phase: 'failed', message: 'The selected provider cannot refine previews.' } });
+      return this.currentStatus;
+    }
+    if (this.configKeyNow && this.configKeyNow() !== configKey) {
+      this.invalidate(STALE_MESSAGE);
+      return this.currentStatus;
+    }
+    let envelopeJson: string;
+    let followUp: string;
+    try {
+      const built = buildRefineEnvelope(staged.capture, staged.proposal, followUpText);
+      envelopeJson = built.envelopeJson;
+      followUp = built.followUp;
+    } catch (cause) {
+      const error = cause instanceof AiError ? cause : new AiError('invalid-context', 'The refinement context could not be built.');
+      this.emit({ ...staged, followUp: { text: typeof followUpText === 'string' ? followUpText.trim() : '', phase: 'failed', message: error.message } });
+      return this.currentStatus;
+    }
+    const capture = staged.capture;
+    const myEpoch = this.epoch + 1;
+    this.epoch = myEpoch;
+    const requestId = mintAiRequestId();
+    this.emit({ ...staged, followUp: { text: followUp, phase: 'refining' } });
+    return new Promise<AiDraftStatus>((resolve) => {
+      const abort = new AbortController();
+      const pending: NonNullable<AiDraftController['pending']> = {
+        requestId, abort, timer: null, settled: false,
+        finish: () => { settleRefine({ type: 'dropped' }); },
+      };
+      const settleRefine = (outcome: RefineOutcome): void => {
+        if (pending.settled) return;
+        pending.settled = true;
+        if (pending.timer !== null) {
+          try { this.clearTimeoutFn(pending.timer); } catch { /* Cleanup must not strand settlement. */ }
+          pending.timer = null;
+        }
+        if (this.pending === pending) this.pending = null;
+        if (outcome.type === 'dropped') { resolve(this.currentStatus); return; }
+        if (outcome.type === 'stale' || this.disposed) {
+          if (!this.disposed) this.emit({ state: 'invalidated', message: STALE_MESSAGE });
+          resolve(this.currentStatus);
+          return;
+        }
+        const current = this.currentStatus;
+        if (current.state !== 'staged' || current.capture !== capture) { resolve(this.currentStatus); return; }
+        if (outcome.type === 'success') {
+          this.emit({ state: 'staged', requestId: outcome.requestId, capture, proposal: outcome.proposal, version: current.version + 1, followUp: null });
+        } else if (outcome.type === 'message') {
+          this.emit({ ...current, followUp: { text: followUp, phase: outcome.kind, message: outcome.message } });
+        } else if (outcome.type === 'failure') {
+          this.emit({ ...current, followUp: { text: followUp, phase: 'failed', message: outcome.message } });
+        } else {
+          this.emit({ ...current, followUp: { text: followUp, phase: 'entered', message: 'Refinement cancelled.' } });
+        }
+        resolve(this.currentStatus);
+      };
+      pending.refineSettle = settleRefine;
+      this.pending = pending;
+      const contextCurrent = (): boolean => this.source.modelState() === capture.state
+        && !this.source.interactionBusy()
+        && aiDraftBindingsEqual(draftBindingNow(this.source, this.configKeyNow?.() ?? configKey), capture.binding);
+      try {
+        pending.timer = this.setTimeoutFn(() => {
+          settleRefine({ type: 'failure', message: 'The draft provider did not answer in time.' });
+          abort.abort();
+        }, this.timeoutMs);
+        if (pending.settled) {
+          try { this.clearTimeoutFn(pending.timer); } catch { /* Synchronously fired test timer. */ }
+          return;
+        }
+        if (this.epoch !== myEpoch || this.disposed) { settleRefine({ type: 'dropped' }); return; }
+        if (!contextCurrent()) { settleRefine({ type: 'stale' }); return; }
+        const request: AiDraftRefineRequest = { requestId, followUp, envelopeJson, binding: capture.binding };
+        const refineFn = provider.refine;
+        if (!refineFn) { settleRefine({ type: 'failure', message: 'The selected provider cannot refine previews.' }); return; }
+        let work: ReturnType<NonNullable<AiDraftProvider['refine']>>;
+        try { work = refineFn(request, abort.signal); } catch (cause) {
+          settleRefine({ type: 'failure', message: cause instanceof AiError ? cause.message : 'The draft provider failed.' });
+          return;
+        }
+        Promise.resolve(work).then((value: unknown) => {
+          if (pending.settled) return;
+          if (this.epoch !== myEpoch) { settleRefine({ type: 'dropped' }); return; }
+          let current: boolean;
+          try { current = contextCurrent(); } catch { settleRefine({ type: 'stale' }); return; }
+          if (!current) { settleRefine({ type: 'stale' }); return; }
+          const parsed = validateAiDraftResponse(value);
+          if (!parsed.ok) { settleRefine({ type: 'failure', message: parsed.error }); return; }
+          const response = parsed.response;
+          if (response.kind !== 'plan') {
+            settleRefine({ type: 'message', requestId, kind: response.kind, message: response.message });
+            return;
+          }
+          const compiled = compileAiPlan(response.plan, capture, () => newId(), (e) => this.source.boundsFor(e));
+          if (!compiled.ok) { settleRefine({ type: 'failure', message: compiled.error }); return; }
+          try { if (!contextCurrent()) { settleRefine({ type: 'stale' }); return; } }
+          catch { settleRefine({ type: 'stale' }); return; }
+          settleRefine({ type: 'success', requestId, proposal: compiled.proposal });
+        }, (cause: unknown) => {
+          if (cause instanceof AiError && cause.kind === 'cancelled') settleRefine({ type: 'cancelled' });
+          else settleRefine({ type: 'failure', message: cause instanceof AiError ? cause.message : 'The draft provider failed.' });
+        });
+      } catch {
+        settleRefine({ type: 'failure', message: 'The refinement could not be started.' });
+        abort.abort();
+      }
+    });
   }
 
   dispose(): void {

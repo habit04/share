@@ -251,6 +251,56 @@ export function parseAiDraftResponse(value: unknown): ParsedResponse {
   }
 }
 
+/**
+ * The wire form of a validated plan (milestone 4): every operation expanded
+ * to the full provider-schema field set with nulls for absent fields, in the
+ * schema's field order. Deterministic for a given plan, so it can ride inside
+ * the refinement envelope as the canonical "current plan" a follow-up edits.
+ */
+export function planToWire(plan: AiPlan): { outcome: 'proposal'; message: string | null; operations: readonly Record<string, unknown>[] } {
+  const base = (): Record<string, unknown> => ({
+    op: null, a: null, b: null, center: null, radius: null, origin: null, width: null, height: null,
+    rotationDeg: null, layer: null, targetIds: null, dx: null, dy: null, pivot: null, angleDeg: null,
+  });
+  const operations = plan.operations.map((op) => {
+    const wire = base();
+    wire.op = op.op;
+    switch (op.op) {
+      case 'createLine': wire.a = op.a; wire.b = op.b; wire.layer = op.layer; break;
+      case 'createCircle': wire.center = op.center; wire.radius = op.radius; wire.layer = op.layer; break;
+      case 'createRectangle':
+        wire.origin = op.origin; wire.width = op.width; wire.height = op.height;
+        wire.rotationDeg = op.rotationDeg; wire.layer = op.layer; break;
+      case 'move': case 'copy': wire.targetIds = [...op.targetIds]; wire.dx = op.dx; wire.dy = op.dy; break;
+      case 'rotate': wire.targetIds = [...op.targetIds]; wire.pivot = op.pivot; wire.angleDeg = op.angleDeg; break;
+      case 'delete': wire.targetIds = [...op.targetIds]; break;
+    }
+    return wire;
+  });
+  return { outcome: 'proposal', message: plan.message, operations };
+}
+
+/**
+ * Display labels for plan operations (milestone 4): "Rectangle 1",
+ * "Circle 2", "Move 1" — numbered per operation kind in plan order. These
+ * are proposal references for follow-up instructions and change lists;
+ * they are NOT drawing object ids and confer no edit authority.
+ */
+const OP_LABEL_NAMES: Readonly<Record<AiPlanOperation['op'], string>> = {
+  createLine: 'Line', createCircle: 'Circle', createRectangle: 'Rectangle',
+  move: 'Move', copy: 'Copy', rotate: 'Rotate', delete: 'Delete',
+};
+
+export function planOperationLabels(plan: AiPlan): readonly string[] {
+  const counts = new Map<string, number>();
+  return plan.operations.map((op) => {
+    const name = OP_LABEL_NAMES[op.op];
+    const next = (counts.get(op.op) ?? 0) + 1;
+    counts.set(op.op, next);
+    return `${name} ${next}`;
+  });
+}
+
 /** Revalidate even typed provider/fixture results at the controller/compiler boundary. */
 export function validateAiDraftResponse(value: unknown): ParsedResponse {
   try {

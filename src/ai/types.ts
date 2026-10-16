@@ -270,4 +270,26 @@ export interface AiDraftRequest {
 export interface AiDraftProvider {
   readonly id: string;
   draft(request: AiDraftRequest, signal: AbortSignal): Promise<AiDraftResponse>;
+  /**
+   * Milestone 4: return a COMPLETE REPLACEMENT plan for a follow-up
+   * instruction, evaluated against the original captured context carried
+   * in the refinement envelope. Optional: a provider without refinement
+   * support refuses cleanly and the staged preview is preserved.
+   */
+  refine?(request: AiDraftRefineRequest, signal: AbortSignal): Promise<AiDraftResponse>;
+}
+
+/**
+ * A refinement request (milestone 4): the follow-up text plus the exact
+ * refinement envelope JSON the panel previewed (original context, original
+ * prompt, latest accepted canonical plan, proposal labels). The binding is
+ * the ORIGINAL capture's binding — a refinement never re-captures.
+ */
+export interface AiDraftRefineRequest {
+  readonly requestId: string;
+  readonly followUp: string;
+  readonly envelopeJson: string;
+  readonly binding: AiDraftBinding;
+  /** Live requests pin the destination shown in the panel; the host rejects mismatches. */
+  readonly destination?: { readonly provider: string; readonly model: string; readonly configGeneration?: string };
 }
