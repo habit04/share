@@ -94,6 +94,18 @@ export class WindowAiConnection {
         signal.addEventListener('abort', onAbort, { once: true });
         try {
           const { answer } = unwrap(await this.raw.ask(request));
+          // The host reports provider token usage beside its own byte
+          // counters; fold it into AiAnswer.usage where the controller's
+          // whitelist carries it to the panel.
+          if (answer && typeof answer === 'object') {
+            const raw = answer as { usage?: Record<string, unknown>; providerUsage?: Record<string, unknown> };
+            const tokens: Record<string, number> = {};
+            for (const key of ['inputTokens', 'outputTokens'] as const) {
+              const value = raw.providerUsage?.[key];
+              if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) tokens[key] = value;
+            }
+            if (Object.keys(tokens).length > 0) raw.usage = { ...(raw.usage ?? {}), ...tokens };
+          }
           return answer as AiAnswer;
         } finally {
           signal.removeEventListener('abort', onAbort);

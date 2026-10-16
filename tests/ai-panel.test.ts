@@ -193,3 +193,138 @@ describe('AiAssistantPanel', () => {
     expect(editor.listenerCount()).toBe(0);
   });
 });
+
+describe('AiAssistantPanel connection settings (milestone 2)', () => {
+  interface FakeState {
+    provider: string; model: string; enabled: boolean; keyPersistence: string;
+    keyPresent: boolean; keySource: string | null; encryptionAvailable: boolean; configProblem: string | null;
+  }
+  function fakeConnection() {
+    const state: FakeState = {
+      provider: 'openai', model: 'gpt-5', enabled: false, keyPersistence: 'session',
+      keyPresent: false, keySource: null, encryptionAvailable: true, configProblem: null,
+    };
+    const raw = {
+      getState: async () => ({ ok: true, state: { ...state } }),
+      setModel: async (model: string) => { state.model = model; return { ok: true, state: { ...state } }; },
+      setKey: async (_key: string, persistence: string) => {
+        state.keyPresent = true;
+        state.keySource = persistence === 'encrypted' ? 'stored' : 'session';
+        state.keyPersistence = persistence;
+        return { ok: true, state: { ...state } };
+      },
+      forgetKey: async () => { state.keyPresent = false; state.keySource = null; return { ok: true, state: { ...state } }; },
+      setEnabled: async (enabled: boolean) => { state.enabled = enabled; return { ok: true, state: { ...state } }; },
+      testConnection: async () => ({ ok: true, probe: { model: state.model, inputTokens: 3, outputTokens: 1 } }),
+      ask: async () => ({
+        ok: true,
+        answer: {
+          text: 'Live answer about PB101.', references: ['e-text'],
+          usage: { inputBytes: 100, outputChars: 24, durationMs: 5 },
+          providerUsage: { inputTokens: 42, outputTokens: 7 },
+        },
+      }),
+      cancel: async () => ({ ok: true, cancelled: true }),
+      usage: async () => ({ ok: true, usage: { requests: 1 } }),
+    };
+    return { raw, state };
+  }
+
+  type SettingsInternals = PanelInternals & {
+    settingsEls: {
+      keyInput: FakeElement & { value: string }; saveKeyBtn: FakeElement; forgetKeyBtn: FakeElement & { disabled: boolean };
+      testBtn: FakeElement & { disabled: boolean }; enableCheck: FakeElement & { checked: boolean; disabled: boolean };
+      stateEl: FakeElement; errorEl: FakeElement;
+    } | null;
+    providerLabelEl: FakeElement; sentLabelEl: FakeElement; usageEl: FakeElement; billingEl: FakeElement;
+  };
+
+  async function makeConnected() {
+    const { WindowAiConnection } = await import('../src/ai/host-bridge');
+    const { raw, state } = fakeConnection();
+    const editor = fakeEditor();
+    const container = new FakeElement('div');
+    const panel = new AiAssistantPanel(editor as never, container as never, undefined,
+      new WindowAiConnection(raw as never));
+    return { editor, panel, parts: panel as unknown as SettingsInternals, state, container };
+  }
+
+  it('shows host state, gates enabling on a key, and clears the password field on submit', async () => {
+    const { panel, parts, state } = await makeConnected();
+    panel.toggle();
+    await flush();
+    expect(parts.settingsEls).not.toBeNull();
+    expect(parts.settingsEls!.stateEl.textContent).toContain('API key: not saved');
+    expect(parts.settingsEls!.enableCheck.disabled).toBe(true);
+    parts.settingsEls!.keyInput.value = 'sk-secret';
+    parts.settingsEls!.saveKeyBtn.fire('click');
+    // Cleared synchronously on submission, before the host answered.
+    expect(parts.settingsEls!.keyInput.value).toBe('');
+    await flush();
+    expect(state.keyPresent).toBe(true);
+    expect(parts.settingsEls!.stateEl.textContent).toContain('this session only');
+    expect(parts.settingsEls!.enableCheck.disabled).toBe(false);
+    expect(parts.settingsEls!.saveKeyBtn.textContent).toBe('Replace Key');
+    panel.dispose();
+  });
+
+  it('routes asks to the fixture demo until live is enabled, then to the host with destination labels', async () => {
+    const { panel, parts, state } = await makeConnected();
+    panel.toggle();
+    await flush();
+    parts.questionEl.value = 'find PB101';
+    parts.askBtn.fire('click');
+    await flush();
+    expect(parts.answerEl.textContent).toContain('PB101');
+    expect(parts.providerLabelEl.textContent).toContain('Offline demo');
+    // Save a key and enable: the next ask goes to the host bridge.
+    parts.settingsEls!.keyInput.value = 'sk-secret';
+    parts.settingsEls!.saveKeyBtn.fire('click');
+    await flush();
+    parts.settingsEls!.enableCheck.checked = true;
+    parts.settingsEls!.enableCheck.fire('change');
+    await flush();
+    expect(state.enabled).toBe(true);
+    expect(parts.providerLabelEl.textContent).toContain('Live AI: openai · gpt-5');
+    expect(parts.sentLabelEl.textContent).toContain('sent to openai (model: gpt-5)');
+    expect(parts.askBtn.textContent).toBe('Ask OpenAI');
+    expect(parts.billingEl.classes.has('hidden')).toBe(false);
+    parts.askBtn.fire('click');
+    await flush();
+    expect(parts.answerEl.textContent).toBe('Live answer about PB101.');
+    expect(parts.usageEl.textContent).toContain('42 input tokens');
+    expect(parts.usageEl.textContent).toContain('7 output tokens');
+    panel.dispose();
+  });
+
+  it('discloses the probe charge and reports connection success', async () => {
+    const { panel, parts, container } = await makeConnected();
+    panel.toggle();
+    await flush();
+    const texts = (el: FakeElement): string => [el.textContent, ...el.children.map(texts)].join('\n');
+    expect(texts(container)).toContain('may incur a small charge');
+    expect(texts(container)).toContain('no drawing content');
+    expect(texts(container)).toContain('not zero retention');
+    parts.settingsEls!.keyInput.value = 'sk-secret';
+    parts.settingsEls!.saveKeyBtn.fire('click');
+    await flush();
+    parts.settingsEls!.testBtn.fire('click');
+    await flush();
+    expect(parts.settingsEls!.stateEl.textContent).toContain('Connection OK');
+    panel.dispose();
+  });
+
+  it('forgetting the key returns routing to the offline demo', async () => {
+    const { panel, parts, state } = await makeConnected();
+    panel.toggle();
+    await flush();
+    parts.settingsEls!.keyInput.value = 'sk-secret';
+    parts.settingsEls!.saveKeyBtn.fire('click');
+    await flush();
+    parts.settingsEls!.forgetKeyBtn.fire('click');
+    await flush();
+    expect(state.keyPresent).toBe(false);
+    expect(parts.providerLabelEl.textContent).toContain('Offline demo');
+    panel.dispose();
+  });
+});
