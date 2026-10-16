@@ -11,8 +11,10 @@
  * by parameter id so the encoding is canonical.
  *
  * Model version stays 1 for the 30.2 kinds (angle/flip parameters; move/rotate/scale/flip
- * actions) and the 30.2a visibility parameter + value: they are additive union members,
- * as the design planned (§1.3, visibility design §6.2). A v1 payload written before
+ * actions), the 30.2a visibility parameter + value, and the 30.2b lookup parameter +
+ * value (row key/assignment values reuse the tagged instance-value encoding; the
+ * instance choice is {"kind":"lookup","value":<row name or null>}): they are additive
+ * union members, as the design planned (§1.3, visibility design §6.2). A v1 payload written before
  * those slices contains only the earlier members and decodes identically; a payload
  * using the new kinds, read by an older build, fails that build's structural decode
  * and is retained verbatim — the designed fallback — instead of being half-modeled.
@@ -55,6 +57,7 @@ import {
   type DynamicAction,
   type DynamicBlockDefinition,
   type DynamicParameter,
+  type LookupRow,
   type ParameterGrip,
   type StretchAction,
   type VisibilityState,
@@ -119,6 +122,19 @@ function encodeWholeSelection(selection: readonly WholeSelection[], entityIdsInO
   return selection.map((sel) => ({ entityId: encodeEntityRef(sel.entityId, entityIdsInOrder) }));
 }
 
+/** One tagged parameter value, the same shape instance payloads use. */
+function encodeValue(value: DynamicParameterValue): Record<string, unknown> {
+  return value.kind === 'opaque' ? { kind: 'opaque', payload: value.payload } : { kind: value.kind, value: value.value };
+}
+
+/** A parameter-id -> value map (a lookup row's key or assignments), keys
+ *  sorted by parameter id so the encoding is canonical, as for instances. */
+function encodeValueMap(map: Readonly<Record<string, DynamicParameterValue>>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const id of Object.keys(map).sort()) out[id] = encodeValue(map[id]!);
+  return out;
+}
+
 function encodeParameter(p: DynamicParameter, entityIdsInOrder?: readonly string[]): Record<string, unknown> {
   switch (p.kind) {
     case 'opaque-parameter':
@@ -163,6 +179,16 @@ function encodeParameter(p: DynamicParameter, entityIdsInOrder?: readonly string
           name: s.name,
           visible: s.visible.map((ref) => encodeEntityRef(ref, entityIdsInOrder)),
         })),
+      };
+    case 'lookup':
+      return {
+        kind: 'lookup',
+        id: p.id,
+        name: p.name,
+        basePoint: { x: p.basePoint.x, y: p.basePoint.y },
+        inputs: [...p.inputs],
+        defaultRow: p.defaultRow,
+        rows: p.rows.map((r) => ({ name: r.name, key: encodeValueMap(r.key), assignments: encodeValueMap(r.assignments) })),
       };
   }
 }
@@ -236,9 +262,7 @@ export function encodeDynamicDefinition(definition: DynamicBlockDefinition, enti
 export function encodeDynamicInstance(state: DynamicInstanceState): string {
   const values: Record<string, unknown> = {};
   for (const id of Object.keys(state.values).sort()) {
-    const value = state.values[id]!;
-    values[id] =
-      value.kind === 'opaque' ? { kind: 'opaque', payload: value.payload } : { kind: value.kind, value: value.value };
+    values[id] = encodeValue(state.values[id]!);
   }
   return escapeDynamicJson(JSON.stringify({ v: DYNAMIC_MODEL_VERSION, kind: 'instance', block: state.block, values }));
 }
@@ -292,6 +316,30 @@ function decodeAngleConstraint(raw: unknown): AngleConstraint | undefined {
   if (raw.min !== undefined && !isFiniteNumber(raw.min)) return undefined;
   if (raw.max !== undefined && !isFiniteNumber(raw.max)) return undefined;
   return { kind: 'range', ...(raw.min !== undefined ? { min: raw.min as number } : {}), ...(raw.max !== undefined ? { max: raw.max as number } : {}) };
+}
+
+/** One tagged parameter value (instance values, lookup row keys/assignments). */
+function decodeValue(raw: unknown): DynamicParameterValue | undefined {
+  if (!isRecord(raw)) return undefined;
+  if (raw.kind === 'distance' && isFiniteNumber(raw.value)) return { kind: 'distance', value: raw.value };
+  if (raw.kind === 'angle' && isFiniteNumber(raw.value)) return { kind: 'angle', value: raw.value };
+  if (raw.kind === 'flip' && typeof raw.value === 'boolean') return { kind: 'flip', value: raw.value };
+  if (raw.kind === 'visibility' && typeof raw.value === 'string') return { kind: 'visibility', value: raw.value };
+  if (raw.kind === 'lookup' && (typeof raw.value === 'string' || raw.value === null)) return { kind: 'lookup', value: raw.value };
+  if (raw.kind === 'opaque' && typeof raw.payload === 'string') return { kind: 'opaque', payload: raw.payload };
+  return undefined;
+}
+
+/** A parameter-id -> value map (a lookup row's key or assignments). */
+function decodeValueMap(raw: unknown): Record<string, DynamicParameterValue> | undefined {
+  if (!isRecord(raw)) return undefined;
+  const out: Record<string, DynamicParameterValue> = {};
+  for (const [id, value] of Object.entries(raw)) {
+    const decoded = decodeValue(value);
+    if (!decoded) return undefined;
+    out[id] = decoded;
+  }
+  return out;
 }
 
 function decodeGrips(raw: unknown): ParameterGrip[] | undefined {
@@ -355,6 +403,29 @@ function decodeParameter(raw: unknown, entityIdsInOrder?: readonly string[]): Dy
       basePoint: { x: raw.basePoint.x, y: raw.basePoint.y },
       defaultState: raw.defaultState,
       states,
+    };
+  }
+  if (raw.kind === 'lookup') {
+    if (!isPoint(raw.basePoint)) return undefined;
+    if (!Array.isArray(raw.inputs) || !raw.inputs.every((i) => typeof i === 'string')) return undefined;
+    if (raw.defaultRow !== null && typeof raw.defaultRow !== 'string') return undefined;
+    if (!Array.isArray(raw.rows)) return undefined;
+    const rows: LookupRow[] = [];
+    for (const r of raw.rows) {
+      if (!isRecord(r) || typeof r.name !== 'string') return undefined;
+      const key = decodeValueMap(r.key);
+      const assignments = decodeValueMap(r.assignments);
+      if (!key || !assignments) return undefined;
+      rows.push({ name: r.name, key, assignments });
+    }
+    return {
+      kind: 'lookup',
+      id: raw.id,
+      name: raw.name,
+      basePoint: { x: raw.basePoint.x, y: raw.basePoint.y },
+      inputs: [...raw.inputs] as string[],
+      defaultRow: raw.defaultRow as string | null,
+      rows,
     };
   }
   if (raw.kind === 'flip') {
@@ -536,13 +607,9 @@ export function decodeDynamicInstance(raw: string, definition?: DynamicBlockDefi
   if (!parsed || typeof parsed.block !== 'string' || !isRecord(parsed.values)) return retained;
   const values: Record<string, DynamicParameterValue> = {};
   for (const [id, value] of Object.entries(parsed.values)) {
-    if (!isRecord(value)) return retained;
-    if (value.kind === 'distance' && isFiniteNumber(value.value)) values[id] = { kind: 'distance', value: value.value };
-    else if (value.kind === 'angle' && isFiniteNumber(value.value)) values[id] = { kind: 'angle', value: value.value };
-    else if (value.kind === 'flip' && typeof value.value === 'boolean') values[id] = { kind: 'flip', value: value.value };
-    else if (value.kind === 'visibility' && typeof value.value === 'string') values[id] = { kind: 'visibility', value: value.value };
-    else if (value.kind === 'opaque' && typeof value.payload === 'string') values[id] = { kind: 'opaque', payload: value.payload };
-    else return retained;
+    const decoded = decodeValue(value);
+    if (!decoded) return retained;
+    values[id] = decoded;
   }
   const state: DynamicInstanceState = { block: parsed.block, values };
   if (definition && !validateInstanceValues(definition, state, blockName).ok) return retained;
