@@ -57,7 +57,7 @@ import { deflateSync, crc32 } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { inflateSync } from 'node:zlib';
-import { parsePdfBasics, pageContents, parseContentStream } from '../tests/helpers/pdf.ts';
+import { parsePdfBasics, pageContents, parseContentStream, dictValue } from '../tests/helpers/pdf.ts';
 /**
  * Where each image of a page's content is drawn: the unit square through the transformation
  * current at its `Do` (q / Q / cm tracked), as a box in page points.
@@ -679,6 +679,119 @@ try {
 
   step = 'Native CAD metadata';
   await runCadMetadataChecks({ app, page: win, repo, outDir, check, current });
+
+  // Test-owned real utilityProcess assembly smoke. This exercises the shipped
+  // host factory and engine assets, including inside a test ASAR; it does not
+  // claim to exercise the lexical main-service instance, font admission or Plot.
+  if (process.platform === 'win32' && current) {
+    step = 'restricted PDF utilityProcess assembly';
+    const marker = 'JCAD-UTILITY-AUTHORED-PLAINTEXT';
+    const content = `BT /F1 12 Tf 72 720 Td (${marker}) Tj ET`;
+    const objects = [
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Count 1 /Kids [3 0 R] >>',
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+      '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+      `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    ];
+    let authored = '%PDF-1.4\n';
+    const offsets = [];
+    for (const [index, body] of objects.entries()) { offsets.push(authored.length); authored += `${index + 1} 0 obj\n${body}\nendobj\n`; }
+    const startxref = authored.length;
+    authored += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+    for (const offset of offsets) authored += `${String(offset).padStart(10, '0')} 00000 n \n`;
+    authored += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${startxref}\n%%EOF\n`;
+    const plain = new Uint8Array(Buffer.from(authored, 'ascii'));
+    const plainPdf = parsePdfBasics(plain);
+    check(plainPdf.errors.length === 0 && plainPdf.pages.length === 1 && dictValue(plainPdf.trailer, 'Encrypt') === null,
+      'restricted utility input is an authored valid unencrypted one-page PDF');
+    const proof = await app.evaluate(async ({ app: main, utilityProcess }, input) => {
+      const load = process.mainModule?.require.bind(process.mainModule);
+      if (!load) throw new Error('The CJS main loader is unavailable for utility assembly inspection');
+      const path = load('node:path'), { createHash } = load('node:crypto');
+      const appPath = main.getAppPath(), modulePath = path.join(appPath, 'electron', 'restricted-pdf', 'host.cjs');
+      const childPath = path.join(appPath, 'electron', 'restricted-pdf', 'qpdf-child.cjs');
+      const { createRestrictedPdfHost, MAX_INPUT_BYTES, MAX_DECLARED_MEMORY } = load(modulePath);
+      const originalFork = utilityProcess.fork;
+      /** @type {Array<{ modulePath: string, pid: number | null, spawned: boolean, exited: boolean, exitCode: number | null, errors: string[] }>} */
+      const children = [];
+      utilityProcess.fork = function (file, args, options) {
+        const child = originalFork.call(utilityProcess, file, args, options);
+        if (path.resolve(file).toLowerCase() === path.resolve(childPath).toLowerCase()) {
+          const entry = { modulePath: file, pid: child.pid ?? null, spawned: false, exited: false, exitCode: null, errors: [] };
+          children.push(entry);
+          child.once('spawn', () => { entry.spawned = true; entry.pid = child.pid ?? null; });
+          child.once('exit', (code) => { entry.exited = true; entry.exitCode = code; });
+          child.on('error', (error) => { entry.errors.push(String(error).slice(0, 512)); });
+        }
+        return child;
+      };
+      const source = Buffer.from(input, 'ascii');
+      const digest = () => createHash('sha256').update(source).digest('hex');
+      const inputSha256 = digest();
+      let host, output, settledStats;
+      try {
+        // No spawn injection, alternate assets, deadline or resource override.
+        host = createRestrictedPdfHost();
+        output = await host.transform(source);
+        settledStats = host.stats();
+      } finally {
+        try { if (host) await host.dispose(); }
+        finally { utilityProcess.fork = originalFork; }
+      }
+      if (!(output instanceof Uint8Array) || output.byteLength > 2 * source.byteLength + 1024 * 1024) throw new Error('Utility output exceeds its production envelope');
+      return { scope: 'TEST-OWNED HOST: real utilityProcess and shipped engine assets; not main service or font/Plot admission',
+        packaged: main.isPackaged, appPath, modulePath, childPath, children,
+        maxInputBytes: MAX_INPUT_BYTES, maxDeclaredMemory: MAX_DECLARED_MEMORY,
+        inputBytes: source.byteLength, inputSha256, inputUnchanged: digest() === inputSha256,
+        settledStats, disposedStats: host.stats(), outputBase64: Buffer.from(output.buffer, output.byteOffset, output.byteLength).toString('base64') };
+    }, authored);
+    const output = new Uint8Array(Buffer.from(proof.outputBase64, 'base64'));
+    const pdf = parsePdfBasics(output);
+    const reference = /^(\d+)\s+(\d+)\s+R$/.exec(dictValue(pdf.trailer, 'Encrypt') ?? '');
+    const encryption = reference ? pdf.objects.get(Number(reference[1])) : null;
+    const dictionary = encryption?.dict ?? '';
+    const cryptFilters = dictValue(dictionary, 'CF') ?? '';
+    const standard = dictValue(cryptFilters, 'StdCF') ?? '';
+    // The small existing helper searches keys textually. Remove the nested CF
+    // dictionary before reading outer /Length, so its /Length32 is not mistaken
+    // for the top-level /Length256. This smoke uses qpdf's classic-xref output.
+    const topLevelEncryption = cryptFilters ? dictionary.replace(cryptFilters, '<< >>') : dictionary;
+    const metadata = dictValue(dictionary, 'EncryptMetadata');
+    const empty = (value) => value && value.active === 0 && value.queued === 0 && value.queuedBytes === 0 && value.reservedBytes === 0 && value.quarantined === false;
+    check(proof.packaged === packaged && (!packaged || /[\\/]app\.asar$/.test(proof.appPath))
+      && proof.modulePath.startsWith(proof.appPath) && proof.childPath.startsWith(proof.appPath),
+    `restricted utility uses the actual ${packaged ? 'test ASAR' : 'source'} host and child paths`);
+    check(proof.maxInputBytes === 128 * 1024 * 1024 && proof.maxDeclaredMemory === 805306368,
+      'restricted utility retains production input and WASM-memory caps');
+    check(proof.children.length === 1 && proof.children[0].spawned && proof.children[0].pid > 0
+      && proof.children[0].exited && proof.children[0].exitCode === 0 && proof.children[0].errors.length === 0
+      && resolve(proof.children[0].modulePath).toLowerCase() === resolve(proof.childPath).toLowerCase(),
+    'restricted utility used one actual child with observed successful exit and no process error');
+    check(output.byteLength >= 8 && output.byteLength <= 2 * plain.byteLength + 1024 * 1024 && pdf.version === '1.7',
+      `restricted utility output is bounded PDF 1.7 (${output.byteLength} bytes)`);
+    check(pdf.errors.length === 0 && pdf.startxrefValid && pdf.endsWithEof && pdf.pages.length === 1,
+      `restricted utility PDF has sound classic-xref/page structure (${pdf.errors.join('; ') || 'no errors'})`);
+    check(!!reference && encryption?.gen === Number(reference[2]) && dictValue(dictionary, 'Filter') === '/Standard',
+      'restricted utility trailer resolves to its actual Standard Encrypt dictionary');
+    check(dictValue(dictionary, 'R') === '6' && dictValue(dictionary, 'V') === '5' && dictValue(topLevelEncryption, 'Length') === '256',
+      'restricted utility Encrypt dictionary declares R6/V5/256-bit encryption');
+    check(dictValue(standard, 'CFM') === '/AESV3' && dictValue(standard, 'Length') === '32'
+      && dictValue(dictionary, 'StmF') === '/StdCF' && dictValue(dictionary, 'StrF') === '/StdCF',
+    'restricted utility stream and string filters select the AESV3 Standard crypt filter');
+    check(dictValue(dictionary, 'P') === '-1324' && (metadata === null || metadata === 'true'),
+      'restricted utility records the expected P2 flags and metadata encryption (explicit true or PDF default)');
+    check(!Buffer.from(output).includes(Buffer.from(marker, 'ascii')) && proof.inputBytes === plain.byteLength && proof.inputUnchanged,
+      'restricted utility does not expose the authored plaintext marker and leaves its input unchanged');
+    check(empty(proof.settledStats), 'restricted utility result is returned after child exit with all reservations refunded');
+    check(empty(proof.disposedStats), 'restricted utility finally-dispose completes with no active, queued or unconfirmed work');
+    const { outputBase64: _outputBase64, ...record } = proof;
+    writeFileSync(join(outDir, 'restricted-utility-authored.pdf'), output, { flag: 'wx' });
+    writeFileSync(join(outDir, 'restricted-utility-proof.json'), JSON.stringify({ ...record, outputBytes: output.byteLength,
+      pdf: { version: pdf.version, encryptObject: reference ? Number(reference[1]) : null,
+        filter: dictValue(dictionary, 'Filter'), revision: dictValue(dictionary, 'R'), permissions: dictValue(dictionary, 'P'),
+        metadataEncryption: metadata ?? 'true (PDF default)' } }, null, 2), { flag: 'wx' });
+  } else console.log('restricted utility assembly smoke skipped: requires the current Windows source or test build');
 
   // ------------------------------------------------------------------ PLOT through plot-pdf
   step = 'PLOT';
