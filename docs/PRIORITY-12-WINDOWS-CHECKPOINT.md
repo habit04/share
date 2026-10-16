@@ -1,5 +1,34 @@
 # Priority 12 Windows validation checkpoint
 
+## Latest completed source gate and packaging follow-up
+
+The exact `74369d3` Windows/private-DWG suite passes **7,022 tests, zero failures,
+38 skips** (398 files, 204.70 s). Both ordinary PR/push CI runs pass all five
+latest job results. Actual artifacts pass desktop 257/257 and three origin
+launches each, with 15,698 equal before/after inputs and unchanged EXE/ASAR/fuses.
+The push GPU's original Electron acquisition failure is retained; one GPU-only
+re-execution passes, with no deadline or assertion changes. Chrome passes 31/31
+native-text checks plus the earlier separate 12/12 authored-CFF/mixed checks.
+
+The next narrow packaging change explicitly includes `LICENSE` and
+`THIRD-PARTY-NOTICES.md` in the app archive. The real builder filter and an
+existing test ASAR prove that both were previously absent. CI now verifies the
+two archived documents byte-for-byte against source and records their hashes.
+Real ASAR controls reject missing, stale and BOM-modified notices; the real
+builder-filter regression fails before the file-inclusion fix. This follow-up
+requires its own source and packaged CI gate; the draft PR records the final
+head and receipts. Signing, dependencies, installers and release workflows are
+unchanged.
+
+The fourteen-patch 12.4 candidate remains unadopted. Its earlier controls now
+pass 14/14, but new bounded pinned-JS controls pass 10 and fail four assertions:
+cached file-stream writes bypass the guard, and Buffer slicing can retain more
+backing storage than the admitted budget. These are isolated actual JS methods
+with modeled filesystem initialization, not native IPC/WASM exploit evidence.
+Justin forwarded the verified round-three feedback to Muse. Corrected source,
+native utilityProcess/Plot/IPC/save and combined gates remain required. Merge
+stays held and priority 12 remains incomplete. Historical checkpoints follow.
+
 2026-10-16 Chrome-comparison follow-up; branch `review/p12-dwg-f4`, over tested
 head `a94f104`. Application bytes are unchanged from the inspected
 `435f57e` tree. Draft PR #23 remains unmerged; no publication, installer,

@@ -19,6 +19,15 @@ export function assertCiContext(env, platform, arch) {
 export function assertGeneratedInputsOnly(changedPaths) {
   for (const file of changedPaths) assert.equal(file, 'electron/dwg-writer-integrity.json', 'Unexpected source change before packaged checks');
 }
+/** @param {string} archive @param {string} repo */
+export function verifyPackedNotices(archive, repo) {
+  const asar = createRequire(import.meta.url)('@electron/asar');
+  return ['LICENSE', 'THIRD-PARTY-NOTICES.md'].map(file => {
+    const expected = readFileSync(join(repo, file)), actual = asar.extractFile(archive, file);
+    assert.deepEqual(actual, expected, `${file} must match the source notice bytes`);
+    return { path: file, bytes: actual.length, sha256: createHash('sha256').update(actual).digest('hex') };
+  });
+}
 async function digest(file) {
   const hash = createHash('sha256'); for await (const bytes of createReadStream(file)) hash.update(bytes); return hash.digest('hex');
 }
@@ -115,7 +124,7 @@ async function main() {
     for(const row of before.filter(item=>item.path.startsWith('electron/')||item.path.startsWith('dist/'))){if(row.link!==undefined)continue;assert.equal(createHash('sha256').update(asar.extractFile(archive,row.path.split('/').join(sep))).digest('hex'),row.sha256,row.path);packedCount++;}
     for(const name of readdirSync(writer))assert.equal(await digest(join(dirname(executable),'resources/dwg-writer',name)),await digest(join(writer,name)),name);
     const fuses=await verifyExecutableFuses(executable,'test');
-    receipt.proof={executableSha256:await digest(executable),archiveSha256:await digest(archive),packedCount,testMetadata:{jcadTestBuild:true,version:packed.version},fuses,dwgFiles:readdirSync(writer)};save();
+    receipt.proof={executableSha256:await digest(executable),archiveSha256:await digest(archive),packedCount,notices:verifyPackedNotices(archive,repo),testMetadata:{jcadTestBuild:true,version:packed.version},fuses,dwgFiles:readdirSync(writer)};save();
     for(const [name,args] of [['desktop',['--experimental-strip-types',join(repo,'scripts/e2e-electron.mjs'),'--packaged',executable]],['origin',[join(repo,'scripts/e2e-origin.mjs'),'--packaged',executable]]]){
       const out=join(reports,`${name}-output`);mkdirSync(out);
       const result=await child(name,args,15*60*1000,{JCAD_E2E_OUT:out,JCAD_ORIGIN_E2E_KEEP:'1'});receipt.drivers.push(result);save();assertChild(result);

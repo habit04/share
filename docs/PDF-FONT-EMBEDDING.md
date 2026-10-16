@@ -6,6 +6,17 @@ embedding and conservative variable-glyf default admission. It does not complete
 priority 12, the font roadmap or certify an installed release. Native acceptance
 and source gates are recorded separately from historical candidate reviews below.
 
+Latest complete source checkpoint `74369d3` passes **7,022 Windows/private-DWG
+tests, zero failures and 38 skips**, both five-job CI runs and both actual
+packaged desktop/origin gates. The cleanup and Chrome comparison failures
+described in historical entries below have separate passing follow-up evidence;
+Chrome native text passes 31/31 and authored CFF/mixed text passes 12/12. The
+next packaging change adds exact source license/notice documents to the ASAR
+and requires its own final gate. The unadopted 12.4 candidate still has two
+memory-guard defects; preview/print admission and merge remain held. See the
+[Windows checkpoint](PRIORITY-12-WINDOWS-CHECKPOINT.md) and draft PR #23 for exact
+heads, receipts and acceptance limits.
+
 The Windows plot bridge reads only installed Windows Fonts files, through the same confined,
 bounded workers as metrics. Programs, permissions and geometry come from one race-checked file
 read. Standalone glyf fonts with installable/editable embedding permissions are accepted.
@@ -120,7 +131,7 @@ uncompressed mixed CFF/static-subset/whole-variable pages. Earlier 147 targeted
 checks and 120 affected-reader/writer checks pass; 23 authored static programs
 remain byte-identical to the prior source's fixtures.
 
-The current two-worker full run is **6,955 passed, one failed, 38 skipped**.
+The historical initial combined two-worker run is **6,955 passed, one failed, 38 skipped**.
 The sole failure is the existing large-file admission fixture's cleanup. Refusal,
 hash, cancellation, disposal and zero-reader checks finish by 288 ms; detailed
 stage logging reaches `unlink-start` at 296 ms but never records its return.

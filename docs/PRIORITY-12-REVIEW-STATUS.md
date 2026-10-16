@@ -4,6 +4,21 @@ Windows development review, 2026-10-16. The combined branch is published as
 draft PR #23; it is not merged or released. Earlier released TTC support remains
 the v0.5.2 baseline.
 
+Latest complete checkpoint: `74369d3` passes the full Windows/private-DWG suite
+**7,022/0/38** and both five-job CI runs. Both actual Windows artifacts pass
+desktop 257/257 and origin 3/3, with unchanged inputs/package identity. Chrome
+native text passes 31/31; the separate authored-CFF/mixed check passes 12/12.
+The push GPU's one approved acquisition-failure re-execution is disclosed in
+the PR receipts. No original failed report is rewritten.
+
+A further packaging fix includes the project license and third-party notices
+in the app archive and verifies their exact source bytes. Its source/package
+gates are recorded separately in the draft PR. The current 12.4 candidate is
+still blocked by two independently reproduced MEMFS defects: its old controls
+pass 14/14, new controls have 10 passes/four failures, and no candidate is
+adopted. Muse owns corrections; native/composed acceptance remains with the
+lead. Merge remains held. The earlier checkpoints below are historical.
+
 Current source composes the corrected CFF1 and variable-default implementations
 with existing collection selection, used-glyph validation, static subsetting and
 DWG/F4 safeguards. The `a94f104` full Windows two-worker gate passes **6,974
@@ -108,9 +123,9 @@ remaining installed-CFF/wider-viewer limits.
 | 12.1 collection selection | Reviewed and corrected locally; real Windows workers/IPC/Plot and private AutoCAD reference pass for the tested Nirmala faces and Arial. | Lead: combined acceptance, packaged checks and CI. |
 | Used-glyph validation (SimSun scope) | Algorithm and DWG/F4 source composition reviewed; 132 independent authored-PDF checks pass. Real SimSun still refuses at bitmap/origin validation, YaHei at conflicting PostScript names. | Lead: packaged/CI gates; native Han vector acceptance remains absent. Actual missing-SHX raster output and explicit vector refusal pass. |
 | 12.3 glyf subsetting | Reviewed and corrected; real Windows subset/whole-control Unicode and pixels match. Added actual-byte whole-program guard for variation tables: eight failing-before/passing-after regressions. | Lead: combined suite and native gates. Variation-aware subsetting remains deferred. |
-| 12.6a variable defaults | Corrected source retains legal-name-ID guards and current TTC/used-glyph/subset/F4 behavior. Final archive adds no code. Real Bahnschrift app IPC/Plot/edit/save/reopen and whole-program identity pass on `743fdbb`; varying optical-size fonts refuse explicitly. Native Chrome passes exact source-fragment text with the corrected boundary oracle. | Lead: retain the passing 6,974/0/38 full and both packaged/CI gates on `a94f104`, then validate the new comparator head; retain narrow PDF conditions. These results cover the tested default, not named instances or all variable fonts. |
+| 12.6a variable defaults | Corrected source retains legal-name-ID guards and current TTC/used-glyph/subset/F4 behavior. Final archive adds no code. Real Bahnschrift app IPC/Plot/edit/save/reopen and whole-program identity pass on `743fdbb`; varying optical-size fonts refuse explicitly. Native Chrome passes exact source-fragment text with the corrected boundary oracle. | Lead: retain `74369d3` full 7022/0/38 and both packaged/CI gates, then verify the packaging follow-up; retain narrow PDF conditions. These results cover the tested default, not named instances or all variable fonts. |
 | 12.2 standalone CFF1 | Corrected parser/writer, implicit-matrix/late-width guards, aliases and resource-scoped PDF1.6 are integrated. Fresh actual-reader/capture proof produces 34 PDFs; producer 168/168, configured checked-CMap inspection 1903/1903 after 221/221 controls. Stock pypdf retains 28 failures; original 1873/1903 report and classification 67/67 remain recorded. | Lead: retain original failures and declared private decoder scope, then complete acceptance. No installed standalone CFF font is available; synthetic checks do not establish real-font IPC/viewer compatibility. |
-| 12.4 preview/print permissions | Earlier eleven-patch candidate fails six independent assertions covering quarantine and two MEMFS accounting paths. New fourteen-patch archive `c61cfaca…`, declared head `be3ca1f`, adds three commits over identical earlier diff payloads; seventeen manifest entries verify. New correctness claims remain unverified; no candidate is integrated. | Lead: independently review/test the three new corrections, preserve font/DWG seams and complete native utilityProcess/Plot/IPC, full-suite and viewer gates. Refusal stays active; see PRIORITY-12-WINDOWS-CHECKPOINT.md. |
+| 12.4 preview/print permissions | Fourteen-patch archive `c61cfaca…`, declared head `be3ca1f`, passes integrity/private reconstruction. Unchanged old controls now pass 14/14, but new pinned-JS controls have 10 passes/four failures covering cached-write bypass and Buffer backing-storage overrun. No candidate is integrated. | Muse: two narrow memory-guard corrections and clean comparable suite. Lead: preserve font/DWG seams and complete native utilityProcess/Plot/IPC, full-suite and viewer gates. Refusal stays active; see PRIORITY-12-WINDOWS-CHECKPOINT.md. |
 | 12.5 shaping | v4 design approved for additive interface/helpers and synthetic contract tests. Capped prototype passes 106 bounded Windows Node checks across 33 cases; no app/runtime/consumer adoption. | Muse: scoped interface commit with epoch, selected-face, wire/copy and exit-join tests; correct three probe labels. Lead: later runtime/Windows/render/extraction gates. |
 | DWG/F4 combined source | 63 Windows workflow assertions and 721 independent native checks pass on `167c50b`; effective STYLE, metrics, title/signature, source protection and DXF reopen verified. | Lead: maintain font/projection refusals; remote CI and packaged gates remain separate. No merge clearance. |
 

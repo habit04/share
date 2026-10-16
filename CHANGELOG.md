@@ -11,6 +11,11 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+### Fixed
+
+- Include the project license and third-party notices in the application archive;
+  packaged CI verifies both against their exact source bytes.
+
 ### Added
 
 - Windows font metrics and vector PDF embedding now select the TrueType collection
