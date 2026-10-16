@@ -57,6 +57,7 @@ type ProbeImpl = (signal: AbortSignal) => Promise<unknown>;
 function envelope(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     requestId: 3,
+    destination: { provider: 'openai', model: 'gpt-5' },
     question: 'how many objects?',
     snapshot: {
       kind: 'jcad.ai.selection-snapshot', version: 1,
@@ -90,10 +91,12 @@ function hangUntilAbort(onStart?: () => void): TransportImpl {
 
 function makeWorld() {
   const files = new Map<string, Buffer>();
-  const fail = { writes: false, deletes: false };
+  const fail = { writes: false, deletes: false, configWrites: false };
+  const writeBlocks = new Map<string, Promise<void>>();
   const seams = {
     writeFileAtomic: async (p: string, data: Buffer) => {
-      if (fail.writes) throw new Error('disk full');
+      if (fail.writes || (p === CONFIG_PATH && fail.configWrites)) throw new Error('disk full');
+      if (writeBlocks.has(p)) await writeBlocks.get(p);
       files.set(p, Buffer.from(data));
     },
     readFile: (p: string) => {
@@ -137,7 +140,7 @@ function makeWorld() {
   });
   const newService = () => createAiService({ configStore, keyStores, transportFactory });
   return {
-    files, fail, keyStores, configStore, factoryCalls, transportFactory, newService,
+    files, fail, writeBlocks, keyStores, configStore, factoryCalls, transportFactory, newService,
     service: newService(),
     setTransport: (impl: TransportImpl) => { transportImpl = impl; },
     setProbe: (impl: ProbeImpl | null) => { probeImpl = impl; },
@@ -153,7 +156,7 @@ describe('ai-service connection state', () => {
     const state = await world.service.getState();
     expect(state).toEqual({
       provider: 'openai', providers: ['openai', 'anthropic'], model: 'gpt-5', enabled: false, keyPersistence: 'session',
-      keyPresent: false, keySource: null, encryptionAvailable: true, configProblem: null,
+      keyPresent: false, keyStored: false, credentialProblem: null, keySource: null, encryptionAvailable: true, configProblem: null,
     });
     await world.service.dispose();
   });
@@ -171,7 +174,7 @@ describe('ai-service connection state', () => {
   it('refuses to enable Live AI before any key is saved', async () => {
     const world = makeWorld();
     await expect(world.service.setEnabled(true)).rejects.toMatchObject({ kind: 'provider-not-configured' });
-    await expect(world.service.setEnabled(true)).rejects.toThrow(/Save an API key before enabling/);
+    await expect(world.service.setEnabled(true)).rejects.toThrow(/Save a key in the AI panel connection settings/);
     expect((await world.service.getState()).enabled).toBe(false);
     await world.service.dispose();
   });
@@ -273,7 +276,7 @@ describe('ai-service configuration changes cancel work', () => {
     await settled;
     expect(world.configStore.get().providers.openai.model).toBe('gpt-5-mini');
     world.setTransport(async () => ({ text: 'mini answer', references: [] }));
-    const answer = await world.service.ask(envelope({ requestId: 4 }));
+    const answer = await world.service.ask(envelope({ requestId: 4, destination: { provider: 'openai', model: 'gpt-5-mini' } }));
     expect(answer.text).toBe('mini answer');
     expect(world.factoryCalls.at(-1)).toMatchObject({ model: 'gpt-5-mini', apiKey: 'sk-live' });
     await world.service.dispose();
@@ -469,7 +472,7 @@ describe('ai-service providers', () => {
     expect(state.keySource).toBeNull();
     await world.service.setKey('sk-anthropic-key', 'session');
     await world.service.setEnabled(true);
-    const answer = await world.service.ask(envelope());
+    const answer = await world.service.ask(envelope({ destination: { provider: 'anthropic', model: 'claude-sonnet-5-5' } }));
     expect(answer.text).toBe('Two objects.');
     // The anthropic ask used the anthropic key and the anthropic default model only.
     expect(world.factoryCalls).toEqual([
@@ -567,5 +570,191 @@ describe('ai-service providers', () => {
     const answer = await pending;
     expect(answer.text).toBe('still answered');
     await world.service.dispose();
+  });
+});
+
+describe('ai-service admission and persistence races', () => {
+  it('reports corrupt ciphertext as unusable while keeping it available for Forget', async () => {
+    const world = makeWorld();
+    world.files.set(KEY_PATH, Buffer.from('corrupt encrypted value'));
+    world.seedConfig({ version: 1, provider: 'openai', model: 'gpt-5', enabled: false, keyPersistence: 'encrypted' });
+    const state = await world.service.getState();
+    expect(state).toMatchObject({ keyPresent: false, keyStored: true, keySource: null, credentialProblem: 'credential-corrupt' });
+    expect(world.files.has(KEY_PATH)).toBe(true);
+    expect(world.transportFactory).not.toHaveBeenCalled();
+    await world.service.forgetKey();
+    expect(await world.service.getState()).toMatchObject({ keyPresent: false, keyStored: false, credentialProblem: null });
+    await world.service.dispose();
+  });
+
+  it('serializes config patches so a later write merges the completed earlier write', async () => {
+    const world = makeWorld();
+    await world.configStore.load();
+    const gate = deferred();
+    world.writeBlocks.set(CONFIG_PATH, gate.promise);
+    const model = world.configStore.update({ model: 'gpt-5-mini' });
+    const enabled = world.configStore.update({ enabled: true });
+    gate.resolve();
+    await Promise.all([model, enabled]);
+    expect(world.configStore.get().providers.openai).toMatchObject({ model: 'gpt-5-mini', enabled: true });
+    const disk = JSON.parse(world.files.get(CONFIG_PATH)!.toString('utf8')) as ConfigShape;
+    expect(disk.providers.openai).toMatchObject({ model: 'gpt-5-mini', enabled: true });
+    await world.service.dispose();
+  });
+
+  it.each([
+    { provider: 'unknown', model: 'gpt-5', enabled: true, keyPersistence: 'encrypted' },
+    { provider: 'openai', model: 'invalid model', enabled: true, keyPersistence: 'encrypted' },
+    { provider: 'openai', model: 'gpt-5', enabled: 'true', keyPersistence: 'encrypted' },
+  ])('fails closed over malformed provider configuration: %j', async (bad) => {
+    const world = makeWorld();
+    world.seedConfig({ version: 2, provider: bad.provider, providers: {
+      openai: { model: bad.model, enabled: bad.enabled, keyPersistence: bad.keyPersistence },
+      anthropic: { model: 'claude-sonnet-5-5', enabled: false, keyPersistence: 'session' },
+    } });
+    expect(await world.service.getState()).toMatchObject({ provider: 'openai', model: 'gpt-5', enabled: false, configProblem: 'config-invalid' });
+    expect(world.transportFactory).not.toHaveBeenCalled();
+    await world.service.dispose();
+  });
+
+  it('rejects missing or stale destinations without constructing a transport', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-destination-test', 'session');
+    await world.service.setEnabled(true);
+    for (const destination of [undefined, { provider: 'anthropic', model: 'gpt-5' }, { provider: 'openai', model: 'old-model' }]) {
+      await expect(world.service.ask(envelope({ destination }))).rejects.toMatchObject({ kind: 'cancelled' });
+    }
+    expect(world.transportFactory).not.toHaveBeenCalled();
+    await world.service.dispose();
+  });
+
+  it('serializes provider/key changes and blocks asks until their writes finish', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-openai-before', 'session');
+    await world.service.setEnabled(true);
+    const gate = deferred();
+    world.writeBlocks.set(CONFIG_PATH, gate.promise);
+    const switched = world.service.setProvider('anthropic');
+    const saved = world.service.setKey('sk-anthropic-after', 'session');
+    await expect(world.service.ask(envelope())).rejects.toMatchObject({ kind: 'cancelled' });
+    expect(world.transportFactory).not.toHaveBeenCalled();
+    gate.resolve();
+    await Promise.all([switched, saved]);
+    world.writeBlocks.clear();
+    await world.service.setEnabled(true);
+    await world.service.ask(envelope({ destination: { provider: 'anthropic', model: 'claude-sonnet-5-5' } }));
+    expect(world.factoryCalls.at(-1)).toMatchObject({ provider: 'anthropic', apiKey: 'sk-anthropic-after' });
+    await world.service.setProvider('openai');
+    await world.service.ask(envelope());
+    expect(world.factoryCalls.at(-1)).toMatchObject({ provider: 'openai', apiKey: 'sk-openai-before' });
+    await world.service.dispose();
+  });
+
+  it('does not admit asks while disabling is waiting for persistence', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-disable-test', 'session');
+    await world.service.setEnabled(true);
+    const gate = deferred();
+    world.writeBlocks.set(CONFIG_PATH, gate.promise);
+    const disabling = world.service.setEnabled(false);
+    await expect(world.service.ask(envelope())).rejects.toMatchObject({ kind: 'cancelled' });
+    gate.resolve();
+    await disabling;
+    await expect(world.service.ask(envelope())).rejects.toMatchObject({ kind: 'live-disabled' });
+    expect(world.transportFactory).not.toHaveBeenCalled();
+    await world.service.dispose();
+  });
+
+  it('restores the exact previous ciphertext when switching to session persistence fails', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-original-ciphertext', 'encrypted');
+    const original = Buffer.from(world.files.get(KEY_PATH)!);
+    world.fail.configWrites = true;
+    await expect(world.service.setKey('sk-replacement-secret', 'session')).rejects.toMatchObject({ kind: 'credential-unavailable' });
+    expect(world.files.get(KEY_PATH)).toEqual(original);
+    expect(world.keyStores.openai.readKey()).toBe('sk-original-ciphertext');
+    world.fail.configWrites = false;
+    await world.service.dispose();
+  });
+
+  it('replaces an encrypted key atomically without an unnecessary settings write', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-original-encrypted', 'encrypted');
+    world.fail.configWrites = true;
+    await world.service.setKey('sk-replacement-encrypted', 'encrypted');
+    expect(world.keyStores.openai.readKey()).toBe('sk-replacement-encrypted');
+    await world.service.dispose();
+  });
+
+  it('never activates orphan ciphertext after a failed persistence update and rollback, including restart', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-session-authorized', 'session');
+    await world.service.setEnabled(true);
+    world.fail.configWrites = true;
+    world.fail.deletes = true;
+    await expect(world.service.setKey('sk-orphan-ciphertext', 'encrypted')).rejects.toMatchObject({ kind: 'credential-rollback-failed' });
+    expect(await world.service.getState()).toMatchObject({ keyPresent: false, keyStored: true, credentialProblem: 'credential-unavailable' });
+    const restarted = world.newService();
+    expect(await restarted.getState()).toMatchObject({ keyPresent: false, keyStored: true, keyPersistence: 'session' });
+    await expect(restarted.ask(envelope())).rejects.toMatchObject({ kind: 'credential-unavailable' });
+    expect(world.factoryCalls).toEqual([]);
+    await restarted.dispose();
+    await world.service.dispose();
+  });
+
+  it('loads the persisted provider before forgetting its stored key', async () => {
+    const world = makeWorld();
+    await world.keyStores.openai.saveKey('sk-openai-retained');
+    await world.keyStores.anthropic.saveKey('sk-anthropic-forgotten');
+    world.seedConfig({ version: 2, provider: 'anthropic', providers: {
+      openai: { model: 'gpt-5', enabled: false, keyPersistence: 'encrypted' },
+      anthropic: { model: 'claude-sonnet-5-5', enabled: false, keyPersistence: 'encrypted' },
+    } });
+    await world.service.forgetKey();
+    expect(world.keyStores.openai.readKey()).toBe('sk-openai-retained');
+    expect(world.keyStores.anthropic.hasKey()).toBe(false);
+    await world.service.dispose();
+  });
+
+  it('revokes a request still awaiting initial configuration load', async () => {
+    const world = makeWorld();
+    const gate = deferred();
+    const originalLoad = world.configStore.load;
+    world.configStore.load = async () => { await gate.promise; return originalLoad(); };
+    const pending = world.service.ask(envelope());
+    const settled = expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
+    world.service.cancelAll();
+    gate.resolve();
+    await settled;
+    expect(world.transportFactory).not.toHaveBeenCalled();
+    await world.service.dispose();
+  });
+
+  it('bounds probes even when a cancelled transport ignores abort and preserves the output-limit flag', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-probe-test', 'session');
+    const started = deferred(), gate = deferred<unknown>();
+    world.setProbe(async () => { started.resolve(); return gate.promise; });
+    const first = world.service.testConnection();
+    const settled = expect(first).rejects.toMatchObject({ kind: 'cancelled' });
+    await started.promise;
+    await expect(world.service.testConnection()).rejects.toMatchObject({ kind: 'provider-failure' });
+    world.service.cancelAll();
+    await settled;
+    await expect(world.service.testConnection()).rejects.toMatchObject({ kind: 'provider-failure' });
+    gate.resolve({});
+    await Promise.resolve();
+    await Promise.resolve();
+    world.setProbe(async () => ({ inputTokens: 3, outputLimited: true, text: 'never expose this' }));
+    expect(await world.service.testConnection()).toEqual({ model: 'gpt-5', inputTokens: 3, outputLimited: true });
+    await world.service.dispose();
+  });
+
+  it('rejects mutation and probe entry points after disposal', async () => {
+    const world = makeWorld();
+    await world.service.dispose();
+    await expect(world.service.setKey('sk-after-close', 'session')).rejects.toMatchObject({ kind: 'disposed' });
+    await expect(world.service.testConnection()).rejects.toMatchObject({ kind: 'disposed' });
+    expect(world.factoryCalls).toEqual([]);
   });
 });

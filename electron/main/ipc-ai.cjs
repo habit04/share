@@ -54,12 +54,26 @@ function aiDir() {
  */
 function createAiRuntime(overrides = {}) {
   const dir = overrides.dir ?? aiDir();
-  fs.mkdirSync(dir, { recursive: true });
   const writeFileAtomic = overrides.writeFileAtomic
-    ?? (async (target, data) => { await atomicWriteFile(target, data); });
+    ?? (async (target, data) => {
+      await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
+      await atomicWriteFile(target, data);
+    });
+  const readBounded = (target) => {
+    const max = path.basename(target) === 'config.json' ? 4096 : 8192;
+    const fd = fs.openSync(target, 'r');
+    try {
+      if (fs.fstatSync(fd).size > max) throw new Error('AI state exceeds its size limit.');
+      const buffer = Buffer.alloc(max + 1);
+      let length = 0, bytes;
+      while ((bytes = fs.readSync(fd, buffer, length, buffer.length - length, null)) > 0) length += bytes;
+      if (length > max) throw new Error('AI state exceeds its size limit.');
+      return buffer.subarray(0, length);
+    } finally { fs.closeSync(fd); }
+  };
   const seams = {
     writeFileAtomic,
-    readFile: (target) => fs.readFileSync(target),
+    readFile: readBounded,
     removeFile: (target) => { fs.unlinkSync(target); },
     fileExists: (target) => fs.existsSync(target),
   };
@@ -92,8 +106,8 @@ function errorPayload(cause) {
     const retry = /** @type {AiHostError & { retryAfterSeconds?: unknown }} */ (cause).retryAfterSeconds;
     return {
       kind: cause.kind,
-      message: cause.message,
-      ...(typeof retry === 'number' ? { retryAfterSeconds: retry } : {}),
+      message: String(cause.message).slice(0, 1024),
+      ...(typeof retry === 'number' && Number.isFinite(retry) && retry >= 0 && retry <= 3600 ? { retryAfterSeconds: retry } : {}),
     };
   }
   // Unexpected failures get a fixed message: internal detail, provider
@@ -122,6 +136,23 @@ function registerAiIpc(ctx, overrides = {}) {
   const { ipcMain } = ctx;
   const { service } = createAiRuntime(overrides);
   const state = async () => ({ state: await service.getState() });
+  const requests = new Map();
+  const probes = new Set();
+  const observed = new WeakSet();
+  const owner = (ev) => ({ sender: ev?.sender, processId: ev?.senderFrame?.processId, routingId: ev?.senderFrame?.routingId });
+  const sameOwner = (a, b) => a.sender === b.sender && a.processId === b.processId && a.routingId === b.routingId;
+  function observe(contents) {
+    if (!contents || observed.has(contents)) return;
+    observed.add(contents);
+    const revoke = () => {
+      for (const record of [...requests.values(), ...probes]) if (record.owner.sender === contents) record.abort.abort();
+    };
+    contents.once('destroyed', revoke);
+    contents.on('render-process-gone', revoke);
+    contents.on('did-start-navigation', (_event, _url, sameDocument, mainFrame) => {
+      if (mainFrame && !sameDocument) revoke();
+    });
+  }
 
   ipcMain.handle('ai-get-state', respond(state));
   ipcMain.handle('ai-set-provider', respond(async (_ev, provider) => {
@@ -144,9 +175,30 @@ function registerAiIpc(ctx, overrides = {}) {
     await service.setEnabled(enabled);
     return state();
   }));
-  ipcMain.handle('ai-test-connection', respond(async () => ({ probe: await service.testConnection() })));
-  ipcMain.handle('ai-ask', respond(async (_ev, request) => ({ answer: await service.ask(request) })));
-  ipcMain.handle('ai-cancel', respond(async (_ev, requestId) => ({ cancelled: service.cancel(requestId) })));
+  ipcMain.handle('ai-test-connection', respond(async (ev) => {
+    if (probes.size >= 16) throw new AiHostError('provider-failure', 'Too many pending AI connection tests.');
+    const record = { owner: owner(ev), abort: new AbortController() };
+    observe(record.owner.sender);
+    probes.add(record);
+    try { return { probe: await service.testConnection(record.abort.signal) }; } finally { probes.delete(record); }
+  }));
+  ipcMain.handle('ai-ask', respond(async (ev, request) => {
+    const requestId = request?.requestId;
+    if ((typeof requestId !== 'string' && !Number.isSafeInteger(requestId)) || requests.has(requestId)) {
+      throw new AiHostError('invalid-request', 'Invalid or duplicate AI request id.');
+    }
+    if (requests.size >= 16) throw new AiHostError('provider-failure', 'Too many pending AI requests.');
+    const record = { owner: owner(ev), abort: new AbortController() };
+    observe(record.owner.sender);
+    requests.set(requestId, record); // Own cancellation before service initialization can await.
+    try { return { answer: await service.ask(request, record.abort.signal) }; } finally { requests.delete(requestId); }
+  }));
+  ipcMain.handle('ai-cancel', respond(async (ev, requestId) => {
+    const record = requests.get(requestId);
+    if (!record || !sameOwner(record.owner, owner(ev))) return { cancelled: false };
+    record.abort.abort();
+    return { cancelled: true };
+  }));
   ipcMain.handle('ai-usage', respond(async () => ({ usage: service.usage() })));
 
   // Renderer lifecycle: when the app window's contents are destroyed or
@@ -154,16 +206,10 @@ function registerAiIpc(ctx, overrides = {}) {
   // outlive it. Cancelling is sender-checked against the live window.
   const app = overrides.app ?? require('electron').app;
   if (app && typeof app.on === 'function') {
-    app.on('web-contents-created', (_event, contents) => {
-      const cancelIfAppRenderer = () => {
-        if (ctx.mainWindow && !ctx.mainWindow.isDestroyed()
-          && ctx.mainWindow.webContents === contents) service.cancelAll();
-      };
-      contents.once('destroyed', cancelIfAppRenderer);
-      contents.on('render-process-gone', cancelIfAppRenderer);
-    });
-    app.on('will-quit', () => { void service.dispose(); });
+    app.on('web-contents-created', (_event, contents) => observe(contents));
+    app.on('will-quit', () => { void service.dispose().catch(() => {}); });
   }
+  if (ctx.mainWindow && !ctx.mainWindow.isDestroyed()) observe(ctx.mainWindow.webContents);
 
   return { service };
 }

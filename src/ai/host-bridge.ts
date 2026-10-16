@@ -21,6 +21,9 @@ export interface AiConnectionState {
   readonly enabled: boolean;
   readonly keyPersistence: 'session' | 'encrypted';
   readonly keyPresent: boolean;
+  /** Stored ciphertext may exist even when the host cannot decrypt/use it. */
+  readonly keyStored?: boolean;
+  readonly credentialProblem?: string | null;
   readonly keySource: 'session' | 'stored' | null;
   readonly encryptionAvailable: boolean;
   readonly configProblem: string | null;
@@ -28,6 +31,7 @@ export interface AiConnectionState {
 
 export interface AiProbeResult {
   readonly model: string;
+  readonly outputLimited?: boolean;
   readonly inputTokens?: number;
   readonly outputTokens?: number;
 }
@@ -60,6 +64,7 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set<AiErrorKind>([
   'output-too-large', 'disposed', 'live-disabled', 'auth-failed', 'model-access',
   'rate-limited', 'network', 'refused', 'credential-unavailable',
   'credential-corrupt', 'credential-delete-failed',
+  'invalid-request', 'credential-rollback-failed',
 ]);
 
 /** Rebuild a typed error from a bounded IPC payload; unknown kinds fail closed. */
@@ -94,21 +99,31 @@ export class WindowAiConnection {
     this.bridge = {
       ask: async (request: AiAskRequest, signal: AbortSignal): Promise<AiAnswer> => {
         if (signal.aborted) throw new AiError('cancelled', 'The request was cancelled.');
-        const onAbort = () => { void this.raw.cancel(request.requestId).catch(() => {}); };
+        let rejectAborted: (cause: AiError) => void = () => {};
+        const aborted = new Promise<never>((_resolve, reject) => { rejectAborted = reject; });
+        const onAbort = () => {
+          rejectAborted(new AiError('cancelled', 'The request was cancelled.'));
+          try { void this.raw.cancel(request.requestId).catch(() => {}); } catch { /* IPC may already be gone. */ }
+        };
         signal.addEventListener('abort', onAbort, { once: true });
         try {
-          const { answer } = unwrap(await this.raw.ask(request));
+          const { answer } = unwrap(await Promise.race([this.raw.ask(request), aborted]));
           // The host reports provider token usage beside its own byte
           // counters; fold it into AiAnswer.usage where the controller's
           // whitelist carries it to the panel.
-          if (answer && typeof answer === 'object') {
+          if (answer && typeof answer === 'object' && !Array.isArray(answer)) {
             const raw = answer as { usage?: Record<string, unknown>; providerUsage?: Record<string, unknown> };
             const tokens: Record<string, number> = {};
             for (const key of ['inputTokens', 'outputTokens'] as const) {
               const value = raw.providerUsage?.[key];
               if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) tokens[key] = value;
             }
-            if (Object.keys(tokens).length > 0) raw.usage = { ...(raw.usage ?? {}), ...tokens };
+            if (Object.keys(tokens).length > 0) {
+              // This remains untrusted until AiAskController validates it;
+              // retain all fields for that validation while copying usage.
+              const candidate = answer as AiAnswer;
+              return { ...candidate, usage: { ...(candidate.usage ?? {}), ...tokens } };
+            }
           }
           return answer as AiAnswer;
         } finally {

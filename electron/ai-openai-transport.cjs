@@ -7,8 +7,9 @@
  * validated request (see aiRequest()) into a single POST to the OpenAI
  * Responses API and validates the answer back into { text, references }.
  * Only the question and the validated selection snapshot go on the wire;
- * request ids, snapshot byte counts and the session/document binding are
- * host/renderer bookkeeping and are never sent. Drawing text inside the
+ * outer request ids, byte counters and the session/document binding are
+ * host/renderer bookkeeping and are never sent. The canonical snapshot
+ * retains its own serializedBytes accounting field. Drawing text inside the
  * snapshot is untrusted data: the fixed instructions say so, and the model
  * is given no tools and no way to act on the drawing.
  *
@@ -16,13 +17,14 @@
  * redirect:'manual' plus an explicit 3xx refusal, so credentials can never
  * be forwarded elsewhere), output tokens are capped in the request, the
  * response body is byte-capped while it is read (before any parsing),
- * store:false keeps JCad out of provider-side storage controls, and there
+ * store:false requests no stored Responses object (provider retention
+ * policies still apply), and there
  * are no retries: a failed or ambiguous call fails once with a bounded
  * AiHostError whose message never contains provider body text, headers or
  * the API key. The key is used only in the Authorization header.
  */
 
-const { AiHostError } = require('./ai-host.cjs');
+const { AI_LIMITS, AiHostError, aiAnswer } = require('./ai-host.cjs');
 
 const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const DEFAULT_MAX_OUTPUT_TOKENS = 2048;
@@ -73,11 +75,11 @@ const INVALID_ANSWER = 'The provider returned an invalid answer.';
  * @property {number} status
  * @property {{ get: (name: string) => string | null }} headers
  * @property {{ getReader: () => { read: () => Promise<{ done: boolean, value?: Uint8Array }>,
- *              cancel: (reason?: unknown) => Promise<unknown> } } | null} body
+ *              cancel: (reason?: unknown) => Promise<unknown>, releaseLock?: () => void } } | null} body
  * @property {() => Promise<string>} text
  * @typedef {(url: string, init: object) => Promise<TransportResponse>} FetchImpl
- * @typedef {{ inputTokens: number, outputTokens: number }} ProviderUsage
- * @typedef {{ model: string, inputTokens?: number, outputTokens?: number }} ProbeResult
+ * @typedef {{ inputTokens?: number, outputTokens?: number }} ProviderUsage
+ * @typedef {{ model: string, inputTokens?: number, outputTokens?: number, outputLimited?: boolean }} ProbeResult
  * @typedef {((request: ValidatedRequest, signal?: AbortSignal) => Promise<object>)
  *           & { probe: (signal?: AbortSignal) => Promise<ProbeResult> }} OpenAiTransport
  */
@@ -145,47 +147,58 @@ function retryAfterSeconds(response) {
  */
 async function readBody(response, maxBytes, signal) {
   const body = response.body;
-  if (body && typeof body.getReader === 'function') {
-    const reader = body.getReader();
-    /** @type {Uint8Array[]} */
-    const chunks = [];
-    let total = 0;
+  // text() buffers before returning, so it cannot enforce a read-time cap.
+  // Native fetch provides a reader for every non-empty response body.
+  if (!body || typeof body.getReader !== 'function') {
+    throw failure('invalid-answer', 'The provider returned an unreadable response body.');
+  }
+  const reader = (() => {
+    try { return body.getReader(); }
+    catch { throw failure('network', 'The provider response could not be read.'); }
+  })();
+  const cancelReader = () => {
+    try { void reader.cancel().catch(() => {}); } catch { /* already closed */ }
+  };
+  let onAbort = () => {};
+  const aborted = new Promise((_resolve, reject) => {
+    onAbort = () => {
+      cancelReader();
+      reject(failure('cancelled', 'The AI request was cancelled.'));
+    };
+  });
+  signal?.addEventListener('abort', onAbort, { once: true });
+  /** @type {Uint8Array[]} */
+  const chunks = [];
+  let total = 0;
+  try {
     for (;;) {
       if (signal?.aborted) {
-        try { await reader.cancel(); } catch { /* the stream is already gone */ }
+        cancelReader();
         throw failure('cancelled', 'The AI request was cancelled.');
       }
       /** @type {{ done: boolean, value?: Uint8Array }} */
       let step;
       try {
-        step = await reader.read();
+        step = /** @type {{ done: boolean, value?: Uint8Array }} */ (await Promise.race([reader.read(), aborted]));
       } catch {
         if (signal?.aborted) throw failure('cancelled', 'The AI request was cancelled.');
         throw failure('network', 'The connection to the provider was interrupted.');
       }
+      if (signal?.aborted) throw failure('cancelled', 'The AI request was cancelled.');
       if (step.done) break;
       const chunk = step.value ?? new Uint8Array(0);
       total += chunk.byteLength;
       if (total > maxBytes) {
-        try { await reader.cancel(); } catch { /* the stream is already gone */ }
+        cancelReader();
         throw failure('output-too-large', 'The provider response exceeds the size limit.');
       }
       chunks.push(chunk);
     }
     return Buffer.concat(chunks, total).toString('utf8');
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+    try { reader.releaseLock?.(); } catch { /* a cancelled pending read can still own the lock */ }
   }
-  /** @type {string} */
-  let text;
-  try {
-    text = await response.text();
-  } catch {
-    if (signal?.aborted) throw failure('cancelled', 'The AI request was cancelled.');
-    throw failure('network', 'The connection to the provider was interrupted.');
-  }
-  if (Buffer.byteLength(text, 'utf8') > maxBytes) {
-    throw failure('output-too-large', 'The provider response exceeds the size limit.');
-  }
-  return text;
 }
 
 /**
@@ -241,6 +254,10 @@ function httpFailure(response, bodyText) {
  */
 async function postResponses(send, apiKey, maxResponseBytes, body, signal) {
   if (signal?.aborted) throw failure('cancelled', 'The AI request was cancelled.');
+  const requestBody = JSON.stringify(body);
+  if (Buffer.byteLength(requestBody, 'utf8') > 256 * 1024) {
+    throw failure('invalid-request', 'The AI request exceeds the transport size limit.');
+  }
   /** @type {TransportResponse} */
   let response;
   try {
@@ -252,13 +269,17 @@ async function postResponses(send, apiKey, maxResponseBytes, body, signal) {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(body),
+      body: requestBody,
     });
   } catch {
     if (signal?.aborted) throw failure('cancelled', 'The AI request was cancelled.');
     throw failure('network', 'Could not reach the provider. Check the network connection and try again.');
   }
   if (response.status >= 300 && response.status < 400) {
+    try {
+      const reader = response.body?.getReader();
+      if (reader) { void reader.cancel().catch(() => {}); reader.releaseLock?.(); }
+    } catch { /* refusal must not wait for or expose body cleanup failures */ }
     throw failure('provider-failure', 'The provider redirected the request; redirects are refused.');
   }
   const text = await readBody(response, maxResponseBytes, signal);
@@ -339,13 +360,15 @@ function parseAnswer(payload) {
   } catch {
     throw failure('invalid-answer', INVALID_ANSWER);
   }
-  if (!isRecord(answer) || typeof answer.text !== 'string' || answer.text.length === 0
-    || !Array.isArray(answer.references)
-    || answer.references.some((reference) => typeof reference !== 'string')) {
+  if (!isRecord(answer) || Object.keys(answer).some((key) => key !== 'text' && key !== 'references')
+    || typeof answer.text !== 'string' || answer.text.length === 0
+    || !Array.isArray(answer.references) || answer.references.length > MAX_REFERENCES
+    || answer.references.some((reference) => typeof reference !== 'string'
+      || reference.length > AI_LIMITS.maxSnapshotBytes || Buffer.byteLength(reference, 'utf8') > AI_LIMITS.maxSnapshotBytes)) {
     throw failure('invalid-answer', INVALID_ANSWER);
   }
   /** @type {{ text: string, references: string[], providerUsage?: ProviderUsage }} */
-  const result = { text: answer.text, references: /** @type {string[]} */ (answer.references) };
+  const result = aiAnswer({ text: answer.text, references: answer.references });
   const tokens = usageTokens(payload);
   if (tokens) result.providerUsage = tokens;
   return result;
@@ -361,15 +384,19 @@ function parseAnswer(payload) {
  * @returns {OpenAiTransport}
  */
 function createOpenAiTransport({ apiKey, model, fetchImpl, maxOutputTokens, maxResponseBytes }) {
-  if (typeof apiKey !== 'string' || apiKey.length === 0) {
+  if (typeof apiKey !== 'string' || apiKey.length === 0 || apiKey.length > AI_LIMITS.maxKeyChars || /[\u0000-\u001f]/.test(apiKey)) {
     throw failure('provider-not-configured', 'Invalid API key.');
   }
   if (typeof model !== 'string' || model.length === 0) {
     throw failure('provider-not-configured', 'Invalid model.');
   }
+  if (fetchImpl !== undefined && typeof fetchImpl !== 'function') {
+    throw failure('provider-not-configured', 'The OpenAI transport is not configured.');
+  }
   const outputTokens = positiveLimit(maxOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS, 'output token limit');
   const responseBytes = positiveLimit(maxResponseBytes, DEFAULT_MAX_RESPONSE_BYTES, 'response byte limit');
   const send = /** @type {FetchImpl} */ (typeof fetchImpl === 'function' ? fetchImpl : globalThis.fetch);
+  if (typeof send !== 'function') throw failure('provider-not-configured', 'The OpenAI transport is not configured.');
 
   /**
    * @param {ValidatedRequest} request
@@ -405,7 +432,18 @@ function createOpenAiTransport({ apiKey, model, fetchImpl, maxOutputTokens, maxR
         content: [{ type: 'input_text', text: 'Reply with the single word: ready' }],
       }],
     }, signal);
-    if (payload.status !== 'completed') {
+    const details = isRecord(payload.incomplete_details) ? payload.incomplete_details : null;
+    if (payload.status === 'incomplete' && details?.reason === 'max_output_tokens' && Array.isArray(payload.output)) {
+      return { model, ...(usageTokens(payload) ?? {}), outputLimited: true };
+    }
+    if (payload.status !== 'completed' || !Array.isArray(payload.output)) {
+      throw failure('invalid-answer', 'The provider returned an unexpected response.');
+    }
+    const parts = payload.output.filter(isRecord).filter((item) => item.type === 'message')
+      .flatMap((item) => Array.isArray(item.content) ? item.content.filter(isRecord) : []);
+    if (parts.some((part) => part.type === 'refusal')) throw failure('refused', 'The model declined to answer.');
+    const texts = parts.filter((part) => part.type === 'output_text' && typeof part.text === 'string');
+    if (texts.length !== 1 || !String(texts[0].text).trim()) {
       throw failure('invalid-answer', 'The provider returned an unexpected response.');
     }
     return { model, ...(usageTokens(payload) ?? {}) };

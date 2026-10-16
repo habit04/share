@@ -31,6 +31,8 @@ describe('aiErrorFromPayload', () => {
     expect(err).toBeInstanceOf(AiError);
     expect(err.kind).toBe('auth-failed');
     expect(err.message.length).toBe(500);
+    expect(aiErrorFromPayload({ kind: 'credential-rollback-failed', message: 'The key update could not be rolled back.' }).kind).toBe('credential-rollback-failed');
+    expect(aiErrorFromPayload({ kind: 'invalid-request', message: 'Connection settings changed; ask again.' }).kind).toBe('invalid-request');
   });
 
   it('fails closed to provider-failure for unknown kinds and junk payloads', () => {
@@ -76,10 +78,11 @@ describe('WindowAiConnection', () => {
     }));
     const abort = new AbortController();
     const pending = conn.bridge.ask(request, abort.signal);
+    const cancelled = expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
     abort.abort();
     expect(cancel).toHaveBeenCalledWith('ai-salt-1');
     release();
-    void pending.catch(() => {});
+    await cancelled;
   });
 
   it('refuses before invoking when the signal is already aborted', async () => {
@@ -104,5 +107,13 @@ describe('WindowAiConnection', () => {
     }));
     const answer = await conn.bridge.ask(request, new AbortController().signal);
     expect(answer.usage).toMatchObject({ inputBytes: 10, inputTokens: 42, outputTokens: 7 });
+  });
+
+  it('merges token usage without mutating the host response', async () => {
+    const frozen = Object.freeze({ text: 'a', references: [], usage: Object.freeze({ inputBytes: 10 }), providerUsage: Object.freeze({ inputTokens: 42 }) });
+    const conn = new WindowAiConnection(fakeRaw({ ask: async () => ({ ok: true, answer: frozen }) }));
+    const answer = await conn.bridge.ask(request, new AbortController().signal);
+    expect(answer.usage).toMatchObject({ inputBytes: 10, inputTokens: 42 });
+    expect(frozen.usage).toEqual({ inputBytes: 10 });
   });
 });

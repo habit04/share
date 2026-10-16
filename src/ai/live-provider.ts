@@ -14,11 +14,10 @@ import { AiError, type AiAnswer, type AiAskRequest, type AiProvider } from './ty
  */
 
 /**
- * The narrow host bridge a future preload registration would provide.
+ * The narrow registered host bridge.
  * The bridge must forward cancellation to the sender-scoped host, removing
  * queued jobs and aborting running work. An AbortSignal itself cannot cross
- * Electron IPC: a future preload must translate it to host.cancel(requestId).
- * This milestone registers neither channel.
+ * Electron IPC: WindowAiConnection translates it to host.cancel(requestId).
  */
 export interface AiHostBridge {
   ask(request: AiAskRequest, signal: AbortSignal): Promise<AiAnswer>;
@@ -62,8 +61,8 @@ export class LiveProvider implements AiProvider {
     if (request.question.length > AI_MAX_QUESTION_CHARS) {
       throw new AiError('invalid-question', 'The question exceeds the permitted length.');
     }
-    if (request.snapshot.serializedBytes > AI_MAX_SNAPSHOT_BYTES) {
-      throw new AiError('invalid-answer', 'The snapshot exceeds the permitted size.');
+    if (new TextEncoder().encode(JSON.stringify(request.snapshot)).length > AI_MAX_SNAPSHOT_BYTES) {
+      throw new AiError('invalid-context', 'The snapshot exceeds the permitted size.');
     }
     let onAbort: () => void = () => {};
     const aborted = new Promise<never>((_resolve, reject) => {
@@ -72,7 +71,8 @@ export class LiveProvider implements AiProvider {
     });
     try {
       if (signal.aborted) throw new AiError('cancelled', 'The request was cancelled.');
-      return await Promise.race([this.bridge.ask(request, signal), aborted]);
+      const pinned = { ...request, destination: { provider: this.config!.providerId, model: this.config!.model } };
+      return await Promise.race([this.bridge.ask(pinned, signal), aborted]);
     } finally {
       signal.removeEventListener('abort', onAbort);
     }

@@ -3,17 +3,20 @@ import { createRequire } from 'node:module';
 import { mkdtempSync, rmSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { EventEmitter } from 'node:events';
 
 const require = createRequire(import.meta.url);
+const { guardIpc } = require('../electron/ipc-guard.cjs');
 const { registerAiIpc } = require('../electron/main/ipc-ai.cjs') as {
   registerAiIpc: (ctx: unknown, overrides?: Record<string, unknown>) => { service: unknown };
 };
 
 const KEY = 'sk-ipc-test-secret-1234567890';
 
-function envelope(requestId: string): Record<string, unknown> {
+function envelope(requestId: string, provider = 'openai', model = provider === 'anthropic' ? 'claude-sonnet-5-5' : 'gpt-5'): Record<string, unknown> {
   return {
     requestId,
+    destination: { provider, model },
     question: 'how many objects?',
     snapshot: {
       kind: 'jcad.ai.selection-snapshot', version: 1,
@@ -39,7 +42,9 @@ function completedResponse(text: string): Response {
 }
 
 function probeResponse(): Response {
-  return new Response(JSON.stringify({ status: 'completed', output: [], usage: { input_tokens: 3, output_tokens: 1 } }), { status: 200 });
+  return new Response(JSON.stringify({ status: 'completed', output: [
+    { type: 'message', content: [{ type: 'output_text', text: 'ready' }] },
+  ], usage: { input_tokens: 3, output_tokens: 1 } }), { status: 200 });
 }
 
 function anthropicResponse(text: string): Response {
@@ -65,6 +70,8 @@ interface Harness {
   appHandlers: Map<string, Array<(...args: unknown[]) => void>>;
   fetchCalls: Array<{ url: string; init: Record<string, unknown> }>;
   dir: string;
+  contents: EventEmitter & { mainFrame: { processId: number; routingId: number; parent: null; url: string } };
+  invokeAs: (event: unknown, channel: string, ...args: unknown[]) => Promise<Record<string, unknown>>;
   invoke: (channel: string, ...args: unknown[]) => Promise<Record<string, unknown>>;
 }
 
@@ -86,10 +93,10 @@ function makeHarness(fetchImpl?: (url: string, init: Record<string, unknown>) =>
     if (url.includes('anthropic')) return body.includes('single word') ? anthropicProbeResponse() : anthropicResponse('Claude answer.');
     return body.includes('single word') ? probeResponse() : completedResponse('One line.');
   };
-  const ctx = {
-    ipcMain: { handle: (channel: string, fn: never) => handlers.set(channel, fn) },
-    mainWindow: null,
-  };
+  const contents = Object.assign(new EventEmitter(), { mainFrame: { processId: 1, routingId: 1, parent: null, url: 'jcad://app/index.html' } });
+  const win = { isDestroyed: () => false, webContents: contents };
+  const ipc = { handle: (channel: string, fn: never) => handlers.set(channel, fn) };
+  const ctx = { ipcMain: guardIpc(ipc, { getWindow: () => win, isAppUrl: (url: string) => url === 'jcad://app/index.html', log: { reject: vi.fn() } }), mainWindow: win };
   const app = {
     on: (event: string, fn: (...args: unknown[]) => void) => {
       appHandlers.set(event, [...(appHandlers.get(event) ?? []), fn]);
@@ -97,11 +104,12 @@ function makeHarness(fetchImpl?: (url: string, init: Record<string, unknown>) =>
   };
   registerAiIpc(ctx, { dir, safeStorage, fetchImpl: recordingFetch, app });
   return {
-    handlers, appHandlers, fetchCalls, dir,
+    handlers, appHandlers, fetchCalls, dir, contents,
+    invokeAs: async (event, channel, ...args) => handlers.get(channel)!(event, ...args),
     invoke: async (channel, ...args) => {
       const fn = handlers.get(channel);
       if (!fn) throw new Error(`channel not registered: ${channel}`);
-      return fn({}, ...args);
+      return fn({ sender: contents, senderFrame: contents.mainFrame }, ...args);
     },
   };
 }
@@ -129,7 +137,7 @@ describe('ai IPC registration (guarded context)', () => {
     expect(askedEarly).toMatchObject({ ok: false, error: { kind: 'live-disabled' } });
     await harness.invoke('ai-set-key', ANTHROPIC_KEY, 'session');
     await harness.invoke('ai-set-enabled', true);
-    const asked = await harness.invoke('ai-ask', envelope('ai-test-anth-1'));
+    const asked = await harness.invoke('ai-ask', envelope('ai-test-anth-1', 'anthropic'));
     expect(asked).toMatchObject({ ok: true, answer: { text: 'Claude answer.', providerUsage: { inputTokens: 11, outputTokens: 4 } } });
     expect(harness.fetchCalls).toHaveLength(1);
     const call = harness.fetchCalls[0]!;
@@ -222,6 +230,60 @@ describe('ai IPC registration (guarded context)', () => {
     expect(settled).toMatchObject({ ok: false, error: { kind: 'cancelled' } });
   });
 
+  it('owns cancellation before an ask has finished service admission', async () => {
+    await harness.invoke('ai-set-key', KEY, 'session');
+    await harness.invoke('ai-set-enabled', true);
+    const pending = harness.invoke('ai-ask', envelope('ai-early-cancel'));
+    expect(await harness.invoke('ai-cancel', 'ai-early-cancel')).toMatchObject({ ok: true, cancelled: true });
+    expect(await pending).toMatchObject({ ok: false, error: { kind: 'cancelled' } });
+    expect(harness.fetchCalls).toHaveLength(0);
+  });
+
+  it('rejects other windows, subframes and navigated pages through the real IPC guard', async () => {
+    const frame = harness.contents.mainFrame;
+    const callers = [
+      { sender: {}, senderFrame: frame },
+      { sender: harness.contents, senderFrame: { ...frame, routingId: 4, parent: frame } },
+      { sender: harness.contents, senderFrame: { ...frame, url: 'https://example.invalid/' } },
+    ];
+    for (const event of callers) {
+      await expect(harness.invokeAs(event, 'ai-set-key', KEY, 'session')).rejects.toThrow('Unauthorized IPC caller');
+      await expect(harness.invokeAs(event, 'ai-cancel', 'ai-foreign-cancel')).rejects.toThrow('Unauthorized IPC caller');
+    }
+    expect(harness.fetchCalls).toHaveLength(0);
+    expect(await harness.invoke('ai-get-state')).toMatchObject({ state: { keyPresent: false } });
+  });
+
+  it('does not let a replacement main frame cancel the previous frame request by id', async () => {
+    harness = makeHarness((_url, init) => new Promise<Response>((_resolve, reject) => {
+      (init.signal as AbortSignal).addEventListener('abort', () => reject(new Error('aborted')));
+    }));
+    await harness.invoke('ai-set-key', KEY, 'session');
+    await harness.invoke('ai-set-enabled', true);
+    const pending = harness.invoke('ai-ask', envelope('ai-frame-owned'));
+    await vi.waitFor(() => { expect(harness.fetchCalls).toHaveLength(1); });
+    harness.contents.mainFrame = { ...harness.contents.mainFrame, routingId: 2 };
+    expect(await harness.invoke('ai-cancel', 'ai-frame-owned')).toMatchObject({ ok: true, cancelled: false });
+    harness.contents.emit('did-start-navigation', {}, 'jcad://app/index.html', false, true);
+    expect(await pending).toMatchObject({ ok: false, error: { kind: 'cancelled' } });
+  });
+
+  it('cancels drawing requests and probes on main-frame reload without cancelling on subframe navigation', async () => {
+    harness = makeHarness((_url, init) => new Promise<Response>((_resolve, reject) => {
+      (init.signal as AbortSignal).addEventListener('abort', () => reject(new Error('aborted')));
+    }));
+    await harness.invoke('ai-set-key', KEY, 'session');
+    await harness.invoke('ai-set-enabled', true);
+    const request = harness.invoke('ai-ask', envelope('ai-navigation-owned'));
+    const probe = harness.invoke('ai-test-connection');
+    await vi.waitFor(() => { expect(harness.fetchCalls).toHaveLength(2); });
+    harness.contents.emit('did-start-navigation', {}, 'https://example.invalid/', false, false);
+    expect((harness.fetchCalls[0]!.init.signal as AbortSignal).aborted).toBe(false);
+    harness.contents.emit('did-start-navigation', {}, 'jcad://app/index.html', false, true);
+    expect(await request).toMatchObject({ ok: false, error: { kind: 'cancelled' } });
+    expect(await probe).toMatchObject({ ok: false, error: { kind: 'cancelled' } });
+  });
+
   it('cancels in-flight work when the app renderer is destroyed', async () => {
     // Dedicated registration whose context window owns fake contents.
     const dir = mkdtempSync(join(tmpdir(), 'jcad-ai-ipc-destroy-'));
@@ -249,7 +311,7 @@ describe('ai IPC registration (guarded context)', () => {
       });
       registerAiIpc(ctx, { dir, safeStorage, fetchImpl: hangingFetch, app });
       for (const fn of created) fn(null, contents);
-      const invoke = async (channel: string, ...args: unknown[]) => handlers.get(channel)!({}, ...args);
+      const invoke = async (channel: string, ...args: unknown[]) => handlers.get(channel)!({ sender: contents }, ...args);
       await invoke('ai-set-key', KEY, 'session');
       await invoke('ai-set-enabled', true);
       const pending = invoke('ai-ask', envelope('ai-test-destroy'));

@@ -1,5 +1,10 @@
 # AI assistant — milestone 1: “Ask about selected objects”
 
+This document records the original offline M1 behavior. The current tree adds
+opt-in OpenAI and Claude connections; see [milestone 2](AI-ASSISTANT-M2.md) and
+[its review evidence](AI-ASSISTANT-M2-REVIEW.md). The statements below about an
+unregistered host apply to M1 only.
+
 Status: **reviewed, corrected and integrated locally on `review/ai-m1`**
 (base `a68dba5b16ed4099d8decae32f936ebc023129fa`). Windows source validation
 passes; see [review evidence](AI-ASSISTANT-REVIEW.md). This milestone is strictly

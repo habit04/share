@@ -145,6 +145,8 @@ export interface AiAskRequest {
   readonly question: string;
   readonly snapshot: AiSnapshot;
   readonly binding: AiBinding;
+  /** Live requests pin the destination shown in the panel; the host rejects mismatches. */
+  readonly destination?: { readonly provider: string; readonly model: string };
 }
 
 let requestSalt: string | null = null;
@@ -204,7 +206,9 @@ export type AiErrorKind =
   | 'refused'
   | 'credential-unavailable'
   | 'credential-corrupt'
-  | 'credential-delete-failed';
+  | 'credential-delete-failed'
+  | 'credential-rollback-failed'
+  | 'invalid-request';
 
 export class AiError extends Error {
   readonly kind: AiErrorKind;

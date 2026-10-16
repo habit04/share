@@ -7,9 +7,10 @@
  * the OpenAI one: it turns a validated request (see aiRequest()) into a
  * single POST to the Anthropic Messages API and validates the answer back
  * into { text, references }. Only the question and the validated selection
- * snapshot go on the wire; request ids, snapshot byte counts and the
+ * snapshot go on the wire; outer request ids, byte counters and the
  * session/document binding are host/renderer bookkeeping and are never
- * sent. Drawing text inside the snapshot is untrusted data: the fixed
+ * sent. The canonical snapshot retains its serializedBytes accounting
+ * field. Drawing text inside the snapshot is untrusted data: the fixed
  * system instructions say so, and the model is given no tools and no way
  * to act on the drawing.
  *
@@ -23,7 +24,7 @@
  * key is used only in the x-api-key header.
  */
 
-const { AiHostError } = require('./ai-host.cjs');
+const { AI_LIMITS, AiHostError, aiAnswer } = require('./ai-host.cjs');
 
 const MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -31,7 +32,6 @@ const DEFAULT_MAX_OUTPUT_TOKENS = 2048;
 const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024;
 const PROBE_MAX_TOKENS = 16;
 const MAX_REFERENCES = 200;
-const MAX_REFERENCE_CHARS = 256;
 
 const INSTRUCTIONS = [
   'You answer questions about CAD drawing objects using only the JSON selection snapshot in the user message.',
@@ -46,7 +46,8 @@ const ANSWER_SCHEMA = Object.freeze({
   type: 'object',
   properties: {
     text: { type: 'string' },
-    references: { type: 'array', items: { type: 'string' }, maxItems: MAX_REFERENCES },
+    // Anthropic JSON outputs reject maxItems. Enforce count/size locally.
+    references: { type: 'array', items: { type: 'string' } },
   },
   required: ['text', 'references'],
   additionalProperties: false,
@@ -72,11 +73,11 @@ const INVALID_ANSWER = 'Anthropic returned an invalid answer.';
  * @property {number} status
  * @property {{ get: (name: string) => string | null }} headers
  * @property {{ getReader: () => { read: () => Promise<{ done: boolean, value?: Uint8Array }>,
- *              cancel: (reason?: unknown) => Promise<unknown> } } | null} body
+ *              cancel: (reason?: unknown) => Promise<unknown>, releaseLock?: () => void } } | null} body
  * @property {() => Promise<string>} text
  * @typedef {(url: string, init: object) => Promise<TransportResponse>} FetchImpl
  * @typedef {{ inputTokens?: number, outputTokens?: number }} ProviderUsage
- * @typedef {{ model: string, inputTokens?: number, outputTokens?: number }} ProbeResult
+ * @typedef {{ model: string, inputTokens?: number, outputTokens?: number, outputLimited?: boolean }} ProbeResult
  * @typedef {((request: ValidatedRequest, signal?: AbortSignal) => Promise<object>)
  *           & { probe: (signal?: AbortSignal) => Promise<ProbeResult> }} AnthropicTransport
  */
@@ -144,47 +145,58 @@ function retryAfterSeconds(response) {
  */
 async function readBody(response, maxBytes, signal) {
   const body = response.body;
-  if (body && typeof body.getReader === 'function') {
-    const reader = body.getReader();
-    /** @type {Uint8Array[]} */
-    const chunks = [];
-    let total = 0;
+  // text() buffers before returning, so it cannot enforce a read-time cap.
+  // Native fetch provides a reader for every non-empty response body.
+  if (!body || typeof body.getReader !== 'function') {
+    throw failure('invalid-answer', 'The provider returned an unreadable response body.');
+  }
+  const reader = (() => {
+    try { return body.getReader(); }
+    catch { throw failure('network', 'The provider response could not be read.'); }
+  })();
+  const cancelReader = () => {
+    try { void reader.cancel().catch(() => {}); } catch { /* already closed */ }
+  };
+  let onAbort = () => {};
+  const aborted = new Promise((_resolve, reject) => {
+    onAbort = () => {
+      cancelReader();
+      reject(failure('cancelled', 'The AI request was cancelled.'));
+    };
+  });
+  signal?.addEventListener('abort', onAbort, { once: true });
+  /** @type {Uint8Array[]} */
+  const chunks = [];
+  let total = 0;
+  try {
     for (;;) {
       if (signal?.aborted) {
-        try { await reader.cancel(); } catch { /* the stream is already gone */ }
+        cancelReader();
         throw failure('cancelled', 'The AI request was cancelled.');
       }
       /** @type {{ done: boolean, value?: Uint8Array }} */
       let step;
       try {
-        step = await reader.read();
+        step = /** @type {{ done: boolean, value?: Uint8Array }} */ (await Promise.race([reader.read(), aborted]));
       } catch {
         if (signal?.aborted) throw failure('cancelled', 'The AI request was cancelled.');
         throw failure('network', 'The connection to Anthropic was interrupted.');
       }
+      if (signal?.aborted) throw failure('cancelled', 'The AI request was cancelled.');
       if (step.done) break;
       const chunk = step.value ?? new Uint8Array(0);
       total += chunk.byteLength;
       if (total > maxBytes) {
-        try { await reader.cancel(); } catch { /* the stream is already gone */ }
+        cancelReader();
         throw failure('output-too-large', 'The Anthropic response exceeds the size limit.');
       }
       chunks.push(chunk);
     }
     return Buffer.concat(chunks, total).toString('utf8');
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+    try { reader.releaseLock?.(); } catch { /* a cancelled pending read can still own the lock */ }
   }
-  /** @type {string} */
-  let text;
-  try {
-    text = await response.text();
-  } catch {
-    if (signal?.aborted) throw failure('cancelled', 'The AI request was cancelled.');
-    throw failure('network', 'The connection to Anthropic was interrupted.');
-  }
-  if (Buffer.byteLength(text, 'utf8') > maxBytes) {
-    throw failure('output-too-large', 'The Anthropic response exceeds the size limit.');
-  }
-  return text;
 }
 
 /**
@@ -239,6 +251,10 @@ function httpFailure(response, bodyText) {
  */
 async function postMessages(send, apiKey, maxResponseBytes, body, signal) {
   if (signal?.aborted) throw failure('cancelled', 'The AI request was cancelled.');
+  const requestBody = JSON.stringify(body);
+  if (Buffer.byteLength(requestBody, 'utf8') > 256 * 1024) {
+    throw failure('invalid-request', 'The AI request exceeds the transport size limit.');
+  }
   /** @type {TransportResponse} */
   let response;
   try {
@@ -251,13 +267,17 @@ async function postMessages(send, apiKey, maxResponseBytes, body, signal) {
         'anthropic-version': ANTHROPIC_VERSION,
         'content-type': 'application/json',
       },
-      body: JSON.stringify(body),
+      body: requestBody,
     });
   } catch {
     if (signal?.aborted) throw failure('cancelled', 'The AI request was cancelled.');
     throw failure('network', 'Could not reach Anthropic. Check the network connection and try again.');
   }
   if (response.status >= 300 && response.status < 400) {
+    try {
+      const reader = response.body?.getReader();
+      if (reader) { void reader.cancel().catch(() => {}); reader.releaseLock?.(); }
+    } catch { /* refusal must not wait for or expose body cleanup failures */ }
     throw failure('provider-failure', 'Anthropic redirected the request; redirects are refused so credentials are never forwarded.');
   }
   const text = await readBody(response, maxResponseBytes, signal);
@@ -324,13 +344,15 @@ function parseAnswer(payload) {
   } catch {
     throw failure('invalid-answer', INVALID_ANSWER);
   }
-  if (!isRecord(answer) || typeof answer.text !== 'string' || answer.text.length === 0
+  if (!isRecord(answer) || Object.keys(answer).some((key) => key !== 'text' && key !== 'references')
+    || typeof answer.text !== 'string' || answer.text.length === 0
     || !Array.isArray(answer.references) || answer.references.length > MAX_REFERENCES
-    || answer.references.some((reference) => typeof reference !== 'string' || reference.length > MAX_REFERENCE_CHARS)) {
+    || answer.references.some((reference) => typeof reference !== 'string'
+      || reference.length > AI_LIMITS.maxSnapshotBytes || Buffer.byteLength(reference, 'utf8') > AI_LIMITS.maxSnapshotBytes)) {
     throw failure('invalid-answer', INVALID_ANSWER);
   }
   /** @type {{ text: string, references: string[], providerUsage?: ProviderUsage }} */
-  const result = { text: answer.text, references: /** @type {string[]} */ (answer.references) };
+  const result = aiAnswer({ text: answer.text, references: answer.references });
   const tokens = usageTokens(payload);
   if (tokens) result.providerUsage = tokens;
   return result;
@@ -346,7 +368,7 @@ function parseAnswer(payload) {
  * @returns {AnthropicTransport}
  */
 function createAnthropicTransport({ apiKey, model, fetchImpl, maxOutputTokens, maxResponseBytes }) {
-  if (typeof apiKey !== 'string' || apiKey.length === 0) {
+  if (typeof apiKey !== 'string' || apiKey.length === 0 || apiKey.length > AI_LIMITS.maxKeyChars || /[\u0000-\u001f]/.test(apiKey)) {
     throw failure('provider-not-configured', 'The Anthropic API key is not configured.');
   }
   if (typeof model !== 'string' || model.length === 0) {
@@ -391,8 +413,16 @@ function createAnthropicTransport({ apiKey, model, fetchImpl, maxOutputTokens, m
       max_tokens: PROBE_MAX_TOKENS,
       messages: [{ role: 'user', content: 'Reply with the single word: ready' }],
     }, signal);
-    if (payload.stop_reason !== 'end_turn') {
+    if (payload.type === 'message' && payload.stop_reason === 'max_tokens' && Array.isArray(payload.content)) {
+      return { model, ...(usageTokens(payload) ?? {}), outputLimited: true };
+    }
+    if (payload.stop_reason === 'refusal') throw failure('refused', 'The model declined to answer.');
+    if (payload.type !== 'message' || payload.stop_reason !== 'end_turn' || !Array.isArray(payload.content)) {
       throw failure('provider-failure', 'Anthropic did not complete the connection test.');
+    }
+    const texts = payload.content.filter(isRecord).filter((part) => part.type === 'text' && typeof part.text === 'string');
+    if (texts.length !== 1 || !String(texts[0].text).trim()) {
+      throw failure('invalid-answer', 'Anthropic returned an unexpected response.');
     }
     return {
       model: typeof payload.model === 'string' ? payload.model : model,

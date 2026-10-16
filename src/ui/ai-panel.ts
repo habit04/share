@@ -30,8 +30,8 @@ import { icon } from './icons';
 /** Display labels + model presets per provider (host ids stay authoritative). */
 const PROVIDER_LABELS: Readonly<Record<string, string>> = { openai: 'OpenAI', anthropic: 'Anthropic' };
 const MODEL_PRESETS: Readonly<Record<string, readonly string[]>> = {
-  openai: ['gpt-5', 'gpt-5.5', 'gpt-5.6', 'gpt-5.6-luna', 'gpt-4.1', 'gpt-4o-mini'],
-  anthropic: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-sonnet-4-5'],
+  openai: ['gpt-5', 'gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-luna'],
+  anthropic: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5', 'claude-fable-5-1'],
 };
 
 function providerLabel(provider: string): string {
@@ -54,6 +54,12 @@ function retentionNote(provider: string): string {
 
 function probeNote(provider: string): string {
   return `Test Connection makes a real ${providerLabel(provider)} API call with a fixed message and no drawing content. It may incur a small charge on your account.`;
+}
+
+function credentialNote(problem: string): string {
+  if (problem === 'credential-corrupt') return 'API key: saved key cannot be decrypted. Replace or forget it.';
+  if (problem === 'credential-rollback-failed') return 'API key: the previous key update could not be restored. Replace or forget it.';
+  return 'API key: unavailable. Replace or forget it before enabling Live AI.';
 }
 
 export class AiAssistantPanel {
@@ -90,6 +96,9 @@ export class AiAssistantPanel {
   } | null = null;
   /** Provider the settings controls were last rendered for (preset rebuilds). */
   private renderedProvider: string | null = null;
+  private connectionBusy = false;
+  private connectionEpoch = 0;
+  private disposed = false;
 
   constructor(editor: Editor, container: HTMLElement, provider?: AiProvider, connection?: WindowAiConnection | null) {
     this.el = container;
@@ -108,7 +117,7 @@ export class AiAssistantPanel {
     const strip = document.createElement('div');
     strip.className = 'palette-strip';
     strip.innerHTML = `<span class="palette-strip-btns">${icon('close')}${icon('pin')}</span><span class="palette-strip-title">AI Assistant</span>`;
-    strip.querySelector('svg')?.addEventListener('click', () => this.el.classList.add('hidden'));
+    strip.querySelector('svg')?.addEventListener('click', () => this.hide());
 
     const body = document.createElement('div');
     body.className = 'palette-body';
@@ -200,10 +209,13 @@ export class AiAssistantPanel {
       this.unsubscribes.push(editor.on(ev, () => this.refreshPreview()));
     }
     this.renderStatus(this.controller.status);
+    this.updateSettingsAvailability();
   }
 
   toggle(): void {
-    this.el.classList.toggle('hidden');
+    if (this.disposed) return;
+    if (this.isVisible) { this.hide(); return; }
+    this.el.classList.remove('hidden');
     this.refreshPreview();
     if (this.isVisible) {
       this.questionEl.focus();
@@ -216,6 +228,9 @@ export class AiAssistantPanel {
   }
 
   dispose(): void {
+    this.disposed = true;
+    this.connectionEpoch += 1;
+    this.clearKeyInput();
     for (const unsubscribe of this.unsubscribes) unsubscribe();
     this.unsubscribes.length = 0;
     this.controller.dispose();
@@ -223,7 +238,7 @@ export class AiAssistantPanel {
 
   /** Live only when the host says enabled with a key; the demo otherwise. */
   private routeProvider(): AiProvider {
-    if (this.connection && this.connState?.enabled && this.connState.keyPresent && this.liveProvider) {
+    if (this.connection && this.connState?.enabled && this.connState.keyPresent && !this.connState.credentialProblem && this.liveProvider) {
       return this.liveProvider;
     }
     return this.fixtureProvider;
@@ -234,7 +249,67 @@ export class AiAssistantPanel {
   }
 
   private async ask(): Promise<void> {
+    if (this.disposed || this.connectionBusy) return;
     await this.controller.ask(this.questionEl.value);
+  }
+
+  private clearKeyInput(): void {
+    if (this.settingsEls) this.settingsEls.keyInput.value = '';
+  }
+
+  private hide(): void {
+    this.clearKeyInput();
+    this.el.classList.add('hidden');
+  }
+
+  private clearAnswer(): void {
+    this.answerBinding = null;
+    this.answerEl.textContent = '';
+    this.refsEl.textContent = '';
+    this.usageEl.textContent = '';
+  }
+
+  /** One host operation at a time; disabled controls cannot queue a different destination. */
+  private startConnectionOperation(message: string, invalidate: boolean): number | null {
+    if (this.disposed || this.connectionBusy) return null;
+    this.connectionBusy = true;
+    const epoch = ++this.connectionEpoch;
+    if (invalidate) {
+      this.controller.cancel();
+      this.clearAnswer();
+      this.statusEl.textContent = '';
+    }
+    if (this.settingsEls) {
+      this.settingsEls.stateEl.textContent = message;
+      this.settingsEls.errorEl.textContent = '';
+    }
+    this.updateSettingsAvailability();
+    this.refreshPreview();
+    return epoch;
+  }
+
+  private currentConnectionOperation(epoch: number): boolean {
+    return !this.disposed && epoch === this.connectionEpoch;
+  }
+
+  private finishConnectionOperation(epoch: number): void {
+    if (!this.currentConnectionOperation(epoch)) return;
+    this.connectionBusy = false;
+    this.updateSettingsAvailability();
+    this.refreshPreview();
+  }
+
+  private updateSettingsAvailability(): void {
+    const els = this.settingsEls;
+    if (!els) return;
+    const ready = !this.connectionBusy && !this.disposed && this.connState !== null;
+    for (const input of [els.providerSelect, els.modelSelect, els.modelCustom, els.keyInput, els.saveKeyBtn, els.persistSession]) {
+      input.disabled = !ready;
+    }
+    els.persistEncrypted.disabled = !ready || !this.connState?.encryptionAvailable;
+    els.forgetKeyBtn.disabled = !ready || !(this.connState?.keyPresent || this.connState?.keyStored);
+    els.testBtn.disabled = !ready || !this.connState?.keyPresent || !!this.connState?.credentialProblem;
+    els.enableCheck.disabled = !ready || !this.connState?.keyPresent || !!this.connState?.credentialProblem;
   }
 
   // ------------------------------------------------------------ connection
@@ -246,7 +321,10 @@ export class AiAssistantPanel {
 
     const label = document.createElement('div');
     label.className = 'ai-section-label';
-    label.textContent = 'Connection settings (host-managed)';
+    label.textContent = 'Connection settings';
+    const accountNote = document.createElement('div');
+    accountNote.className = 'ai-note';
+    accountNote.textContent = 'Uses provider API keys and API billing; ChatGPT/Claude app sign-ins are not connected here.';
 
     const stateEl = document.createElement('div');
     stateEl.className = 'ai-conn-state';
@@ -261,7 +339,7 @@ export class AiAssistantPanel {
     for (const id of Object.keys(PROVIDER_LABELS)) {
       const option = document.createElement('option');
       option.value = id;
-      option.textContent = PROVIDER_LABELS[id]!;
+      option.textContent = id === 'openai' ? 'OpenAI (GPT models)' : 'Anthropic (Claude)';
       providerSelect.append(option);
     }
     providerSelect.addEventListener('change', () => { void this.switchProvider(providerSelect.value); });
@@ -337,6 +415,7 @@ export class AiAssistantPanel {
     forgetKeyBtn.className = 'ai-forget-key';
     forgetKeyBtn.textContent = 'Forget Key';
     forgetKeyBtn.addEventListener('click', () => {
+      this.clearKeyInput();
       void this.applySettings(() => conn.forgetKey());
     });
     const testBtn = document.createElement('button');
@@ -369,7 +448,7 @@ export class AiAssistantPanel {
     errorEl.className = 'ai-conn-error';
 
     section.append(
-      label, stateEl, providerRow, modelRow, keyLabel, keyInput, persistRow, keyButtons,
+      label, accountNote, stateEl, providerRow, modelRow, keyLabel, keyInput, persistRow, keyButtons,
       probeNoteEl, enableRow, retention, errorEl,
     );
     this.settingsEls = {
@@ -389,34 +468,54 @@ export class AiAssistantPanel {
    * automatic fallback: questions go only to the selected provider.
    */
   private async switchProvider(provider: string): Promise<void> {
+    this.clearKeyInput();
     if (!this.connection || provider === this.connState?.provider) return;
-    this.controller.cancel();
-    this.answerBinding = null;
-    this.answerEl.textContent = '';
-    this.refsEl.textContent = '';
-    this.usageEl.textContent = '';
-    this.statusEl.textContent = '';
     await this.applySettings(() => this.connection!.setProvider(provider));
   }
 
   private async refreshConnection(): Promise<void> {
     if (!this.connection) return;
+    const epoch = this.startConnectionOperation('Reading connection state…', false);
+    if (epoch === null) return;
     try {
-      this.setConnState(await this.connection.state());
+      const state = await this.connection.state();
+      if (this.currentConnectionOperation(epoch)) this.setConnState(state);
     } catch (cause) {
-      this.setConnError(cause);
+      if (this.currentConnectionOperation(epoch)) {
+        this.connState = null;
+        this.liveProvider = null;
+        this.clearAnswer();
+        if (this.settingsEls) this.settingsEls.stateEl.textContent = 'Connection unavailable — offline demo only.';
+        this.setConnError(cause);
+      }
+    } finally {
+      this.finishConnectionOperation(epoch);
     }
   }
 
   /** Run a settings mutation, then render the authoritative host state. */
   private async applySettings(action: () => Promise<AiConnectionState>): Promise<void> {
     if (!this.settingsEls) return;
-    this.settingsEls.errorEl.textContent = '';
+    const epoch = this.startConnectionOperation('Updating connection settings…', true);
+    if (epoch === null) return;
     try {
-      this.setConnState(await action());
+      const state = await action();
+      if (this.currentConnectionOperation(epoch)) this.setConnState(state);
     } catch (cause) {
+      if (!this.currentConnectionOperation(epoch)) return;
       this.setConnError(cause);
-      await this.refreshConnection();
+      try {
+        const state = await this.connection!.state();
+        if (this.currentConnectionOperation(epoch)) this.setConnState(state);
+      } catch {
+        if (this.currentConnectionOperation(epoch)) {
+          this.connState = null;
+          this.liveProvider = null;
+          if (this.settingsEls) this.settingsEls.stateEl.textContent = 'Connection unavailable — offline demo only.';
+        }
+      }
+    } finally {
+      this.finishConnectionOperation(epoch);
     }
   }
 
@@ -438,16 +537,23 @@ export class AiAssistantPanel {
   private async testConnection(): Promise<void> {
     const els = this.settingsEls;
     if (!els || !this.connection) return;
-    els.errorEl.textContent = '';
-    els.stateEl.textContent = 'Testing the connection…';
+    const epoch = this.startConnectionOperation('Testing the connection…', false);
+    if (epoch === null) return;
+    const provider = this.connState?.provider ?? 'openai';
     try {
       const probe = await this.connection.testConnection();
-      els.stateEl.textContent = `Connection OK — ${providerLabel(this.connState?.provider ?? 'openai')} · ${probe.model}`
+      if (!this.currentConnectionOperation(epoch)) return;
+      els.stateEl.textContent = `Connection OK — ${providerLabel(provider)} · ${probe.model}`
         + (probe.outputTokens !== undefined ? ` (probe used ${probe.outputTokens} output tokens)` : '')
+        + (probe.outputLimited ? ' — the probe reached its output limit; the connection was verified' : '')
         + '.';
     } catch (cause) {
-      this.setConnError(cause);
-      await this.refreshConnection();
+      if (this.currentConnectionOperation(epoch)) {
+        this.setConnError(cause);
+        if (this.connState) this.setConnState(this.connState);
+      }
+    } finally {
+      this.finishConnectionOperation(epoch);
     }
   }
 
@@ -459,6 +565,13 @@ export class AiAssistantPanel {
   }
 
   private setConnState(state: AiConnectionState): void {
+    const previous = this.connState;
+    if (previous && ['provider', 'model', 'enabled', 'keyPresent', 'keyStored', 'credentialProblem', 'keySource', 'keyPersistence'].some(
+      (key) => previous[key as keyof AiConnectionState] !== state[key as keyof AiConnectionState],
+    )) {
+      this.controller.cancel();
+      this.clearAnswer();
+    }
     this.connState = state;
     this.liveProvider = this.connection
       ? new LiveProvider(this.connection.bridge, { providerId: state.provider, model: state.model })
@@ -487,18 +600,21 @@ export class AiAssistantPanel {
         els.probeNoteEl.textContent = probeNote(state.provider);
         els.retentionEl.textContent = retentionNote(state.provider);
       }
-      const keyText = state.keyPresent
-        ? `API key: saved (${state.keySource === 'stored' ? 'encrypted on this device' : 'this session only'})`
-        : 'API key: not saved';
+      const keyText = state.credentialProblem
+        ? credentialNote(state.credentialProblem)
+        : state.keyPresent
+          ? `API key: saved (${state.keySource === 'stored' ? 'encrypted on this device' : 'this session only'})`
+          : 'API key: not saved';
       els.stateEl.textContent = `Provider: ${label} · Model: ${state.model} · ${keyText}`
         + (state.configProblem ? ` · Settings problem: ${state.configProblem} (defaults in use)` : '');
-      els.saveKeyBtn.textContent = state.keyPresent ? 'Replace Key' : 'Save Key';
-      els.forgetKeyBtn.disabled = !state.keyPresent;
+      els.saveKeyBtn.textContent = state.keyPresent || state.keyStored ? 'Replace Key' : 'Save Key';
+      els.forgetKeyBtn.disabled = !(state.keyPresent || state.keyStored);
       els.testBtn.disabled = !state.keyPresent;
       els.enableCheck.checked = state.enabled;
       els.enableCheck.disabled = !state.keyPresent;
       els.persistEncrypted.disabled = !state.encryptionAvailable;
-      if (!state.encryptionAvailable && els.persistEncrypted.checked) els.persistSession.checked = true;
+      els.persistEncrypted.checked = state.encryptionAvailable && state.keyPersistence === 'encrypted';
+      els.persistSession.checked = !els.persistEncrypted.checked;
       if ((MODEL_PRESETS[state.provider] ?? []).includes(state.model)) {
         els.modelSelect.value = state.model;
         els.modelCustom.classList.add('hidden');
@@ -511,6 +627,7 @@ export class AiAssistantPanel {
     this.providerLabelEl.textContent = this.liveRoute
       ? `Live AI: ${providerLabel(state.provider)} · ${state.model}`
       : OFFLINE_LABEL;
+    this.updateSettingsAvailability();
     this.refreshPreview();
   }
 
@@ -539,7 +656,12 @@ export class AiAssistantPanel {
       this.statusEl.textContent = cause instanceof Error ? cause.message : 'The drawing context could not be read.';
       return;
     }
-    this.askBtn.disabled = this.controller.status.state === 'asking';
+    this.askBtn.disabled = this.disposed || this.connectionBusy || this.controller.status.state === 'asking';
+    this.providerLabelEl.textContent = this.connectionBusy
+      ? 'Connection settings are updating — questions paused.'
+      : this.liveRoute
+        ? `Live AI: ${providerLabel(this.connState!.provider)} · ${this.connState!.model}`
+        : OFFLINE_LABEL;
     const live = this.liveRoute;
     this.sentLabelEl.textContent = live
       ? `What will be sent to ${providerLabel(this.connState!.provider)} (model: ${this.connState!.model}) — exactly`

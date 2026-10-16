@@ -7,6 +7,10 @@ remains the default until the user deliberately enables live AI. Drafting,
 electrical assistance, MCP, billing services and autonomous tools are out
 of scope.
 
+Reviewed locally on `review/ai-m2`; the review receipt, corrections and
+Windows validation are recorded in [the M2 review](AI-ASSISTANT-M2-REVIEW.md).
+The M1 review remains a historical record of the offline milestone.
+
 ## Providers: OpenAI and Anthropic (Justin's update, 2026-10-16)
 
 Both providers are supported, each with a native adapter behind the
@@ -73,6 +77,8 @@ outputs, `store: false`, data controls); its adapter is
   instructions), `messages` (question + snapshot JSON only), and
   `output_config.format` = JSON Schema `{ text, references }`
   (Anthropic structured outputs). No tools, no sampling overrides.
+  Anthropic's remote schema omits unsupported array-size constraints;
+  the host enforces the 200-reference limit on the returned answer.
 - Response handling: same 256 KiB read cap before parsing. Content
   blocks are read by type — current Claude models may emit `thinking`
   blocks before the text block, and only `text` blocks count: exactly
@@ -104,6 +110,10 @@ host will use, read back from host state.
   corrupt or out-of-shape config falls back to defaults and is reported
   in state as `configProblem` — never silently trusted. A v1 config
   migrates on load (its values become the OpenAI entry).
+- Settings writes and credential changes execute in invocation order.
+  Questions and probes are refused while a mutation is pending. Live
+  requests also carry the provider/model displayed by the panel; the
+  host rejects a mismatched destination before creating a transport.
 - Model is a bounded string (`[A-Za-z0-9._-]{1,128}`), chosen from presets
   or typed; the host validates it in config, in state responses and again
   when building a transport.
@@ -138,6 +148,15 @@ host will use, read back from host state.
   that recreate the store over the same fake filesystem.
 - Replace Key and Forget Key cancel all queued/running AI work first, so
   no in-flight request can outlive the credential it was sent with.
+- Ciphertext is usable after restart only when the saved persistence mode is
+  encrypted. Failed mode changes cannot silently activate an orphaned key file.
+- State distinguishes usable credentials (`keyPresent`) from retained
+  ciphertext (`keyStored`). A corrupt or unavailable key shows a credential
+  problem and allows Forget; it cannot enable live requests or probes.
+- Existing JCad plugins run with application authority. This feature does
+  not create an isolation boundary from a malicious plugin or another
+  process running as the same OS user. OS encryption protects stored
+  ciphertext under the operating system's credential-storage rules.
 
 ## IPC and cancellation
 
@@ -161,13 +180,14 @@ selected provider (the host is authoritative for which that is).
   destroys the sender scope (below). The host rejects duplicate ids in
   its scope (`invalid-request`).
 - Renderer cancellation (`AbortSignal` in the panel/controller) is
-  translated by the preload bridge into `ai-cancel` with the request id;
+  translated by the renderer bridge client into `ai-cancel` with the request id;
   the host cancels queued jobs (removed before any transport call) and
   aborts running ones. M1's host deadlines, enqueue expiry, concurrency
   (2 running / 8 pending) and physical-slot retention are unchanged.
 - The host service cancels all work when: the renderer is destroyed or
   its process goes away (`destroyed` / `render-process-gone` on the app
-  webContents — a new hook, registered in `electron/main/ipc-ai.cjs`),
+  webContents), or its main frame starts a new document navigation/reload
+  (`did-start-navigation`, registered in `electron/main/ipc-ai.cjs`),
   the app quits (`will-quit` dispose, like the other hosts), the config
   changes (provider/model/enabled — switching provider included), or the
   key is replaced/forgotten.
@@ -196,6 +216,13 @@ selected provider (the host is authoritative for which that is).
 - Test Connection sends a small canned probe with **no drawing content**
   (fixed text, tiny output cap) and its label/dialog text discloses that
   it is a real API call that may incur a small charge on the account.
+- Probes retain small output caps (64 tokens for OpenAI, 16 for Claude).
+  A native response reporting token-limit exhaustion verifies connection
+  access and shows an output-limit note; it exposes no partial output and
+  never triggers a retry. Ask answers still reject incomplete output.
+- Questions pause during connection operations. Every settings change
+  cancels and clears the preceding answer. Unsubmitted password input is
+  cleared on a provider switch, panel close, Forget and disposal.
 
 ## Testing (no real credentials, no paid calls)
 

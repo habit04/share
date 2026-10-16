@@ -29,7 +29,7 @@ type ValidatedRequest = {
 };
 type Answer = { text: string; references: string[]; providerUsage?: { inputTokens?: number; outputTokens?: number } };
 type TransportFn = ((request: ValidatedRequest, signal?: AbortSignal) => Promise<Answer>) & {
-  probe: (signal?: AbortSignal) => Promise<{ model: string; inputTokens?: number; outputTokens?: number }>;
+  probe: (signal?: AbortSignal) => Promise<{ model: string; inputTokens?: number; outputTokens?: number; outputLimited?: boolean }>;
 };
 type FetchImpl = (url: string, init: FakeInit) => Promise<FakeResponse>;
 
@@ -96,7 +96,9 @@ function headersOf(entries: Record<string, string> = {}): FakeResponse['headers'
 
 function jsonResponse(status: number, payload: unknown, headers: Record<string, string> = {}): FakeResponse {
   const text = typeof payload === 'string' ? payload : JSON.stringify(payload);
-  return { status, headers: headersOf(headers), body: null, text: async () => text };
+  const { response } = streamingResponse(status, [new TextEncoder().encode(text)]);
+  response.headers = headersOf(headers);
+  return response;
 }
 
 function streamingResponse(status: number, chunks: Uint8Array[]): { response: FakeResponse; state: { cancelled: boolean } } {
@@ -159,7 +161,7 @@ describe('ai-anthropic-transport ask request shape', () => {
       messages: { role: string; content: string }[];
       output_config: { format: { type: string; schema: {
         required: string[]; additionalProperties: boolean;
-        properties: { references: { maxItems: number } };
+        properties: { references: { type: string } };
       } } };
     };
     expect(body.model).toBe(MODEL);
@@ -170,7 +172,8 @@ describe('ai-anthropic-transport ask request shape', () => {
     expect(body.output_config.format.type).toBe('json_schema');
     expect(body.output_config.format.schema.required).toEqual(['text', 'references']);
     expect(body.output_config.format.schema.additionalProperties).toBe(false);
-    expect(body.output_config.format.schema.properties.references.maxItems).toBe(200);
+    // Native Anthropic schemas reject maxItems; count remains enforced locally.
+    expect(body.output_config.format.schema.properties.references).not.toHaveProperty('maxItems');
     // No tools, no sampling controls, no store-style fields, no host metadata.
     expect(body).not.toHaveProperty('tools');
     expect(body).not.toHaveProperty('temperature');
@@ -301,9 +304,14 @@ describe('ai-anthropic-transport ask responses', () => {
     expect(state.cancelled).toBe(true);
   });
 
-  it('refuses an oversized body from the text() fallback too', async () => {
-    const transport = makeTransport(async () => jsonResponse(200, 'x'.repeat(200)), { maxResponseBytes: 64 });
-    await expectKind(transport(validatedRequest()), 'output-too-large');
+  it('rejects a missing stream without invoking an unbounded text() fallback', async () => {
+    let textCalled = false;
+    const response = jsonResponse(200, 'x'.repeat(200));
+    response.body = null;
+    response.text = async () => { textCalled = true; return 'x'.repeat(200); };
+    const transport = makeTransport(async () => response, { maxResponseBytes: 64 });
+    await expectKind(transport(validatedRequest()), 'invalid-answer');
+    expect(textCalled).toBe(false);
   });
 
   it('maps a truncated JSON body to invalid-answer', async () => {
@@ -320,7 +328,7 @@ describe('ai-anthropic-transport ask responses', () => {
     const badRefs = messagePayload('a', []);
     badRefs.content = [{ type: 'text', text: JSON.stringify({ text: 'a', references: [42] }) }];
     await expectKind(makeTransport(async () => jsonResponse(200, badRefs))(validatedRequest()), 'invalid-answer');
-    const longRef = messagePayload('a', ['x'.repeat(257)]);
+    const longRef = messagePayload('a', ['x'.repeat(64 * 1024 + 1)]);
     await expectKind(makeTransport(async () => jsonResponse(200, longRef))(validatedRequest()), 'invalid-answer');
     const manyRefs = messagePayload('a', Array.from({ length: 201 }, (_v, i) => `e-${i}`));
     await expectKind(makeTransport(async () => jsonResponse(200, manyRefs))(validatedRequest()), 'invalid-answer');
@@ -378,9 +386,12 @@ describe('ai-anthropic-transport HTTP error mapping', () => {
   });
 
   it('refuses redirects instead of forwarding credentials elsewhere', async () => {
-    const transport = makeTransport(async () => jsonResponse(302, '', { Location: 'https://example.invalid/steal' }));
+    const { response, state } = streamingResponse(302, []);
+    response.headers = headersOf({ Location: 'https://example.invalid/steal' });
+    const transport = makeTransport(async () => response);
     const error = await expectKind(transport(validatedRequest()), 'provider-failure');
     expect(error.message).toContain('redirect');
+    expect(state.cancelled).toBe(true);
   });
 });
 
@@ -459,13 +470,78 @@ describe('ai-anthropic-transport probe', () => {
     await expectKind(transport.probe(), 'auth-failed');
   });
 
-  it('rejects a probe response that does not end the turn', async () => {
+  it('verifies a model-accepted probe at its existing token cap without exposing partial text', async () => {
     const transport = makeTransport(async () => jsonResponse(200, {
       type: 'message', model: MODEL, stop_reason: 'max_tokens', content: [],
       usage: { input_tokens: 9, output_tokens: 16 },
     }));
-    const error = await expectKind(transport.probe(), 'provider-failure');
-    expect(error.message).toContain('did not complete');
+    const result = await transport.probe();
+    expect(result).toEqual({ model: MODEL, inputTokens: 9, outputTokens: 16, outputLimited: true });
+    expect(result).not.toHaveProperty('text');
+  });
+
+  it('still rejects refused, malformed and unrecognized stopped probes', async () => {
+    for (const payload of [
+      { type: 'message', stop_reason: 'pause_turn', content: [] },
+      { type: 'error', stop_reason: 'max_tokens', content: [] },
+    ]) await expectKind(makeTransport(async () => jsonResponse(200, payload)).probe(), 'provider-failure');
+    await expectKind(makeTransport(async () => jsonResponse(200, {
+      type: 'message', stop_reason: 'end_turn', content: [],
+    })).probe(), 'invalid-answer');
+    await expectKind(makeTransport(async () => jsonResponse(200, {
+      type: 'message', stop_reason: 'refusal', content: [{ type: 'text', text: MARKER }],
+    })).probe(), 'refused');
+  });
+});
+
+describe('ai-anthropic-transport bounded lifecycle regressions', () => {
+  it('accepts intact references beyond 256 characters and enforces final answer size locally', async () => {
+    const id = 'object-'.repeat(80);
+    const answer = await makeTransport(async () => jsonResponse(200, messagePayload('ok', [id])))(validatedRequest());
+    expect(answer.references).toEqual([id]);
+    await expectKind(makeTransport(async () => jsonResponse(200, messagePayload('x'.repeat(8001))))(validatedRequest()), 'output-too-large');
+  });
+
+  it('bounds the actual HTTP request before fetching', async () => {
+    const { calls, fetchImpl } = recordingFetch(async () => jsonResponse(200, messagePayload('unexpected')));
+    const request = validatedRequest({ snapshot: { text: 'x'.repeat(300000) } });
+    await expectKind(makeTransport(fetchImpl)(request), 'invalid-request');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('cancels an outstanding read even when the reader ignores the fetch signal', async () => {
+    let startRead!: () => void;
+    const reading = new Promise<void>((resolve) => { startRead = resolve; });
+    let cancelled = false;
+    const response: FakeResponse = {
+      status: 200, headers: headersOf(),
+      body: { getReader: () => ({
+        read: () => { startRead(); return new Promise(() => {}); },
+        cancel: async () => { cancelled = true; },
+      }) },
+      text: async () => '',
+    };
+    const abort = new AbortController();
+    const pending = makeTransport(async () => response)(validatedRequest(), abort.signal);
+    const assertion = expectKind(pending, 'cancelled');
+    await reading;
+    abort.abort();
+    await assertion;
+    expect(cancelled).toBe(true);
+  });
+
+  it('does not wait for a hung reader cancellation after exceeding the cap', async () => {
+    let cancelled = false;
+    const response: FakeResponse = {
+      status: 200, headers: headersOf(),
+      body: { getReader: () => ({
+        read: async () => ({ done: false, value: new Uint8Array(65) }),
+        cancel: () => { cancelled = true; return new Promise(() => {}); },
+      }) },
+      text: async () => '',
+    };
+    await expectKind(makeTransport(async () => response, { maxResponseBytes: 64 })(validatedRequest()), 'output-too-large');
+    expect(cancelled).toBe(true);
   });
 });
 

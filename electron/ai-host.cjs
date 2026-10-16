@@ -224,6 +224,12 @@ function aiRequest(value) {
     throw new AiHostError('invalid-request', 'Invalid request id.');
   }
   const question = boundedString(value.question, AI_LIMITS.maxQuestionChars, 'question');
+  let destination;
+  if (value.destination !== undefined) {
+    if (!isPlainObject(value.destination) || !AI_PROVIDERS.includes(value.destination.provider)
+      || !validateAiModel(value.destination.model)) throw new AiHostError('invalid-request', 'Invalid AI destination.');
+    destination = { provider: value.destination.provider, model: value.destination.model };
+  }
 
   const snapshot = copySnapshot(value.snapshot);
   let snapshotBytes = 0;
@@ -250,6 +256,7 @@ function aiRequest(value) {
   return {
     requestId: value.requestId,
     question,
+    ...(destination ? { destination } : {}),
     snapshot,
     snapshotBytes,
     binding: {
@@ -362,7 +369,7 @@ function createAiHost({ transport, timeoutMs = 30000, maxConcurrent = 2, maxPend
     } catch (cause) {
       finish(job, cause instanceof AiHostError
         ? cause
-        : new AiHostError('provider-failure', cause instanceof Error ? cause.message : 'The provider failed.'));
+        : new AiHostError('provider-failure', 'The AI provider request failed.'));
     }
     // The concurrency slot is released only when the underlying transport
     // settles, including after cancellation. Ignoring abort cannot multiply
@@ -424,6 +431,7 @@ function createAiHost({ transport, timeoutMs = 30000, maxConcurrent = 2, maxPend
 }
 
 const LINUX_KEYRING_BACKENDS = Object.freeze(['gnome_libsecret', 'kwallet', 'kwallet5', 'kwallet6']);
+const AI_MAX_CIPHERTEXT_BYTES = 8192;
 
 /** The one API-key shape rule, shared by the key store and the service. */
 function validateApiKey(key) {
@@ -487,6 +495,13 @@ function createAiKeyStore({ safeStorage, filePath, fsImpl = fs, platform = proce
       throw new AiHostError('host-unavailable', 'OS-backed encryption is unavailable; refusing to store or read the API key.');
     }
   }
+  function readCiphertext() {
+    const ciphertext = read(filePath);
+    if (!Buffer.isBuffer(ciphertext) || ciphertext.length > AI_MAX_CIPHERTEXT_BYTES) {
+      throw new AiHostError('credential-corrupt', 'The stored API key exceeds the permitted size. Forget the key and save it again.');
+    }
+    return ciphertext;
+  }
   return {
     /** Whether OS-backed encryption can be used at all; never throws. */
     encryptionAvailable() {
@@ -509,9 +524,9 @@ function createAiKeyStore({ safeStorage, filePath, fsImpl = fs, platform = proce
     readKey() {
       if (!exists(filePath)) return null;
       requireOsEncryption();
-      const ciphertext = read(filePath);
+      const ciphertext = readCiphertext();
       try {
-        return safeStorage.decryptString(ciphertext);
+        return validateApiKey(safeStorage.decryptString(ciphertext));
       } catch {
         throw new AiHostError('credential-corrupt', 'The stored API key could not be decrypted. It may be corrupt or from another machine/user. Forget the key and save it again.');
       }
@@ -522,6 +537,29 @@ function createAiKeyStore({ safeStorage, filePath, fsImpl = fs, platform = proce
         await remove(filePath);
       } catch {
         throw new AiHostError('credential-delete-failed', 'The stored API key could not be deleted.');
+      }
+    },
+    /** Change ciphertext and configuration as one recoverable host operation. */
+    async changeKey(key, commit) {
+      const previous = exists(filePath) ? readCiphertext() : null;
+      if (key !== null) {
+        validateApiKey(key);
+        requireOsEncryption();
+      }
+      try {
+        if (key === null) { if (previous !== null) await remove(filePath); }
+        else await writeAtomic(filePath, safeStorage.encryptString(key));
+      } catch {
+        throw new AiHostError(key === null ? 'credential-delete-failed' : 'credential-unavailable', 'The API key could not be updated securely.');
+      }
+      try { await commit(); } catch (cause) {
+        try {
+          if (previous !== null) await writeAtomic(filePath, previous);
+          else if (exists(filePath)) await remove(filePath);
+        } catch {
+          throw new AiHostError('credential-rollback-failed', 'The API key update could not be restored. Live requests are blocked until the key is saved or forgotten.');
+        }
+        throw cause;
       }
     },
   };
@@ -570,10 +608,12 @@ function cloneAiConfig(config) {
  * non-object entry yields the provider defaults.
  * @param {AiProviderId} provider
  * @param {any} value
- * @returns {AiProviderEntry}
+ * @returns {AiProviderEntry | null}
  */
 function parseProviderEntry(provider, value) {
-  const source = isPlainObject(value) ? value : {};
+  if (!isPlainObject(value) || !validateAiModel(value.model) || typeof value.enabled !== 'boolean'
+    || !AI_KEY_PERSISTENCE_MODES.includes(value.keyPersistence)) return null;
+  const source = value;
   return {
     model: validateAiModel(source.model)
       ? /** @type {string} */ (source.model)
@@ -596,25 +636,30 @@ function parseProviderEntry(provider, value) {
 function parseAiConfig(value) {
   if (!isPlainObject(value)) return null;
   if (value.version === 2) {
-    if (!isPlainObject(value.providers)) return null;
+    if (!isPlainObject(value.providers) || !AI_PROVIDERS.includes(value.provider)) return null;
+    const openai = parseProviderEntry('openai', value.providers.openai);
+    const anthropic = parseProviderEntry('anthropic', value.providers.anthropic);
+    if (!openai || !anthropic) return null;
     return {
       version: 2,
       provider: AI_PROVIDERS.includes(/** @type {AiProviderId} */ (value.provider))
         ? /** @type {AiProviderId} */ (value.provider)
         : 'openai',
       providers: {
-        openai: parseProviderEntry('openai', value.providers.openai),
-        anthropic: parseProviderEntry('anthropic', value.providers.anthropic),
+        openai,
+        anthropic,
       },
     };
   }
   if (value.version === 1) {
+    const openai = parseProviderEntry('openai', value);
+    if (value.provider !== 'openai' || !openai) return null;
     return {
       version: 2,
       provider: 'openai',
       providers: {
-        openai: parseProviderEntry('openai', value),
-        anthropic: parseProviderEntry('anthropic', null),
+        openai,
+        anthropic: defaultAiConfig().providers.anthropic,
       },
     };
   }
@@ -642,7 +687,7 @@ function createAiConfigStore({ filePath, writeFileAtomic, readFile, fileExists }
   }
   /** @type {AiConfig | null} */
   let cache = null;
-  return {
+  const store = {
     /** Load (or reload) from disk; caches and reports any problem. */
     async load() {
       let problem = null;
@@ -720,6 +765,16 @@ function createAiConfigStore({ filePath, writeFileAtomic, readFile, fileExists }
       return cloneAiConfig(next);
     },
   };
+  // Atomic writes alone do not prevent overlapping patches from overwriting
+  // one another. Merge each patch only after earlier writes have settled.
+  let operationTail = Promise.resolve();
+  /** @template T @param {() => Promise<T> | T} work @returns {Promise<T>} */
+  const serialize = (work) => {
+    const result = operationTail.then(work);
+    operationTail = result.then(() => {}, () => {});
+    return result;
+  };
+  return { ...store, load: () => serialize(() => store.load()), update: (patch) => serialize(() => store.update(patch)) };
 }
 
 const AI_PROBE_TIMEOUT_MS = 15000;
@@ -734,7 +789,7 @@ const AI_PROBE_TIMEOUT_MS = 15000;
 /** Whether a value quacks like a key store (service construction check). */
 function isKeyStoreShape(value) {
   return !!value && typeof value.readKey === 'function' && typeof value.saveKey === 'function'
-    && typeof value.clearKey === 'function' && typeof value.hasKey === 'function';
+    && typeof value.clearKey === 'function' && typeof value.hasKey === 'function' && typeof value.changeKey === 'function';
 }
 
 /**
@@ -763,284 +818,230 @@ function createAiService({ host: hostOptions, configStore, keyStores, transportF
     || typeof transportFactory !== 'function') {
     throw new AiHostError('host-unavailable', 'The AI service needs a config store, per-provider key stores and a transport factory.');
   }
-  /** @type {Record<AiProviderId, string | null>} Session-only keys: memory only, never persisted. */
+  /** @type {Record<AiProviderId, string | null>} */
   const sessionKeys = { openai: null, anthropic: null };
   /** @type {Record<AiProviderId, { transport: AiTransportFn, model: string, key: string } | null>} */
   const transportCaches = { openai: null, anthropic: null };
-  /** @type {AbortController | null} */
-  let probeController = null;
+  const blockedCredentials = { openai: false, anthropic: false };
+  const probes = new Set();
+  let probeTransports = 0;
+  let disposed = false;
+  let loaded = false;
+  let pendingMutations = 0;
+  let workGeneration = 0;
+  /** @type {Promise<void>} */
+  let mutationTail = Promise.resolve();
   /** @type {string | null} */
   let configProblem = null;
   /** @type {Promise<void> | null} */
   let loadPromise = null;
 
+  function requireOpen() {
+    if (disposed) throw new AiHostError('disposed', 'The AI host has been disposed.');
+  }
   function ensureLoaded() {
     if (!loadPromise) {
-      loadPromise = Promise.resolve()
-        .then(() => configStore.load())
-        .then(({ problem }) => { configProblem = problem; });
+      loadPromise = Promise.resolve().then(() => configStore.load()).then(({ problem }) => {
+        configProblem = problem;
+        loaded = true;
+      });
     }
     return loadPromise;
   }
-
   /** @returns {AiProviderId} */
-  function selectedProvider() {
-    return configStore.get().provider;
-  }
-
+  function selectedProvider() { return configStore.get().provider; }
   /** @param {AiProviderId} provider */
-  function entryFor(provider) {
-    return configStore.get().providers[provider];
-  }
-
-  /** The effective key for a provider, or null. Corrupt stored keys throw. */
-  function resolveKey(provider) {
-    const session = sessionKeys[provider];
-    if (session !== null) return session;
-    const store = keyStores[provider];
-    if (store.hasKey()) return store.readKey();
-    return null;
-  }
-
+  function entryFor(provider) { return configStore.get().providers[provider]; }
   function requireKey(provider) {
-    const key = resolveKey(provider);
-    if (key === null) {
-      throw new AiHostError('provider-not-configured', 'No API key is saved for Live AI. Save a key in the AI panel connection settings.');
+    if (blockedCredentials[provider]) throw new AiHostError('credential-unavailable', 'Save or forget the API key before making another live request.');
+    const stored = keyStores[provider].hasKey();
+    if (sessionKeys[provider] === null && stored && entryFor(provider).keyPersistence !== 'encrypted') {
+      throw new AiHostError('credential-unavailable', 'The stored API key is not enabled by the saved persistence setting. Forget it or save it again.');
     }
-    return key;
+    const key = sessionKeys[provider] ?? (stored && entryFor(provider).keyPersistence === 'encrypted' ? keyStores[provider].readKey() : null);
+    if (key === null) throw new AiHostError('provider-not-configured', 'No API key is saved for Live AI. Save a key in the AI panel connection settings.');
+    return validateApiKey(key);
   }
-
-  /** Build (or reuse) a provider's transport for this model + key. */
   function transportFor(provider, model, key) {
     const cached = transportCaches[provider];
-    if (cached && cached.model === model && cached.key === key) {
-      return cached.transport;
-    }
+    if (cached && cached.model === model && cached.key === key) return cached.transport;
     const transport = transportFactory({ provider, model, apiKey: key });
-    if (typeof transport !== 'function') {
-      throw new AiHostError('provider-not-configured', 'The selected provider is not available.');
-    }
+    if (typeof transport !== 'function') throw new AiHostError('provider-not-configured', 'The selected provider is not available.');
     transportCaches[provider] = { transport, model, key };
     return transport;
   }
-
+  function requireStable(generation) {
+    requireOpen();
+    if (pendingMutations !== 0 || generation !== workGeneration) {
+      throw new AiHostError('cancelled', 'The AI configuration or renderer changed. Review the connection settings and ask again.');
+    }
+  }
+  function requireDestination(value) {
+    const provider = selectedProvider(), model = entryFor(provider).model;
+    if (!isPlainObject(value) || !isPlainObject(value.destination)
+      || value.destination.provider !== provider || value.destination.model !== model) {
+      throw new AiHostError('cancelled', 'The selected AI provider or model changed. Review the connection settings and ask again.');
+    }
+    return { provider, model };
+  }
   const innerHost = createAiHost({
     ...(isPlainObject(hostOptions) ? hostOptions : {}),
     transport: async (request, signal) => {
-      const provider = selectedProvider();
-      const key = requireKey(provider);
-      return transportFor(provider, entryFor(provider).model, key)(request, signal);
+      requireStable(workGeneration);
+      const { provider, model } = requireDestination(request);
+      if (!entryFor(provider).enabled || signal.aborted) throw new AiHostError('cancelled', 'The AI request was cancelled.');
+      return transportFor(provider, model, requireKey(provider))(request, signal);
     },
   });
-
   function cancelAll() {
-    if (probeController) probeController.abort();
+    workGeneration += 1; // Also revokes asks/probes still awaiting initial configuration load.
+    for (const controller of probes) controller.abort();
     return innerHost.cancelAll();
   }
-
-  // Configuration generation (brief §4): every mutation of provider,
-  // model, credential or enablement bumps this counter. Mutations also
-  // cancel outstanding work, so the post-ask check in ask() is defence
-  // in depth — an answer produced under a stale generation can never be
-  // delivered, even if a future mutation path forgets to cancel.
-  let configGeneration = 0;
-  function noteConfigChange() { configGeneration += 1; }
-
-  /**
-   * Set (or replace) the selected provider's API key. All outstanding
-   * work is cancelled first. On any persistence failure the previously
-   * effective key remains in effect.
-   * @param {string} key
-   * @param {string} persistence  'session' | 'encrypted'
-   */
-  async function setKey(key, persistence) {
+  function mutate(work) {
+    requireOpen();
+    if (pendingMutations >= 16) return Promise.reject(new AiHostError('provider-failure', 'Too many pending AI settings changes.'));
+    pendingMutations += 1;
     cancelAll();
-    noteConfigChange();
-    validateApiKey(key);
-    if (!AI_KEY_PERSISTENCE_MODES.includes(persistence)) {
-      throw new AiHostError('invalid-request', 'Invalid AI key persistence mode.');
-    }
-    await ensureLoaded();
-    const provider = selectedProvider();
-    const store = keyStores[provider];
-    if (persistence === 'encrypted') {
-      // Atomic save: a failure leaves the previously stored key readable
-      // and the session key untouched.
-      await store.saveKey(key);
-      sessionKeys[provider] = null;
-      transportCaches[provider] = null;
-      await configStore.update({ keyPersistence: 'encrypted' });
-    } else {
-      const hadStored = store.hasKey();
-      let previousStoredKey = null;
-      if (hadStored) {
-        try { previousStoredKey = store.readKey(); } catch { previousStoredKey = null; }
-        await store.clearKey();
-      }
-      try {
-        await configStore.update({ keyPersistence: 'session' });
-      } catch (error) {
-        // Best effort: put the previous stored key back so the failure
-        // leaves the previous key in effect.
-        if (previousStoredKey !== null) {
-          try { await store.saveKey(previousStoredKey); } catch { /* the original error wins */ }
-        }
-        throw error;
-      }
-      sessionKeys[provider] = key;
-      transportCaches[provider] = null;
-    }
-  }
-
-  return {
-    /** Connection state for the selected provider; never contains key material. */
-    async getState() {
+    const result = mutationTail.then(async () => {
+      requireOpen();
       await ensureLoaded();
-      const provider = selectedProvider();
-      const entry = entryFor(provider);
-      const store = keyStores[provider];
-      const session = sessionKeys[provider];
-      const stored = store.hasKey();
+      requireOpen();
+      await work();
+      configProblem = null;
+    });
+    const settled = result.finally(() => { pendingMutations -= 1; });
+    mutationTail = settled.then(() => {}, () => {});
+    return settled;
+  }
+  async function changeKey(provider, key, persistence) {
+    try {
+      if (persistence === 'encrypted' && entryFor(provider).keyPersistence === 'encrypted') {
+        // Same-mode replacement is one atomic ciphertext write. A second,
+        // unrelated config write cannot turn its success into a partial failure.
+        await keyStores[provider].saveKey(key);
+      } else {
+        await keyStores[provider].changeKey(persistence === 'encrypted' ? key : null,
+          () => configStore.update({ keyPersistence: persistence }));
+      }
+    } catch (cause) {
+      if (cause instanceof AiHostError && cause.kind === 'credential-rollback-failed') blockedCredentials[provider] = true;
+      throw cause;
+    }
+    sessionKeys[provider] = persistence === 'session' ? key : null;
+    transportCaches[provider] = null;
+    blockedCredentials[provider] = false;
+  }
+  return {
+    async getState() {
+      requireOpen();
+      await ensureLoaded();
+      await mutationTail;
+      requireOpen();
+      const provider = selectedProvider(), entry = entryFor(provider), store = keyStores[provider];
+      const session = sessionKeys[provider], stored = store.hasKey();
+      let keyPresent = false, credentialProblem = null;
+      if (session !== null || stored) {
+        try { requireKey(provider); keyPresent = true; }
+        catch (cause) { credentialProblem = cause instanceof AiHostError ? cause.kind : 'credential-unavailable'; }
+      }
       return {
-        provider,
-        providers: [...AI_PROVIDERS],
-        model: entry.model,
-        enabled: entry.enabled,
-        keyPersistence: entry.keyPersistence,
-        keyPresent: session !== null || stored,
-        keySource: session !== null ? 'session' : stored ? 'stored' : null,
-        encryptionAvailable: store.encryptionAvailable(),
-        configProblem,
+        provider, providers: [...AI_PROVIDERS], model: entry.model, enabled: entry.enabled,
+        keyPersistence: entry.keyPersistence, keyPresent, keyStored: stored, credentialProblem,
+        keySource: keyPresent ? session !== null ? 'session' : 'stored' : null,
+        encryptionAvailable: store.encryptionAvailable(), configProblem,
       };
     },
-
-    /**
-     * Switch the selected provider. Switching cancels all outstanding
-     * work first — there is no automatic fallback, and no answer from
-     * the previous provider may outlive the switch. Selecting the
-     * already-selected provider is a no-op (no cancel, no write).
-     * @param {string} provider
-     */
     async setProvider(provider) {
-      if (!AI_PROVIDERS.includes(/** @type {AiProviderId} */ (provider))) {
-        throw new AiHostError('invalid-request', 'Invalid AI provider.');
-      }
-      await ensureLoaded();
-      if (provider === selectedProvider()) return;
-      cancelAll();
-      noteConfigChange();
-      await configStore.update({ provider: /** @type {AiProviderId} */ (provider) });
+      if (!AI_PROVIDERS.includes(provider)) throw new AiHostError('invalid-request', 'Invalid AI provider.');
+      requireOpen();
+      if (loaded && pendingMutations === 0 && provider === selectedProvider()) return;
+      return mutate(async () => { if (provider !== selectedProvider()) await configStore.update({ provider }); });
     },
-
-    /** Set (or replace) the API key; see the inner setKey for semantics. */
-    setKey,
-
-    /** Replace the key, keeping the selected provider's persistence mode. */
+    async setKey(key, persistence) {
+      validateApiKey(key);
+      if (!AI_KEY_PERSISTENCE_MODES.includes(persistence)) throw new AiHostError('invalid-request', 'Invalid AI key persistence mode.');
+      return mutate(() => changeKey(selectedProvider(), key, persistence));
+    },
     async replaceKey(key) {
-      await ensureLoaded();
-      return setKey(key, entryFor(selectedProvider()).keyPersistence);
+      validateApiKey(key);
+      return mutate(() => {
+        const provider = selectedProvider();
+        return changeKey(provider, key, entryFor(provider).keyPersistence);
+      });
     },
-
-    /** Forget the selected provider's key: session copy and stored ciphertext. */
     async forgetKey() {
-      cancelAll();
-      noteConfigChange();
-      const provider = selectedProvider();
-      sessionKeys[provider] = null;
-      transportCaches[provider] = null;
-      const store = keyStores[provider];
-      if (store.hasKey()) await store.clearKey();
+      return mutate(async () => {
+        const provider = selectedProvider(), store = keyStores[provider];
+        // Keep the effective session key if ciphertext deletion fails.
+        if (store.hasKey()) await store.clearKey();
+        sessionKeys[provider] = null;
+        transportCaches[provider] = null;
+        blockedCredentials[provider] = false;
+      });
     },
-
     async setModel(model) {
       if (!validateAiModel(model)) throw new AiHostError('invalid-request', 'Invalid AI model.');
-      cancelAll();
-      noteConfigChange();
-      await ensureLoaded();
-      await configStore.update({ model });
+      return mutate(async () => { await configStore.update({ model }); });
     },
-
     async setEnabled(enabled) {
       if (typeof enabled !== 'boolean') throw new AiHostError('invalid-request', 'Invalid AI enabled flag.');
-      await ensureLoaded();
-      if (!enabled) {
-        cancelAll();
-        noteConfigChange();
-        await configStore.update({ enabled: false });
-        return;
-      }
-      noteConfigChange();
-      const provider = selectedProvider();
-      if (sessionKeys[provider] === null && !keyStores[provider].hasKey()) {
-        throw new AiHostError('provider-not-configured', 'Save an API key before enabling Live AI.');
-      }
-      await configStore.update({ enabled: true });
+      return mutate(async () => {
+        if (enabled) requireKey(selectedProvider());
+        await configStore.update({ enabled });
+      });
     },
-
-    /**
-     * Ask a question through the request host, to the selected provider
-     * only. Refuses before any transport is built while that provider
-     * is disabled or has no key saved.
-     */
     async ask(value, signal) {
+      const generation = workGeneration;
+      requireStable(generation);
       await ensureLoaded();
+      requireStable(generation);
       const provider = selectedProvider();
-      if (!entryFor(provider).enabled) {
-        throw new AiHostError('live-disabled', 'Live AI is not enabled. Enable it in the AI panel connection settings.');
-      }
+      if (!entryFor(provider).enabled) throw new AiHostError('live-disabled', 'Live AI is not enabled. Enable it in the AI panel connection settings.');
       requireKey(provider);
-      const generation = configGeneration;
+      requireDestination(value);
       const answer = await innerHost.ask(value, signal);
-      if (generation !== configGeneration) {
-        throw new AiHostError('cancelled', 'The AI configuration changed while the question was running.');
-      }
+      requireStable(generation);
       return answer;
     },
-
-    cancel(requestId) {
-      return innerHost.cancel(requestId);
-    },
-
-    /** Cancel every outstanding ask and any in-flight connection test. */
+    cancel: (requestId) => innerHost.cancel(requestId),
     cancelAll,
-
-    usage() {
-      return innerHost.usage();
-    },
-
-    /**
-     * A small canned probe through the selected provider's transport
-     * (no drawing content, no host queue). Bounded by a 15 s deadline
-     * and aborted by cancelAll()/dispose() like any other work.
-     */
-    async testConnection() {
+    usage: () => innerHost.usage(),
+    async testConnection(signal) {
+      const generation = workGeneration;
+      requireStable(generation);
       await ensureLoaded();
-      const provider = selectedProvider();
-      const key = requireKey(provider);
-      const model = entryFor(provider).model;
-      const transport = transportFor(provider, model, key);
-      const probe = transport.probe;
-      if (typeof probe !== 'function') {
-        throw new AiHostError('provider-not-configured', 'The selected provider cannot run a connection test.');
-      }
+      requireStable(generation);
+      if (signal?.aborted) throw new AiHostError('cancelled', 'The connection test was cancelled.');
+      if (probeTransports !== 0) throw new AiHostError('provider-failure', 'An AI connection test is already running.');
+      const provider = selectedProvider(), model = entryFor(provider).model;
+      const transport = transportFor(provider, model, requireKey(provider)), probe = transport.probe;
+      if (typeof probe !== 'function') throw new AiHostError('provider-not-configured', 'The selected provider cannot run a connection test.');
       const controller = new AbortController();
-      probeController = controller;
+      const onAbort = () => controller.abort();
+      signal?.addEventListener('abort', onAbort, { once: true });
+      probes.add(controller);
+      probeTransports += 1;
       let timedOut = false;
       const timer = setTimeout(() => { timedOut = true; controller.abort(); }, AI_PROBE_TIMEOUT_MS);
       const abortRejection = new Promise((_resolve, reject) => {
-        controller.signal.addEventListener('abort', () => {
-          reject(new AiHostError(timedOut ? 'timeout' : 'cancelled', timedOut
-            ? `The connection test did not answer within ${AI_PROBE_TIMEOUT_MS} ms.`
-            : 'The connection test was cancelled.'));
-        }, { once: true });
+        controller.signal.addEventListener('abort', () => reject(new AiHostError(timedOut ? 'timeout' : 'cancelled',
+          timedOut ? 'The connection test timed out.' : 'The connection test was cancelled.')), { once: true });
       });
+      if (signal?.aborted) controller.abort();
+      const invocation = Promise.resolve().then(() => {
+        if (controller.signal.aborted) throw new AiHostError('cancelled', 'The connection test was cancelled.');
+        return probe(controller.signal);
+      });
+      // A provider ignoring abort still occupies its slot until the real transport settles.
+      invocation.then(() => { probeTransports -= 1; }, () => { probeTransports -= 1; });
       try {
-        const raw = await Promise.race([
-          Promise.resolve().then(() => probe(controller.signal)),
-          abortRejection,
-        ]);
+        const raw = await Promise.race([invocation, abortRejection]);
+        requireStable(generation);
+        /** @type {{ model: string, outputLimited?: boolean, inputTokens?: number, outputTokens?: number }} */
         const result = { model };
         const usage = isPlainObject(raw) ? raw : {};
+        if (usage.outputLimited === true) result.outputLimited = true;
         const counts = isPlainObject(usage.usage) ? usage.usage : usage;
         for (const field of ['inputTokens', 'outputTokens']) {
           const tokens = counts[field];
@@ -1049,19 +1050,23 @@ function createAiService({ host: hostOptions, configStore, keyStores, transportF
         return result;
       } catch (cause) {
         if (cause instanceof AiHostError) throw cause;
-        throw new AiHostError('provider-failure', cause instanceof Error ? cause.message : 'The connection test failed.');
+        throw new AiHostError('provider-failure', 'The AI connection test failed.');
       } finally {
         clearTimeout(timer);
-        if (probeController === controller) probeController = null;
+        signal?.removeEventListener('abort', onAbort);
+        probes.delete(controller);
       }
     },
-
     async dispose() {
+      disposed = true;
       cancelAll();
+      await mutationTail;
       await innerHost.dispose();
+      for (const provider of AI_PROVIDERS) { sessionKeys[provider] = null; transportCaches[provider] = null; }
     },
   };
 }
+
 
 module.exports = {
   AI_LIMITS, AiHostError, aiRequest, aiAnswer, createAiHost, createAiKeyStore,

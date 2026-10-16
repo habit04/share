@@ -198,6 +198,7 @@ describe('AiAssistantPanel connection settings (milestone 2)', () => {
   interface FakeState {
     provider: string; model: string; enabled: boolean; keyPersistence: string;
     keyPresent: boolean; keySource: string | null; encryptionAvailable: boolean; configProblem: string | null;
+    keyStored?: boolean; credentialProblem?: string | null;
   }
   function fakeConnection() {
     const slices: Record<string, FakeState> = {
@@ -224,7 +225,7 @@ describe('AiAssistantPanel connection settings (milestone 2)', () => {
         s.keyPersistence = persistence;
         return { ok: true, state: snapshot() };
       },
-      forgetKey: async () => { const s = slices[current]!; s.keyPresent = false; s.keySource = null; return { ok: true, state: snapshot() }; },
+      forgetKey: async () => { const s = slices[current]!; s.keyPresent = false; s.keyStored = false; s.credentialProblem = null; s.keySource = null; return { ok: true, state: snapshot() }; },
       setEnabled: async (enabled: boolean) => { slices[current]!.enabled = enabled; return { ok: true, state: snapshot() }; },
       testConnection: async () => ({ ok: true, probe: { model: slices[current]!.model, inputTokens: 3, outputTokens: 1 } }),
       ask: async () => ({
@@ -253,6 +254,8 @@ describe('AiAssistantPanel connection settings (milestone 2)', () => {
   type SettingsInternals = PanelInternals & {
     settingsEls: {
       providerSelect: FakeElement & { value: string };
+      modelSelect: FakeElement; modelCustom: FakeElement;
+      persistSession: FakeElement & { checked: boolean }; persistEncrypted: FakeElement & { checked: boolean };
       keyInput: FakeElement & { value: string }; saveKeyBtn: FakeElement; forgetKeyBtn: FakeElement & { disabled: boolean };
       testBtn: FakeElement & { disabled: boolean }; enableCheck: FakeElement & { checked: boolean; disabled: boolean };
       stateEl: FakeElement; errorEl: FakeElement;
@@ -262,12 +265,12 @@ describe('AiAssistantPanel connection settings (milestone 2)', () => {
 
   async function makeConnected() {
     const { WindowAiConnection } = await import('../src/ai/host-bridge');
-    const { raw, state } = fakeConnection();
+    const { raw, state, slices } = fakeConnection();
     const editor = fakeEditor();
     const container = new FakeElement('div');
     const panel = new AiAssistantPanel(editor as never, container as never, undefined,
       new WindowAiConnection(raw as never));
-    return { editor, panel, parts: panel as unknown as SettingsInternals, state, container };
+    return { editor, panel, parts: panel as unknown as SettingsInternals, state, container, raw, slices };
   }
 
   it('shows host state, gates enabling on a key, and clears the password field on submit', async () => {
@@ -286,6 +289,26 @@ describe('AiAssistantPanel connection settings (milestone 2)', () => {
     expect(parts.settingsEls!.stateEl.textContent).toContain('this session only');
     expect(parts.settingsEls!.enableCheck.disabled).toBe(false);
     expect(parts.settingsEls!.saveKeyBtn.textContent).toBe('Replace Key');
+    panel.dispose();
+  });
+
+  it('offers Forget for unusable stored ciphertext while keeping live requests and probes disabled', async () => {
+    const { panel, parts, slices } = await makeConnected();
+    Object.assign(slices.openai!, { keyStored: true, keyPresent: false, credentialProblem: 'credential-corrupt', enabled: true });
+    panel.toggle();
+    await flush();
+    const els = parts.settingsEls!;
+    expect(els.forgetKeyBtn.disabled).toBe(false);
+    expect(els.testBtn.disabled).toBe(true);
+    expect(els.enableCheck.disabled).toBe(true);
+    expect(els.stateEl.textContent).toContain('saved key cannot be decrypted');
+    expect(els.stateEl.textContent).not.toContain('API key: saved (');
+    expect(els.saveKeyBtn.textContent).toBe('Replace Key');
+    expect(parts.providerLabelEl.textContent).toContain('Offline demo');
+    els.forgetKeyBtn.fire('click');
+    await flush();
+    expect(els.forgetKeyBtn.disabled).toBe(true);
+    expect(els.stateEl.textContent).toContain('API key: not saved');
     panel.dispose();
   });
 
@@ -389,5 +412,110 @@ describe('AiAssistantPanel connection settings (milestone 2)', () => {
     expect(state.keyPresent).toBe(false);
     expect(parts.providerLabelEl.textContent).toContain('Offline demo');
     panel.dispose();
+  });
+
+  it('clears unsaved credentials on provider changes, hide and disposal and restores the provider persistence choice', async () => {
+    const { panel, parts } = await makeConnected();
+    panel.toggle();
+    await flush();
+    const els = parts.settingsEls!;
+    els.keyInput.value = 'unsaved-openai-key';
+    els.persistEncrypted.checked = true;
+    els.providerSelect.value = 'anthropic';
+    els.providerSelect.fire('change');
+    expect(els.keyInput.value).toBe('');
+    await flush();
+    expect(els.persistEncrypted.checked).toBe(false);
+    expect(els.persistSession.checked).toBe(true);
+    els.keyInput.value = 'unsaved-anthropic-key';
+    panel.toggle();
+    expect(els.keyInput.value).toBe('');
+    panel.toggle();
+    await flush();
+    els.keyInput.value = 'unsaved-key';
+    panel.dispose();
+    expect(els.keyInput.value).toBe('');
+  });
+
+  it('pauses questions while a provider mutation is pending and never queues a second settings mutation', async () => {
+    const { panel, parts, raw } = await makeConnected();
+    panel.toggle();
+    await flush();
+    const changeProvider = raw.setProvider;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    raw.setProvider = async (provider) => {
+      const result = await changeProvider(provider);
+      await gate;
+      return result;
+    };
+    raw.ask = vi.fn(raw.ask);
+    raw.setModel = vi.fn(raw.setModel);
+    const els = parts.settingsEls!;
+    els.providerSelect.value = 'anthropic';
+    els.providerSelect.fire('change');
+    expect(parts.askBtn.disabled).toBe(true);
+    expect(els.providerSelect.disabled).toBe(true);
+    parts.questionEl.value = 'find PB101';
+    parts.questionEl.fire('keydown', { key: 'Enter' });
+    els.modelSelect.value = 'different-model';
+    els.modelSelect.fire('change');
+    expect(raw.ask).not.toHaveBeenCalled();
+    expect(raw.setModel).not.toHaveBeenCalled();
+    await flush();
+    expect(parts.answerEl.textContent).toBe('');
+    release();
+    await flush();
+    expect(parts.askBtn.disabled).toBe(false);
+    expect(els.stateEl.textContent).toContain('Provider: Anthropic');
+    panel.dispose();
+  });
+
+  it('cancels a pending answer and clears a displayed answer when model or enabled state changes', async () => {
+    const { editor, panel, parts, raw } = await makeConnected();
+    panel.toggle();
+    await flush();
+    const els = parts.settingsEls!;
+    els.keyInput.value = 'sk-test-only';
+    els.saveKeyBtn.fire('click');
+    await flush();
+    els.enableCheck.checked = true;
+    els.enableCheck.fire('change');
+    await flush();
+    parts.questionEl.value = 'find PB101';
+    parts.askBtn.fire('click');
+    await flush();
+    expect(parts.answerEl.textContent).toContain('Live answer');
+    els.modelSelect.value = 'gpt-5.5';
+    els.modelSelect.fire('change');
+    expect(parts.answerEl.textContent).toBe('');
+    await flush();
+    const answer = await raw.ask();
+    let release: () => void = () => {};
+    raw.ask = () => new Promise((resolve) => { release = () => resolve(answer); });
+    raw.cancel = vi.fn(raw.cancel);
+    parts.askBtn.fire('click');
+    els.enableCheck.checked = false;
+    els.enableCheck.fire('change');
+    expect(raw.cancel).toHaveBeenCalledOnce();
+    release();
+    await flush();
+    expect(parts.answerEl.textContent).toBe('');
+    expect(parts.providerLabelEl.textContent).toContain('Offline demo');
+    expect(editor.runCommand).not.toHaveBeenCalled();
+    panel.dispose();
+  });
+
+  it('ignores a late connection read after disposal', async () => {
+    const { panel, parts, raw } = await makeConnected();
+    const result = await raw.getState();
+    let release: () => void = () => {};
+    raw.getState = () => new Promise((resolve) => { release = () => resolve(result); });
+    panel.toggle();
+    const message = parts.settingsEls!.stateEl.textContent;
+    panel.dispose();
+    release();
+    await flush();
+    expect(parts.settingsEls!.stateEl.textContent).toBe(message);
   });
 });

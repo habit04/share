@@ -1153,14 +1153,21 @@ canvas#drawing {
   border: 1px solid var(--border);
 }
 /* AI Assistant palette (src/ui/ai-panel.ts) */
+.ai-assistant .hidden {
+  display: none;
+}
 .ai-body {
   flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 8px;
   display: flex;
   flex-direction: column;
   gap: 8px;
   color: var(--text);
+}
+.ai-body > * {
+  flex-shrink: 0;
 }
 .ai-section-label {
   font-weight: 600;

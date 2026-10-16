@@ -43,6 +43,7 @@ describe('LiveProvider (inactive adapter)', () => {
     const answer = await provider.ask(request, new AbortController().signal);
     expect(answer.text).toBe('answer');
     expect(bridge.ask).toHaveBeenCalledTimes(1);
+    expect(bridge.ask).toHaveBeenCalledWith({ ...request, destination: { provider: 'agreed-provider', model: 'agreed-model' } }, expect.any(AbortSignal));
   });
 
   it('honours an already-aborted signal before delegating', async () => {
@@ -64,7 +65,7 @@ describe('LiveProvider (inactive adapter)', () => {
     const cancelled = expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
     abort.abort();
     await cancelled;
-    expect(bridge.ask).toHaveBeenCalledWith(request, abort.signal);
+    expect(bridge.ask).toHaveBeenCalledWith({ ...request, destination: { provider: 'p', model: 'm' } }, abort.signal);
   });
 
   it('settles cancellation even if the bridge ignores the signal', async () => {
@@ -75,5 +76,16 @@ describe('LiveProvider (inactive adapter)', () => {
     const cancelled = expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
     abort.abort();
     await cancelled;
+  });
+
+  it('pins its own destination and refuses oversized payloads even when the byte count is forged', async () => {
+    const bridge: AiHostBridge = { ask: vi.fn(async () => ({ text: 'x', references: [] })) };
+    const provider = new LiveProvider(bridge, { providerId: 'openai', model: 'gpt-5' });
+    await provider.ask({ ...request, destination: { provider: 'anthropic', model: 'other-model' } }, new AbortController().signal);
+    expect(bridge.ask).toHaveBeenCalledWith(expect.objectContaining({ destination: { provider: 'openai', model: 'gpt-5' } }), expect.any(AbortSignal));
+    vi.mocked(bridge.ask).mockClear();
+    const oversized = { ...request, snapshot: { ...request.snapshot, objects: [{ id: 'x', type: 'text', layer: '0', geometry: {}, text: 'x'.repeat(70_000) }], serializedBytes: 1 } };
+    await expect(provider.ask(oversized, new AbortController().signal)).rejects.toMatchObject({ kind: 'invalid-context' });
+    expect(bridge.ask).not.toHaveBeenCalled();
   });
 });
