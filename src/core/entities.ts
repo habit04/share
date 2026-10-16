@@ -166,6 +166,19 @@ export interface InsertEntity extends EntityBase {
   readonly hiddenAttributes?: readonly string[];
   /** Native per-insert attribute placement, stored in the block's local coordinate system. */
   readonly attributePlacements?: Readonly<Record<string, TextPlacement & AttributeAppearance & { readonly style?: string }>>;
+  /**
+   * Priority 30: this instance's dynamic parameter values (sparse; absent values take the
+   * definition's defaults). Lives on the insert itself so the expansion cache, keyed by
+   * insert object identity, can never serve stale evaluated geometry. Absent = the block
+   * is static for this instance (or has no dynamic definition).
+   */
+  readonly dynamic?: import('./parametric/instance').DynamicInstanceState;
+  /**
+   * Priority 30: raw JCAD_DYNAMIC instance payload that could not be modeled (malformed
+   * or a newer model version). Retained verbatim for re-export; the instance displays at
+   * the definition's authored (default) state.
+   */
+  readonly dynamicRetained?: string;
 }
 
 export interface EllipseEntity extends EntityBase {
@@ -344,6 +357,19 @@ export interface BlockDef {
   readonly entities: readonly Entity[];
   readonly attributes: readonly AttributeDef[];
   readonly description?: string;
+  /**
+   * Priority 30: JCad's authored dynamic-block definition for this block (parameters +
+   * actions, see core/parametric/definitions.ts). The definition is immutable and shared
+   * by every instance; per-instance values live on the insert (`InsertEntity.dynamic`).
+   * This is JCad's normalized model, not a decoded native evaluation graph.
+   */
+  readonly dynamic?: import('./parametric/definitions').DynamicBlockDefinition;
+  /**
+   * Priority 30: raw JCAD_DYNAMIC definition payload that could not be modeled (malformed
+   * or a newer model version). Retained verbatim for re-export, reported as simplified,
+   * never half-parsed; the block displays and edits as a static block.
+   */
+  readonly dynamicRetained?: string;
   /** External reference (BLOCK flag 4; 8 = overlay): the referenced file's path (DXF group 1). */
   readonly xref?: { readonly path: string; readonly overlay?: boolean };
 }
