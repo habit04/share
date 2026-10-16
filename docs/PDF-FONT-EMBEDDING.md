@@ -42,14 +42,14 @@ composite components and the capital-A glyph the native height gate requires. Ev
 glyph keeps its advances, cmap entry and header box, but is marked as having unknown bounds,
 so any run that reaches it falls back with a report instead of trusting it. The 2,000,000
 point budget is unchanged and now applies to the validated set: a plot whose used glyphs
-genuinely exceed it still refuses. This admits SimSun-class CJK faces — whose whole-face
-point total exceeds the budget although no drawing uses more than a fraction of their
-glyphs — to captured PDF export, with the whole selected program still embedded and its
-OS/2 permissions still gating the face. Screen/interactive metrics are unchanged: they
+genuinely exceed it still refuses. This removes the whole-face point-work obstacle for
+eligible large faces; bitmap/origin and permission checks must still pass. It does not
+establish compatibility with every installed CJK font. The reader returns the complete
+selected program; write-time subsetting is described below. Screen/interactive metrics are unchanged: they
 keep the eager whole-face validation, so these faces continue to render on screen through
 the existing Canvas fallback, and no budget was raised anywhere.
 
-Used faces become full FontFile2 programs, Type0 Identity-H fonts and CIDFontType2 descendants.
+Used faces become FontFile2 programs, Type0 Identity-H fonts and CIDFontType2 descendants.
 CIDToGIDMap and ToUnicode keep glyph identity, including distinct Unicode aliases and supported
 supplementary characters. Native unkerned advances, capital-A height, bearings, FIT/ALIGNED,
 width factor, oblique and rotation drive PDF text. Resources are shared across pages. The format
@@ -61,10 +61,14 @@ byte-identical and empties the rest, so CIDToGIDMap, ToUnicode, widths and glyph
 unchanged. Programs whose OS/2 fsType sets the no-subsetting bit are embedded whole, as are
 programs subsetting cannot shrink or safely rebuild. The embedded `cmap` is kept verbatim
 in this slice (trimming it is a named follow-up); CFF subsetting waits on CFF embedding (12.2).
+Actual subsets receive distinct six-uppercase-letter tags in PDF BaseFont/FontName.
+Whole-font fallbacks keep their original names and exact bytes. Rebuilt `maxp` counts
+must fit their uint16 fields; unsafe counts retain the whole program. Valid ten-byte
+zero-contour glyphs and bounded optional instruction spans are supported.
 
 Unsupported/missing faces or unsupported runs use the existing Helvetica/stroke fallback and
 the plot log reports substitutions. Browser plots keep their existing path. CFF,
-variable/color fonts, uncertain glyph origins, contextual shaping, font subsetting and
+variable/color fonts, uncertain glyph origins, contextual shaping and
 preview/print-only embedding remain open. Within collection-face selection, what
 remains open is acceptance, not selection. Two refusal causes are confirmed on
 Windows by the lead and are classified separately from collection defects:
@@ -74,13 +78,15 @@ Windows by the lead and are classified separately from collection defects:
   the candidate. It is a per-face data gate in the shared metrics reader, not a
   collection defect; the gate now applies to the selected face exactly as it did
   to face 0, and the refusal still ends in the reported fallback.
-- SimSun (`simsun.ttc`, family SimSun, regular) is refused with "glyph point work
-  exceeds the safe limit" through both the metrics and PDF readers on Windows,
-  while Canvas renders the same font. This is a separate cause: the reader
-  eagerly computes bounds for every glyph and this face's total point work passes
-  the safe-work limit. It is remaining 12.1-adjacent work under separate
-  investigation. The point-work limit is a resource safeguard; it is not raised
-  here, and no lazy glyph-work change is made in this milestone.
+- Installed SimSun (`simsun.ttc`, family SimSun, regular) still refuses in this
+  Windows review. Screen metrics retain the point-work refusal. Used-glyph PDF
+  reads clear that obstacle but hit the capital-A/origin gate: embedded bitmap
+  strikes cover the capital-A glyph and existing policy marks it unknown. The
+  bitmap policy is preserved. Authored over-budget fixtures prove the scoped
+  algorithm, not real SimSun admission. Microsoft YaHei (`msyh.ttc`) reaches a
+  distinct conflicting PostScript-name refusal. SimHei and FangSong are absent
+  from this Windows installation. These are explicit limits, not successful font
+  compatibility checks; no fonts were installed or modified.
 
 Real SHX decoding is priority 21. Native tall-glyph
 MTEXT line leading remains approximate even when its font is embedded.

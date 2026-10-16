@@ -22,9 +22,9 @@ messages). The date of each version is the date of the commit that set that vers
   order. Windows source Plot/IPC checks cover regular, bold and cross-family faces;
   packaged-app acceptance remains pending.
 - Captured vector PDF export now point-validates only the glyphs a plot uses (plus their
-  composite components and capital A), so large CJK faces such as SimSun — refused before
-  because their whole-face outline point total exceeds the unchanged safety budget — can
-  embed for the text a drawing actually contains. Glyphs outside the plotted set are
+  composite components and capital A), removing the whole-face point-budget obstacle for
+  eligible large fonts. Installed SimSun still fails its existing bitmap/origin guard;
+  other origin and permission checks remain required. Glyphs outside the plotted set are
   marked unvalidated and any run reaching them uses the reported fallback; screen font
   metrics are unchanged and still fall back to Canvas for these faces.
 - Vector PDF export now subsets embedded TrueType (glyf) font programs to the glyphs each
