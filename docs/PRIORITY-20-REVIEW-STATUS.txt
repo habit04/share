@@ -1,0 +1,45 @@
+Priority 20.1 — separate headless xref core review
+
+Disposition: CORRECTIONS REQUIRED. No loader source is adopted in this branch.
+The application still retains reference paths/overlay flags and placeholders.
+Priority12 remains first; the separate review owner runs targeted xref checks
+so the integration lead does not duplicate them.
+
+Corrected Muse candidate: ea6ae8a22e8b075eaef0f0e8f43b406ea23de5cb
+Pinned upstream base: a68dba5b16ed4099d8decae32f936ebc023129fa
+Base tree: 3f84470f81001651a84c043c870d0e5c283cd27b
+Owner-replayed candidate tree: 8c9c92a86c5a1e9ce250a40d05ed9253b46c460b
+The separate owner's eight-patch replay matches the claimed tree. Replayed
+commit metadata differs; this is content/tree proof, not original commit proof.
+
+Evidence reviewed by the integration lead:
+- Review packet SHA256:
+  4e38fbc556e4d630db418e4cef8a259f7c6553b958dd1c379b9beb5ffdbdbc0a
+- Size 42,756 bytes; safe archive inventory and all 27 payload hashes verify.
+- Raw JSON reports total 103 passed, 11 failed, zero skipped:
+  supplied/neighbor batch 82/1; earlier regression batch 7/6;
+  boundary/identification batch 14/4. These are the owner's Windows Node
+  headless executions, not a second run by the integration lead.
+- Earlier edge/UNC corrections now pass, including 64/65 boundaries and
+  canonical-adapter controls. Eleven reproduced assertions remain red.
+
+Remaining owner/Muse corrections:
+1. Reject disagreement between identified and read content versions.
+2. Reject incompatible owning locations for one canonical identity/version.
+3. Diagnose unavailable host identity; do not omit host ancestry and reread it.
+4. Charge/enforce actual total bytes before response-error early returns.
+5. Count admitted unique source files even when parsing fails.
+6. Prevent partial load from replacing an existing last-good graph.
+7. Classify identification ENOENT/ENOTDIR as missing and EACCES/EPERM as denied.
+8. Correct the supplied path assertion for actual platform separators.
+
+Owner reports renderer/test typecheck and fixture inventory pass. No new full
+suite, native filesystem grants, UI/IPC, DWG, GPU, AutoCAD or application save/
+render/plot acceptance is claimed. The delivered full-suite failures remain
+unresolved evidence. Copied headless dependencies are qualified as such;
+Electron was excluded and no pristine-install/native runtime proof is implied.
+
+The separate validation repository and review packet stay owner-managed. Our
+active source/dependencies/processes were not changed by that work. Muse owns
+product corrections and replacement ZIP delivery; Codex retains eventual native
+and combined integration. No push, merge, release or backend clearance follows.
