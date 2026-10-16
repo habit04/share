@@ -9,6 +9,7 @@ import { PATTERN_NAMES } from '../core/hatch';
 import { aciToCss, ACI_NAMES } from '../render/palette';
 import { icon } from './icons';
 import { GeometryBudgetError } from '../core/geometry-budget-error';
+import { ConstraintPolicyError } from '../core/constraints/policy';
 import { isViewportFrame, viewTwist } from '../core/layouts';
 import type { Dimension3D, Solid3D } from '../model3d/types';
 import { dimensionById, replaceDimension3D, replaceSolid, solidById } from '../model3d/model';
@@ -44,6 +45,26 @@ export class PropertiesPalette {
   toggle(): void {
     this.el.classList.toggle('hidden');
     this.render();
+  }
+
+  /**
+   * Run one palette edit that commits through a document transaction.
+   * A deliberate refusal — the geometry budget (GeometryBudgetError) or
+   * the constraint policy (ConstraintPolicyError, review round 2 C08) —
+   * leaves the document unchanged by construction; the palette reports
+   * the refusal on the command log and re-renders, so the field shows
+   * the unchanged value instead of the error escaping the change handler
+   * (which left the stale typed value on screen with no explanation).
+   * Any other error still throws.
+   */
+  private runEdit(fn: () => void): void {
+    try {
+      fn();
+    } catch (error) {
+      if (!(error instanceof GeometryBudgetError) && !(error instanceof ConstraintPolicyError)) throw error;
+      this.editor.log(error.message);
+      this.render();
+    }
   }
 
   private row(label: string, value: string | HTMLElement): HTMLElement {
@@ -144,13 +165,7 @@ export class PropertiesPalette {
       return all.every((e) => e[key] === first) ? String(first ?? '') : '*VARIES*';
     };
     const patchAll = (patch: LayerColorPatch) => {
-      try {
-        patchMixedSelection(doc, sel, solids.map((s) => s.id), dims3d.map((d) => d.id), patch);
-      } catch (error) {
-        if (!(error instanceof GeometryBudgetError)) throw error;
-        this.editor.log(error.message);
-        this.render();
-      }
+      this.runEdit(() => patchMixedSelection(doc, sel, solids.map((s) => s.id), dims3d.map((d) => d.id), patch));
     };
     if (sel.length === 0) {
       b.appendChild(this.row('Layer', this.select(layers, doc.currentLayer, (v) => doc.setCurrentLayer(v))));
@@ -166,7 +181,7 @@ export class PropertiesPalette {
         this.select(layerVal === '*VARIES*' ? [['*VARIES*', '*VARIES*'], ...layers] : layers, layerVal, (v) => {
           if (v === '*VARIES*') return;
           if (mixed) patchAll({ layer: v });
-          else doc.replaceEntities(sel.map((e) => ({ ...e, layer: v })));
+          else this.runEdit(() => doc.replaceEntities(sel.map((e) => ({ ...e, layer: v }))));
         }),
       ),
     );
@@ -177,7 +192,7 @@ export class PropertiesPalette {
         patchAll({ color: v === 'ByLayer' ? 'ByLayer' : parseInt(v, 10) });
         return;
       }
-      doc.replaceEntities(sel.map((e) => ({ ...e, color: v === 'ByLayer' ? ('ByLayer' as const) : parseInt(v, 10), trueColor: undefined, colorName: undefined, colorLayer: undefined })));
+      this.runEdit(() => doc.replaceEntities(sel.map((e) => ({ ...e, color: v === 'ByLayer' ? ('ByLayer' as const) : parseInt(v, 10), trueColor: undefined, colorName: undefined, colorLayer: undefined }))));
     });
     const swatchWrap = document.createElement('span');
     swatchWrap.className = 'prop-color';
@@ -192,12 +207,7 @@ export class PropertiesPalette {
     const e = sel[0]!;
     const num = (v: number) => v.toFixed(4);
     const patch = (p: Partial<Entity>) => {
-      try { doc.replaceEntities([{ ...e, ...p } as Entity]); }
-      catch (error) {
-        if (!(error instanceof GeometryBudgetError)) throw error;
-        this.editor.log(error.message);
-        this.render();
-      }
+      this.runEdit(() => doc.replaceEntities([{ ...e, ...p } as Entity]));
     };
     const numInput = (v: number, fn: (n: number) => void) =>
       this.input(num(v), (s) => {
@@ -240,7 +250,7 @@ export class PropertiesPalette {
           const rotationInput = numInput(g.deg(viewTwist(e.vport.view)), (n) => {
             if (e.vport.view.locked) return;
             const edited: typeof e = { ...e, vport: { ...e.vport, view: { ...e.vport.view, twist: g.rad(n) } } };
-            doc.replaceEntities([edited]);
+            this.runEdit(() => doc.replaceEntities([edited]));
           });
           rotationInput.disabled = Boolean(e.vport.view.locked);
           rotationInput.title = e.vport.view.locked ? 'Unlock the viewport with MVIEW before changing its view rotation.' : 'Degrees; positive turns the model counterclockwise on the sheet.';
@@ -328,7 +338,7 @@ export class PropertiesPalette {
               e.solid ? 'SOLID' : e.pattern,
               (v) => {
                 const { patternLines: _custom, ...rest } = e;
-                doc.replaceEntities([{ ...rest, pattern: v, solid: v === 'SOLID', patternType: 1 }]);
+                this.runEdit(() => doc.replaceEntities([{ ...rest, pattern: v, solid: v === 'SOLID', patternType: 1 }]));
               },
             ),
           ),
@@ -338,7 +348,7 @@ export class PropertiesPalette {
           const known = PATTERN_NAMES.includes(e.pattern);
           const setPattern = (p: { angle?: number; scale?: number }) => {
             const { patternLines, ...rest } = e;
-            doc.replaceEntities([known ? { ...rest, ...p } : { ...rest, patternLines, ...p }]);
+            this.runEdit(() => doc.replaceEntities([known ? { ...rest, ...p } : { ...rest, patternLines, ...p }]));
           };
           b.appendChild(this.row('Angle', numInput((e.angle * 180) / Math.PI, (n) => setPattern({ angle: (n * Math.PI) / 180 }))));
           b.appendChild(this.row('Scale', numInput(e.scale, (n) => n > 0 && setPattern({ scale: n }))));
@@ -426,25 +436,13 @@ export class PropertiesPalette {
     header.textContent = dims.length ? mixedSelectionLabel(0, solids.length, dims.length) : solids.length === 1 ? '3D Solid' : `3D Solids (${solids.length})`;
     b.appendChild(header);
     const patchAll = (patch: LayerColorPatch) => {
-      try {
-        patchMixedSelection(doc, [], solids.map((s) => s.id), dims.map((d) => d.id), patch);
-      } catch (error) {
-        if (!(error instanceof GeometryBudgetError)) throw error;
-        this.editor.log(error.message);
-        this.render();
-      }
+      this.runEdit(() => patchMixedSelection(doc, [], solids.map((s) => s.id), dims.map((d) => d.id), patch));
     };
     const update = (fn: (s: Solid3D) => Solid3D) => {
-      try {
-        doc.updateModel3D((m) => solids.reduce((acc, s) => {
-          const cur = solidById(acc, s.id);
-          return cur ? replaceSolid(acc, fn(cur)) : acc;
-        }, m));
-      } catch (error) {
-        if (!(error instanceof GeometryBudgetError)) throw error;
-        this.editor.log(error.message);
-        this.render();
-      }
+      this.runEdit(() => doc.updateModel3D((m) => solids.reduce((acc, s) => {
+        const cur = solidById(acc, s.id);
+        return cur ? replaceSolid(acc, fn(cur)) : acc;
+      }, m)));
     };
     const common = (key: 'layer' | 'color') => {
       const first = String(solids[0]![key]);
@@ -501,10 +499,10 @@ export class PropertiesPalette {
     header.textContent = dims.length === 1 ? '3D Dimension' : `3D Dimensions (${dims.length})`;
     b.appendChild(header);
     const update = (fn: (d: Dimension3D) => Dimension3D) => {
-      doc.updateModel3D((m) => dims.reduce((acc, d) => {
+      this.runEdit(() => doc.updateModel3D((m) => dims.reduce((acc, d) => {
         const cur = dimensionById(acc, d.id);
         return cur ? replaceDimension3D(acc, fn(cur)) : acc;
-      }, m));
+      }, m)));
     };
     const common = (key: 'layer' | 'color') => {
       const first = String(dims[0]![key]);
