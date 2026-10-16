@@ -23,7 +23,8 @@ import { decodeConstraints, CONSTRAINTS_REPORT, CONSTRAINTS_RETAINED_REPORT } fr
 import { decodeDynamicInstance } from './dynamic-data';
 import type { ConstraintSet } from '../../core/constraints/model';
 import { DEFAULT_LAYERS } from '../../core/document';
-import { readEntities } from './read-pass';
+import { completeDeferredAttribFold, hasDeferredAttribFold, readEntities } from './read-pass';
+import { reportObj } from './read-core';
 import { attachDxfCadGraph } from '../cad-graph-dxf';
 import { CadGraphError, canonicalCadHandle } from '../../core/cad-graph';
 import { Model3DReader, native3dObject } from './mesh3d-read';
@@ -212,10 +213,22 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     const { dynamicRetained: _retained, ...rest } = e;
     return { ...rest, dynamic: decoded.state };
   };
-  entities = entities.map(resolveForwardInstance);
+  // Review round 2 (C04): the same forward-reference problem dropped
+  // ATTRIB placements/appearance — the fold needs the owning definition,
+  // which did not exist when a parent block's entities were read. The
+  // read pass retained the raw follower records for exactly those
+  // inserts; replay the complete fold (values, hidden flags, local
+  // placements, R07 authored-frame rebase) now, against the decoded
+  // instance state, so block order cannot change the result.
+  const resolveForward = (e: Entity): Entity => {
+    const resolved = resolveForwardInstance(e);
+    if (resolved.type !== 'insert') return resolved;
+    return completeDeferredAttribFold(resolved, e, blocks, (o, message) => reportObj(ctx, o, 'simplified', message));
+  };
+  entities = entities.map(resolveForward);
   for (const [name, block] of Object.entries(blocks)) {
-    if (block.entities.some((e) => e.type === 'insert' && e.dynamic === undefined && e.dynamicRetained !== undefined)) {
-      blocks[name] = { ...block, entities: block.entities.map(resolveForwardInstance) };
+    if (block.entities.some((e) => e.type === 'insert' && ((e.dynamic === undefined && e.dynamicRetained !== undefined) || hasDeferredAttribFold(e)))) {
+      blocks[name] = { ...block, entities: block.entities.map(resolveForward) };
     }
   }
 
