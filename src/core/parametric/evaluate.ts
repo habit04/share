@@ -1,21 +1,43 @@
 /**
- * Priority 30.1 — bounded, deterministic evaluator for dynamic-block definitions.
+ * Priority 30.1/30.2 — bounded, deterministic evaluator for dynamic-block definitions.
  *
  * Pure: no I/O, no editor/tool imports (core layering — the editor's STRETCH tool
  * lives in src/tools and must not be imported from here). Evaluation either
  * returns a complete result or a refusal with a stable code; it never returns
- * partially-stretched geometry, never clamps/snaps/drops a modeled action, and
+ * partially-transformed geometry, never clamps/snaps/drops a modeled action, and
  * never mutates its inputs (they may be sealed with sealImmutableData).
  * Results are in DEFINITION space; composing with insert transforms/expansion
  * is the caller's job.
+ *
+ * 30.2 whole-entity actions (move/rotate/scale/flip) reuse the core transform
+ * stack from core/entities (translateEntity / rotateEntity / scaleEntityBy /
+ * mirrorEntityAcross — exact for every entity type) instead of duplicating
+ * per-type transform logic here. Import note: core/entities value-imports
+ * evaluateDynamicBlock from this module, so the two modules are mutually
+ * dependent; every binding crossed in either direction is a hoisted function
+ * declaration and neither module invokes the other's bindings while its own
+ * module body evaluates, which keeps the cycle safe.
  */
-import { EPS, add, rotate, scale as scalePoint, type Point } from '../geometry';
-import type { AttributeDef, Entity } from '../entities';
+import { EPS, add, dot, normalize, rotate, scale as scalePoint, sub, type Point } from '../geometry';
+import {
+  mirrorEntityAcross,
+  rotateEntity,
+  scaleEntityBy,
+  translateEntity,
+  type AttributeDef,
+  type Entity,
+} from '../entities';
 import {
   validateDefinition,
+  type AngleParameter,
   type DefinitionIssue,
   type DynamicBlockDefinition,
+  type FlipAction,
+  type FlipParameter,
   type LinearDistanceParameter,
+  type MoveAction,
+  type RotateAction,
+  type ScaleAction,
   type StretchAction,
 } from './definitions';
 import { validateInstanceValues, type DynamicParameterValue, type DynamicInstanceState, type InstanceIssue } from './instance';
@@ -88,11 +110,12 @@ export type EvaluationRefusalCode =
   | 'action-cycle' // chained actions depend on each other cyclically
   | 'chain-depth-exceeded' // dependency path longer than limits.maxChainDepth
   | 'work-limit-exceeded' // limits.maxWork / maxActions / maxOutputEntities hit
+  | 'degenerate-transform' // a computed whole-entity transform is degenerate (scale factor <= 0 / non-finite)
   | 'unstretchable-entity'; // selection names an entity type with no movable points
 
 export interface EvaluationDiagnostic {
   readonly severity: 'info' | 'warning';
-  readonly code: 'value-defaulted' | 'frame-missed-selection' | 'zero-delta';
+  readonly code: 'value-defaulted' | 'frame-missed-selection' | 'zero-delta' | 'action-no-op';
   readonly message: string;
   readonly parameterId?: string;
   readonly actionId?: string;
@@ -193,6 +216,23 @@ const inFrame = (p: Point, frame: StretchAction['frame']): boolean =>
   p.y >= frame.min.y - EVALUATION_TOLERANCE &&
   p.y <= frame.max.y + EVALUATION_TOLERANCE;
 
+/** Reflect a point across the line a-b. The point-level half of
+ *  mirrorEntityAcross (core/entities), used for attribute placements, whose
+ *  only movable datum is their position. */
+function reflectPoint(p: Point, a: Point, b: Point): Point {
+  const d = normalize(sub(b, a));
+  const v = sub(p, a);
+  const proj = scalePoint(d, dot(v, d));
+  const perp = sub(v, proj);
+  return add(a, sub(proj, perp));
+}
+
+/** The action kinds this build evaluates (opaque actions refused earlier). */
+type ModeledAction = StretchAction | MoveAction | RotateAction | ScaleAction | FlipAction;
+
+/** A modeled (non-opaque) parameter: the kinds an action can be driven by. */
+type ModeledParameter = LinearDistanceParameter | AngleParameter | FlipParameter;
+
 /** Does action.cover's selection cover targetId's movable point `pointIndex`,
  *  positioned at point p, for dependency derivation? (Frame membership of p is
  *  tested by the caller.) */
@@ -224,7 +264,16 @@ export function evaluationKey(
     .map((id) => {
       const value = effective[id];
       if (!value) return `${id}=missing`;
-      return value.kind === 'distance' ? `${id}=d:${String(value.value)}` : `${id}=o:${value.payload}`;
+      switch (value.kind) {
+        case 'distance':
+          return `${id}=d:${String(value.value)}`;
+        case 'angle':
+          return `${id}=a:${String(value.value)}`;
+        case 'flip':
+          return `${id}=f:${String(value.value)}`;
+        case 'opaque':
+          return `${id}=o:${value.payload}`;
+      }
     });
   return `dyn${definition.version}|${parts.join(';')}`;
 }
@@ -293,11 +342,12 @@ export function evaluateDynamicBlock(
     });
   }
 
-  const parametersById = new Map<string, LinearDistanceParameter>();
+  const parametersById = new Map<string, ModeledParameter>();
   for (const param of definition.parameters) {
-    if (param.kind === 'linear-distance') parametersById.set(param.id, param);
+    if (param.kind !== 'opaque-parameter') parametersById.set(param.id, param);
   }
-  const actions = definition.actions as readonly StretchAction[];
+  // Opaque actions were refused above, so every remaining action is modeled.
+  const actions = definition.actions as readonly ModeledAction[];
 
   const entityIndexById = new Map<string, number>(baseEntities.map((e, i) => [e.id, i]));
   const attributeIndexByTag = new Map<string, number>(baseAttributes.map((a, i) => [a.tag, i]));
@@ -328,6 +378,16 @@ export function evaluateDynamicBlock(
   //      grip cycle is still an 'action-cycle'.)
   //    - a movable point of a B-selection target (at authored positions), when
   //      the point lies inside A's frame and A's selection covers it.
+  //    Both rules are stretch-sourced: a stretch's frame membership is defined
+  //    on the geometry it sees, so a stretch that moves points another action
+  //    governs must run before that action. Grip coupling is derived for
+  //    linear-distance parameters (the only kind whose value grip has a
+  //    position on a measured segment); angle/flip parameters couple through
+  //    shared selection targets instead. Whole-entity actions (30.2) have
+  //    position-independent transforms and no frame, so no edge is derived
+  //    for or from them: they compose in authoring order, which is the
+  //    topological tie-break. Deriving dependency edges from whole-action
+  //    grip movement is later 30.2 chaining work (spec §3.2, final bullet).
   const gripPointOf = (param: LinearDistanceParameter): Point | undefined => {
     const grip = param.grips.find((gr) => gr.role === 'value' && gr.movesWithValue);
     if (!grip) return undefined;
@@ -343,10 +403,11 @@ export function evaluateDynamicBlock(
   for (let b = 0; b < count; b += 1) {
     const actionB = actions[b]!;
     const paramB = parametersById.get(actionB.parameterId)!;
-    const gripB = gripPointOf(paramB);
+    const gripB = paramB.kind === 'linear-distance' ? gripPointOf(paramB) : undefined;
     for (let a = 0; a < count; a += 1) {
       if (a === b) continue;
       const actionA = actions[a]!;
+      if (actionA.kind !== 'stretch') continue; // whole actions source no edges (above)
       let depends = false;
       if (actionA.parameterId !== actionB.parameterId && gripB && inFrame(gripB, actionA.frame)) depends = true;
       if (!depends) {
@@ -418,21 +479,11 @@ export function evaluateDynamicBlock(
   const appliedActions: string[] = [];
   const defaultedReported = new Set<string>();
 
-  for (const actionIndex of order) {
-    const action = actions[actionIndex]!;
-    const param = parametersById.get(action.parameterId)!;
+  /** Apply one stretch action to the working copies. Returns a refusal, or
+   *  undefined on success (including a zero-delta no-op). */
+  const applyStretchAction = (action: StretchAction, param: LinearDistanceParameter): EvaluationResult | undefined => {
     const valueEntry = effective[param.id]!;
     const effectiveValue = valueEntry.kind === 'distance' ? valueEntry.value : param.defaultValue;
-    if (instance?.values[param.id] === undefined && !defaultedReported.has(param.id)) {
-      defaultedReported.add(param.id);
-      diagnostics.push({
-        severity: 'info',
-        code: 'value-defaulted',
-        message: `Parameter '${param.id}' has no instance value; its default ${param.defaultValue} is used.`,
-        parameterId: param.id,
-        actionId: action.id,
-      });
-    }
     const rawDelta = effectiveValue - param.defaultValue;
     const directionLen = Math.hypot(param.direction.x, param.direction.y);
     const unit = { x: param.direction.x / directionLen, y: param.direction.y / directionLen };
@@ -514,6 +565,137 @@ export function evaluateDynamicBlock(
         actionId: action.id,
       });
     }
+    return undefined;
+  };
+
+  /**
+   * Apply one whole-entity action (30.2: move / rotate / scale / flip) to the
+   * working copies. The transform is the delta between the parameter's
+   * effective value and its default — the authored state is the default state,
+   * as for stretch — computed once, then applied to every selected target with
+   * the exact core transform stack. A parameter at its default is a no-op:
+   * targets keep their identity and an 'action-no-op' diagnostic is reported.
+   * Whole transforms are exact for every entity type, so there is no
+   * unstretchable case here; an attribute target is transformed by its
+   * placement point only (values and tags are never evaluation outputs).
+   */
+  const applyWholeAction = (action: MoveAction | RotateAction | ScaleAction | FlipAction): EvaluationResult | undefined => {
+    const param = parametersById.get(action.parameterId)!;
+    const degenerate = (message: string): EvaluationResult =>
+      refuse({ code: 'degenerate-transform', message, actionId: action.id, parameterId: param.id });
+    let transformEntity: ((entity: Entity) => Entity) | undefined;
+    let transformPoint: ((point: Point) => Point) | undefined;
+    switch (action.kind) {
+      case 'move': {
+        const p = param as LinearDistanceParameter;
+        const entry = effective[p.id]!;
+        const value = entry.kind === 'distance' ? entry.value : p.defaultValue;
+        const directionLen = Math.hypot(p.direction.x, p.direction.y);
+        const unit = { x: p.direction.x / directionLen, y: p.direction.y / directionLen };
+        const delta = rotate(scalePoint(unit, (value - p.defaultValue) * (action.distanceMultiplier ?? 1)), action.angleOffset ?? 0);
+        if (!Number.isFinite(delta.x) || !Number.isFinite(delta.y)) {
+          return degenerate(`Move action '${action.id}' computed a non-finite displacement.`);
+        }
+        if (Math.hypot(delta.x, delta.y) > EVALUATION_TOLERANCE) {
+          transformEntity = (entity) => translateEntity(entity, delta);
+          transformPoint = (point) => add(point, delta);
+        }
+        break;
+      }
+      case 'rotate': {
+        const p = param as AngleParameter;
+        const entry = effective[p.id]!;
+        const value = entry.kind === 'angle' ? entry.value : p.defaultValue;
+        const deltaAngle = value - p.defaultValue;
+        if (!Number.isFinite(deltaAngle)) {
+          return degenerate(`Rotate action '${action.id}' computed a non-finite angle.`);
+        }
+        if (Math.abs(deltaAngle) > EVALUATION_TOLERANCE) {
+          const { center } = action;
+          transformEntity = (entity) => rotateEntity(entity, center, deltaAngle);
+          transformPoint = (point) => rotate(point, deltaAngle, center);
+        }
+        break;
+      }
+      case 'scale': {
+        const p = param as LinearDistanceParameter;
+        const entry = effective[p.id]!;
+        const value = entry.kind === 'distance' ? entry.value : p.defaultValue;
+        // The default's positivity is a definition-validation rule; the
+        // effective value is instance data, so a degenerate factor (zero or
+        // negative value, overflow) is refused here, never applied.
+        const factor = value / p.defaultValue;
+        if (!Number.isFinite(factor) || factor <= 0) {
+          return degenerate(`Scale action '${action.id}' computed factor ${factor} from value ${value} / default ${p.defaultValue}; the factor must be positive and finite.`);
+        }
+        if (Math.abs(factor - 1) > EVALUATION_TOLERANCE) {
+          const { basePoint } = action;
+          transformEntity = (entity) => scaleEntityBy(entity, basePoint, factor);
+          transformPoint = (point) => add(basePoint, scalePoint(sub(point, basePoint), factor));
+        }
+        break;
+      }
+      case 'flip': {
+        const p = param as FlipParameter;
+        const entry = effective[p.id]!;
+        const value = entry.kind === 'flip' ? entry.value : p.defaultValue;
+        if (value !== p.defaultValue) {
+          const { axisA, axisB } = action;
+          transformEntity = (entity) => mirrorEntityAcross(entity, axisA, axisB);
+          transformPoint = (point) => reflectPoint(point, axisA, axisB);
+        }
+        break;
+      }
+    }
+    if (!transformEntity || !transformPoint) {
+      diagnostics.push({
+        severity: 'info',
+        code: 'action-no-op',
+        message: `Action '${action.id}' does not change geometry (parameter '${param.id}' is at its default).`,
+        parameterId: param.id,
+        actionId: action.id,
+      });
+      return undefined;
+    }
+    for (const sel of action.selection) {
+      const baseTarget = targetFor(sel.entityId);
+      if (!baseTarget) continue; // validateDefinition already refused unknown ids.
+      // Current (possibly already transformed by an earlier action) state.
+      const target: Target =
+        baseTarget.kind === 'entity'
+          ? { kind: 'entity', index: baseTarget.index, entity: outEntities[baseTarget.index]! }
+          : { kind: 'attribute', index: baseTarget.index, attribute: outAttributes[baseTarget.index]! };
+      const points = movablePoints(target);
+      if (!charge(1 + (points ? points.length : 1))) return workRefusal();
+      if (target.kind === 'entity') {
+        outEntities[target.index] = transformEntity(target.entity);
+      } else {
+        outAttributes[target.index] = { ...target.attribute, position: transformPoint(target.attribute.position) };
+      }
+    }
+    return undefined;
+  };
+
+  for (const actionIndex of order) {
+    const action = actions[actionIndex]!;
+    const param = parametersById.get(action.parameterId)!;
+    if (instance?.values[param.id] === undefined && !defaultedReported.has(param.id)) {
+      defaultedReported.add(param.id);
+      diagnostics.push({
+        severity: 'info',
+        code: 'value-defaulted',
+        message: `Parameter '${param.id}' has no instance value; its default ${param.defaultValue} is used.`,
+        parameterId: param.id,
+        actionId: action.id,
+      });
+    }
+    // Definition validation guarantees the parameter kind pairs with the action
+    // kind, so the stretch branch's parameter is a linear-distance parameter.
+    const refusal =
+      action.kind === 'stretch'
+        ? applyStretchAction(action, param as LinearDistanceParameter)
+        : applyWholeAction(action);
+    if (refusal) return refusal;
     appliedActions.push(action.id);
   }
 
