@@ -111,7 +111,7 @@ function failure(kind, message, retryAfterSeconds) {
 function positiveLimit(value, fallback, what) {
   if (value === undefined) return fallback;
   if (!Number.isSafeInteger(value) || value < 1) {
-    throw failure('invalid-request', `Invalid ${what}.`);
+    throw failure('host-unavailable', `Invalid ${what}.`);
   }
   return value;
 }
@@ -275,20 +275,24 @@ async function postResponses(send, apiKey, maxResponseBytes, body, signal) {
 }
 
 /**
- * Provider token usage, when the response reports both counters as
- * non-negative safe integers; otherwise usage is simply omitted.
+ * Provider token usage: each counter is carried independently when it is
+ * a non-negative safe integer; invalid counters are simply omitted
+ * (matching the Anthropic adapter).
  * @param {Record<string, unknown>} payload
  * @returns {ProviderUsage | undefined}
  */
 function usageTokens(payload) {
   const usage = payload.usage;
   if (!isRecord(usage)) return undefined;
-  const input = usage.input_tokens;
-  const output = usage.output_tokens;
-  if (typeof input !== 'number' || typeof output !== 'number'
-    || !Number.isSafeInteger(input) || !Number.isSafeInteger(output)
-    || input < 0 || output < 0) return undefined;
-  return { inputTokens: input, outputTokens: output };
+  /** @type {ProviderUsage} */
+  const tokens = {};
+  if (typeof usage.input_tokens === 'number' && Number.isSafeInteger(usage.input_tokens) && usage.input_tokens >= 0) {
+    tokens.inputTokens = usage.input_tokens;
+  }
+  if (typeof usage.output_tokens === 'number' && Number.isSafeInteger(usage.output_tokens) && usage.output_tokens >= 0) {
+    tokens.outputTokens = usage.output_tokens;
+  }
+  return Object.keys(tokens).length > 0 ? tokens : undefined;
 }
 
 /**
@@ -358,10 +362,10 @@ function parseAnswer(payload) {
  */
 function createOpenAiTransport({ apiKey, model, fetchImpl, maxOutputTokens, maxResponseBytes }) {
   if (typeof apiKey !== 'string' || apiKey.length === 0) {
-    throw failure('invalid-request', 'Invalid API key.');
+    throw failure('provider-not-configured', 'Invalid API key.');
   }
   if (typeof model !== 'string' || model.length === 0) {
-    throw failure('invalid-request', 'Invalid model.');
+    throw failure('provider-not-configured', 'Invalid model.');
   }
   const outputTokens = positiveLimit(maxOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS, 'output token limit');
   const responseBytes = positiveLimit(maxResponseBytes, DEFAULT_MAX_RESPONSE_BYTES, 'response byte limit');
