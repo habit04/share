@@ -11,15 +11,31 @@ split stage logging shows disposal complete with zero reader descriptors before
 `unlink` stops returning at 296 ms. No cleanup cause or product fix is established.
 The isolated unchanged case passes in 261 ms. Limits, deadlines and assertions
 remain unchanged; no further full-suite retries are used to claim clearance.
-Fresh combined native checks can proceed independently; merge remains held.
+Fresh combined native checks below have now executed; merge remains held.
+
+Commit `743fdbb` passes the fresh Windows source-runtime Plot/edit/save/reopen
+workflow, including Bahnschrift through app IPC, exact whole-variable programs,
+three optical-size refusals, all 63 real-DWG F4 assertions and nine independent
+Han raster checks. Six Canvas/PDF crops remain within the original 3px bounds;
+source/fonts stay unchanged and the owned Electron exits. Strict native PDF
+inspection is **2,882/2,883**: the known Symbol warning on the Helvetica fallback
+control remains red, and six consumed-ticket cancellation diagnostics remain.
+
+Fresh authored CFF/mixed proof on the same commit produces 34 PDFs with **168/168
+producer checks**. Strict independent inspection is **1,873/1,903**: 28 pypdf
+custom-Encoding extraction failures and two fallback-control Symbol warnings
+are retained. All 52 PDFium page extractions and raw glyph/CID/Unicode mappings
+pass. A separate 67-check local-library/source-integrity classification confirms
+the pypdf limitation without turning the strict failed gate green. Installed-CFF,
+packaged-app, remote-CI and broader viewer acceptance remain open.
 
 | Piece | Current evidence and status | Next gate / owner |
 |---|---|---|
 | 12.1 collection selection | Reviewed and corrected locally; real Windows workers/IPC/Plot and private AutoCAD reference pass for the tested Nirmala faces and Arial. | Lead: combined acceptance, packaged checks and CI. |
 | Used-glyph validation (SimSun scope) | Algorithm and DWG/F4 source composition reviewed; 132 independent authored-PDF checks pass. Real SimSun still refuses at bitmap/origin validation, YaHei at conflicting PostScript names. | Lead: packaged/CI gates; native Han vector acceptance remains absent. Actual missing-SHX raster output and explicit vector refusal pass. |
 | 12.3 glyf subsetting | Reviewed and corrected; real Windows subset/whole-control Unicode and pixels match. Added actual-byte whole-program guard for variation tables: eight failing-before/passing-after regressions. | Lead: combined suite and native gates. Variation-aware subsetting remains deferred. |
-| 12.6a variable defaults | Corrected reader/writer composed with current TTC/used-glyph/subset/F4 source; lead legal-name-ID guards retained. Final archive adds no code: all 14 patches are byte-identical to the previous handoff. 49 supplied tests, combined regression cases and the earlier 45-check installed Bahnschrift probe pass. | Lead: clean combined/full/native Plot/save/reopen gates; default-instance and viewer limits remain. Supplied partial/timeout logs do not establish clearance. |
-| 12.2 standalone CFF1 | Corrected bounded parser and writer composed with current source, including implicit-matrix and late-width repairs, aliases and resource-scoped PDF1.6. New regressions include mixed CFF/static-subset/whole-variable pages. Earlier private candidate produces 24 PDFs passing 623 independent checks plus 30 whole-program checks. | Lead: fresh combined/full/native and authored-PDF gates. No installed standalone CFF font is available here; synthetic checks do not establish real-font IPC/viewer compatibility. |
+| 12.6a variable defaults | Corrected source retains legal-name-ID guards and current TTC/used-glyph/subset/F4 behavior. Final archive adds no code. Real Bahnschrift app IPC/Plot/edit/save/reopen and whole-program identity pass on `743fdbb`; varying optical-size fonts refuse explicitly. | Lead: resolve red full/strict PDF gates, then packaged/CI/viewer acceptance. These results cover the tested default, not named instances or all variable fonts. |
+| 12.2 standalone CFF1 | Corrected parser/writer, implicit-matrix/late-width guards, aliases and resource-scoped PDF1.6 are integrated. Fresh actual-reader/capture proof produces 34 PDFs; producer 168/168, strict inspector 1873/1903, classification 67/67 as detailed above. | Lead: retain strict failures and complete acceptance. No installed standalone CFF font is available; synthetic checks do not establish real-font IPC/viewer compatibility. |
 | 12.4 preview/print permissions | qpdf 12.4.2 self-build selected for implementation; delivered binary remains a prototype. Windows Node smoke passes 89 strict independent assertions and exact encrypted/plain pixels on one small authored fixture. Actual WASM max is 2 GiB; MEMFS/IPC copies need separate bounds. | Muse: capped rebuild, aggregate resource/lifecycle/IPC guards, strict evidence and full notices. Lead: eventual Windows app/viewer acceptance and shipping pin. Refusal remains active. |
 | 12.5 shaping | v4 design approved for additive interface/helpers and synthetic contract tests. Capped prototype passes 106 bounded Windows Node checks across 33 cases; no app/runtime/consumer adoption. | Muse: scoped interface commit with epoch, selected-face, wire/copy and exit-join tests; correct three probe labels. Lead: later runtime/Windows/render/extraction gates. |
 | DWG/F4 combined source | 63 Windows workflow assertions and 721 independent native checks pass on `167c50b`; effective STYLE, metrics, title/signature, source protection and DXF reopen verified. | Lead: maintain font/projection refusals; remote CI and packaged gates remain separate. No merge clearance. |

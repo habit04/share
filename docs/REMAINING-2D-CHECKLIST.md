@@ -6,7 +6,12 @@ source. The combined full gate remains **6,955 passed / one failed / 38 skipped*
 native deletion of the existing large-PDF test fixture stalls after product checks,
 disposal and zero-reader assertions finish. The isolated case passes; its cause is
 unresolved and full-suite clearance is withheld. No limits/deadlines are relaxed.
-Fresh native Plot/F4 and authored-PDF checks are next; nothing is merged/released.
+Fresh native Plot/edit/save/reopen passes on `743fdbb`, including Bahnschrift IPC,
+63 F4 assertions and nine Han raster checks. Strict native PDF inspection remains
+2882/2883 (known fallback Symbol warning). Fresh authored CFF proof produces 34
+PDFs; producer 168/168, strict inspection 1873/1903 (28 pypdf custom-CMap extraction
+limits and two fallback warnings), classification 67/67. Those failures remain
+visible; packaged/CI/viewer gates stay open. Nothing is merged/released.
 
 Priority 30 may be implemented separately by Muse under the
 [dynamic-block and constraint handoff](PRIORITY-30-MUSE-HANDOFF.txt). Codex retains

@@ -130,10 +130,49 @@ unlink wait, not its cause, and not a fixed product deadlock. Prior failed logs
 and the source/input hash receipt are retained; no full-suite retry loop or
 deadline/limit changes are used to clear it. Merge clearance remains withheld.
 
-Fresh committed-tree Windows Plot/F4 and authored-CFF/mixed-PDF checks remain
-required. The 623+30/41/45 checks below belong to earlier private candidates;
-they do not replace those combined-source gates. No installed standalone CFF font
-is available, and no new AutoCAD, packaged-app or remote-CI acceptance is claimed.
+Fresh committed-tree Windows Plot/F4 and authored-CFF/mixed-PDF checks have now
+executed on clean commit `743fdbbf5da42c3bc8ff6c90b9c38e947b822f49`, using its fresh
+renderer build. Actual app IPC reads, native Plot, cancellation, edit/undo/redo,
+DXF save/reopen and repeat Plot pass for selected Nirmala collection faces,
+Arial and Bahnschrift Regular. Bahnschrift remains whole and unprefixed with
+byte-identical fvar/gvar; native metadata and PDF reads agree. Segoe UI Variable,
+Sitka regular and Sitka italic refuse because their optical-size axes vary.
+The six Canvas/PDF ink crops meet the original 3px edge tolerance. Source/font
+hashes stay unchanged, page errors are empty and the owned Electron exits.
+
+All 63 original real-DWG F4 assertions and nine independent raster checks pass.
+The actual Chinese raster output and restored signature/title screenshot are
+visually inspected. Native PDF inspection is **2,882/2,883**: its sole strict
+failure remains the known missing-Symbol Poppler diagnostic on the explicitly
+refused Cambria/Helvetica control. The six consumed-ticket cancellation messages
+also remain in the main log; this is not a clean-log claim. Direct native DWG
+rewriting of that private drawing still refuses safely; DXF-copy reopen is the
+positive path, not proof of complete DWG saving or searchable Chinese vector text.
+
+A fresh actual-source authored proof makes 34 PDFs through the current confined
+reader, captured lookup and compressed/uncompressed writer. Its **168/168 producer
+checks** pass. Strict independent inspection is **1,873/1,903**, preserving every
+failure: 28 exact pypdf extraction checks on custom Encoding streams and two
+Poppler Symbol warnings on restricted-CFF/Helvetica fallback controls. All 52
+PDFium page extractions, all 50 embedded-font raw code/CID/glyph/Unicode mappings,
+whole-program identities, actual static subset controls, variable-table identity,
+widths, CFF rendering and compressed pixel comparisons pass. No pypdf exact-text
+success is claimed. A separate **67/67 classification/integrity receipt** traces
+pypdf 6.10.0's local implementation: custom Encoding streams fall through to a
+single-byte StandardEncoding dictionary, unlike its named Identity-H UTF-16 path.
+That explains the observed NUL/surrogate extraction without waiving the red gate.
+
+The first private authored producer attempt stopped before making PDFs because
+its provenance helper treated an esbuild `?raw` key as a disk filename. Only that
+private path translation was corrected; the failed attempt is retained. Final
+source, authored fonts and PDFs rehash unchanged. A read-only Restart Manager
+query reports no holders for the surviving zero-byte cleanup fixture; it does
+not exclude a filesystem/filter wait or resolve the full-suite failure.
+
+The 623+30/41/45 checks below remain historical private-candidate evidence. No
+installed standalone CFF font is available, and no new AutoCAD, installed-package,
+Acrobat or remote-CI acceptance is claimed. Priority12 and merge clearance remain
+incomplete; the new results do not clear failed or unexecuted gates.
 
 ## Validation
 
