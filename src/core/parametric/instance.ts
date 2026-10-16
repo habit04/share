@@ -5,7 +5,7 @@
  * insert. It does not copy the definition, the geometry, or the insert's transform.
  * Validation reports; it never clamps, snaps or repairs.
  */
-import type { DynamicBlockDefinition, LinearDistanceParameter } from './definitions';
+import type { AngleParameter, DynamicBlockDefinition, DynamicParameter, LinearDistanceParameter } from './definitions';
 import { EVALUATION_TOLERANCE } from './evaluate';
 
 /**
@@ -23,9 +23,13 @@ export interface DynamicInstanceState {
   readonly values: Readonly<Record<string, DynamicParameterValue>>;
 }
 
-/** Values are tagged so 30.2 kinds (angle, visibility state, flip) don't reshape 30.1 data. */
+/** Values are tagged so new kinds (30.2: angle, flip) don't reshape existing data. */
 export type DynamicParameterValue =
   | { readonly kind: 'distance'; readonly value: number }
+  /** Angle in radians (the codebase's angle convention). */
+  | { readonly kind: 'angle'; readonly value: number }
+  /** Flip state: true = mirrored relative to the authored orientation. */
+  | { readonly kind: 'flip'; readonly value: boolean }
   | { readonly kind: 'opaque'; readonly payload: string };
 
 export type InstanceIssueCode =
@@ -88,8 +92,31 @@ function constraintIssue(param: LinearDistanceParameter, value: number): Instanc
   }
 }
 
-const defaultValueOf = (param: LinearDistanceParameter | { readonly kind: 'opaque-parameter'; readonly payload: string }): DynamicParameterValue =>
-  param.kind === 'linear-distance' ? { kind: 'distance', value: param.defaultValue } : { kind: 'opaque', payload: param.payload };
+function angleConstraintIssue(param: AngleParameter, value: number): InstanceIssue | undefined {
+  const c = param.constraint;
+  if (c.kind === 'unbounded') return undefined;
+  // Range bounds are exact, as for distances; angles are never wrapped to fit.
+  if (c.min !== undefined && value < c.min) {
+    return { code: 'value-out-of-range', message: `Parameter '${param.id}' angle ${value} is below its minimum ${c.min}.`, parameterId: param.id };
+  }
+  if (c.max !== undefined && value > c.max) {
+    return { code: 'value-out-of-range', message: `Parameter '${param.id}' angle ${value} exceeds its maximum ${c.max}.`, parameterId: param.id };
+  }
+  return undefined;
+}
+
+const defaultValueOf = (param: DynamicParameter): DynamicParameterValue => {
+  switch (param.kind) {
+    case 'linear-distance':
+      return { kind: 'distance', value: param.defaultValue };
+    case 'angle':
+      return { kind: 'angle', value: param.defaultValue };
+    case 'flip':
+      return { kind: 'flip', value: param.defaultValue };
+    case 'opaque-parameter':
+      return { kind: 'opaque', payload: param.payload };
+  }
+};
 
 /**
  * Validate per-instance values against a definition and compute the effective
@@ -131,6 +158,31 @@ export function validateInstanceValues(
       } else {
         effective[param.id] = supplied;
       }
+      continue;
+    }
+    if (param.kind === 'angle') {
+      if (supplied.kind !== 'angle') {
+        issues.push({ code: 'wrong-value-kind', message: `Parameter '${param.id}' cannot take a '${supplied.kind}' value.`, parameterId: param.id });
+        continue;
+      }
+      if (typeof supplied.value !== 'number' || !Number.isFinite(supplied.value)) {
+        issues.push({ code: 'non-finite-value', message: `Parameter '${param.id}' value is not a finite number.`, parameterId: param.id });
+        continue;
+      }
+      const issue = angleConstraintIssue(param, supplied.value);
+      if (issue) {
+        issues.push(issue);
+        continue;
+      }
+      effective[param.id] = supplied;
+      continue;
+    }
+    if (param.kind === 'flip') {
+      if (supplied.kind !== 'flip' || typeof supplied.value !== 'boolean') {
+        issues.push({ code: 'wrong-value-kind', message: `Parameter '${param.id}' cannot take a non-boolean flip value.`, parameterId: param.id });
+        continue;
+      }
+      effective[param.id] = supplied;
       continue;
     }
     // Modeled (linear-distance) parameter.
