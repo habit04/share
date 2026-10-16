@@ -327,12 +327,12 @@ function pointPairResidual(c: Constraint, a: PointExpr, b: PointExpr, S: number)
     eval: rows,
     jac: (vars_, out, rowAt, nVars) => {
       for (const d of b.derivs(vars_)) {
-        out[rowAt * nVars + d.v] += d.px / S;
-        out[(rowAt + 1) * nVars + d.v] += d.py / S;
+        out[rowAt * nVars + d.v] = out[rowAt * nVars + d.v]! + d.px / S;
+        out[(rowAt + 1) * nVars + d.v] = out[(rowAt + 1) * nVars + d.v]! + d.py / S;
       }
       for (const d of a.derivs(vars_)) {
-        out[rowAt * nVars + d.v] -= d.px / S;
-        out[(rowAt + 1) * nVars + d.v] -= d.py / S;
+        out[rowAt * nVars + d.v] = out[rowAt * nVars + d.v]! - d.px / S;
+        out[(rowAt + 1) * nVars + d.v] = out[(rowAt + 1) * nVars + d.v]! - d.py / S;
       }
     },
   };
@@ -350,8 +350,8 @@ function fixedResidual(c: Constraint, p: PointExpr, p0: Point, S: number): Resid
     },
     jac: (vars, out, rowAt, nVars) => {
       for (const d of p.derivs(vars)) {
-        out[rowAt * nVars + d.v] += d.px / S;
-        out[(rowAt + 1) * nVars + d.v] += d.py / S;
+        out[rowAt * nVars + d.v] = out[rowAt * nVars + d.v]! + d.px / S;
+        out[(rowAt + 1) * nVars + d.v] = out[(rowAt + 1) * nVars + d.v]! + d.py / S;
       }
     },
   };
@@ -370,8 +370,8 @@ function hvResidual(c: Constraint, p: PointExpr, q: PointExpr, S: number): Resid
       out[at] = (horizontal ? pq.y - pp.y : pq.x - pp.x) / S;
     },
     jac: (vs, out, rowAt, nVars) => {
-      for (const d of q.derivs(vs)) out[rowAt * nVars + d.v] += (horizontal ? d.py : d.px) / S;
-      for (const d of p.derivs(vs)) out[rowAt * nVars + d.v] -= (horizontal ? d.py : d.px) / S;
+      for (const d of q.derivs(vs)) out[rowAt * nVars + d.v] = out[rowAt * nVars + d.v]! + (horizontal ? d.py : d.px) / S;
+      for (const d of p.derivs(vs)) out[rowAt * nVars + d.v] = out[rowAt * nVars + d.v]! - (horizontal ? d.py : d.px) / S;
     },
   };
 }
@@ -385,7 +385,7 @@ function scalarResidual(c: Constraint, vars: readonly number[], value: (vs: Floa
       out[at] = value(vs);
     },
     jac: (_vs, out, rowAt, nVars) => {
-      for (const { v, g } of grads) out[rowAt * nVars + v] += g;
+      for (const { v, g } of grads) out[rowAt * nVars + v] = out[rowAt * nVars + v]! + g;
     },
   };
 }

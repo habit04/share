@@ -265,21 +265,18 @@ export function validateConstraints(entities: readonly Entity[], set: Constraint
       const [s0, s1] = sides as [Side, Side];
       if (anchorKey(s0.entity, s0.ref) === anchorKey(s1.entity, s1.ref)) {
         problems.push({ code: 'self-reference', constraintId: c.id, message: `Constraint '${c.id}' references the same anchor twice.` });
-      } else if (
-        c.kind === 'coincident' &&
-        s0.entity === s1.entity &&
-        s0.entity.type === 'polyline' &&
-        s0.entity.closed &&
-        [s0, s1].every((s) => s.ref.anchor === 'vertex') &&
-        new Set([s0, s1].map((s) => s.ref.index! % s0.entity.points.length)).size === 2 &&
-        [s0, s1].some((s) => s.ref.index! % s0.entity.points.length === 0) &&
-        [s0, s1].some((s) => s.ref.index! % s0.entity.points.length === s0.entity.points.length - 1)
-      ) {
-        problems.push({
-          code: 'invalid-anchor',
-          constraintId: c.id,
-          message: `Constraint '${c.id}' joins vertex 0 and vertex ${s0.entity.points.length - 1} of the same closed polyline; closure is the 'closed' flag, not a shared vertex.`,
-        });
+      } else if (c.kind === 'coincident' && s0.entity === s1.entity && s0.entity.type === 'polyline' && s0.entity.closed) {
+        const poly = s0.entity;
+        const n = poly.points.length;
+        const i0 = s0.ref.anchor === 'vertex' && s0.ref.index !== undefined ? s0.ref.index % n : -1;
+        const i1 = s1.ref.anchor === 'vertex' && s1.ref.index !== undefined ? s1.ref.index % n : -1;
+        if (i0 >= 0 && i1 >= 0 && i0 !== i1 && (i0 === 0 || i1 === 0) && (i0 === n - 1 || i1 === n - 1)) {
+          problems.push({
+            code: 'invalid-anchor',
+            constraintId: c.id,
+            message: `Constraint '${c.id}' joins vertex 0 and vertex ${n - 1} of the same closed polyline; closure is the 'closed' flag, not a shared vertex.`,
+          });
+        }
       }
     }
 
