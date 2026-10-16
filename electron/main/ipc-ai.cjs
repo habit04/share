@@ -36,25 +36,33 @@ function aiDir() {
 }
 
 /**
+ * @typedef {object} AiRuntimeOverrides
+ * @property {object} [safeStorage]  Electron safeStorage (tests inject a fake)
+ * @property {(url: string, init: object) => Promise<object>} [fetchImpl]
+ * @property {string} [dir]  AI state directory (defaults to <userData>/ai)
+ * @property {(filePath: string, data: Buffer) => Promise<void>} [writeFileAtomic]
+ * @property {object} [app]  Electron app (lifecycle hooks; registerAiIpc only)
+ */
+
+/**
  * Build the production AI service over real Electron/OS dependencies.
  * `overrides` exists for tests (fake safeStorage/fetch/base dir/writer);
  * production passes nothing and Electron values are read lazily so this
  * module can be required outside an app context.
- * @param {{ safeStorage?: object, fetchImpl?: Function, dir?: string,
- *           writeFileAtomic?: Function }} [overrides]
+ * @param {AiRuntimeOverrides} [overrides]
  */
 function createAiRuntime(overrides = {}) {
   const dir = overrides.dir ?? aiDir();
   fs.mkdirSync(dir, { recursive: true });
   const writeFileAtomic = overrides.writeFileAtomic
-    ?? ((target, data) => atomicWriteFile(target, data));
+    ?? (async (target, data) => { await atomicWriteFile(target, data); });
   const seams = {
     writeFileAtomic,
     readFile: (target) => fs.readFileSync(target),
     removeFile: (target) => { fs.unlinkSync(target); },
     fileExists: (target) => fs.existsSync(target),
   };
-  const safeStorage = overrides.safeStorage ?? require('electron').safeStorage;
+  const safeStorage = /** @type {any} */ (overrides.safeStorage ?? require('electron').safeStorage);
   const keyStore = createAiKeyStore({
     safeStorage,
     filePath: path.join(dir, 'openai-key.bin'),
@@ -64,11 +72,13 @@ function createAiRuntime(overrides = {}) {
     filePath: path.join(dir, 'config.json'),
     ...seams,
   });
-  const fetchImpl = overrides.fetchImpl ?? ((...args) => globalThis.fetch(...args));
+  const fetchImpl = overrides.fetchImpl ?? ((url, init) => /** @type {any} */ (globalThis.fetch)(url, init));
   const service = createAiService({
     configStore,
     keyStore,
-    transportFactory: ({ model, apiKey }) => createOpenAiTransport({ apiKey, model, fetchImpl }),
+    transportFactory: ({ model, apiKey }) => createOpenAiTransport({
+      apiKey, model, fetchImpl: /** @type {any} */ (fetchImpl),
+    }),
   });
   return { service, keyStore, configStore, dir };
 }
@@ -76,10 +86,12 @@ function createAiRuntime(overrides = {}) {
 /** Map any failure to the bounded IPC error payload. */
 function errorPayload(cause) {
   if (cause instanceof AiHostError) {
+    // The transport attaches a bounded retryAfterSeconds to its errors.
+    const retry = /** @type {AiHostError & { retryAfterSeconds?: unknown }} */ (cause).retryAfterSeconds;
     return {
       kind: cause.kind,
       message: cause.message,
-      ...(typeof cause.retryAfterSeconds === 'number' ? { retryAfterSeconds: cause.retryAfterSeconds } : {}),
+      ...(typeof retry === 'number' ? { retryAfterSeconds: retry } : {}),
     };
   }
   // Unexpected failures get a fixed message: internal detail, provider
@@ -102,8 +114,7 @@ function respond(fn) {
  * Register the AI channels on the guarded context. Returns the runtime
  * for the caller's lifecycle management (and for tests).
  * @param {import('./context.cjs').MainContext} ctx
- * @param {{ safeStorage?: object, fetchImpl?: Function, dir?: string,
- *           writeFileAtomic?: Function, app?: object }} [overrides]
+ * @param {AiRuntimeOverrides} [overrides]
  */
 function registerAiIpc(ctx, overrides = {}) {
   const { ipcMain } = ctx;

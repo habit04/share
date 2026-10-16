@@ -151,8 +151,7 @@ describe('ai IPC registration (guarded context)', () => {
       encryptString: (plain: string) => Buffer.from(`enc:${[...plain].reverse().join('')}`, 'utf8'),
       decryptString: (cipher: Buffer) => [...cipher.toString('utf8').slice(4)].reverse().join(''),
     };
-    const { registerAiIpc: register2 } = require('../electron/main/ipc-ai.cjs') as typeof import('../electron/main/ipc-ai.cjs');
-    register2(ctx2, { dir, safeStorage, fetchImpl: async () => completedResponse('Back.'), app: { on: () => {} } });
+    registerAiIpc(ctx2, { dir, safeStorage, fetchImpl: async () => completedResponse('Back.'), app: { on: () => {} } });
     const getState = handlers2.get('ai-get-state')!;
     const state = await getState({});
     expect(state).toMatchObject({ ok: true, state: { keyPresent: true, keySource: 'stored' } });
