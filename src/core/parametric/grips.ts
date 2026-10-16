@@ -30,7 +30,7 @@ import type { DrawingState } from '../document';
 import * as g from '../geometry';
 import type { Point } from '../geometry';
 import type { AngleParameter, LinearDistanceParameter } from './definitions';
-import { validateInstanceValues } from './instance';
+import { resolvedEffectiveValues } from './evaluate';
 import { setDynamicParameter, type SetDynamicParameterProblem } from './apply';
 
 /**
@@ -73,8 +73,12 @@ type GripParameter = LinearDistanceParameter | AngleParameter;
 export function dynamicGrips(ins: InsertEntity, block: BlockDef): readonly DynamicGrip[] {
   const definition = block.dynamic;
   if (!definition || block.dynamicRetained !== undefined || ins.dynamicRetained !== undefined) return [];
-  const validation = validateInstanceValues(definition, ins.dynamic, ins.block);
-  if (!validation.ok) return [];
+  // Grip positions anchor at the lookup-RESOLVED values (review R11) —
+  // the same values geometry is evaluated from — not the raw stored map:
+  // under an active lookup row a covered parameter's grip sits at the
+  // row's value, where the evaluated geometry actually is.
+  const resolution = resolvedEffectiveValues(definition, ins.dynamic, ins.block);
+  if (!resolution.ok) return [];
   const grips: DynamicGrip[] = [];
   for (const param of definition.parameters) {
     // flip / visibility / lookup parameters carry no `grips` list and get no
@@ -82,12 +86,12 @@ export function dynamicGrips(ins: InsertEntity, block: BlockDef): readonly Dynam
     if (param.kind !== 'linear-distance' && param.kind !== 'angle') continue;
     if (!param.grips.some((grip) => grip.role === 'value')) continue;
     if (param.kind === 'linear-distance') {
-      const eff = validation.effective[param.id];
+      const eff = resolution.resolved[param.id];
       const value = eff?.kind === 'distance' ? eff.value : param.defaultValue;
       const unit = unitDirection(param);
       grips.push({ parameterId: param.id, kind: param.kind, localPoint: g.add(param.basePoint, g.scale(unit, value)) });
     } else if (param.kind === 'angle') {
-      const eff = validation.effective[param.id];
+      const eff = resolution.resolved[param.id];
       const value = eff?.kind === 'angle' ? eff.value : param.defaultValue;
       grips.push({ parameterId: param.id, kind: param.kind, localPoint: g.polar(param.basePoint, value, ANGLE_GRIP_RADIUS) });
     }

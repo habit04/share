@@ -61,7 +61,7 @@ const insert = (over: Partial<InsertEntity> = {}): InsertEntity => ({
 });
 
 describe('dynamicParameterRows', () => {
-  it('one row per parameter with its effective (stored) value', () => {
+  it('one row per parameter with its effective value — lookup-resolved (review R11)', () => {
     const ins = insert({
       dynamic: {
         block: 'PROPS',
@@ -74,8 +74,13 @@ describe('dynamicParameterRows', () => {
         },
       },
     });
+    // The stored row 'Wide' sets width 18, shadowing the raw stored 14:
+    // geometry evaluates 18, so the row shows 18 (before R11 this test
+    // pinned the raw 14 — the exact display/geometry divergence the
+    // review flagged). Parameters the row does not cover show their
+    // stored values as before.
     expect(dynamicParameterRows(block(), ins)).toEqual([
-      { kind: 'distance', id: 'width', name: 'Width', value: 14 },
+      { kind: 'distance', id: 'width', name: 'Width', value: 18 },
       { kind: 'angle', id: 'swing', name: 'Swing', value: 0.25 },
       { kind: 'flip', id: 'handed', name: 'Handed', value: true },
       { kind: 'visibility', id: 'vis', name: 'Visibility', value: 'Open', options: ['Open', 'Closed'] },

@@ -15,7 +15,7 @@
 import type { Drawing } from '../core/document';
 import type { BlockDef, InsertEntity } from '../core/entities';
 import { setDynamicParameter, type DynamicParameterEditValue } from '../core/parametric/apply';
-import { matchingLookupRow } from '../core/parametric/evaluate';
+import { matchingLookupRow, resolvedEffectiveValues } from '../core/parametric/evaluate';
 import { validateInstanceValues } from '../core/parametric/instance';
 
 export type DynamicParameterRow =
@@ -55,9 +55,18 @@ export function dynamicParameterRows(block: BlockDef, ins: InsertEntity): Dynami
   }
   const validation = validateInstanceValues(definition, ins.dynamic, ins.block);
   const effective = validation.ok ? validation.effective : undefined;
+  // Rows display the lookup-RESOLVED values (review R11) — the values
+  // geometry is evaluated from — so a parameter covered by the active
+  // row shows the row's value, not its shadowed raw stored one. The one
+  // exception is the lookup parameter's own row, whose display contract
+  // (stored choice -> default row -> matched row -> Custom) is defined
+  // over the RAW effective values; matchingLookupRow likewise reads the
+  // raw map, by its own contract.
+  const resolution = validation.ok ? resolvedEffectiveValues(definition, ins.dynamic, ins.block) : undefined;
+  const resolved = resolution?.ok ? resolution.resolved : undefined;
   const rows: DynamicParameterRow[] = [];
   for (const param of definition.parameters) {
-    const eff = effective?.[param.id];
+    const eff = (param.kind === 'lookup' ? effective : resolved)?.[param.id];
     switch (param.kind) {
       case 'linear-distance':
         rows.push({ kind: 'distance', id: param.id, name: param.name, value: eff?.kind === 'distance' ? eff.value : param.defaultValue });

@@ -356,6 +356,78 @@ export function matchingLookupRow(
   return undefined;
 }
 
+/**
+ * The one value resolution every consumer shares (review R11): instance
+ * validation, then the lookup override pass (design §2.6). `effective` is
+ * the raw validated map (stored values, defaults filled in); `resolved`
+ * is `effective` with the active lookup row's key and assignments applied
+ * — the values geometry is evaluated from. When the definition has a
+ * lookup parameter whose effective choice names a row, the row wins;
+ * direct values under an active row are shadowed, not deleted (remove
+ * the choice and they rule again, unchanged). Key and assignments are
+ * disjoint by definition validation, and every value they inject was
+ * validated against its target parameter at definition time, so the
+ * override is total and cannot produce an invalid effective value.
+ *
+ * Grip positions, Properties rows and command prompts MUST read
+ * `resolved` (through this function), never the raw map: before R11 they
+ * read the raw values, so a covered parameter displayed its shadowed
+ * stored value while geometry used the row's — three surfaces, two
+ * truths. `evaluateDynamicBlock` itself derives its `finalEffective`
+ * here, so the surfaces cannot drift apart again.
+ */
+export type EffectiveValuesResolution =
+  | {
+      readonly ok: true;
+      /** Raw effective values (stored, else definition defaults). */
+      readonly effective: Readonly<Record<string, DynamicParameterValue>>;
+      /** Lookup-resolved values — geometry's values. The SAME object as
+       *  `effective` when no row applies. */
+      readonly resolved: Readonly<Record<string, DynamicParameterValue>>;
+      /** The applied row's name, when a row produced `resolved`. */
+      readonly appliedRow?: string;
+      /** Parameters whose resolved value came from the applied row. */
+      readonly rowSetParameters: ReadonlySet<string>;
+      /** Declared (always undefined) so union access typechecks under
+       *  tsconfig.scripts.json (strictNullChecks off) — review R01. */
+      readonly issues?: undefined;
+    }
+  | {
+      readonly ok: false;
+      readonly issues: readonly InstanceIssue[];
+      /** Declared (always undefined) so union access typechecks under
+       *  tsconfig.scripts.json (strictNullChecks off) — review R01. */
+      readonly effective?: undefined;
+      readonly resolved?: undefined;
+      readonly appliedRow?: undefined;
+      readonly rowSetParameters?: undefined;
+    };
+
+export function resolvedEffectiveValues(
+  definition: DynamicBlockDefinition,
+  instance: DynamicInstanceState | undefined,
+  blockName?: string,
+): EffectiveValuesResolution {
+  const validation = validateInstanceValues(definition, instance, blockName);
+  if (!validation.ok) return { ok: false, issues: validation.issues };
+  const effective = validation.effective;
+  const lookup = definition.parameters.find((p): p is LookupParameter => p.kind === 'lookup');
+  if (!lookup) return { ok: true, effective, resolved: effective, rowSetParameters: new Set<string>() };
+  const choice = effective[lookup.id];
+  const rowName = choice && choice.kind === 'lookup' ? choice.value : null;
+  if (rowName === null) return { ok: true, effective, resolved: effective, rowSetParameters: new Set<string>() };
+  // Instance validation guarantees the named row exists.
+  const row = lookup.rows.find((r) => r.name === rowName)!;
+  const rowSetParameters = new Set<string>([...Object.keys(row.key), ...Object.keys(row.assignments)]);
+  return {
+    ok: true,
+    effective,
+    resolved: { ...effective, ...row.key, ...row.assignments },
+    appliedRow: rowName,
+    rowSetParameters,
+  };
+}
+
 export function evaluateDynamicBlock(
   definition: DynamicBlockDefinition,
   baseEntities: readonly Entity[],
@@ -376,51 +448,34 @@ export function evaluateDynamicBlock(
     });
   }
 
-  // 2. Instance validation.
-  const validation = validateInstanceValues(definition, instance);
-  if (!validation.ok) {
+  // 2. Instance validation + 3. the lookup override pass (design §2.6):
+  //    a single resolution over values, before any geometry, via the
+  //    shared accessor (review R11) — finalEffective is its `resolved`
+  //    map. Everything downstream — grip positions in dependency
+  //    derivation, action deltas, the visibility filter — reads
+  //    finalEffective only; the raw effective map is used for exactly one
+  //    thing: the 'value-defaulted' diagnostic is suppressed for
+  //    parameters the active row sets (their value did not come from a
+  //    default, and reporting "default used" would be false).
+  const resolution = resolvedEffectiveValues(definition, instance);
+  if (!resolution.ok) {
     return refuse({
       code: 'invalid-instance',
-      message: `Invalid dynamic instance values: ${validation.issues.map((i) => i.message).join(' ')}`,
-      instanceIssues: validation.issues,
+      message: `Invalid dynamic instance values: ${resolution.issues.map((i) => i.message).join(' ')}`,
+      instanceIssues: resolution.issues,
     });
   }
-  const effective = validation.effective;
-
-  // 3. Lookup override pass (design §2.6): a single pass over values, before
-  //    any geometry. When the definition has a lookup parameter whose
-  //    effective choice names a row, finalEffective = {...effective,
-  //    ...row.key, ...row.assignments} — the row wins; direct values under an
-  //    active row are shadowed, not deleted (remove the choice and they rule
-  //    again, unchanged). Key and assignments are disjoint by definition
-  //    validation, and every value they inject was validated against its
-  //    target parameter at definition time, so the override is total and
-  //    cannot produce an invalid effective value. Everything downstream —
-  //    grip positions in dependency derivation, action deltas, the
-  //    visibility filter — reads finalEffective only; the raw effective map
-  //    is used for exactly one thing: the 'value-defaulted' diagnostic is
-  //    suppressed for parameters the active row sets (their value did not
-  //    come from a default, and reporting "default used" would be false).
+  const finalEffective = resolution.resolved;
+  const rowSetParameters = resolution.rowSetParameters;
   const diagnostics: EvaluationDiagnostic[] = [];
-  const lookup = definition.parameters.find((p): p is LookupParameter => p.kind === 'lookup');
-  let finalEffective = effective;
-  const rowSetParameters = new Set<string>();
-  if (lookup) {
-    const choice = effective[lookup.id];
-    const rowName = choice && choice.kind === 'lookup' ? choice.value : null;
-    if (rowName !== null) {
-      // Instance validation (step 2) guarantees the named row exists.
-      const row = lookup.rows.find((r) => r.name === rowName)!;
-      finalEffective = { ...effective, ...row.key, ...row.assignments };
-      for (const id of Object.keys(row.key)) rowSetParameters.add(id);
-      for (const id of Object.keys(row.assignments)) rowSetParameters.add(id);
-      diagnostics.push({
-        severity: 'info',
-        code: 'lookup-applied',
-        message: `Lookup parameter '${lookup.id}' applied row '${rowName}', setting: ${[...rowSetParameters].sort().join(', ')}.`,
-        parameterId: lookup.id,
-      });
-    }
+  if (resolution.appliedRow !== undefined) {
+    const lookup = definition.parameters.find((p): p is LookupParameter => p.kind === 'lookup')!;
+    diagnostics.push({
+      severity: 'info',
+      code: 'lookup-applied',
+      message: `Lookup parameter '${lookup.id}' applied row '${resolution.appliedRow}', setting: ${[...rowSetParameters].sort().join(', ')}.`,
+      parameterId: lookup.id,
+    });
   }
 
   // 4. Opaque members: retained, never interpreted; evaluation refuses whole.

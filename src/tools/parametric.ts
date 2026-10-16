@@ -16,9 +16,8 @@
  */
 import type { InsertEntity } from '../core/entities';
 import type { DynamicParameter, OpaqueParameter } from '../core/parametric/definitions';
-import { setDynamicParameter, type DynamicParameterEditValue } from '../core/parametric/apply';
-import { validateInstanceValues } from '../core/parametric/instance';
-import { matchingLookupRow } from '../core/parametric/evaluate';
+import { setDynamicParameter, type DynamicParameterEditValue, type SetDynamicParameterResult } from '../core/parametric/apply';
+import { matchingLookupRow, resolvedEffectiveValues } from '../core/parametric/evaluate';
 import type { Tool } from './types';
 import { scriptTool, text, number, keyword, select, dflt } from './script';
 
@@ -69,8 +68,14 @@ export function dynSetTool(): Tool {
       ctx.log(`Block "${ins.block}" has no editable parameters.`);
       return;
     }
-    const validation = validateInstanceValues(definition, ins.dynamic, ins.block);
-    const effOf = (id: string) => (validation.ok ? validation.effective[id] : undefined);
+    // Prompts show the lookup-RESOLVED values (review R11) — the values
+    // geometry is evaluated from — so a parameter covered by the active
+    // row prompts at the row's value, not its shadowed raw stored one.
+    // (The lookup parameter's own display reads its choice from the same
+    // resolved map: a row never sets the lookup parameter itself, and
+    // row-matching is defined over the raw effective values.)
+    const resolution = resolvedEffectiveValues(definition, ins.dynamic, ins.block);
+    const effOf = (id: string) => (resolution.ok ? resolution.resolved[id] : undefined);
     /** The current value the way the prompts show it (defaults when stored values are invalid). */
     const displayOf = (p: EditableParameter): string => {
       const eff = effOf(p.id);
@@ -86,7 +91,7 @@ export function dynSetTool(): Tool {
         case 'lookup': {
           const stored = eff?.kind === 'lookup' ? eff.value : undefined;
           if (stored) return stored;
-          const matched = validation.ok ? matchingLookupRow(p, validation.effective) : undefined;
+          const matched = resolution.ok ? matchingLookupRow(p, resolution.effective) : undefined;
           return matched ?? 'Custom';
         }
       }
