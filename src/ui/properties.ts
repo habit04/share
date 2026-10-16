@@ -1,5 +1,7 @@
 import type { Editor } from '../app/editor';
-import type { ColorSpec, Entity } from '../core/entities';
+import type { ColorSpec, Entity, InsertEntity } from '../core/entities';
+import type { DynamicParameterEditValue } from '../core/parametric/apply';
+import { dynamicParameterRows, setDynamicParameterValue, type DynamicParameterRow } from '../tools/parametric-properties';
 import { splinePoints, imageLabel, textWidth, translateEntity, rotateEntity } from '../core/entities';
 import { textAnchor, textJustification } from '../core/text-placement';
 import * as g from '../core/geometry';
@@ -278,6 +280,17 @@ export class PropertiesPalette {
         b.appendChild(this.row('Rows', arrayInput(e.rows ?? 1, (n) => Number.isSafeInteger(n) && n > 0 && n <= 65535 && patch({ rows: n }))));
         b.appendChild(this.row('Column spacing', arrayInput(e.columnSpacing ?? 0, (n) => patch({ columnSpacing: n }))));
         b.appendChild(this.row('Row spacing', arrayInput(e.rowSpacing ?? 0, (n) => patch({ rowSpacing: n }))));
+        if (block && (block.dynamic || block.dynamicRetained !== undefined)) {
+          // Dynamic-block parameters (30.4): rows from the pure builder in
+          // tools/parametric-properties.ts; commits go through
+          // setDynamicParameter, never through the entity `patch` above —
+          // a parameter edit is a document transition, not a field write.
+          const dynRows = dynamicParameterRows(block, e);
+          if (dynRows.length) {
+            b.appendChild(this.section('Parameters'));
+            for (const r of dynRows) b.appendChild(this.dynamicParameterRow(e, r));
+          }
+        }
         if (block && block.attributes.length) {
           b.appendChild(this.section('Attributes'));
           for (const a of block.attributes) {
@@ -357,6 +370,43 @@ export class PropertiesPalette {
         b.appendChild(this.row('Height', num(Math.hypot(e.v.x, e.v.y) * e.size.y)));
         b.appendChild(this.row('Clipped', e.clipOn ? 'Yes' : 'No'));
         break;
+    }
+  }
+
+  /**
+   * One row of the dynamic Parameters section. Distance/angle are numeric
+   * inputs (angles shown in degrees, the palette convention; the model
+   * value is radians), flip a toggle, visibility a state choice, lookup a
+   * row choice with a Custom entry. Every commit routes through
+   * setDynamicParameterValue (apply.ts); a refusal is logged there and
+   * the re-render shows the unchanged stored value.
+   */
+  private dynamicParameterRow(e: InsertEntity, row: DynamicParameterRow): HTMLElement {
+    const commit = (value: DynamicParameterEditValue) => {
+      setDynamicParameterValue(this.editor, e.id, row.id, value);
+      this.render();
+    };
+    switch (row.kind) {
+      case 'distance':
+        return this.row(row.name, this.input(row.value.toFixed(4), (s) => {
+          const n = parseFloat(s);
+          if (Number.isFinite(n)) commit(n);
+          else this.render();
+        }));
+      case 'angle':
+        return this.row(row.name, this.input(((row.value * 180) / Math.PI).toFixed(4), (s) => {
+          const n = parseFloat(s);
+          if (Number.isFinite(n)) commit((n * Math.PI) / 180);
+          else this.render();
+        }));
+      case 'flip':
+        return this.row(row.name, this.select([['1', 'Flipped'], ['0', 'Not flipped']], row.value ? '1' : '0', (v) => commit(v === '1')));
+      case 'visibility':
+        return this.row(row.name, this.select(row.options.map((o): [string, string] => [o, o]), row.value, (v) => commit(v)));
+      case 'lookup':
+        return this.row(row.name, this.select([['', 'Custom'], ...row.options.map((o): [string, string] => [o, o])], row.value ?? '', (v) => commit(v === '' ? null : v)));
+      case 'note':
+        return this.row(row.name, row.text);
     }
   }
 
