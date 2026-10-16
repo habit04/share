@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { WindowAiConnection, aiErrorFromPayload, type AiPreloadBridge } from '../src/ai/host-bridge';
-import { AiError, type AiAskRequest } from '../src/ai/types';
+import { AiError, type AiAskRequest, type AiDraftRequest } from '../src/ai/types';
 
 const state = {
   provider: 'openai', model: 'gpt-5', enabled: true, keyPersistence: 'session' as const,
@@ -8,6 +8,20 @@ const state = {
 };
 
 const request = { requestId: 'ai-salt-1', question: 'q', snapshot: {}, binding: {} } as unknown as AiAskRequest;
+
+const planValue = {
+  outcome: 'proposal', message: null,
+  operations: [{
+    op: 'createLine', a: { x: 0, y: 0 }, b: { x: 10, y: 0 },
+    center: null, radius: null, origin: null, width: null, height: null,
+    rotationDeg: null, layer: null, targetIds: null, dx: null, dy: null,
+    pivot: null, angleDeg: null,
+  }],
+};
+
+const draftRequest = {
+  requestId: 'ai-salt-draft-1', prompt: 'draw a line', contextJson: '{}', binding: {},
+} as unknown as AiDraftRequest;
 
 function fakeRaw(over: Partial<AiPreloadBridge> = {}): AiPreloadBridge {
   return {
@@ -19,6 +33,14 @@ function fakeRaw(over: Partial<AiPreloadBridge> = {}): AiPreloadBridge {
     setEnabled: async () => ({ ok: true, state }),
     testConnection: async () => ({ ok: true, probe: { model: 'gpt-5' } }),
     ask: async () => ({ ok: true, answer: { text: 'a', references: [] } }),
+    draft: async () => ({
+      ok: true,
+      draft: {
+        value: planValue,
+        usage: { inputBytes: 44, outputChars: 321, durationMs: 12 },
+        providerUsage: { inputTokens: 30, outputTokens: 12 },
+      },
+    }),
     cancel: async () => ({ ok: true, cancelled: true }),
     usage: async () => ({ ok: true, usage: {} }),
     ...over,
@@ -115,5 +137,91 @@ describe('WindowAiConnection', () => {
     const answer = await conn.bridge.ask(request, new AbortController().signal);
     expect(answer.usage).toMatchObject({ inputBytes: 10, inputTokens: 42 });
     expect(frozen.usage).toEqual({ inputBytes: 10 });
+  });
+});
+
+describe('WindowAiConnection draft bridge (milestone 3)', () => {
+  it('returns the host-validated raw plan value with whitelisted usage', async () => {
+    const conn = new WindowAiConnection(fakeRaw());
+    const result = await conn.bridge.draft!(draftRequest, new AbortController().signal);
+    expect(result.response).toEqual(planValue);
+    expect(result.usage).toEqual({ inputBytes: 44, outputChars: 321, durationMs: 12, inputTokens: 30, outputTokens: 12 });
+  });
+
+  it('does not plan-validate: a contract-shaped but invalid plan value passes through untouched', async () => {
+    const oddValue = { outcome: 'proposal', message: null, operations: [{ op: 'explode' }] };
+    const conn = new WindowAiConnection(fakeRaw({
+      draft: async () => ({ ok: true, draft: { value: oddValue } }),
+    }));
+    const result = await conn.bridge.draft!(draftRequest, new AbortController().signal);
+    expect(result.response).toEqual(oddValue);
+    expect(result.usage).toBeUndefined();
+  });
+
+  it('rejects a malformed host draft envelope as invalid-plan', async () => {
+    for (const draft of [null, 'text', [], { usage: {} }, { value: 'not-an-object' }, { value: [] }]) {
+      const conn = new WindowAiConnection(fakeRaw({ draft: async () => ({ ok: true, draft }) }));
+      await expect(conn.bridge.draft!(draftRequest, new AbortController().signal))
+        .rejects.toMatchObject({ kind: 'invalid-plan' });
+    }
+  });
+
+  it('drops malformed usage counters field by field', async () => {
+    const conn = new WindowAiConnection(fakeRaw({
+      draft: async () => ({
+        ok: true,
+        draft: {
+          value: planValue,
+          usage: { inputBytes: -1, outputChars: 3.5, durationMs: 9 },
+          providerUsage: { inputTokens: 7, outputTokens: 'many' },
+        },
+      }),
+    }));
+    const result = await conn.bridge.draft!(draftRequest, new AbortController().signal);
+    expect(result.usage).toEqual({ durationMs: 9, inputTokens: 7 });
+  });
+
+  it('reconstructs host draft errors, including invalid-plan and busy', async () => {
+    const conn = new WindowAiConnection(fakeRaw({
+      draft: async () => ({ ok: false, error: { kind: 'invalid-plan', message: 'The proposal contained an invalid operation.' } }),
+    }));
+    await expect(conn.bridge.draft!(draftRequest, new AbortController().signal))
+      .rejects.toMatchObject({ kind: 'invalid-plan', message: 'The proposal contained an invalid operation.' });
+    expect(aiErrorFromPayload({ kind: 'busy', message: 'The editor is busy.' }).kind).toBe('busy');
+    expect(aiErrorFromPayload({ kind: 'invalid-plan', message: 'Nope.' }).kind).toBe('invalid-plan');
+  });
+
+  it('translates abort into the cancel channel with the draft request id', async () => {
+    const cancel = vi.fn(async () => ({ ok: true as const, cancelled: true }));
+    const conn = new WindowAiConnection(fakeRaw({
+      cancel,
+      draft: async () => new Promise(() => {}),
+    }));
+    const abort = new AbortController();
+    const pending = conn.bridge.draft!(draftRequest, abort.signal);
+    const cancelled = expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
+    abort.abort();
+    expect(cancel).toHaveBeenCalledWith('ai-salt-draft-1');
+    await cancelled;
+  });
+
+  it('settles promptly when the IPC draft call never answers', async () => {
+    const conn = new WindowAiConnection(fakeRaw({
+      draft: async () => new Promise(() => {}),
+    }));
+    const abort = new AbortController();
+    const pending = conn.bridge.draft!(draftRequest, abort.signal);
+    const cancelled = expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
+    abort.abort();
+    await cancelled;
+  });
+
+  it('refuses before invoking when the signal is already aborted', async () => {
+    const draft = vi.fn(async () => ({ ok: true as const, draft: { value: planValue } }));
+    const conn = new WindowAiConnection(fakeRaw({ draft }));
+    const abort = new AbortController();
+    abort.abort();
+    await expect(conn.bridge.draft!(draftRequest, abort.signal)).rejects.toMatchObject({ kind: 'cancelled' });
+    expect(draft).not.toHaveBeenCalled();
   });
 });

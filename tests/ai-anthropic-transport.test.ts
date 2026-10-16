@@ -28,8 +28,16 @@ type ValidatedRequest = {
   binding: { sessionId: number; docId: string; contentGeneration: number; docRevision: number; selectionCount: number };
 };
 type Answer = { text: string; references: string[]; providerUsage?: { inputTokens?: number; outputTokens?: number } };
+type ValidatedDraftRequest = {
+  requestId: number | string;
+  prompt: string;
+  contextJson: string;
+  contextBytes: number;
+};
+type DraftResult = { value: unknown; contentBytes: number; usage?: { inputTokens?: number; outputTokens?: number } };
 type TransportFn = ((request: ValidatedRequest, signal?: AbortSignal) => Promise<Answer>) & {
   probe: (signal?: AbortSignal) => Promise<{ model: string; inputTokens?: number; outputTokens?: number; outputLimited?: boolean }>;
+  draft: (request: ValidatedDraftRequest, signal?: AbortSignal) => Promise<DraftResult>;
 };
 type FetchImpl = (url: string, init: FakeInit) => Promise<FakeResponse>;
 
@@ -542,6 +550,132 @@ describe('ai-anthropic-transport bounded lifecycle regressions', () => {
     };
     await expectKind(makeTransport(async () => response, { maxResponseBytes: 64 })(validatedRequest()), 'output-too-large');
     expect(cancelled).toBe(true);
+  });
+});
+
+const draftPlanValue = {
+  outcome: 'proposal', message: null,
+  operations: [{
+    op: 'createCircle', a: null, b: null, center: { x: 5, y: 5 }, radius: 3,
+    origin: null, width: null, height: null,
+    rotationDeg: null, layer: null, targetIds: null, dx: null, dy: null,
+    pivot: null, angleDeg: null,
+  }],
+};
+
+function draftRequest(over: Partial<ValidatedDraftRequest> = {}): ValidatedDraftRequest {
+  return {
+    requestId: 'ai-salt-draft-1',
+    prompt: 'draw a circle',
+    contextJson: '{"kind":"jcad.ai.draft-context","version":1}',
+    contextBytes: 44,
+    ...over,
+  };
+}
+
+function draftMessage(text: string, over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'msg-draft', type: 'message', role: 'assistant', model: MODEL,
+    stop_reason: 'end_turn', stop_sequence: null,
+    content: [{ type: 'text', text }],
+    usage: { input_tokens: 13, output_tokens: 8 },
+    ...over,
+  };
+}
+
+describe('ai-anthropic-transport draft', () => {
+  it('posts one draft request with the plan schema, no maxItems anywhere, and the 4096-token budget', async () => {
+    const { calls, fetchImpl } = recordingFetch(async () => jsonResponse(200, draftMessage(JSON.stringify(draftPlanValue))));
+    const transport = makeTransport(fetchImpl);
+    const request = draftRequest();
+    await transport.draft(request);
+    expect(calls).toHaveLength(1);
+    const { url, init } = calls[0]!;
+    expect(url).toBe('https://api.anthropic.com/v1/messages');
+    expect(init.method).toBe('POST');
+    expect(init.redirect).toBe('manual');
+    expect(init.headers?.['x-api-key']).toBe(API_KEY);
+    expect(init.headers?.['anthropic-version']).toBe('2023-06-01');
+    const raw = init.body!;
+    const body = JSON.parse(raw) as {
+      model: string; max_tokens: number; system: string;
+      messages: { role: string; content: string }[];
+      output_config: {
+        format: {
+          type: string;
+          schema: {
+            required: string[];
+            properties: {
+              outcome: { enum: string[] };
+              operations: { items: { required: string[]; properties: { op: { enum: string[] } } } };
+            };
+          };
+        };
+      };
+    };
+    expect(body.model).toBe(MODEL);
+    expect(body.max_tokens).toBe(4096);
+    expect(body.system).toContain('drafting engine');
+    expect(body.system).toContain('eligible:true');
+    expect(body.output_config.format.type).toBe('json_schema');
+    // Anthropic rejects maxItems in structured-output schemas: it must
+    // appear nowhere in the schema (the plan bounds are enforced locally).
+    expect(JSON.stringify(body.output_config.format.schema)).not.toContain('maxItems');
+    expect(body.output_config.format.schema.required).toEqual(['outcome', 'message', 'operations']);
+    expect(body.output_config.format.schema.properties.outcome.enum).toEqual(['proposal', 'clarification', 'unsupported']);
+    const operation = body.output_config.format.schema.properties.operations.items;
+    expect(operation.properties.op.enum).toEqual(['createLine', 'createCircle', 'createRectangle', 'move', 'copy', 'rotate', 'delete']);
+    expect(operation.required).toEqual(['op', 'a', 'b', 'center', 'radius', 'origin', 'width', 'height', 'rotationDeg', 'layer', 'targetIds', 'dx', 'dy', 'pivot', 'angleDeg']);
+    // The user content is exactly the prompt plus the exact context JSON.
+    expect(body.messages[0]!.content).toBe(`Request: ${request.prompt}\n\nContext (exact JSON):\n${request.contextJson}`);
+    // Host bookkeeping never reaches the provider.
+    expect(raw).not.toContain('binding');
+    expect(raw).not.toContain('contextBytes');
+    expect(raw).not.toContain(String(request.requestId));
+  });
+
+  it('returns the parsed value unvalidated, with raw content bytes and usage', async () => {
+    const text = JSON.stringify(draftPlanValue);
+    const { fetchImpl } = recordingFetch(async () => jsonResponse(200, draftMessage(text)));
+    const transport = makeTransport(fetchImpl);
+    const result = await transport.draft(draftRequest());
+    expect(result.value).toEqual(draftPlanValue);
+    expect(result.contentBytes).toBe(Buffer.byteLength(text, 'utf8'));
+    expect(result.contentBytes).toBeGreaterThan(0);
+    expect(result.usage).toEqual({ inputTokens: 13, outputTokens: 8 });
+  });
+
+  it('ignores thinking blocks before the single text block', async () => {
+    const text = JSON.stringify(draftPlanValue);
+    const payload = draftMessage(text, {
+      content: [
+        { type: 'thinking', thinking: 'reasoning first' },
+        { type: 'redacted_thinking', data: 'opaque' },
+        { type: 'text', text },
+      ],
+    });
+    const { fetchImpl } = recordingFetch(async () => jsonResponse(200, payload));
+    const transport = makeTransport(fetchImpl);
+    const result = await transport.draft(draftRequest());
+    expect(result.value).toEqual(draftPlanValue);
+  });
+
+  it('maps stop reasons: max_tokens to output-too-large, refusal to refused, others to invalid-answer', async () => {
+    const text = JSON.stringify(draftPlanValue);
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, draftMessage(text, { stop_reason: 'max_tokens' }))).fetchImpl).draft(draftRequest()), 'output-too-large');
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, draftMessage(text, { stop_reason: 'refusal' }))).fetchImpl).draft(draftRequest()), 'refused');
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, draftMessage(text, { stop_reason: 'tool_use' }))).fetchImpl).draft(draftRequest()), 'invalid-answer');
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, draftMessage(text, { type: 'not-a-message' }))).fetchImpl).draft(draftRequest()), 'invalid-answer');
+  });
+
+  it('refuses malformed JSON and multiple text blocks as invalid-answer', async () => {
+    const { fetchImpl } = recordingFetch(async () => jsonResponse(200, draftMessage('{"outcome":')));
+    await expectKind(makeTransport(fetchImpl).draft(draftRequest()), 'invalid-answer');
+    const twoTexts = draftMessage('{}', {
+      content: [{ type: 'text', text: '{"outcome":' }, { type: 'text', text: '"proposal"}' }],
+    });
+    const { fetchImpl: fetch2 } = recordingFetch(async () => jsonResponse(200, twoTexts));
+    await expectKind(makeTransport(fetch2).draft(draftRequest()), 'invalid-answer');
   });
 });
 

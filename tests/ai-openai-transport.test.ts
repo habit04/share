@@ -28,8 +28,16 @@ type ValidatedRequest = {
   binding: { sessionId: number; docId: string; contentGeneration: number; docRevision: number; selectionCount: number };
 };
 type Answer = { text: string; references: string[]; providerUsage?: { inputTokens?: number; outputTokens?: number } };
+type ValidatedDraftRequest = {
+  requestId: number | string;
+  prompt: string;
+  contextJson: string;
+  contextBytes: number;
+};
+type DraftResult = { value: unknown; contentBytes: number; usage?: { inputTokens?: number; outputTokens?: number } };
 type TransportFn = ((request: ValidatedRequest, signal?: AbortSignal) => Promise<Answer>) & {
   probe: (signal?: AbortSignal) => Promise<{ model: string; inputTokens?: number; outputTokens?: number; outputLimited?: boolean }>;
+  draft: (request: ValidatedDraftRequest, signal?: AbortSignal) => Promise<DraftResult>;
 };
 type FetchImpl = (url: string, init: FakeInit) => Promise<FakeResponse>;
 
@@ -499,6 +507,152 @@ describe('ai-openai-transport bounded lifecycle regressions', () => {
     };
     await expectKind(makeTransport(async () => response, { maxResponseBytes: 64 })(validatedRequest()), 'output-too-large');
     expect(cancelled).toBe(true);
+  });
+});
+
+const draftPlanValue = {
+  outcome: 'proposal', message: null,
+  operations: [{
+    op: 'createLine', a: { x: 0, y: 0 }, b: { x: 10, y: 0 },
+    center: null, radius: null, origin: null, width: null, height: null,
+    rotationDeg: null, layer: null, targetIds: null, dx: null, dy: null,
+    pivot: null, angleDeg: null,
+  }],
+};
+
+function draftRequest(over: Partial<ValidatedDraftRequest> = {}): ValidatedDraftRequest {
+  return {
+    requestId: 'ai-salt-draft-1',
+    prompt: 'draw a line',
+    contextJson: '{"kind":"jcad.ai.draft-context","version":1}',
+    contextBytes: 44,
+    ...over,
+  };
+}
+
+function draftPayload(text: string, usage?: { input_tokens: number; output_tokens: number }): Record<string, unknown> {
+  return {
+    id: 'resp-draft', status: 'completed', model: MODEL,
+    output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }],
+    ...(usage ? { usage } : {}),
+  };
+}
+
+describe('ai-openai-transport draft', () => {
+  it('posts one draft request with the strict plan schema and the 4096-token budget', async () => {
+    const { calls, fetchImpl } = recordingFetch(async () => jsonResponse(200, draftPayload(JSON.stringify(draftPlanValue))));
+    const transport = makeTransport(fetchImpl);
+    const request = draftRequest();
+    await transport.draft(request);
+    expect(calls).toHaveLength(1);
+    const { url, init } = calls[0]!;
+    expect(url).toBe('https://api.openai.com/v1/responses');
+    expect(init.method).toBe('POST');
+    expect(init.redirect).toBe('manual');
+    expect(init.headers?.Authorization).toBe(`Bearer ${API_KEY}`);
+    const raw = init.body!;
+    const body = JSON.parse(raw) as {
+      model: string; store: boolean; max_output_tokens: number; instructions: string;
+      input: { role: string; content: { type: string; text: string }[] }[];
+      text: {
+        format: {
+          type: string; name: string; strict: boolean;
+          schema: {
+            required: string[];
+            properties: {
+              outcome: { enum: string[] };
+              operations: {
+                maxItems: number;
+                items: {
+                  required: string[];
+                  properties: { op: { enum: string[] }; targetIds: { maxItems: number } };
+                };
+              };
+            };
+          };
+        };
+      };
+    };
+    expect(body.model).toBe(MODEL);
+    expect(body.store).toBe(false);
+    expect(body.max_output_tokens).toBe(4096);
+    expect(body.instructions).toContain('drafting engine');
+    expect(body.instructions).toContain('eligible:true');
+    expect(body.text.format.type).toBe('json_schema');
+    expect(body.text.format.name).toBe('jcad_draft_plan');
+    expect(body.text.format.strict).toBe(true);
+    expect(body.text.format.schema.required).toEqual(['outcome', 'message', 'operations']);
+    expect(body.text.format.schema.properties.outcome.enum).toEqual(['proposal', 'clarification', 'unsupported']);
+    expect(body.text.format.schema.properties.operations.maxItems).toBe(64);
+    const operation = body.text.format.schema.properties.operations.items;
+    expect(operation.properties.op.enum).toEqual(['createLine', 'createCircle', 'createRectangle', 'move', 'copy', 'rotate', 'delete']);
+    expect(operation.properties.targetIds.maxItems).toBe(200);
+    expect(operation.required).toEqual(['op', 'a', 'b', 'center', 'radius', 'origin', 'width', 'height', 'rotationDeg', 'layer', 'targetIds', 'dx', 'dy', 'pivot', 'angleDeg']);
+    // The user content is exactly the prompt plus the exact context JSON.
+    expect(body.input[0]!.content[0]!.text).toBe(`Request: ${request.prompt}\n\nContext (exact JSON):\n${request.contextJson}`);
+    // Host bookkeeping never reaches the provider.
+    expect(raw).not.toContain('binding');
+    expect(raw).not.toContain('contextBytes');
+    expect(raw).not.toContain(String(request.requestId));
+  });
+
+  it('returns the parsed value unvalidated, with raw content bytes and usage', async () => {
+    const text = JSON.stringify(draftPlanValue);
+    const { fetchImpl } = recordingFetch(async () => jsonResponse(200, draftPayload(text, { input_tokens: 21, output_tokens: 9 })));
+    const transport = makeTransport(fetchImpl);
+    const result = await transport.draft(draftRequest());
+    expect(result.value).toEqual(draftPlanValue);
+    expect(result.contentBytes).toBe(Buffer.byteLength(text, 'utf8'));
+    expect(result.contentBytes).toBeGreaterThan(0);
+    expect(result.usage).toEqual({ inputTokens: 21, outputTokens: 9 });
+  });
+
+  it('counts UTF-8 content bytes, not characters', async () => {
+    const value = { outcome: 'clarification', message: '¿Qué tamaño?', operations: null };
+    const text = JSON.stringify(value);
+    const { fetchImpl } = recordingFetch(async () => jsonResponse(200, draftPayload(text)));
+    const transport = makeTransport(fetchImpl);
+    const result = await transport.draft(draftRequest());
+    expect(result.value).toEqual(value);
+    expect(result.contentBytes).toBe(Buffer.byteLength(text, 'utf8'));
+    expect(result.contentBytes).toBeGreaterThan(text.length);
+  });
+
+  it('maps a refusal part to refused', async () => {
+    const payload = {
+      id: 'resp-draft', status: 'completed', model: MODEL,
+      output: [{ type: 'message', role: 'assistant', content: [{ type: 'refusal', refusal: 'no' }] }],
+    };
+    const { fetchImpl } = recordingFetch(async () => jsonResponse(200, payload));
+    await expectKind(makeTransport(fetchImpl).draft(draftRequest()), 'refused');
+  });
+
+  it('maps incomplete drafts: token limit to output-too-large, filter to refused, other to invalid-answer', async () => {
+    const incomplete = (reason: string) => ({
+      id: 'resp-draft', status: 'incomplete', model: MODEL, incomplete_details: { reason }, output: [],
+    });
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, incomplete('max_output_tokens'))).fetchImpl).draft(draftRequest()), 'output-too-large');
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, incomplete('content_filter'))).fetchImpl).draft(draftRequest()), 'refused');
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, incomplete('other'))).fetchImpl).draft(draftRequest()), 'invalid-answer');
+  });
+
+  it('maps a failed status to provider-failure', async () => {
+    const { fetchImpl } = recordingFetch(async () => jsonResponse(200, { id: 'resp-draft', status: 'failed', model: MODEL, output: [] }));
+    await expectKind(makeTransport(fetchImpl).draft(draftRequest()), 'provider-failure');
+  });
+
+  it('refuses malformed JSON and split output as invalid-answer', async () => {
+    const { fetchImpl } = recordingFetch(async () => jsonResponse(200, draftPayload('{"outcome":')));
+    await expectKind(makeTransport(fetchImpl).draft(draftRequest()), 'invalid-answer');
+    const split = {
+      id: 'resp-draft', status: 'completed', model: MODEL,
+      output: [{ type: 'message', role: 'assistant', content: [
+        { type: 'output_text', text: '{"outcome":' },
+        { type: 'output_text', text: '"proposal"}' },
+      ] }],
+    };
+    const { fetchImpl: fetch2 } = recordingFetch(async () => jsonResponse(200, split));
+    await expectKind(makeTransport(fetch2).draft(draftRequest()), 'invalid-answer');
   });
 });
 

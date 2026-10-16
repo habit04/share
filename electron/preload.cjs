@@ -88,6 +88,7 @@ contextBridge.exposeInMainWorld('jcad', {
     setEnabled: (enabled) => ipcRenderer.invoke('ai-set-enabled', enabled === true),
     testConnection: () => ipcRenderer.invoke('ai-test-connection'),
     ask: (request) => ipcRenderer.invoke('ai-ask', request),
+    draft: (request) => ipcRenderer.invoke('ai-draft', request),
     cancel: (requestId) => ipcRenderer.invoke('ai-cancel', String(requestId ?? '')),
     usage: () => ipcRenderer.invoke('ai-usage'),
   },

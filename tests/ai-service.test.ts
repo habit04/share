@@ -34,6 +34,10 @@ interface ServiceShape {
   ask: (value: unknown, signal?: AbortSignal) => Promise<{
     text: string; references: string[]; providerUsage?: { inputTokens?: number; outputTokens?: number }; usage: unknown;
   }>;
+  draft: (value: unknown, signal?: AbortSignal) => Promise<{
+    value: unknown; usage: { inputBytes: number; outputChars: number; durationMs: number };
+    providerUsage?: { inputTokens?: number; outputTokens?: number };
+  }>;
   cancel: (requestId: number | string) => boolean;
   cancelAll: () => number;
   usage: () => Record<string, number>;
@@ -53,6 +57,37 @@ const CONFIG_PATH = '/data/ai-config.json';
 
 type TransportImpl = (request: unknown, signal: AbortSignal) => Promise<unknown>;
 type ProbeImpl = (signal: AbortSignal) => Promise<unknown>;
+type DraftImpl = (provider: string, request: unknown, signal: AbortSignal) => Promise<unknown>;
+
+const draftPlanValue = {
+  outcome: 'proposal', message: null,
+  operations: [{
+    op: 'createLine', a: { x: 0, y: 0 }, b: { x: 10, y: 0 },
+    center: null, radius: null, origin: null, width: null, height: null,
+    rotationDeg: null, layer: null, targetIds: null, dx: null, dy: null,
+    pivot: null, angleDeg: null,
+  }],
+};
+
+function draftEnvelope(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    requestId: 'ai-salt-draft-1',
+    destination: { provider: 'openai', model: 'gpt-5' },
+    prompt: 'draw a line',
+    contextJson: '{"kind":"jcad.ai.draft-context","version":1}',
+    binding: {
+      ask: {
+        sessionId: 1, docId: 'doc-1', contentGeneration: 1, docRevision: 7, docLoadCount: 1,
+        space: { layout: null, viewport: null }, selectionIds: ['e-line'],
+      },
+      unitsKey: '1|2|4',
+      defaultsKey: '{"layer":"0","color":"ByLayer"}',
+      eligibilityKey: 'e-line=1',
+      configKey: 'openai|gpt-5|0',
+    },
+    ...over,
+  };
+}
 
 function envelope(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -130,20 +165,32 @@ function makeWorld() {
     text: 'Two objects.', references: ['e-line'], providerUsage: { inputTokens: 11, outputTokens: 7 },
   });
   let probeImpl: ProbeImpl | null = async () => ({ inputTokens: 3, outputTokens: 2 });
+  let draftImpl: DraftImpl | null = async () => ({
+    value: draftPlanValue, contentBytes: 321, usage: { inputTokens: 30, outputTokens: 12 },
+  });
+  const draftCalls: { provider: string; request: unknown }[] = [];
   const transportFactory = vi.fn((options: { provider: string; model: string; apiKey: string }) => {
     factoryCalls.push({ ...options });
     const transport = (request: unknown, signal: AbortSignal) => transportImpl(request, signal);
     if (probeImpl) {
       (transport as { probe?: ProbeImpl }).probe = (signal) => probeImpl!(signal);
     }
+    if (draftImpl) {
+      const impl = draftImpl;
+      (transport as { draft?: (request: unknown, signal: AbortSignal) => Promise<unknown> }).draft = (request, signal) => {
+        draftCalls.push({ provider: options.provider, request });
+        return impl(options.provider, request, signal);
+      };
+    }
     return transport;
   });
   const newService = () => createAiService({ configStore, keyStores, transportFactory });
   return {
-    files, fail, writeBlocks, keyStores, configStore, factoryCalls, transportFactory, newService,
+    files, fail, writeBlocks, keyStores, configStore, factoryCalls, transportFactory, newService, draftCalls,
     service: newService(),
     setTransport: (impl: TransportImpl) => { transportImpl = impl; },
     setProbe: (impl: ProbeImpl | null) => { probeImpl = impl; },
+    setDraft: (impl: DraftImpl | null) => { draftImpl = impl; },
     seedConfig: (config: Record<string, unknown>) => {
       files.set(CONFIG_PATH, Buffer.from(JSON.stringify(config), 'utf8'));
     },
@@ -756,5 +803,128 @@ describe('ai-service admission and persistence races', () => {
     await expect(world.service.setKey('sk-after-close', 'session')).rejects.toMatchObject({ kind: 'disposed' });
     await expect(world.service.testConnection()).rejects.toMatchObject({ kind: 'disposed' });
     expect(world.factoryCalls).toEqual([]);
+  });
+});
+
+describe('ai-service draft path (milestone 3)', () => {
+  it('routes a draft to the selected provider only, with its own key and model', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-live', 'session');
+    await world.service.setEnabled(true);
+    const result = await world.service.draft(draftEnvelope());
+    expect(result.value).toEqual(draftPlanValue);
+    expect(result.providerUsage).toEqual({ inputTokens: 30, outputTokens: 12 });
+    expect(result.usage).toMatchObject({ outputChars: 321 });
+    expect(world.factoryCalls).toEqual([{ provider: 'openai', model: 'gpt-5', apiKey: 'sk-live' }]);
+    expect(world.draftCalls.map((call) => call.provider)).toEqual(['openai']);
+    // The transport receives the validated request: prompt + exact context.
+    const sent = world.draftCalls[0]!.request as { prompt: string; contextJson: string };
+    expect(sent.prompt).toBe('draw a line');
+    expect(sent.contextJson).toBe('{"kind":"jcad.ai.draft-context","version":1}');
+    await world.service.dispose();
+  });
+
+  it('routes to Anthropic with the Anthropic key after a provider switch, never to OpenAI', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-openai', 'session');
+    await world.service.setProvider('anthropic');
+    await world.service.setKey('sk-anthropic', 'session');
+    await world.service.setEnabled(true);
+    const result = await world.service.draft(draftEnvelope({
+      destination: { provider: 'anthropic', model: 'claude-sonnet-5-5' },
+    }));
+    expect(result.value).toEqual(draftPlanValue);
+    expect(world.factoryCalls).toEqual([{ provider: 'anthropic', model: 'claude-sonnet-5-5', apiKey: 'sk-anthropic' }]);
+    expect(world.draftCalls.map((call) => call.provider)).toEqual(['anthropic']);
+    await world.service.dispose();
+  });
+
+  it('rejects destination mismatches without constructing a transport', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-live', 'session');
+    await world.service.setEnabled(true);
+    for (const destination of [undefined, { provider: 'anthropic', model: 'gpt-5' }, { provider: 'openai', model: 'old-model' }]) {
+      await expect(world.service.draft(draftEnvelope({ destination }))).rejects.toMatchObject({ kind: 'cancelled' });
+    }
+    expect(world.transportFactory).not.toHaveBeenCalled();
+    expect(world.draftCalls).toEqual([]);
+    await world.service.dispose();
+  });
+
+  it('refuses drafts while Live AI is disabled and without a key', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-session', 'session');
+    await expect(world.service.draft(draftEnvelope())).rejects.toMatchObject({ kind: 'live-disabled' });
+    const world2 = makeWorld();
+    world2.seedConfig({ version: 1, provider: 'openai', model: 'gpt-5', enabled: true, keyPersistence: 'session' });
+    await expect(world2.service.draft(draftEnvelope())).rejects.toMatchObject({ kind: 'provider-not-configured' });
+    expect(world.transportFactory).not.toHaveBeenCalled();
+    expect(world2.transportFactory).not.toHaveBeenCalled();
+    await world.service.dispose();
+    await world2.service.dispose();
+  });
+
+  it('refuses when the selected provider transport cannot draft', async () => {
+    const world = makeWorld();
+    world.setDraft(null);
+    await world.service.setKey('sk-live', 'session');
+    await world.service.setEnabled(true);
+    await expect(world.service.draft(draftEnvelope())).rejects.toMatchObject({ kind: 'provider-not-configured' });
+    await world.service.dispose();
+  });
+
+  it('surfaces an invalid plan from the provider as invalid-plan', async () => {
+    const world = makeWorld();
+    world.setDraft(async () => ({
+      value: { outcome: 'proposal', message: null, operations: [{ op: 'explode' }] },
+      contentBytes: 60,
+    }));
+    await world.service.setKey('sk-live', 'session');
+    await world.service.setEnabled(true);
+    await expect(world.service.draft(draftEnvelope())).rejects.toMatchObject({ kind: 'invalid-plan' });
+    await world.service.dispose();
+  });
+
+  it('a settings mutation during a draft suppresses delivery of the plan', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-live', 'session');
+    await world.service.setEnabled(true);
+    const gate = deferred();
+    world.setDraft(async (_provider, _request, signal) => {
+      await gate.promise;
+      if (signal.aborted) return { value: draftPlanValue, contentBytes: 10 };
+      return { value: draftPlanValue, contentBytes: 10 };
+    });
+    const pending = world.service.draft(draftEnvelope());
+    const settled = expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
+    // The mutation cancels outstanding work and bumps the configuration
+    // generation, so the late plan can never be delivered as current.
+    await world.service.setModel('gpt-5-mini');
+    gate.resolve();
+    await settled;
+    await world.service.dispose();
+  });
+
+  it('blocks drafts while a settings mutation is pending, then admits them after', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-live', 'session');
+    await world.service.setEnabled(true);
+    const gate = deferred();
+    world.writeBlocks.set(CONFIG_PATH, gate.promise);
+    const switched = world.service.setProvider('anthropic');
+    await expect(world.service.draft(draftEnvelope())).rejects.toMatchObject({ kind: 'cancelled' });
+    expect(world.draftCalls).toEqual([]);
+    gate.resolve();
+    await switched;
+    world.writeBlocks.clear();
+    // After the mutation settles, the new provider serves drafts.
+    await world.service.setKey('sk-anthropic', 'session');
+    await world.service.setEnabled(true);
+    const result = await world.service.draft(draftEnvelope({
+      destination: { provider: 'anthropic', model: 'claude-sonnet-5-5' },
+    }));
+    expect(result.value).toEqual(draftPlanValue);
+    expect(world.draftCalls.map((call) => call.provider)).toEqual(['anthropic']);
+    await world.service.dispose();
   });
 });

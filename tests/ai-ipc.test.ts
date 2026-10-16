@@ -65,6 +65,55 @@ function anthropicProbeResponse(): Response {
   return new Response(JSON.stringify(body), { status: 200 });
 }
 
+function draftPlanValue(): Record<string, unknown> {
+  return {
+    outcome: 'proposal', message: null,
+    operations: [{
+      op: 'createLine', a: { x: 0, y: 0 }, b: { x: 10, y: 0 },
+      center: null, radius: null, origin: null, width: null, height: null,
+      rotationDeg: null, layer: null, targetIds: null, dx: null, dy: null,
+      pivot: null, angleDeg: null,
+    }],
+  };
+}
+
+function draftEnvelope(requestId: string, provider = 'openai', model = provider === 'anthropic' ? 'claude-sonnet-5-5' : 'gpt-5'): Record<string, unknown> {
+  return {
+    requestId,
+    destination: { provider, model },
+    prompt: 'draw a line',
+    contextJson: '{"kind":"jcad.ai.draft-context","version":1}',
+    binding: {
+      ask: {
+        sessionId: 1, docId: 'doc-1', contentGeneration: 1, docRevision: 7, docLoadCount: 1,
+        space: { layout: null, viewport: null }, selectionIds: ['e-line'],
+      },
+      unitsKey: '1|2|4',
+      defaultsKey: '{"layer":"0","color":"ByLayer"}',
+      eligibilityKey: 'e-line=1',
+      configKey: `${provider}|${model}|0`,
+    },
+  };
+}
+
+function openAiDraftResponse(): Response {
+  const body = {
+    status: 'completed',
+    output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(draftPlanValue()) }] }],
+    usage: { input_tokens: 30, output_tokens: 12 },
+  };
+  return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+}
+
+function anthropicDraftResponse(): Response {
+  const body = {
+    type: 'message', stop_reason: 'end_turn', model: 'claude-sonnet-5-5',
+    content: [{ type: 'text', text: JSON.stringify(draftPlanValue()) }],
+    usage: { input_tokens: 13, output_tokens: 8 },
+  };
+  return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+}
+
 interface Harness {
   handlers: Map<string, (ev: unknown, ...args: unknown[]) => Promise<Record<string, unknown>>>;
   appHandlers: Map<string, Array<(...args: unknown[]) => void>>;
@@ -120,9 +169,9 @@ afterEach(() => { if (harness) rmSync(harness.dir, { recursive: true, force: tru
 describe('ai IPC registration (guarded context)', () => {
   beforeEach(() => { harness = makeHarness(); });
 
-  it('registers exactly the ten ai channels through the context ipcMain', () => {
+  it('registers exactly the eleven ai channels through the context ipcMain', () => {
     expect([...harness.handlers.keys()].sort()).toEqual([
-      'ai-ask', 'ai-cancel', 'ai-forget-key', 'ai-get-state', 'ai-set-enabled',
+      'ai-ask', 'ai-cancel', 'ai-draft', 'ai-forget-key', 'ai-get-state', 'ai-set-enabled',
       'ai-set-key', 'ai-set-model', 'ai-set-provider', 'ai-test-connection', 'ai-usage',
     ]);
   });
@@ -228,6 +277,87 @@ describe('ai IPC registration (guarded context)', () => {
     expect(cancelled).toMatchObject({ ok: true, cancelled: true });
     const settled = await pending;
     expect(settled).toMatchObject({ ok: false, error: { kind: 'cancelled' } });
+  });
+
+  it('routes ai-draft to OpenAI and returns the validated raw plan value', async () => {
+    harness = makeHarness(async () => openAiDraftResponse());
+    await harness.invoke('ai-set-key', KEY, 'session');
+    await harness.invoke('ai-set-enabled', true);
+    const drafted = await harness.invoke('ai-draft', draftEnvelope('ai-draft-1'));
+    expect(drafted).toMatchObject({
+      ok: true,
+      draft: { value: draftPlanValue(), providerUsage: { inputTokens: 30, outputTokens: 12 } },
+    });
+    expect(harness.fetchCalls).toHaveLength(1);
+    expect(harness.fetchCalls[0]!.url).toBe('https://api.openai.com/v1/responses');
+    expect(String(harness.fetchCalls[0]!.init.body)).toContain('jcad_draft_plan');
+    // The key appears in no IPC response.
+    expect(JSON.stringify(drafted)).not.toContain(KEY);
+  });
+
+  it('routes ai-draft to Anthropic with its own key after a provider switch', async () => {
+    const ANTHROPIC_KEY = '<redacted>';
+    harness = makeHarness(async () => anthropicDraftResponse());
+    await harness.invoke('ai-set-key', KEY, 'session');
+    await harness.invoke('ai-set-provider', 'anthropic');
+    await harness.invoke('ai-set-key', ANTHROPIC_KEY, 'session');
+    await harness.invoke('ai-set-enabled', true);
+    const drafted = await harness.invoke('ai-draft', draftEnvelope('ai-draft-anth-1', 'anthropic'));
+    expect(drafted).toMatchObject({
+      ok: true,
+      draft: { value: draftPlanValue(), providerUsage: { inputTokens: 13, outputTokens: 8 } },
+    });
+    expect(harness.fetchCalls).toHaveLength(1);
+    const call = harness.fetchCalls[0]!;
+    expect(call.url).toBe('https://api.anthropic.com/v1/messages');
+    const headers = (call.init.headers ?? {}) as Record<string, string>;
+    expect(headers['x-api-key']).toBe(ANTHROPIC_KEY);
+    expect(JSON.stringify(call.init)).not.toContain(KEY);
+  });
+
+  it('refuses ai-draft before enablement — no fetch happens', async () => {
+    const drafted = await harness.invoke('ai-draft', draftEnvelope('ai-draft-early'));
+    expect(drafted).toMatchObject({ ok: false, error: { kind: 'live-disabled' } });
+    expect(harness.fetchCalls).toHaveLength(0);
+  });
+
+  it('translates ai-cancel into host cancellation of a running draft', async () => {
+    harness = makeHarness((_url, init) => new Promise<Response>((_resolve, reject) => {
+      const signal = init.signal as AbortSignal;
+      signal.addEventListener('abort', () => reject(new Error('aborted by host')));
+    }));
+    await harness.invoke('ai-set-key', KEY, 'session');
+    await harness.invoke('ai-set-enabled', true);
+    const pending = harness.invoke('ai-draft', draftEnvelope('ai-draft-cancel'));
+    await vi.waitFor(() => { expect(harness.fetchCalls).toHaveLength(1); });
+    const cancelled = await harness.invoke('ai-cancel', 'ai-draft-cancel');
+    expect(cancelled).toMatchObject({ ok: true, cancelled: true });
+    const settled = await pending;
+    expect(settled).toMatchObject({ ok: false, error: { kind: 'cancelled' } });
+  });
+
+  it('rejects a duplicate draft request id while the first is outstanding', async () => {
+    harness = makeHarness((_url, init) => new Promise<Response>((_resolve, reject) => {
+      const signal = init.signal as AbortSignal;
+      signal.addEventListener('abort', () => reject(new Error('aborted by host')));
+    }));
+    await harness.invoke('ai-set-key', KEY, 'session');
+    await harness.invoke('ai-set-enabled', true);
+    const pending = harness.invoke('ai-draft', draftEnvelope('ai-draft-dupe'));
+    await vi.waitFor(() => { expect(harness.fetchCalls).toHaveLength(1); });
+    const duplicate = await harness.invoke('ai-draft', draftEnvelope('ai-draft-dupe'));
+    expect(duplicate).toMatchObject({ ok: false, error: { kind: 'invalid-request' } });
+    await harness.invoke('ai-cancel', 'ai-draft-dupe');
+    expect(await pending).toMatchObject({ ok: false, error: { kind: 'cancelled' } });
+  });
+
+  it('owns cancellation before a draft has finished service admission', async () => {
+    await harness.invoke('ai-set-key', KEY, 'session');
+    await harness.invoke('ai-set-enabled', true);
+    const pending = harness.invoke('ai-draft', draftEnvelope('ai-draft-early-cancel'));
+    expect(await harness.invoke('ai-cancel', 'ai-draft-early-cancel')).toMatchObject({ ok: true, cancelled: true });
+    expect(await pending).toMatchObject({ ok: false, error: { kind: 'cancelled' } });
+    expect(harness.fetchCalls).toHaveLength(0);
   });
 
   it('owns cancellation before an ask has finished service admission', async () => {

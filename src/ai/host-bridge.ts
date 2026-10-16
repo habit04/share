@@ -1,5 +1,12 @@
-import { AiError, type AiAnswer, type AiAskRequest, type AiErrorKind } from './types';
-import type { AiHostBridge } from './live-provider';
+import {
+  AiError,
+  type AiAnswer,
+  type AiAskRequest,
+  type AiDraftRequest,
+  type AiErrorKind,
+  type AiUsage,
+} from './types';
+import type { AiDraftWireResult, AiHostBridge } from './live-provider';
 
 /**
  * Renderer client for the guarded AI host bridge (milestone 2,
@@ -54,6 +61,7 @@ export interface AiPreloadBridge {
   setEnabled(enabled: boolean): Promise<AiResult<{ state: AiConnectionState }>>;
   testConnection(): Promise<AiResult<{ probe: AiProbeResult }>>;
   ask(request: AiAskRequest): Promise<AiResult<{ answer: unknown }>>;
+  draft(request: AiDraftRequest): Promise<AiResult<{ draft: unknown }>>;
   cancel(requestId: string): Promise<AiResult<{ cancelled: boolean }>>;
   usage(): Promise<AiResult<{ usage: Record<string, number> }>>;
 }
@@ -64,7 +72,7 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set<AiErrorKind>([
   'output-too-large', 'disposed', 'live-disabled', 'auth-failed', 'model-access',
   'rate-limited', 'network', 'refused', 'credential-unavailable',
   'credential-corrupt', 'credential-delete-failed',
-  'invalid-request', 'credential-rollback-failed',
+  'invalid-request', 'credential-rollback-failed', 'invalid-plan', 'busy',
 ]);
 
 /** Rebuild a typed error from a bounded IPC payload; unknown kinds fail closed. */
@@ -89,6 +97,45 @@ function unwrap<T>(result: AiResult<T>): T {
   }
   if (result.ok === true) return result;
   throw aiErrorFromPayload((result as { error?: AiIpcErrorPayload }).error);
+}
+
+/**
+ * Bounded validation of a host draft result (milestone 3). The host has
+ * already validated the plan with its mirror validator; the raw provider
+ * value crosses so LiveDraftProvider can apply the authoritative
+ * parseAiDraftResponse — this layer does NOT plan-validate. It only
+ * checks the result envelope is a record carrying a record `value`, and
+ * whitelists the usage counters field by field, exactly as untrusted as
+ * the ask path's.
+ */
+function draftWireResult(value: unknown): AiDraftWireResult {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new AiError('invalid-plan', 'The AI host returned an invalid draft.');
+  }
+  const raw = value as {
+    value?: unknown;
+    usage?: Record<string, unknown>; providerUsage?: Record<string, unknown>;
+  };
+  if (!raw.value || typeof raw.value !== 'object' || Array.isArray(raw.value)) {
+    throw new AiError('invalid-plan', 'The AI host returned an invalid draft.');
+  }
+  const response = raw.value;
+  const usage: { inputBytes?: number; outputChars?: number; durationMs?: number; inputTokens?: number; outputTokens?: number } = {};
+  const counters = raw.usage && typeof raw.usage === 'object' && !Array.isArray(raw.usage) ? raw.usage : {};
+  for (const key of ['inputBytes', 'outputChars', 'durationMs'] as const) {
+    const amount = counters[key];
+    if (typeof amount === 'number' && Number.isFinite(amount) && amount >= 0
+      && (key === 'durationMs' || Number.isSafeInteger(amount))) usage[key] = amount;
+  }
+  const providerUsage = raw.providerUsage && typeof raw.providerUsage === 'object' && !Array.isArray(raw.providerUsage)
+    ? raw.providerUsage
+    : {};
+  for (const key of ['inputTokens', 'outputTokens'] as const) {
+    const amount = providerUsage[key];
+    if (typeof amount === 'number' && Number.isSafeInteger(amount) && amount >= 0) usage[key] = amount;
+  }
+  const clean: AiUsage = usage;
+  return { response, ...(Object.keys(clean).length > 0 ? { usage: clean } : {}) };
 }
 
 export class WindowAiConnection {
@@ -126,6 +173,22 @@ export class WindowAiConnection {
             }
           }
           return answer as AiAnswer;
+        } finally {
+          signal.removeEventListener('abort', onAbort);
+        }
+      },
+      draft: async (request: AiDraftRequest, signal: AbortSignal): Promise<AiDraftWireResult> => {
+        if (signal.aborted) throw new AiError('cancelled', 'The request was cancelled.');
+        let rejectAborted: (cause: AiError) => void = () => {};
+        const aborted = new Promise<never>((_resolve, reject) => { rejectAborted = reject; });
+        const onAbort = () => {
+          rejectAborted(new AiError('cancelled', 'The request was cancelled.'));
+          try { void this.raw.cancel(request.requestId).catch(() => {}); } catch { /* IPC may already be gone. */ }
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        try {
+          const { draft } = unwrap(await Promise.race([this.raw.draft(request), aborted]));
+          return draftWireResult(draft);
         } finally {
           signal.removeEventListener('abort', onAbort);
         }

@@ -10,19 +10,35 @@ import type { AiBinding, AiSnapshotSource } from '../src/ai/types';
 
 const require = createRequire(import.meta.url);
 const {
-  AI_LIMITS, aiRequest, aiAnswer, createAiHost, createAiKeyStore,
+  AI_LIMITS, aiRequest, aiAnswer, aiDraftRequest, aiDraftResult, createAiHost, createAiKeyStore,
   AI_PROVIDERS, AI_DEFAULT_MODEL, AI_PROVIDER_DEFAULT_MODELS, validateAiModel, createAiConfigStore, createAiService,
 } = require('../electron/ai-host.cjs') as {
   AI_LIMITS: Record<string, number>;
   aiRequest: (value: unknown) => { requestId: number | string; question: string; snapshotBytes: number; snapshot: Record<string, unknown> };
   aiAnswer: (value: unknown) => { text: string; references: string[]; providerUsage?: { inputTokens?: number; outputTokens?: number } };
+  aiDraftRequest: (value: unknown) => {
+    requestId: number | string; prompt: string; contextJson: string; contextBytes: number;
+    destination?: { provider: string; model: string };
+    binding: {
+      ask: { sessionId: number; docId: string; contentGeneration: number; docRevision: number; selectionCount: number };
+      unitsKey: string; defaultsKey: string; eligibilityKey: string; configKey: string;
+    };
+  };
+  aiDraftResult: (value: unknown) => {
+    response: { kind: string; plan?: { message: string | null; operations: Record<string, unknown>[] }; message?: string };
+    contentBytes: number;
+    providerUsage?: { inputTokens?: number; outputTokens?: number };
+  };
   createAiHost: (options?: {
     transport?: (request: unknown, signal: AbortSignal) => Promise<unknown>;
+    draftTransport?: (request: unknown, signal: AbortSignal) => Promise<unknown>;
     timeoutMs?: number;
+    draftTimeoutMs?: number;
     maxConcurrent?: number;
     maxPending?: number;
   }) => {
     ask: (value: unknown, signal?: AbortSignal) => Promise<{ text: string; references: string[]; usage: unknown; providerUsage?: { inputTokens?: number; outputTokens?: number } }>;
+    draft: (value: unknown, signal?: AbortSignal) => Promise<{ value: unknown; usage: { inputBytes: number; outputChars: number; durationMs: number }; providerUsage?: { inputTokens?: number; outputTokens?: number } }>;
     cancel: (requestId: number | string) => boolean;
     cancelAll: () => number;
     usage: () => Record<string, number>;
@@ -711,5 +727,230 @@ describe('ai wiring boundary (milestone 2)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+const nullOpFields = {
+  center: null, radius: null, origin: null, width: null, height: null,
+  rotationDeg: null, layer: null, targetIds: null, dx: null, dy: null,
+  pivot: null, angleDeg: null,
+};
+const draftLineOp = { op: 'createLine', a: { x: 0, y: 0 }, b: { x: 10, y: 0 }, ...nullOpFields };
+const draftPlanValue = { outcome: 'proposal', message: null, operations: [draftLineOp] };
+
+function draftEnvelope(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    requestId: 'ai-salt-draft-1',
+    destination: { provider: 'openai', model: 'gpt-5' },
+    prompt: 'draw a line',
+    contextJson: '{"kind":"jcad.ai.draft-context","version":1}',
+    binding: {
+      ask: {
+        sessionId: 1, docId: 'doc-1', contentGeneration: 1, docRevision: 7, docLoadCount: 1,
+        space: { layout: null, viewport: null }, selectionIds: ['e-line', 'e-circle'],
+      },
+      unitsKey: '1|2|4',
+      defaultsKey: '{"layer":"0","color":"ByLayer"}',
+      eligibilityKey: 'e-line=1;e-circle=1',
+      configKey: 'openai|gpt-5|0',
+    },
+    ...over,
+  };
+}
+
+describe('ai-host draft request validator (milestone 3)', () => {
+  it('pins the draft limits to the renderer constants', () => {
+    expect(AI_LIMITS.maxDraftPlanBytes).toBe(32 * 1024);
+    expect(AI_LIMITS.maxDraftContextBytes).toBe(96 * 1024);
+    expect(AI_LIMITS.maxDraftOperations).toBe(64);
+    expect(AI_LIMITS.maxDraftTargetsPerOp).toBe(200);
+    expect(AI_LIMITS.maxDraftAffected).toBe(400);
+    expect(AI_LIMITS.maxDraftCreated).toBe(200);
+    expect(AI_LIMITS.maxDraftCoordinate).toBe(1e7);
+    expect(AI_LIMITS.maxDraftDimension).toBe(1e6);
+    expect(AI_LIMITS.maxDraftMessageChars).toBe(1000);
+  });
+
+  it('accepts a valid envelope and returns only whitelisted fields', () => {
+    const result = aiDraftRequest(draftEnvelope({ apiKey: 'never-carried', stray: { deep: true } }));
+    expect(result.requestId).toBe('ai-salt-draft-1');
+    expect(result.prompt).toBe('draw a line');
+    expect(result.contextBytes).toBe(Buffer.byteLength('{"kind":"jcad.ai.draft-context","version":1}', 'utf8'));
+    expect(result.destination).toEqual({ provider: 'openai', model: 'gpt-5' });
+    expect(result.binding).toEqual({
+      ask: { sessionId: 1, docId: 'doc-1', contentGeneration: 1, docRevision: 7, selectionCount: 2 },
+      unitsKey: '1|2|4',
+      defaultsKey: '{"layer":"0","color":"ByLayer"}',
+      eligibilityKey: 'e-line=1;e-circle=1',
+      configKey: 'openai|gpt-5|0',
+    });
+    expect(result).not.toHaveProperty('apiKey');
+    expect(result).not.toHaveProperty('stray');
+  });
+
+  it('allows an empty eligibility fingerprint (a creation-only selection)', () => {
+    const envelope = draftEnvelope();
+    (envelope.binding as Record<string, unknown>).eligibilityKey = '';
+    ((envelope.binding as Record<string, unknown>).ask as Record<string, unknown>).selectionIds = [];
+    expect(aiDraftRequest(envelope).binding.ask.selectionCount).toBe(0);
+  });
+
+  it.each([
+    ['a non-object', null],
+    ['a bad request id', draftEnvelope({ requestId: 'x' })],
+    ['an empty prompt', draftEnvelope({ prompt: '' })],
+    ['an over-long prompt', draftEnvelope({ prompt: 'p'.repeat(2001) })],
+    ['a prompt with control characters', draftEnvelope({ prompt: 'draw\u0007' })],
+    ['a missing context', draftEnvelope({ contextJson: '' })],
+    ['a non-string context', draftEnvelope({ contextJson: { kind: 'x' } })],
+    ['an over-size context', draftEnvelope({ contextJson: 'x'.repeat(96 * 1024 + 1) })],
+    ['an unknown destination provider', draftEnvelope({ destination: { provider: 'other', model: 'gpt-5' } })],
+    ['an invalid destination model', draftEnvelope({ destination: { provider: 'openai', model: 'not a model' } })],
+    ['a missing binding', draftEnvelope({ binding: undefined })],
+    ['a binding without the ask binding', draftEnvelope({ binding: { unitsKey: 'a', defaultsKey: 'b', eligibilityKey: 'c', configKey: 'd' } })],
+    ['a non-integer revision', draftEnvelope({ binding: { ask: { sessionId: 1, docId: 'd', contentGeneration: 1, docRevision: 1.5, selectionIds: [] }, unitsKey: 'a', defaultsKey: 'b', eligibilityKey: 'c', configKey: 'd' } })],
+    ['a non-string fingerprint', draftEnvelope({ binding: { ask: { sessionId: 1, docId: 'd', contentGeneration: 1, docRevision: 1, selectionIds: [] }, unitsKey: 7, defaultsKey: 'b', eligibilityKey: 'c', configKey: 'd' } })],
+    ['a fingerprint with control characters', draftEnvelope({ binding: { ask: { sessionId: 1, docId: 'd', contentGeneration: 1, docRevision: 1, selectionIds: [] }, unitsKey: 'a', defaultsKey: 'b', eligibilityKey: 'c', configKey: 'openai\u0001' } })],
+  ])('rejects %s', (_label, value) => {
+    expect(() => aiDraftRequest(value)).toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+  });
+
+  it('rejects an envelope past the shared byte cap even when each field is in bounds', () => {
+    const value = draftEnvelope({ contextJson: 'x'.repeat(96 * 1024), junk: 'y'.repeat(40 * 1024) });
+    expect(() => aiDraftRequest(value)).toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+  });
+});
+
+describe('ai-host draft result validator (milestone 3)', () => {
+  it('normalizes a valid plan and carries bounded provider usage', () => {
+    const result = aiDraftResult({ value: draftPlanValue, contentBytes: 321, usage: { inputTokens: 30, outputTokens: 12, junk: 1 } });
+    expect(result.contentBytes).toBe(321);
+    expect(result.providerUsage).toEqual({ inputTokens: 30, outputTokens: 12 });
+    expect(result.response.kind).toBe('plan');
+    expect(result.response.plan?.message).toBeNull();
+    expect(result.response.plan?.operations).toEqual([
+      { op: 'createLine', a: { x: 0, y: 0 }, b: { x: 10, y: 0 }, layer: null },
+    ]);
+  });
+
+  it('accepts a clarification with a message and no operations', () => {
+    const result = aiDraftResult({ value: { outcome: 'clarification', message: 'What radius?', operations: null }, contentBytes: 60 });
+    expect(result.response).toEqual({ kind: 'clarification', message: 'What radius?' });
+  });
+
+  it('enforces the 32 KiB plan byte cap from the adapter-reported count', () => {
+    expect(() => aiDraftResult({ value: draftPlanValue, contentBytes: 32 * 1024 + 1 }))
+      .toThrow(expect.objectContaining({ kind: 'invalid-plan' }));
+    expect(() => aiDraftResult({ value: draftPlanValue, contentBytes: 32 * 1024 })).not.toThrow();
+    expect(() => aiDraftResult({ value: draftPlanValue, contentBytes: -1 }))
+      .toThrow(expect.objectContaining({ kind: 'invalid-plan' }));
+    expect(() => aiDraftResult({ value: draftPlanValue }))
+      .toThrow(expect.objectContaining({ kind: 'invalid-plan' }));
+  });
+
+  it.each([
+    ['a non-object value', 'proposal'],
+    ['an unknown outcome', { outcome: 'maybe', message: null, operations: null }],
+    ['an extra top-level field', { ...draftPlanValue, script: 'run()' }],
+    ['empty operations', { outcome: 'proposal', message: null, operations: [] }],
+    ['too many operations', { outcome: 'proposal', message: null, operations: Array.from({ length: 65 }, () => draftLineOp) }],
+    ['an unknown operation', { outcome: 'proposal', message: null, operations: [{ ...draftLineOp, op: 'explode' }] }],
+    ['an unknown operation field', { outcome: 'proposal', message: null, operations: [{ ...draftLineOp, payload: 'x' }] }],
+    ['a misplaced field', { outcome: 'proposal', message: null, operations: [{ ...draftLineOp, radius: 4 }] }],
+    ['a zero-length line', { outcome: 'proposal', message: null, operations: [{ ...draftLineOp, b: { x: 0, y: 0 } }] }],
+    ['a non-finite coordinate', { outcome: 'proposal', message: null, operations: [{ ...draftLineOp, b: { x: Number.POSITIVE_INFINITY, y: 0 } }] }],
+    ['an out-of-range coordinate', { outcome: 'proposal', message: null, operations: [{ ...draftLineOp, b: { x: 1e7 + 1, y: 0 } }] }],
+    ['a negative radius', { outcome: 'proposal', message: null, operations: [{ op: 'createCircle', ...nullOpFields, a: null, b: null, center: { x: 0, y: 0 }, radius: -1 }] }],
+    ['a no-op move', { outcome: 'proposal', message: null, operations: [{ op: 'move', ...nullOpFields, a: null, b: null, targetIds: ['e1'], dx: 0, dy: 0 }] }],
+    ['a no-op rotation', { outcome: 'proposal', message: null, operations: [{ op: 'rotate', ...nullOpFields, a: null, b: null, targetIds: ['e1'], pivot: { x: 0, y: 0 }, angleDeg: 720 }] }],
+    ['duplicate targets in one operation', { outcome: 'proposal', message: null, operations: [{ op: 'delete', ...nullOpFields, a: null, b: null, targetIds: ['e1', 'e1'] }] }],
+    ['conflicting targets across operations', {
+      outcome: 'proposal', message: null,
+      operations: [
+        { op: 'move', ...nullOpFields, a: null, b: null, targetIds: ['e1'], dx: 1, dy: 0 },
+        { op: 'delete', ...nullOpFields, a: null, b: null, targetIds: ['e1'] },
+      ],
+    }],
+    ['a clarification carrying operations', { outcome: 'clarification', message: 'What size?', operations: [draftLineOp] }],
+    ['a clarification without a message', { outcome: 'unsupported', message: null, operations: null }],
+    ['an over-long message', { outcome: 'clarification', message: 'x'.repeat(1001), operations: null }],
+  ])('rejects %s as invalid-plan', (_label, value) => {
+    expect(() => aiDraftResult({ value, contentBytes: 100 })).toThrow(expect.objectContaining({ kind: 'invalid-plan' }));
+  });
+});
+
+describe('ai-host draft jobs (milestone 3)', () => {
+  it('runs a draft through the job machinery and resolves the raw value with usage', async () => {
+    const seen: unknown[] = [];
+    const host = createAiHost({
+      draftTransport: async (request) => {
+        seen.push(request);
+        return { value: draftPlanValue, contentBytes: 321, usage: { inputTokens: 30, outputTokens: 12 } };
+      },
+    });
+    const result = await host.draft(draftEnvelope());
+    expect(result.value).toEqual(draftPlanValue);
+    expect(result.usage.inputBytes).toBe(result.value ? Buffer.byteLength('{"kind":"jcad.ai.draft-context","version":1}', 'utf8') : 0);
+    expect(result.usage.outputChars).toBe(321);
+    expect(result.providerUsage).toEqual({ inputTokens: 30, outputTokens: 12 });
+    expect((seen[0] as { prompt: string }).prompt).toBe('draw a line');
+    expect(host.usage()).toMatchObject({ requests: 1, inputBytes: result.usage.inputBytes, outputChars: 321 });
+    await host.dispose();
+  });
+
+  it('refuses drafts when no draft transport is configured', async () => {
+    const host = createAiHost({ transport: async () => ({ text: 'x', references: [] }) });
+    await expect(host.draft(draftEnvelope())).rejects.toMatchObject({ kind: 'provider-not-configured' });
+    await host.dispose();
+  });
+
+  it('surfaces an invalid plan from the transport as invalid-plan', async () => {
+    const host = createAiHost({
+      draftTransport: async () => ({ value: { outcome: 'proposal', message: null, operations: [] }, contentBytes: 40 }),
+    });
+    await expect(host.draft(draftEnvelope())).rejects.toMatchObject({ kind: 'invalid-plan' });
+    await host.dispose();
+  });
+
+  it('cancels a hanging draft by request id', async () => {
+    const host = createAiHost({
+      draftTransport: (_request, signal) => new Promise((resolve) => {
+        signal.addEventListener('abort', () => resolve({ value: draftPlanValue, contentBytes: 10 }));
+      }),
+    });
+    const pending = host.draft(draftEnvelope());
+    const settled = expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
+    expect(host.cancel('ai-salt-draft-1')).toBe(true);
+    await settled;
+    await host.dispose();
+  });
+
+  it('rejects a duplicate draft request id while the first is outstanding', async () => {
+    const host = createAiHost({
+      draftTransport: (_request, signal) => new Promise((resolve) => {
+        signal.addEventListener('abort', () => resolve({ value: draftPlanValue, contentBytes: 10 }));
+      }),
+    });
+    const pending = host.draft(draftEnvelope());
+    const settled = expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
+    await expect(host.draft(draftEnvelope())).rejects.toMatchObject({ kind: 'invalid-request' });
+    host.cancelAll();
+    await settled;
+    await host.dispose();
+  });
+
+  it('shares the request-id space with asks', async () => {
+    const host = createAiHost({
+      transport: (_request, signal) => new Promise((resolve) => {
+        signal.addEventListener('abort', () => resolve({ text: 'late', references: [] }));
+      }),
+      draftTransport: async () => ({ value: draftPlanValue, contentBytes: 10 }),
+    });
+    const asking = host.ask(envelope());
+    const askSettled = expect(asking).rejects.toMatchObject({ kind: 'cancelled' });
+    await expect(host.draft(draftEnvelope({ requestId: 3 }))).rejects.toMatchObject({ kind: 'invalid-request' });
+    host.cancelAll();
+    await askSettled;
+    await host.dispose();
   });
 });

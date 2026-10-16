@@ -1,5 +1,14 @@
-import { AI_MAX_QUESTION_CHARS, AI_MAX_SNAPSHOT_BYTES } from './limits';
-import { AiError, type AiAnswer, type AiAskRequest, type AiProvider } from './types';
+import { AI_DRAFT_MAX_CONTEXT_BYTES, AI_MAX_QUESTION_CHARS, AI_MAX_SNAPSHOT_BYTES } from './limits';
+import { parseAiDraftResponse, type AiDraftResponse } from './draft-plan';
+import {
+  AiError,
+  type AiAnswer,
+  type AiAskRequest,
+  type AiDraftProvider,
+  type AiDraftRequest,
+  type AiProvider,
+  type AiUsage,
+} from './types';
 
 /**
  * Live provider adapter (milestone 2, docs/AI-ASSISTANT-M2.md). The panel
@@ -21,6 +30,21 @@ import { AiError, type AiAnswer, type AiAskRequest, type AiProvider } from './ty
  */
 export interface AiHostBridge {
   ask(request: AiAskRequest, signal: AbortSignal): Promise<AiAnswer>;
+  /**
+   * Milestone 3: optional because a host without drafting support must
+   * refuse cleanly ('host-unavailable'), never fall back to ask.
+   */
+  draft?(request: AiDraftRequest, signal: AbortSignal): Promise<AiDraftWireResult>;
+}
+
+/**
+ * What the bridge returns for a draft: the host-validated response value
+ * (still untrusted here — LiveDraftProvider applies the plan contract)
+ * plus usage counters when the host reported them.
+ */
+export interface AiDraftWireResult {
+  readonly response: unknown;
+  readonly usage?: AiUsage;
 }
 
 /** Non-secret configuration only. Endpoint and credentials stay host-side. */
@@ -73,6 +97,83 @@ export class LiveProvider implements AiProvider {
       if (signal.aborted) throw new AiError('cancelled', 'The request was cancelled.');
       const pinned = { ...request, destination: { provider: this.config!.providerId, model: this.config!.model } };
       return await Promise.race([this.bridge.ask(pinned, signal), aborted]);
+    } finally {
+      signal.removeEventListener('abort', onAbort);
+    }
+  }
+}
+
+/**
+ * Live draft provider (milestone 3, docs/AI-ASSISTANT-M3.md): the draft
+ * twin of LiveProvider. It pins the same destination from its config, the
+ * host rejects mismatches, and the returned value is validated against
+ * the plan contract here before the draft controller may stage it. A
+ * bridge without a draft method means the host predates drafting: that is
+ * 'host-unavailable', never a silent fallback to the ask path.
+ */
+export class LiveDraftProvider implements AiDraftProvider {
+  readonly id: string;
+  private readonly bridge?: AiHostBridge;
+  private readonly config?: LiveProviderConfig;
+
+  constructor(bridge?: AiHostBridge, config?: LiveProviderConfig) {
+    this.bridge = bridge;
+    this.config = config ? { ...config } : undefined;
+    this.id = config?.providerId ?? 'live-unconfigured';
+  }
+
+  /** True only when a host bridge with draft support and a complete agreed config are present. */
+  get configured(): boolean {
+    return this.bridge !== undefined
+      && typeof this.bridge.draft === 'function'
+      && this.config !== undefined
+      && this.config.providerId.length > 0
+      && this.config.model.length > 0;
+  }
+
+  async draft(request: AiDraftRequest, signal: AbortSignal): Promise<AiDraftResponse> {
+    if (!this.bridge || typeof this.bridge.draft !== 'function') {
+      throw new AiError(
+        'host-unavailable',
+        'The AI host does not support drafting. Update the application and try again.',
+      );
+    }
+    if (!this.config || this.config.providerId.length === 0 || this.config.model.length === 0) {
+      throw new AiError(
+        'provider-not-configured',
+        'No live AI provider has been selected. The live adapter is inactive until a provider, endpoint, credentials and data handling are agreed.',
+      );
+    }
+    if (signal.aborted) throw new AiError('cancelled', 'The request was cancelled.');
+    // Defence in depth: the host re-validates everything, but an
+    // out-of-bound envelope is refused here rather than handed over.
+    if (request.prompt.length > AI_MAX_QUESTION_CHARS) {
+      throw new AiError('invalid-question', 'The draft prompt exceeds the permitted length.');
+    }
+    if (new TextEncoder().encode(request.contextJson).length > AI_DRAFT_MAX_CONTEXT_BYTES) {
+      throw new AiError('invalid-context', 'The draft context exceeds the permitted size.');
+    }
+    let onAbort: () => void = () => {};
+    const aborted = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(new AiError('cancelled', 'The request was cancelled.'));
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+      if (signal.aborted) throw new AiError('cancelled', 'The request was cancelled.');
+      // Only the wire fields cross: the parsed context object and the
+      // local byte count are renderer bookkeeping the host validator
+      // would (and must) ignore anyway.
+      const pinned = {
+        requestId: request.requestId,
+        prompt: request.prompt,
+        contextJson: request.contextJson,
+        binding: request.binding,
+        destination: { provider: this.config.providerId, model: this.config.model },
+      };
+      const result = await Promise.race([this.bridge.draft(pinned, signal), aborted]);
+      const parsed = parseAiDraftResponse(result?.response);
+      if (!parsed.ok) throw new AiError('invalid-plan', parsed.error);
+      return parsed.response;
     } finally {
       signal.removeEventListener('abort', onAbort);
     }

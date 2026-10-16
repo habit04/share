@@ -55,6 +55,71 @@ const ANSWER_SCHEMA = Object.freeze({
 
 const INVALID_ANSWER = 'Anthropic returned an invalid answer.';
 
+// ---- Milestone 3 (Draft / Edit): mirrors src/ai/draft-schema.ts. The
+// adapters cannot import the renderer module, so the schema and the fixed
+// instructions are carried here; tests pin both sides to the same shape.
+// Anthropic's structured-output schema omits maxItems (its API rejects
+// that keyword); array bounds are enforced locally by the host/renderer
+// plan validators instead. Draft budget is 4096 tokens, separate from
+// the Ask budget (2048).
+
+const DRAFT_MAX_TOKENS = 4096;
+
+const DRAFT_INSTRUCTIONS = [
+  'You are the drafting engine inside JCad, a CAD application. You return exactly one JSON object matching the supplied schema; no prose outside it.',
+  'You propose edits; JCad validates and computes all geometry locally and the user approves before anything is applied. Never invent object ids: edit operations may target only ids marked eligible:true in the context targets. Creations must not carry ids.',
+  'All numbers are drawing units and degrees, in the World XY plane of the Model tab, exactly as the context states. If the drawing is unitless and the user specified physical units, return outcome "clarification" and ask instead of assuming a scale.',
+  'Supported operations only: createLine (a,b), createCircle (center,radius), createRectangle (origin,width,height, optional rotationDeg), move/copy (targetIds, dx, dy), rotate (targetIds, pivot, angleDeg), delete (targetIds). Rectangles become closed polylines computed by JCad.',
+  'If an essential dimension, unit, pivot or scope is missing, return outcome "clarification" with one clear question. If the request needs anything unsupported (blocks, text, dimensions, hatches, curves, 3D, layouts, electrical content, retained CAD objects, layers that do not exist or are locked/hidden), return outcome "unsupported" and say why. Never return a partial plan that silently omits part of the request.',
+  'Fill every field of each operation object: the fields an operation does not use must be null. One object may be targeted by at most one edit operation.',
+].join('\n');
+
+const DRAFT_POINT_SCHEMA = Object.freeze({
+  type: 'object',
+  additionalProperties: false,
+  properties: { x: { type: 'number' }, y: { type: 'number' } },
+  required: ['x', 'y'],
+});
+const DRAFT_POINT_OR_NULL = Object.freeze({ anyOf: [DRAFT_POINT_SCHEMA, { type: 'null' }] });
+const DRAFT_NUMBER_OR_NULL = Object.freeze({ type: ['number', 'null'] });
+
+const DRAFT_SCHEMA = Object.freeze({
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    outcome: { type: 'string', enum: ['proposal', 'clarification', 'unsupported'] },
+    message: { type: ['string', 'null'] },
+    operations: {
+      type: ['array', 'null'],
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          op: { type: 'string', enum: ['createLine', 'createCircle', 'createRectangle', 'move', 'copy', 'rotate', 'delete'] },
+          a: DRAFT_POINT_OR_NULL,
+          b: DRAFT_POINT_OR_NULL,
+          center: DRAFT_POINT_OR_NULL,
+          radius: DRAFT_NUMBER_OR_NULL,
+          origin: DRAFT_POINT_OR_NULL,
+          width: DRAFT_NUMBER_OR_NULL,
+          height: DRAFT_NUMBER_OR_NULL,
+          rotationDeg: DRAFT_NUMBER_OR_NULL,
+          layer: { type: ['string', 'null'] },
+          // Anthropic JSON outputs reject maxItems. Enforce count locally.
+          targetIds: { type: ['array', 'null'], items: { type: 'string' } },
+          dx: DRAFT_NUMBER_OR_NULL,
+          dy: DRAFT_NUMBER_OR_NULL,
+          pivot: DRAFT_POINT_OR_NULL,
+          angleDeg: DRAFT_NUMBER_OR_NULL,
+        },
+        required: ['op', 'a', 'b', 'center', 'radius', 'origin', 'width', 'height', 'rotationDeg',
+          'layer', 'targetIds', 'dx', 'dy', 'pivot', 'angleDeg'],
+      },
+    },
+  },
+  required: ['outcome', 'message', 'operations'],
+});
+
 /**
  * The output of aiRequest() in electron/ai-host.cjs.
  * @typedef {object} ValidatedRequest
@@ -79,7 +144,28 @@ const INVALID_ANSWER = 'Anthropic returned an invalid answer.';
  * @typedef {{ inputTokens?: number, outputTokens?: number }} ProviderUsage
  * @typedef {{ model: string, inputTokens?: number, outputTokens?: number, outputLimited?: boolean }} ProbeResult
  * @typedef {((request: ValidatedRequest, signal?: AbortSignal) => Promise<object>)
- *           & { probe: (signal?: AbortSignal) => Promise<ProbeResult> }} AnthropicTransport
+ *           & { probe: (signal?: AbortSignal) => Promise<ProbeResult>,
+ *               draft: (request: ValidatedDraftRequest, signal?: AbortSignal) => Promise<DraftResult> }} AnthropicTransport
+ */
+
+/**
+ * The output of aiDraftRequest() in electron/ai-host.cjs. Only prompt and
+ * contextJson go on the wire; ids and the binding stay host-side.
+ * @typedef {object} ValidatedDraftRequest
+ * @property {number | string} requestId
+ * @property {string} prompt
+ * @property {string} contextJson
+ * @property {number} contextBytes
+ */
+
+/**
+ * A draft transport result: the JSON-parsed provider object (NOT yet
+ * plan-validated — aiDraftResult in the host does that), the UTF-8 byte
+ * length of the raw content string it came from, and provider usage.
+ * @typedef {object} DraftResult
+ * @property {unknown} value
+ * @property {number} contentBytes
+ * @property {ProviderUsage} [usage]
  */
 
 /** @param {unknown} value @returns {value is Record<string, unknown>} */
@@ -359,6 +445,47 @@ function parseAnswer(payload) {
 }
 
 /**
+ * Extract the draft content from a Messages payload with the same
+ * stop-reason discipline as parseAnswer. The JSON value is returned
+ * unvalidated (the host's aiDraftResult applies the plan contract); only
+ * transport-level failures — refusal, truncation, malformed JSON — are
+ * decided here, so an incomplete plan is refused once and never retried
+ * (a retry would be a second paid call). Content blocks are inspected by
+ * type: thinking blocks may precede the answer and are ignored; exactly
+ * one text block is required.
+ * @param {Record<string, unknown>} payload
+ * @returns {DraftResult}
+ */
+function parseDraft(payload) {
+  if (payload.type !== 'message') throw failure('invalid-answer', INVALID_ANSWER);
+  if (payload.stop_reason === 'max_tokens') {
+    throw failure('output-too-large', 'The Anthropic draft exceeds the output limit.');
+  }
+  if (payload.stop_reason === 'refusal') throw failure('refused', 'The model declined to draft.');
+  if (payload.stop_reason !== 'end_turn') throw failure('invalid-answer', INVALID_ANSWER);
+  const content = Array.isArray(payload.content) ? payload.content : [];
+  /** @type {string[]} */
+  const texts = [];
+  for (const block of content) {
+    if (isRecord(block) && block.type === 'text' && typeof block.text === 'string') texts.push(block.text);
+  }
+  if (texts.length !== 1) throw failure('invalid-answer', INVALID_ANSWER);
+  /** @type {unknown} */
+  let value;
+  try {
+    value = JSON.parse(texts[0]);
+  } catch {
+    throw failure('invalid-answer', INVALID_ANSWER);
+  }
+  const tokens = usageTokens(payload);
+  return {
+    value,
+    contentBytes: Buffer.byteLength(/** @type {string} */ (texts[0]), 'utf8'),
+    ...(tokens ? { usage: tokens } : {}),
+  };
+}
+
+/**
  * Create the Anthropic transport for createAiHost(). The returned function
  * matches the host contract — (validatedRequest, signal) => answer — and
  * carries a probe() for Test Connection: a tiny canned request with no
@@ -430,7 +557,30 @@ function createAnthropicTransport({ apiKey, model, fetchImpl, maxOutputTokens, m
     };
   }
 
-  return Object.assign(transport, { probe });
+  /**
+   * Milestone 3: one draft request against the Messages API with the plan
+   * schema as structured output, the fixed drafting instructions as the
+   * system prompt and the draft token budget. Only the user's prompt and
+   * the exact context JSON the panel previewed go on the wire.
+   * @param {ValidatedDraftRequest} request
+   * @param {AbortSignal} [signal]
+   * @returns {Promise<DraftResult>}
+   */
+  async function draft(request, signal) {
+    const payload = await postMessages(send, apiKey, responseBytes, {
+      model,
+      max_tokens: DRAFT_MAX_TOKENS,
+      system: DRAFT_INSTRUCTIONS,
+      messages: [{
+        role: 'user',
+        content: `Request: ${request.prompt}\n\nContext (exact JSON):\n${request.contextJson}`,
+      }],
+      output_config: { format: { type: 'json_schema', schema: DRAFT_SCHEMA } },
+    }, signal);
+    return parseDraft(payload);
+  }
+
+  return Object.assign(transport, { probe, draft });
 }
 
 module.exports = { createAnthropicTransport };

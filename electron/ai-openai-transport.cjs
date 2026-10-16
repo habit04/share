@@ -57,6 +57,77 @@ const ANSWER_FORMAT = Object.freeze({
 
 const INVALID_ANSWER = 'The provider returned an invalid answer.';
 
+// ---- Milestone 3 (Draft / Edit): mirrors src/ai/draft-schema.ts. The
+// adapters cannot import the renderer module, so the schema and the fixed
+// instructions are carried here; tests pin both sides to the same shape.
+// Draft output budget is 4096 tokens, separate from the Ask budget (2048).
+
+const DRAFT_MAX_OUTPUT_TOKENS = 4096;
+const DRAFT_MAX_OPERATIONS = 64;
+const DRAFT_MAX_TARGETS_PER_OP = 200;
+
+const DRAFT_INSTRUCTIONS = [
+  'You are the drafting engine inside JCad, a CAD application. You return exactly one JSON object matching the supplied schema; no prose outside it.',
+  'You propose edits; JCad validates and computes all geometry locally and the user approves before anything is applied. Never invent object ids: edit operations may target only ids marked eligible:true in the context targets. Creations must not carry ids.',
+  'All numbers are drawing units and degrees, in the World XY plane of the Model tab, exactly as the context states. If the drawing is unitless and the user specified physical units, return outcome "clarification" and ask instead of assuming a scale.',
+  'Supported operations only: createLine (a,b), createCircle (center,radius), createRectangle (origin,width,height, optional rotationDeg), move/copy (targetIds, dx, dy), rotate (targetIds, pivot, angleDeg), delete (targetIds). Rectangles become closed polylines computed by JCad.',
+  'If an essential dimension, unit, pivot or scope is missing, return outcome "clarification" with one clear question. If the request needs anything unsupported (blocks, text, dimensions, hatches, curves, 3D, layouts, electrical content, retained CAD objects, layers that do not exist or are locked/hidden), return outcome "unsupported" and say why. Never return a partial plan that silently omits part of the request.',
+  'Fill every field of each operation object: the fields an operation does not use must be null. One object may be targeted by at most one edit operation.',
+].join('\n');
+
+const DRAFT_POINT_SCHEMA = Object.freeze({
+  type: 'object',
+  additionalProperties: false,
+  properties: { x: { type: 'number' }, y: { type: 'number' } },
+  required: ['x', 'y'],
+});
+const DRAFT_POINT_OR_NULL = Object.freeze({ anyOf: [DRAFT_POINT_SCHEMA, { type: 'null' }] });
+const DRAFT_NUMBER_OR_NULL = Object.freeze({ type: ['number', 'null'] });
+
+const DRAFT_SCHEMA = Object.freeze({
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    outcome: { type: 'string', enum: ['proposal', 'clarification', 'unsupported'] },
+    message: { type: ['string', 'null'] },
+    operations: {
+      type: ['array', 'null'],
+      maxItems: DRAFT_MAX_OPERATIONS,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          op: { type: 'string', enum: ['createLine', 'createCircle', 'createRectangle', 'move', 'copy', 'rotate', 'delete'] },
+          a: DRAFT_POINT_OR_NULL,
+          b: DRAFT_POINT_OR_NULL,
+          center: DRAFT_POINT_OR_NULL,
+          radius: DRAFT_NUMBER_OR_NULL,
+          origin: DRAFT_POINT_OR_NULL,
+          width: DRAFT_NUMBER_OR_NULL,
+          height: DRAFT_NUMBER_OR_NULL,
+          rotationDeg: DRAFT_NUMBER_OR_NULL,
+          layer: { type: ['string', 'null'] },
+          targetIds: { type: ['array', 'null'], items: { type: 'string' }, maxItems: DRAFT_MAX_TARGETS_PER_OP },
+          dx: DRAFT_NUMBER_OR_NULL,
+          dy: DRAFT_NUMBER_OR_NULL,
+          pivot: DRAFT_POINT_OR_NULL,
+          angleDeg: DRAFT_NUMBER_OR_NULL,
+        },
+        required: ['op', 'a', 'b', 'center', 'radius', 'origin', 'width', 'height', 'rotationDeg',
+          'layer', 'targetIds', 'dx', 'dy', 'pivot', 'angleDeg'],
+      },
+    },
+  },
+  required: ['outcome', 'message', 'operations'],
+});
+
+const DRAFT_FORMAT = Object.freeze({
+  type: 'json_schema',
+  name: 'jcad_draft_plan',
+  strict: true,
+  schema: DRAFT_SCHEMA,
+});
+
 /**
  * The output of aiRequest() in electron/ai-host.cjs.
  * @typedef {object} ValidatedRequest
@@ -81,7 +152,28 @@ const INVALID_ANSWER = 'The provider returned an invalid answer.';
  * @typedef {{ inputTokens?: number, outputTokens?: number }} ProviderUsage
  * @typedef {{ model: string, inputTokens?: number, outputTokens?: number, outputLimited?: boolean }} ProbeResult
  * @typedef {((request: ValidatedRequest, signal?: AbortSignal) => Promise<object>)
- *           & { probe: (signal?: AbortSignal) => Promise<ProbeResult> }} OpenAiTransport
+ *           & { probe: (signal?: AbortSignal) => Promise<ProbeResult>,
+ *               draft: (request: ValidatedDraftRequest, signal?: AbortSignal) => Promise<DraftResult> }} OpenAiTransport
+ */
+
+/**
+ * The output of aiDraftRequest() in electron/ai-host.cjs. Only prompt and
+ * contextJson go on the wire; ids and the binding stay host-side.
+ * @typedef {object} ValidatedDraftRequest
+ * @property {number | string} requestId
+ * @property {string} prompt
+ * @property {string} contextJson
+ * @property {number} contextBytes
+ */
+
+/**
+ * A draft transport result: the JSON-parsed provider object (NOT yet
+ * plan-validated — aiDraftResult in the host does that), the UTF-8 byte
+ * length of the raw content string it came from, and provider usage.
+ * @typedef {object} DraftResult
+ * @property {unknown} value
+ * @property {number} contentBytes
+ * @property {ProviderUsage} [usage]
  */
 
 /** @param {unknown} value @returns {value is Record<string, unknown>} */
@@ -375,6 +467,60 @@ function parseAnswer(payload) {
 }
 
 /**
+ * Extract the draft content from a Responses payload with the same status
+ * discipline as parseAnswer. The JSON value is returned unvalidated (the
+ * host's aiDraftResult applies the plan contract); only transport-level
+ * failures — refusal, truncation, malformed JSON — are decided here, so an
+ * incomplete plan is refused once and never retried (a retry would be a
+ * second paid call).
+ * @param {Record<string, unknown>} payload
+ * @returns {DraftResult}
+ */
+function parseDraft(payload) {
+  if (payload.status === 'failed') {
+    throw failure('provider-failure', 'The provider failed to answer. Try again later.');
+  }
+  if (payload.status === 'incomplete') {
+    const details = payload.incomplete_details;
+    const reason = isRecord(details) ? details.reason : undefined;
+    if (reason === 'max_output_tokens') {
+      throw failure('output-too-large', 'The provider draft exceeds the output limit.');
+    }
+    if (reason === 'content_filter') throw failure('refused', 'The model declined to draft.');
+    throw failure('invalid-answer', INVALID_ANSWER);
+  }
+  if (payload.status !== 'completed') throw failure('invalid-answer', INVALID_ANSWER);
+  const output = Array.isArray(payload.output) ? payload.output : [];
+  let refused = false;
+  /** @type {string[]} */
+  const texts = [];
+  for (const item of output) {
+    if (!isRecord(item) || item.type !== 'message') continue;
+    const content = Array.isArray(item.content) ? item.content : [];
+    for (const part of content) {
+      if (!isRecord(part)) continue;
+      if (part.type === 'refusal') refused = true;
+      else if (part.type === 'output_text' && typeof part.text === 'string') texts.push(part.text);
+    }
+  }
+  if (refused) throw failure('refused', 'The model declined to draft.');
+  if (texts.length !== 1) throw failure('invalid-answer', INVALID_ANSWER);
+  /** @type {unknown} */
+  let value;
+  try {
+    value = JSON.parse(texts[0]);
+  } catch {
+    throw failure('invalid-answer', INVALID_ANSWER);
+  }
+  const tokens = usageTokens(payload);
+  return {
+    value,
+    contentBytes: Buffer.byteLength(/** @type {string} */ (texts[0]), 'utf8'),
+    ...(tokens ? { usage: tokens } : {}),
+  };
+}
+
+/**
  * Create the OpenAI transport for createAiHost(). The returned function
  * matches the host contract — (validatedRequest, signal) => answer — and
  * carries a probe() for Test Connection: a tiny canned request with no
@@ -449,7 +595,31 @@ function createOpenAiTransport({ apiKey, model, fetchImpl, maxOutputTokens, maxR
     return { model, ...(usageTokens(payload) ?? {}) };
   }
 
-  return Object.assign(transport, { probe });
+  /**
+   * Milestone 3: one draft request against the Responses API with the
+   * strict plan schema, the fixed drafting instructions and the draft
+   * token budget. Only the user's prompt and the exact context JSON the
+   * panel previewed go on the wire.
+   * @param {ValidatedDraftRequest} request
+   * @param {AbortSignal} [signal]
+   * @returns {Promise<DraftResult>}
+   */
+  async function draft(request, signal) {
+    const payload = await postResponses(send, apiKey, responseBytes, {
+      model,
+      store: false,
+      max_output_tokens: DRAFT_MAX_OUTPUT_TOKENS,
+      instructions: DRAFT_INSTRUCTIONS,
+      input: [{
+        role: 'user',
+        content: [{ type: 'input_text', text: `Request: ${request.prompt}\n\nContext (exact JSON):\n${request.contextJson}` }],
+      }],
+      text: { format: DRAFT_FORMAT },
+    }, signal);
+    return parseDraft(payload);
+  }
+
+  return Object.assign(transport, { probe, draft });
 }
 
 module.exports = { createOpenAiTransport };

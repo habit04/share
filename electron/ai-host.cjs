@@ -35,6 +35,16 @@ const AI_LIMITS = Object.freeze({
   maxTableCells: 64,
   maxSamplePoints: 16,
   maxOmittedListed: 100,
+  // Milestone 3 (Draft / Edit) — mirrors the AI_DRAFT_* constants in limits.ts.
+  maxDraftPlanBytes: 32 * 1024,
+  maxDraftContextBytes: 96 * 1024,
+  maxDraftOperations: 64,
+  maxDraftTargetsPerOp: 200,
+  maxDraftAffected: 400,
+  maxDraftCreated: 200,
+  maxDraftCoordinate: 1e7,
+  maxDraftDimension: 1e6,
+  maxDraftMessageChars: 1000,
 });
 
 class AiHostError extends Error {
@@ -299,17 +309,318 @@ function aiAnswer(value) {
 }
 
 /**
+ * Validate a draft envelope from the renderer (milestone 3,
+ * docs/AI-ASSISTANT-M3.md) and return a fresh object with only whitelisted
+ * fields, mirroring aiRequest(). The context JSON is the exact text the
+ * panel previewed: it crosses as one bounded opaque string and is never
+ * rebuilt or re-serialized host-side. The binding is the draft binding
+ * (AiDraftBinding): the ask binding whitelisted as in aiRequest() plus the
+ * units/defaults/eligibility/configuration fingerprint strings, each
+ * bounded. Fingerprint contents are renderer bookkeeping — the host never
+ * interprets them; it only carries the whitelist through.
+ */
+function aiDraftRequest(value) {
+  if (!isPlainObject(value)) throw new AiHostError('invalid-request', 'Invalid AI draft request.');
+  let envelopeBytes;
+  try {
+    envelopeBytes = Buffer.byteLength(JSON.stringify(value), 'utf8');
+  } catch {
+    throw new AiHostError('invalid-request', 'AI draft request is not serializable.');
+  }
+  if (envelopeBytes > AI_LIMITS.maxEnvelopeBytes) {
+    throw new AiHostError('invalid-request', 'AI draft request exceeds the size limit.');
+  }
+  const requestId = value.requestId;
+  if (!((Number.isSafeInteger(requestId) && requestId >= 0)
+    || (typeof requestId === 'string' && /^[A-Za-z0-9][A-Za-z0-9-]{7,95}$/.test(requestId)))) {
+    throw new AiHostError('invalid-request', 'Invalid request id.');
+  }
+  const prompt = boundedString(value.prompt, AI_LIMITS.maxQuestionChars, 'draft prompt');
+  if (typeof value.contextJson !== 'string' || value.contextJson.length === 0) {
+    throw new AiHostError('invalid-request', 'Invalid draft context.');
+  }
+  const contextBytes = Buffer.byteLength(value.contextJson, 'utf8');
+  if (contextBytes > AI_LIMITS.maxDraftContextBytes) {
+    throw new AiHostError('invalid-request', 'Draft context exceeds the size limit.');
+  }
+  let destination;
+  if (value.destination !== undefined) {
+    if (!isPlainObject(value.destination) || !AI_PROVIDERS.includes(value.destination.provider)
+      || !validateAiModel(value.destination.model)) throw new AiHostError('invalid-request', 'Invalid AI destination.');
+    destination = { provider: value.destination.provider, model: value.destination.model };
+  }
+  const binding = value.binding;
+  if (!isPlainObject(binding) || !isPlainObject(binding.ask)) {
+    throw new AiHostError('invalid-request', 'Invalid draft binding.');
+  }
+  const ask = binding.ask;
+  if (!Number.isSafeInteger(ask.sessionId)
+    || typeof ask.docId !== 'string' || ask.docId.length > AI_LIMITS.maxEnvelopeBytes
+    || !Number.isSafeInteger(ask.contentGeneration)
+    || !Number.isSafeInteger(ask.docRevision)
+    || !Array.isArray(ask.selectionIds)
+    || ask.selectionIds.length > AI_LIMITS.maxEnvelopeBytes
+    || ask.selectionIds.some((id) => typeof id !== 'string' || id.length > AI_LIMITS.maxEnvelopeBytes)) {
+    throw new AiHostError('invalid-request', 'Invalid draft binding.');
+  }
+  const fingerprints = {};
+  for (const field of ['unitsKey', 'defaultsKey', 'eligibilityKey', 'configKey']) {
+    const fingerprint = binding[field];
+    // A fingerprint may be empty (an empty selection has no eligibility
+    // entries); it is a bounded opaque string, never content.
+    if (typeof fingerprint !== 'string' || fingerprint.length > AI_LIMITS.maxEnvelopeBytes
+      || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(fingerprint)) {
+      throw new AiHostError('invalid-request', 'Invalid draft binding.');
+    }
+    fingerprints[field] = fingerprint;
+  }
+  return {
+    requestId: value.requestId,
+    prompt,
+    contextJson: value.contextJson,
+    contextBytes,
+    ...(destination ? { destination } : {}),
+    binding: {
+      ask: {
+        sessionId: ask.sessionId,
+        docId: ask.docId,
+        contentGeneration: ask.contentGeneration,
+        docRevision: ask.docRevision,
+        selectionCount: ask.selectionIds.length,
+      },
+      ...fingerprints,
+    },
+  };
+}
+
+// ---- Draft plan validation: the host-side mirror of parseAiDraftResponse
+// in src/ai/draft-plan.ts. The two implementations pin the same contract
+// (docs/AI-ASSISTANT-M3.md); a plan that fails either side is refused whole
+// with kind 'invalid-plan' and nothing is ever repaired or partially kept.
+
+const DRAFT_TOP_KEYS = new Set(['outcome', 'message', 'operations']);
+const DRAFT_OP_KEYS = new Set([
+  'op', 'a', 'b', 'center', 'radius', 'origin', 'width', 'height', 'rotationDeg',
+  'layer', 'targetIds', 'dx', 'dy', 'pivot', 'angleDeg',
+]);
+const DRAFT_ID_MAX_CHARS = 512;
+/** Fields that must be null for each op (non-null = misplaced data). */
+const DRAFT_NULL_FIELDS = Object.freeze({
+  createLine: ['center', 'radius', 'origin', 'width', 'height', 'rotationDeg', 'targetIds', 'dx', 'dy', 'pivot', 'angleDeg'],
+  createCircle: ['a', 'b', 'origin', 'width', 'height', 'rotationDeg', 'targetIds', 'dx', 'dy', 'pivot', 'angleDeg'],
+  createRectangle: ['a', 'b', 'center', 'radius', 'targetIds', 'dx', 'dy', 'pivot', 'angleDeg'],
+  move: ['a', 'b', 'center', 'radius', 'origin', 'width', 'height', 'rotationDeg', 'layer', 'pivot', 'angleDeg'],
+  copy: ['a', 'b', 'center', 'radius', 'origin', 'width', 'height', 'rotationDeg', 'layer', 'pivot', 'angleDeg'],
+  rotate: ['a', 'b', 'center', 'radius', 'origin', 'width', 'height', 'rotationDeg', 'layer', 'dx', 'dy'],
+  delete: ['a', 'b', 'center', 'radius', 'origin', 'width', 'height', 'rotationDeg', 'layer', 'dx', 'dy', 'pivot', 'angleDeg'],
+});
+
+function invalidPlan(message) {
+  return new AiHostError('invalid-plan', message);
+}
+
+function draftPoint(value) {
+  if (!isPlainObject(value)) return null;
+  if (Object.keys(value).length !== 2 || typeof value.x !== 'number' || typeof value.y !== 'number') return null;
+  if (!Number.isFinite(value.x) || !Number.isFinite(value.y)) return null;
+  if (Math.abs(value.x) > AI_LIMITS.maxDraftCoordinate || Math.abs(value.y) > AI_LIMITS.maxDraftCoordinate) return null;
+  return { x: value.x, y: value.y };
+}
+
+function draftDimension(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  if (value <= 0 || value > AI_LIMITS.maxDraftDimension) return null;
+  return value;
+}
+
+function draftFinite(value, maxAbs) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > maxAbs) return null;
+  return value;
+}
+
+/** @returns {string | null | undefined} the layer, null for absent, undefined for invalid */
+function draftLayer(value) {
+  if (value === null) return null;
+  if (typeof value !== 'string' || value.length === 0 || value.length > DRAFT_ID_MAX_CHARS) return undefined;
+  return value;
+}
+
+function draftTargets(value) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > AI_LIMITS.maxDraftTargetsPerOp) return null;
+  const seen = new Set();
+  for (const id of value) {
+    if (typeof id !== 'string' || id.length === 0 || id.length > DRAFT_ID_MAX_CHARS) return null;
+    if (seen.has(id)) return null;
+    seen.add(id);
+  }
+  return [...value];
+}
+
+/** Normalize one raw operation to the plan shape, or return null. */
+function draftOperation(raw) {
+  if (!isPlainObject(raw)) return null;
+  for (const key of Object.keys(raw)) if (!DRAFT_OP_KEYS.has(key)) return null;
+  const op = raw.op;
+  if (typeof op !== 'string' || !Object.hasOwn(DRAFT_NULL_FIELDS, op)) return null;
+  for (const field of DRAFT_NULL_FIELDS[op]) if (raw[field] !== null && raw[field] !== undefined) return null;
+  switch (op) {
+    case 'createLine': {
+      const a = draftPoint(raw.a), b = draftPoint(raw.b), layer = draftLayer(raw.layer);
+      if (!a || !b || layer === undefined) return null;
+      if (a.x === b.x && a.y === b.y) return null; // zero-length line
+      return { op, a, b, layer };
+    }
+    case 'createCircle': {
+      const center = draftPoint(raw.center), radius = draftDimension(raw.radius), layer = draftLayer(raw.layer);
+      if (!center || radius === null || layer === undefined) return null;
+      return { op, center, radius, layer };
+    }
+    case 'createRectangle': {
+      const origin = draftPoint(raw.origin), width = draftDimension(raw.width), height = draftDimension(raw.height);
+      let rotationDeg = null;
+      if (raw.rotationDeg !== null && raw.rotationDeg !== undefined) {
+        rotationDeg = draftFinite(raw.rotationDeg, 3600);
+        if (rotationDeg === null) return null;
+      }
+      const layer = draftLayer(raw.layer);
+      if (!origin || width === null || height === null || layer === undefined) return null;
+      return { op, origin, width, height, rotationDeg, layer };
+    }
+    case 'move':
+    case 'copy': {
+      const targetIds = draftTargets(raw.targetIds);
+      const dx = draftFinite(raw.dx, AI_LIMITS.maxDraftCoordinate), dy = draftFinite(raw.dy, AI_LIMITS.maxDraftCoordinate);
+      if (!targetIds || dx === null || dy === null) return null;
+      if (dx === 0 && dy === 0) return null; // a no-op edit can never be staged
+      return { op, targetIds, dx, dy };
+    }
+    case 'rotate': {
+      const targetIds = draftTargets(raw.targetIds), pivot = draftPoint(raw.pivot);
+      const angleDeg = draftFinite(raw.angleDeg, 3600);
+      if (!targetIds || !pivot || angleDeg === null) return null;
+      if (((angleDeg % 360) + 360) % 360 === 0) return null; // no-op rotation
+      return { op, targetIds, pivot, angleDeg };
+    }
+    case 'delete': {
+      const targetIds = draftTargets(raw.targetIds);
+      if (!targetIds) return null;
+      return { op, targetIds };
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * Validate a provider's raw draft response value (the mirror of
+ * parseAiDraftResponse). Returns the normalized AiDraftResponse shape:
+ * { kind: 'plan', plan } | { kind: 'clarification' | 'unsupported', message }.
+ */
+function parseDraftResponse(value) {
+  if (!isPlainObject(value)) throw invalidPlan('The provider response was not an object.');
+  for (const key of Object.keys(value)) if (!DRAFT_TOP_KEYS.has(key)) throw invalidPlan('The provider response carried unexpected fields.');
+  const outcome = value.outcome;
+  if (outcome !== 'proposal' && outcome !== 'clarification' && outcome !== 'unsupported') {
+    throw invalidPlan('The provider response had an unknown outcome.');
+  }
+  const message = value.message;
+  if (message !== null && message !== undefined
+    && (typeof message !== 'string' || message.length > AI_LIMITS.maxDraftMessageChars)) {
+    throw invalidPlan('The provider message was invalid.');
+  }
+  if (outcome !== 'proposal') {
+    if (value.operations !== null && value.operations !== undefined) {
+      throw invalidPlan('A clarification or unsupported response must not carry operations.');
+    }
+    if (typeof message !== 'string' || message.length === 0) {
+      throw invalidPlan('The provider response did not explain itself.');
+    }
+    return { kind: outcome, message };
+  }
+  if (!Array.isArray(value.operations) || value.operations.length === 0) {
+    throw invalidPlan('The proposal carried no operations.');
+  }
+  if (value.operations.length > AI_LIMITS.maxDraftOperations) {
+    throw invalidPlan('The proposal carried too many operations.');
+  }
+  const operations = [];
+  const targeted = new Set();
+  let affected = 0, created = 0;
+  for (const rawOp of value.operations) {
+    const op = draftOperation(rawOp);
+    if (!op) throw invalidPlan('The proposal contained an invalid or unsupported operation.');
+    const targetIds = /** @type {{ targetIds?: string[] }} */ (op).targetIds;
+    if (targetIds !== undefined) {
+      affected += targetIds.length;
+      if (op.op === 'copy') created += targetIds.length;
+      for (const id of targetIds) {
+        if (targeted.has(id)) throw invalidPlan('The proposal targeted the same object in more than one operation.');
+        targeted.add(id);
+      }
+    } else {
+      created += 1;
+    }
+    operations.push(op);
+  }
+  if (affected > AI_LIMITS.maxDraftAffected) throw invalidPlan('The proposal affected too many objects.');
+  if (created > AI_LIMITS.maxDraftCreated) throw invalidPlan('The proposal created too many objects.');
+  return {
+    kind: 'plan',
+    plan: { message: typeof message === 'string' && message.length > 0 ? message : null, operations },
+  };
+}
+
+/**
+ * Validate a transport draft result ({ value, contentBytes, usage }) before
+ * the plan is allowed back to the renderer. The plan byte cap is enforced
+ * from the adapter-reported raw content byte count before the value is
+ * inspected; the value itself must satisfy the plan contract.
+ */
+function aiDraftResult(value) {
+  if (!isPlainObject(value)) throw invalidPlan('The provider returned an invalid draft.');
+  const contentBytes = value.contentBytes;
+  if (!Number.isSafeInteger(contentBytes) || contentBytes < 0) {
+    throw invalidPlan('The provider returned an invalid draft.');
+  }
+  if (contentBytes > AI_LIMITS.maxDraftPlanBytes) {
+    throw invalidPlan('The draft plan exceeds the size limit.');
+  }
+  const response = parseDraftResponse(value.value);
+  const result = { response, contentBytes };
+  // Provider-reported token usage rides along only as bounded counts.
+  if (isPlainObject(value.usage)) {
+    const providerUsage = {};
+    for (const field of ['inputTokens', 'outputTokens']) {
+      const tokens = value.usage[field];
+      if (Number.isSafeInteger(tokens) && tokens >= 0) providerUsage[field] = tokens;
+    }
+    if (Object.keys(providerUsage).length > 0) result.providerUsage = providerUsage;
+  }
+  return result;
+}
+
+/** Per-job deadline for draft jobs, from enqueue (same value as the ask deadline default). */
+const AI_DRAFT_TIMEOUT_MS = 30000;
+
+/**
  * Create the host service. `transport` is the only provider-specific piece:
  * an async function (validatedRequest, signal) => answer, supplied when a
  * provider is agreed. The transport must abort network/body reads when its
  * signal aborts, and cap provider tokens/body bytes before reading an answer:
  * the usage counters below are not a spend limit. Without one, every ask refuses with
  * 'provider-not-configured' and nothing leaves the machine.
+ * `draftTransport` (milestone 3) is the same contract for drafts:
+ * (validatedDraftRequest, signal) => { value, contentBytes, usage }, run
+ * through the same queue, concurrency and cancellation machinery with its
+ * own per-job deadline (draftTimeoutMs).
  * @param {{ transport?: (request: object, signal: AbortSignal) => Promise<object>,
- *           timeoutMs?: number, maxConcurrent?: number, maxPending?: number }} [options]
+ *           draftTransport?: (request: object, signal: AbortSignal) => Promise<object>,
+ *           timeoutMs?: number, draftTimeoutMs?: number,
+ *           maxConcurrent?: number, maxPending?: number }} [options]
  */
-function createAiHost({ transport, timeoutMs = 30000, maxConcurrent = 2, maxPending = 8 } = {}) {
+function createAiHost({ transport, draftTransport, timeoutMs = 30000, draftTimeoutMs = AI_DRAFT_TIMEOUT_MS, maxConcurrent = 2, maxPending = 8 } = {}) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647
+    || !Number.isSafeInteger(draftTimeoutMs) || draftTimeoutMs < 1 || draftTimeoutMs > 2147483647
     || !Number.isSafeInteger(maxConcurrent) || maxConcurrent < 1
     || !Number.isSafeInteger(maxPending) || maxPending < 0) {
     throw new AiHostError('invalid-request', 'Invalid AI host limits.');
@@ -323,7 +634,7 @@ function createAiHost({ transport, timeoutMs = 30000, maxConcurrent = 2, maxPend
     inputBytes: 0, outputChars: 0, lastDurationMs: 0,
   };
 
-  function finish(job, error, answer) {
+  function finish(job, error, value, outputChars = 0) {
     if (job.settled) return;
     job.settled = true;
     clearTimeout(job.timer);
@@ -337,9 +648,9 @@ function createAiHost({ transport, timeoutMs = 30000, maxConcurrent = 2, maxPend
       else usage.failures += 1;
       job.reject(error);
     } else {
-      usage.outputChars += answer.text.length;
+      usage.outputChars += outputChars;
       usage.lastDurationMs = Date.now() - job.started;
-      job.resolve({ ...answer, usage: { inputBytes: job.request.snapshotBytes, outputChars: answer.text.length, durationMs: usage.lastDurationMs } });
+      job.resolve(value);
     }
   }
 
@@ -347,7 +658,7 @@ function createAiHost({ transport, timeoutMs = 30000, maxConcurrent = 2, maxPend
     if (job.settled) return;
     // Settle before aborting: a transport that resolves on abort cannot win.
     finish(job, new AiHostError(kind, kind === 'timeout'
-      ? `The provider did not answer within ${timeoutMs} ms.` : 'The AI request was cancelled.'));
+      ? `The provider did not answer within ${job.limitMs} ms.` : 'The AI request was cancelled.'));
     job.controller.abort();
   }
 
@@ -362,10 +673,33 @@ function createAiHost({ transport, timeoutMs = 30000, maxConcurrent = 2, maxPend
   async function run(job) {
     try {
       if (job.settled) return;
-      // ask() admits jobs only after confirming that transport is configured.
-      const invoke = /** @type {NonNullable<typeof transport>} */ (transport);
-      const raw = await invoke(job.request, job.controller.signal);
-      if (!job.settled) finish(job, null, aiAnswer(raw));
+      // ask()/draft() admit jobs only after confirming their transport is configured.
+      if (job.kind === 'draft') {
+        const invoke = /** @type {NonNullable<typeof draftTransport>} */ (draftTransport);
+        const raw = await invoke(job.request, job.controller.signal);
+        if (!job.settled) {
+          // aiDraftResult validates the plan (invalid → 'invalid-plan');
+          // the raw provider value itself crosses back so the renderer's
+          // parseAiDraftResponse stays the authoritative parse, exactly as
+          // the ask path re-validates host answers renderer-side.
+          const result = aiDraftResult(raw);
+          finish(job, null, {
+            value: /** @type {{ value: unknown }} */ (raw).value,
+            usage: { inputBytes: job.request.contextBytes, outputChars: result.contentBytes, durationMs: Date.now() - job.started },
+            ...(result.providerUsage ? { providerUsage: result.providerUsage } : {}),
+          }, result.contentBytes);
+        }
+      } else {
+        const invoke = /** @type {NonNullable<typeof transport>} */ (transport);
+        const raw = await invoke(job.request, job.controller.signal);
+        if (!job.settled) {
+          const answer = aiAnswer(raw);
+          finish(job, null, {
+            ...answer,
+            usage: { inputBytes: job.request.snapshotBytes, outputChars: answer.text.length, durationMs: Date.now() - job.started },
+          }, answer.text.length);
+        }
+      }
     } catch (cause) {
       finish(job, cause instanceof AiHostError
         ? cause
@@ -376,6 +710,28 @@ function createAiHost({ transport, timeoutMs = 30000, maxConcurrent = 2, maxPend
     // live transports; queued requests still expire on their own timers.
   }
 
+  function enqueue(kind, request, signal, limitMs) {
+    return new Promise((resolve, reject) => {
+      const job = { kind, request, resolve, reject, signal, controller: new AbortController(),
+        settled: false, started: Date.now(), limitMs,
+        timer: /** @type {ReturnType<typeof setTimeout> | null} */ (null),
+        onAbort: /** @type {(() => void) | null} */ (null) };
+      job.onAbort = () => cancel(job);
+      jobs.set(request.requestId, job);
+      signal?.addEventListener('abort', job.onAbort, { once: true });
+      if (signal?.aborted) { cancel(job); return; }
+      job.timer = setTimeout(() => cancel(job, 'timeout'), limitMs);
+      queue.push(job);
+      pump();
+    });
+  }
+
+  function requireSignal(signal) {
+    if (signal && (typeof signal.aborted !== 'boolean' || typeof signal.addEventListener !== 'function'
+      || typeof signal.removeEventListener !== 'function')) throw new AiHostError('invalid-request', 'Invalid cancellation signal.');
+    if (signal?.aborted) throw new AiHostError('cancelled', 'The AI request was cancelled.');
+  }
+
   return {
     // An injected same-process bridge passes its AbortSignal directly. The
     // IPC bridge (electron/main/ipc-ai.cjs) instead translates a renderer
@@ -383,9 +739,7 @@ function createAiHost({ transport, timeoutMs = 30000, maxConcurrent = 2, maxPend
     // guarded sender; signals are not serializable IPC values.
     async ask(value, signal) {
       if (disposed) throw new AiHostError('disposed', 'The AI host has been disposed.');
-      if (signal && (typeof signal.aborted !== 'boolean' || typeof signal.addEventListener !== 'function'
-        || typeof signal.removeEventListener !== 'function')) throw new AiHostError('invalid-request', 'Invalid cancellation signal.');
-      if (signal?.aborted) throw new AiHostError('cancelled', 'The AI request was cancelled.');
+      requireSignal(signal);
       const request = aiRequest(value);
       usage.requests += 1;
       usage.inputBytes += request.snapshotBytes;
@@ -396,19 +750,23 @@ function createAiHost({ transport, timeoutMs = 30000, maxConcurrent = 2, maxPend
       if (active >= maxConcurrent && queue.length >= maxPending) {
         throw new AiHostError('provider-failure', 'Too many pending AI requests.');
       }
-      return new Promise((resolve, reject) => {
-        const job = { request, resolve, reject, signal, controller: new AbortController(),
-          settled: false, started: Date.now(),
-          timer: /** @type {ReturnType<typeof setTimeout> | null} */ (null),
-          onAbort: /** @type {(() => void) | null} */ (null) };
-        job.onAbort = () => cancel(job);
-        jobs.set(request.requestId, job);
-        signal?.addEventListener('abort', job.onAbort, { once: true });
-        if (signal?.aborted) { cancel(job); return; }
-        job.timer = setTimeout(() => cancel(job, 'timeout'), timeoutMs);
-        queue.push(job);
-        pump();
-      });
+      return enqueue('ask', request, signal, timeoutMs);
+    },
+    /** Milestone 3: the draft twin of ask(), over the draft transport. */
+    async draft(value, signal) {
+      if (disposed) throw new AiHostError('disposed', 'The AI host has been disposed.');
+      requireSignal(signal);
+      const request = aiDraftRequest(value);
+      usage.requests += 1;
+      usage.inputBytes += request.contextBytes;
+      if (typeof draftTransport !== 'function') {
+        throw new AiHostError('provider-not-configured', 'No live AI provider has been selected; the AI host is inactive.');
+      }
+      if (jobs.has(request.requestId)) throw new AiHostError('invalid-request', 'Duplicate AI request id.');
+      if (active >= maxConcurrent && queue.length >= maxPending) {
+        throw new AiHostError('provider-failure', 'Too many pending AI requests.');
+      }
+      return enqueue('draft', request, signal, draftTimeoutMs);
     },
     cancel(requestId) {
       const job = jobs.get(requestId);
@@ -781,9 +1139,12 @@ const AI_PROBE_TIMEOUT_MS = 15000;
 
 /**
  * A provider transport: answers a validated request, and may carry a
- * `probe` for the connection test.
+ * `probe` for the connection test and a `draft` for milestone-3 plan
+ * requests ((validatedDraftRequest, signal) => { value, contentBytes,
+ * usage }).
  * @typedef {((request: object, signal: AbortSignal) => Promise<object>)
- *   & { probe?: (signal: AbortSignal) => Promise<object> }} AiTransportFn
+ *   & { probe?: (signal: AbortSignal) => Promise<object>,
+ *       draft?: (request: object, signal: AbortSignal) => Promise<object> }} AiTransportFn
  */
 
 /** Whether a value quacks like a key store (service construction check). */
@@ -891,6 +1252,16 @@ function createAiService({ host: hostOptions, configStore, keyStores, transportF
       const { provider, model } = requireDestination(request);
       if (!entryFor(provider).enabled || signal.aborted) throw new AiHostError('cancelled', 'The AI request was cancelled.');
       return transportFor(provider, model, requireKey(provider))(request, signal);
+    },
+    draftTransport: async (request, signal) => {
+      requireStable(workGeneration);
+      const { provider, model } = requireDestination(request);
+      if (!entryFor(provider).enabled || signal.aborted) throw new AiHostError('cancelled', 'The AI request was cancelled.');
+      const transport = transportFor(provider, model, requireKey(provider));
+      if (typeof transport.draft !== 'function') {
+        throw new AiHostError('provider-not-configured', 'The selected provider cannot draft. Update the application and try again.');
+      }
+      return transport.draft(request, signal);
     },
   });
   function cancelAll() {
@@ -1004,6 +1375,20 @@ function createAiService({ host: hostOptions, configStore, keyStores, transportF
       requireStable(generation);
       return answer;
     },
+    /** Milestone 3: the draft twin of ask(), with the same guards. */
+    async draft(value, signal) {
+      const generation = workGeneration;
+      requireStable(generation);
+      await ensureLoaded();
+      requireStable(generation);
+      const provider = selectedProvider();
+      if (!entryFor(provider).enabled) throw new AiHostError('live-disabled', 'Live AI is not enabled. Enable it in the AI panel connection settings.');
+      requireKey(provider);
+      requireDestination(value);
+      const result = await innerHost.draft(value, signal);
+      requireStable(generation);
+      return result;
+    },
     cancel: (requestId) => innerHost.cancel(requestId),
     cancelAll,
     usage: () => innerHost.usage(),
@@ -1069,7 +1454,7 @@ function createAiService({ host: hostOptions, configStore, keyStores, transportF
 
 
 module.exports = {
-  AI_LIMITS, AiHostError, aiRequest, aiAnswer, createAiHost, createAiKeyStore,
+  AI_LIMITS, AiHostError, aiRequest, aiAnswer, aiDraftRequest, aiDraftResult, createAiHost, createAiKeyStore,
   AI_PROVIDERS, AI_DEFAULT_MODEL, AI_PROVIDER_DEFAULT_MODELS, validateAiModel,
   createAiConfigStore, createAiService,
 };
