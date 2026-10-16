@@ -39,6 +39,7 @@ import {
   type ConstraintSet,
 } from './model';
 import { resolveShape, validateConstraints, type ConstraintProblem, type ConstraintShape, type Side } from './validate';
+import { moveWidthFrameGrip } from '../polyline-widths';
 
 // ---------------------------------------------------------------------------
 // Fixed constants (design §5.5). Exported for tests; NOT user settings.
@@ -1273,6 +1274,24 @@ function guardProblems(entities: readonly Entity[]): ConstraintProblem[] {
           break;
         }
         for (const p of pts) nums.push(...coords(p));
+        // A width frame the solver must write back into (R05) has to
+        // be invertible and vertex-aligned; a degenerate or mismatched
+        // frame is refused here rather than throwing mid-solve.
+        const wf = e.widthFrame as { points?: unknown; origin?: unknown; x?: unknown; y?: unknown } | undefined;
+        if (wf !== undefined && wf !== null) {
+          const [ox, oy] = coords(wf.origin);
+          const [xx, xy] = coords(wf.x);
+          const [yx, yy] = coords(wf.y);
+          const framePts = Array.isArray(wf.points) ? wf.points : null;
+          if (
+            framePts === null ||
+            framePts.length !== pts.length ||
+            ![ox, oy, xx, xy, yx, yy].every((v) => Number.isFinite(v)) ||
+            xx * yy - xy * yx === 0
+          ) {
+            bad(e, 'a degenerate or vertex-mismatched width frame');
+          }
+        }
         break;
       }
     }
@@ -2646,11 +2665,25 @@ function materialize(e: ConstrainableEntity, vars: Float64Array, offset: number)
         startAngle: vars[offset + 3]!,
         endAngle: vars[offset + 4]!,
       };
-    case 'polyline':
-      return {
-        ...e,
-        points: e.points.map((_, i) => ({ x: vars[offset + 2 * i]!, y: vars[offset + 2 * i + 1]! })),
-      };
+    case 'polyline': {
+      const points = e.points.map((_, i) => ({ x: vars[offset + 2 * i]!, y: vars[offset + 2 * i + 1]! }));
+      if (!e.widthFrame) return { ...e, points };
+      // Width-frame coherence (review R05 residual): a framed
+      // polyline's display vertices are DERIVED from the frame —
+      // polylineVertices maps the frame's source points through it —
+      // so writing solved display points while leaving the frame
+      // stale installs an entity whose two vertex readings disagree.
+      // Each solved vertex that actually moved is applied back into
+      // the frame's source through the frame inverse — the same
+      // mechanism as the editor's width-frame grip edit — so points
+      // and frame agree by construction. The frame's origin, axes and
+      // widths (where the width semantics live) are untouched.
+      let frame = e.widthFrame;
+      for (let i = 0; i < points.length; i += 1) {
+        if (points[i]!.x !== e.points[i]!.x || points[i]!.y !== e.points[i]!.y) frame = moveWidthFrameGrip(frame, i, points[i]!);
+      }
+      return { ...e, points, widthFrame: frame };
+    }
   }
 }
 

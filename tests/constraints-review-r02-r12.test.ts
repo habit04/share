@@ -6,7 +6,7 @@
  * constants or tighter absolute bounds — never looser local ones.
  */
 import { describe, expect, it } from 'vitest';
-import type { ArcEntity, CircleEntity, Entity, LineEntity, PointEntity } from '../src/core/entities';
+import { blockTransform, polylineVertices, type ArcEntity, type CircleEntity, type Entity, type LineEntity, type PointEntity, type PolylineEntity } from '../src/core/entities';
 import { resolveAnchorPoint, type Constraint, type ConstraintSet } from '../src/core/constraints/model';
 import { analyzeConstraints, solveConstraints } from '../src/core/constraints/solve';
 
@@ -481,5 +481,48 @@ describe('R03 residual — H/V construction must not collapse a segment (review 
     const out = r.entities![0] as LineEntity;
     expect(out.b.x).toBeCloseTo(3, 9);
     expect(out.b.y).toBeCloseTo(0, 9);
+  });
+});
+
+describe('R05 residual — solved framed polylines stay coherent (review case B)', () => {
+  const framedSource = (): PolylineEntity => {
+    const source: PolylineEntity = { ...base, id: 'P', type: 'polyline', points: [{ x: 0, y: 0 }, { x: 10, y: 3 }], closed: false, width: 1 };
+    return blockTransform(source, (p) => ({ x: p.x * 2, y: p.y }), 0, 2, 1, false) as PolylineEntity;
+  };
+
+  it('affine (scale 2,1) framed polyline: display points and frame-derived vertices agree after solve', () => {
+    const framed = framedSource();
+    expect(framed.widthFrame).toBeDefined();
+    const cs = set(
+      { id: 'fx', kind: 'fixed', role: 'driving', refs: [ref('P', 'start')] },
+      { id: 'h', kind: 'horizontal', role: 'driving', refs: [ref('P', 'segment', 0)] },
+    );
+    const r = solveConstraints([framed], cs);
+    expect(r.ok).toBe(true);
+    const out = r.entities![0] as PolylineEntity;
+    expect(out.points[1]!.y).toBe(0);
+    // The frame-derived display vertex reads the same point.
+    expect(polylineVertices(out)[1]!.y).toBe(0);
+    expect(polylineVertices(out)[1]!.x).toBeCloseTo(out.points[1]!.x, 9);
+    // The frame is retained (width semantics live there), axes unchanged.
+    expect(out.widthFrame).toBeDefined();
+    expect(out.widthFrame!.x).toEqual(framed.widthFrame!.x);
+    expect(out.widthFrame!.y).toEqual(framed.widthFrame!.y);
+  });
+
+  it('a framed polyline whose constraints move no vertex is returned by identity', () => {
+    const framed = framedSource();
+    const cs = set({ id: 'fx', kind: 'fixed', role: 'driving', refs: [ref('P', 'start')] });
+    const r = solveConstraints([framed], cs);
+    expect(r.ok).toBe(true);
+    expect(r.entities![0]).toBe(framed);
+  });
+
+  it('a degenerate width frame is refused as invalid input, never thrown', () => {
+    const framed = framedSource();
+    const broken: PolylineEntity = { ...framed, widthFrame: { ...framed.widthFrame!, x: { x: 0, y: 0 } } };
+    const r = solveConstraints([broken], set({ id: 'fx', kind: 'fixed', role: 'driving', refs: [ref('P', 'start')] }));
+    expect(r.ok).toBe(false);
+    expect(r.problems.some((p) => p.code === 'invalid-value')).toBe(true);
   });
 });
