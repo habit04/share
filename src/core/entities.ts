@@ -1440,6 +1440,34 @@ export function insertExpansionLimited(ins: InsertEntity, lookup: BlockLookup): 
 export interface InsertEvaluationRefusal {
   readonly code: string;
   readonly message: string;
+  /** The reference whose state cannot be established: the probed insert itself
+   *  for a top-level refusal, the nested reference for a nested one (R10). */
+  readonly insertId?: string;
+  /** The block that reference points at. */
+  readonly block?: string;
+}
+
+/** The refusal of ONE reference against its own block (no nesting), or null. */
+function ownEvaluationRefusal(ins: InsertEntity, block: BlockDef): InsertEvaluationRefusal | null {
+  const definition = block.dynamic;
+  const instance = ins.dynamic;
+  const who = { insertId: ins.id, block: ins.block };
+  if (!definition && !instance && block.dynamicRetained === undefined && ins.dynamicRetained === undefined) return null;
+  if (block.dynamicRetained !== undefined) {
+    return { code: 'definition-retained', ...who, message: `Block "${block.name}" has a dynamic definition this build cannot model; it is retained as data and has no evaluated state.` };
+  }
+  if (ins.dynamicRetained !== undefined) {
+    return { code: 'instance-retained', ...who, message: `Block reference "${ins.id}" carries dynamic values this build cannot model; they are retained as data and have no evaluated state.` };
+  }
+  if (!definition) {
+    return { code: 'no-dynamic-definition', ...who, message: `Block reference "${ins.id}" carries dynamic values but block "${block.name}" has no dynamic definition to evaluate them against.` };
+  }
+  if (!instance) return null;
+  if (instance.block !== block.name) {
+    return { code: 'block-mismatch', ...who, message: `Block reference "${ins.id}" carries dynamic values for block "${instance.block}", not "${block.name}".` };
+  }
+  const result = evaluateDynamicBlock(definition, block.entities, block.attributes, instance);
+  return result.ok ? null : { code: result.refusal.code, ...who, message: result.refusal.message };
 }
 
 /**
@@ -1454,28 +1482,57 @@ export interface InsertEvaluationRefusal {
  * with NO stored instance values (nothing to lose — expansion presents
  * the authored geometry, which is what the explode produces). The gating
  * mirrors expansionBlock exactly.
+ *
+ * Review R10: the probe walks every nested reference the expansion of
+ * `ins` actually consumes — the (possibly evaluated) entities of each
+ * block, recursively — and returns the FIRST nested refusal in
+ * consumption order, identified by insertId/block. The walk mirrors
+ * explodeSingleInto's guards: references deeper than MAX_INSERT_DEPTH
+ * are never consumed (not probed), a block already on the chain is
+ * skipped (cyclic), a missing block consumes nothing, and the visit
+ * budget matches the expansion budget (a walk that would exceed it is
+ * already refused by insertExpansionLimited, which EXPLODE checks first).
  */
 export function insertEvaluationRefusal(ins: InsertEntity, lookup: BlockLookup): InsertEvaluationRefusal | null {
+  return probeEvaluationRefusal(ins, lookup, 0, [], { visits: MAX_INSERT_EXPANSION });
+}
+
+function probeEvaluationRefusal(
+  ins: InsertEntity,
+  lookup: BlockLookup,
+  depth: number,
+  chain: string[],
+  budget: { visits: number },
+): InsertEvaluationRefusal | null {
+  // Beyond the depth limit expansion never descends: nothing is consumed,
+  // so nothing can be lost — not even this reference's own state.
+  if (depth > MAX_INSERT_DEPTH) return null;
+  if (budget.visits <= 0) return null;
+  budget.visits -= 1;
   const block = lookup(ins.block);
   if (!block) return null;
-  const definition = block.dynamic;
-  const instance = ins.dynamic;
-  if (!definition && !instance && block.dynamicRetained === undefined && ins.dynamicRetained === undefined) return null;
-  if (block.dynamicRetained !== undefined) {
-    return { code: 'definition-retained', message: `Block "${block.name}" has a dynamic definition this build cannot model; it is retained as data and has no evaluated state.` };
+  if (chain.includes(ins.block)) return null;
+  const own = ownEvaluationRefusal(ins, block);
+  if (own) {
+    return depth === 0
+      ? own
+      : { ...own, message: `Nested block reference "${ins.id}" of block "${ins.block}" cannot be exploded: ${own.message}` };
   }
-  if (ins.dynamicRetained !== undefined) {
-    return { code: 'instance-retained', message: `Block reference "${ins.id}" carries dynamic values this build cannot model; they are retained as data and have no evaluated state.` };
+  // The references expansion consumes are the ones in the EVALUATED
+  // definition (actions and the visibility post-pass already applied),
+  // not the authored list.
+  const expanded = expansionBlock(block, ins);
+  chain.push(ins.block);
+  try {
+    for (const e of expanded.entities) {
+      if (e.type !== 'insert') continue;
+      const nested = probeEvaluationRefusal(e, lookup, depth + 1, chain, budget);
+      if (nested) return nested;
+    }
+    return null;
+  } finally {
+    chain.pop();
   }
-  if (!definition) {
-    return { code: 'no-dynamic-definition', message: `Block reference "${ins.id}" carries dynamic values but block "${block.name}" has no dynamic definition to evaluate them against.` };
-  }
-  if (!instance) return null;
-  if (instance.block !== block.name) {
-    return { code: 'block-mismatch', message: `Block reference "${ins.id}" carries dynamic values for block "${instance.block}", not "${block.name}".` };
-  }
-  const result = evaluateDynamicBlock(definition, block.entities, block.attributes, instance);
-  return result.ok ? null : { code: result.refusal.code, message: result.refusal.message };
 }
 
 /** Append the expansion of `ins` to `out` (no spread: nested results may be large). */
