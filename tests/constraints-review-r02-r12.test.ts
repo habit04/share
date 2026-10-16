@@ -523,6 +523,6 @@ describe('R05 residual — solved framed polylines stay coherent (review case B)
     const broken: PolylineEntity = { ...framed, widthFrame: { ...framed.widthFrame!, x: { x: 0, y: 0 } } };
     const r = solveConstraints([broken], set({ id: 'fx', kind: 'fixed', role: 'driving', refs: [ref('P', 'start')] }));
     expect(r.ok).toBe(false);
-    expect(r.problems.some((p) => p.code === 'invalid-value')).toBe(true);
+    expect(r.problems!.some((p) => p.code === 'invalid-value')).toBe(true);
   });
 });
