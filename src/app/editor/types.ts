@@ -150,6 +150,8 @@ export interface EditorHooks {
   terminalStrip?: (init: TerminalStripSettings) => Promise<TerminalStripSettings | null>;
   wireType?: (current: string) => Promise<string | null>;
   properties?: () => void;
+  /** AI Assistant palette toggle (src/ui/ai-panel.ts). Called directly, never via runCommand, so it cannot cancel the current tool. */
+  aiAssistant?: () => void;
   projectChanged?: () => void;
   /** AutoCAD Electrical-style dialogs (see src/electrical/ui.ts); defaults come from src/ui/electrical-dialogs.ts. */
   electrical?: ElectricalUi;

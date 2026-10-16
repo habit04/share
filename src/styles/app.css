@@ -1152,6 +1152,52 @@ canvas#drawing {
   margin: 4px;
   border: 1px solid var(--border);
 }
+/* AI Assistant palette (src/ui/ai-panel.ts) */
+.ai-body {
+  flex: 1;
+  overflow: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--text);
+}
+.ai-section-label {
+  font-weight: 600;
+  font-size: 11px;
+  opacity: 0.8;
+}
+.ai-sent {
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  padding: 6px;
+  background: #1e1e1e;
+  border: 1px solid var(--border);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ai-question {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+.ai-buttons {
+  display: flex;
+  gap: 8px;
+}
+.ai-status {
+  font-style: italic;
+}
+.ai-answer {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ai-refs {
+  font-size: 11px;
+  opacity: 0.85;
+}
 .prop-header {
   padding: 5px 8px;
   background: #3a3a3a;
