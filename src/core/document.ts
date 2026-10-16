@@ -18,6 +18,7 @@ import type { TextGeometryContext } from './text-metrics';
 import type { NativeViewCamera } from './named-view';
 import { reconcileCadGraph, validateCadState, type CadGraph, type CadGraphEditIntent } from './cad-graph';
 import type { ConstraintSet } from './constraints/model';
+import { enforceConstraintPolicy } from './constraints/policy';
 
 import type { Model3D } from '../model3d/types';
 import { model3dOf, withModel3D } from '../model3d/model';
@@ -331,7 +332,13 @@ export class Drawing {
 
   /** Shared preparation, bounded undo history and dirty notification for both transaction scopes. */
   private commitTransition(state: DrawingState, intent?: CadGraphEditIntent): void {
-    const next = prepareDrawingTransition(this.state, state, intent);
+    // Priority 30 review §3: the geometry-edit constraint policy runs at
+    // this choke point (see src/core/constraints/policy.ts for the policy
+    // and its stated coverage boundary). It throws ConstraintPolicyError
+    // on refusal — before anything is assigned — so a refused edit leaves
+    // no history entry, no dirty flag and no revision change.
+    const enforced = enforceConstraintPolicy(this.state, state);
+    const next = prepareDrawingTransition(this.state, enforced, intent);
     if (next === this.state) return;
     this.undoStack.push(this.state);
     if (this.undoStack.length > this.maxUndo) this.undoStack.shift();
