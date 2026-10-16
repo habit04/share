@@ -431,7 +431,12 @@ function selectCollectionFace(data, expectedFamily, request) {
   const { bold, italic } = request;
   const matches = pool.filter((entry) => (bold === undefined || entry.identity.bold === bold) && (italic === undefined || entry.identity.italic === italic));
   if (expectedFamily === undefined && bold === undefined && italic === undefined) return 0;
-  if (matches.length) return matches[0].index;
+  if (matches.length) {
+    // Prefer the unstyled value of each unspecified flag, independently of face
+    // order. Explicit flags still match exactly; a wholly unspecified request
+    // without a family has already retained face 0 above.
+    return (matches.find((entry) => (bold !== undefined || !entry.identity.bold) && (italic !== undefined || !entry.identity.italic)) ?? matches[0]).index;
+  }
   return (pool.find((entry) => !entry.identity.bold && !entry.identity.italic) ?? pool[0]).index;
 }
 
