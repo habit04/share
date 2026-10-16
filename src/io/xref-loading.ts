@@ -470,6 +470,19 @@ function throwIfAborted(ctx: StageContext, ref: XrefReferenceInput, resolvedPath
   if (ctx.signal?.aborted) throw cancelledFatal(ref, resolvedPath, depth);
 }
 
+/**
+ * Canonical identity evidence is usable only with a nonempty string id
+ * and an absolute owning location. One validator serves dependency
+ * identities AND host identity evidence (adapter-returned or
+ * caller-supplied): invalid evidence is never anchored on, seeded into
+ * ancestry, or silently replaced (20.1 round 3).
+ */
+function isValidFileIdentity(identity: XrefFileIdentity | null | undefined): identity is XrefFileIdentity {
+  return !!identity
+    && typeof identity.id === 'string' && identity.id.trim().length > 0
+    && typeof identity.owningLocation === 'string' && isAbsolutePath(identity.owningLocation);
+}
+
 /** Deep-copy a snapshot and seal the copy; caller/parser-owned objects are never frozen. */
 function sealSnapshot(snapshot: XrefSnapshot): XrefSnapshot {
   return sealImmutableData(structuredClone(snapshot));
@@ -513,25 +526,40 @@ export async function stageXrefLoad(input: XrefLoadInput, deps: XrefLoaderDeps, 
     // incomplete candidate, not a successful lexical load.
     let hostIdentity = input.hostIdentity;
     let hostIdentityFailed = false;
-    if (!hostIdentity && deps.reader.identify && hostPath !== null) {
+    if (hostIdentity !== undefined) {
+      // Caller-supplied host evidence is validated with the same rule
+      // as adapter evidence, BEFORE it anchors resolution or seeds
+      // ancestry — and it is never silently replaced by adapter
+      // evidence: invalid caller evidence fails closed.
+      if (!isValidFileIdentity(hostIdentity)) hostIdentityFailed = true;
+    } else if (deps.reader.identify && hostPath !== null) {
       if (!isAbsolutePath(hostPath)) {
         hostIdentityFailed = true;
       } else {
+        let identified: XrefFileIdentity | null = null;
         try {
-          hostIdentity = (await deps.reader.identify(hostPath, { resolvedPath: hostPath, originalPath: hostPath, blockName: '', depth: 0, ...(ctx.signal ? { signal: ctx.signal } : {}) })) ?? undefined;
+          identified = await deps.reader.identify(hostPath, { resolvedPath: hostPath, originalPath: hostPath, blockName: '', depth: 0, ...(ctx.signal ? { signal: ctx.signal } : {}) });
         } catch (error) {
           if (isAbort(error, ctx.signal)) throw new StagingFatal({ kind: 'cancelled', blockName: '', originalPath: '', resolvedPath: hostPath, depth: 0, message: 'xref load cancelled' });
           hostIdentityFailed = true;
         }
-        if (!hostIdentity) hostIdentityFailed = true;
         throwIfAborted(ctx, { blockName: '', path: '' }, hostPath, 0);
+        if (!hostIdentityFailed) {
+          // Adapter-returned host evidence is validated BEFORE the
+          // anchor and ancestry are derived from it: an empty id would
+          // seed ancestry as `id:` and let a SELF edge identifying as
+          // `id:HOST` reload the host as external geometry.
+          if (isValidFileIdentity(identified)) hostIdentity = identified;
+          else hostIdentityFailed = true;
+        }
       }
     }
+    if (hostIdentityFailed) hostIdentity = undefined;
     const hostAnchor = hostIdentity?.owningLocation ?? hostPath;
     const ancestors: Ancestor[] = hostIdentity ? [{ key: `id:${hostIdentity.id}`, location: hostIdentity.owningLocation }] : [];
     const nodes: XrefNode[] = [];
     if (hostIdentityFailed) {
-      const message = 'the host identity could not be established by the adapter; canonical mode fails closed and no reference is read';
+      const message = 'the host identity evidence is missing or invalid; canonical mode fails closed and no reference is read';
       ctx.failures.push({ kind: 'unresolved-location', blockName: '', originalPath: hostPath ?? '', resolvedPath: hostPath, depth: 0, message });
       for (const ref of roots) {
         ctx.referencesSeen += 1;
@@ -619,7 +647,7 @@ async function buildNode(ctx: StageContext, ref: XrefReferenceInput, containingL
       return fail('unresolved-location', resolvedPath, `the adapter could not identify this location: ${errorMessage(error)}`);
     }
     throwIfAborted(ctx, ref, resolvedPath, depth);
-    if (!identified || !identified.id || !identified.owningLocation || !isAbsolutePath(identified.owningLocation)) {
+    if (!isValidFileIdentity(identified)) {
       return fail('unresolved-location', resolvedPath, 'the adapter reported this location as unavailable or ambiguous');
     }
     identity = identified;
@@ -862,7 +890,10 @@ export class XrefStore {
     const generationAtStart = this.#generation;
     const epochAtStart = this.#hostEpoch;
     const hostAtStart = this.#boundHost;
-    const attemptHost = options.hostKey ?? input.hostIdentity?.id ?? input.hostPath ?? null;
+    // The store binds to the same validated host evidence the loader
+    // accepts: an invalid caller-supplied identity contributes no id,
+    // so the attempt keys on the host path instead (20.1 round 3).
+    const attemptHost = options.hostKey ?? (isValidFileIdentity(input.hostIdentity) ? input.hostIdentity.id : undefined) ?? input.hostPath ?? null;
     const outcome = await stageXrefLoad(input, deps, options);
     const superseded = request !== this.#lastRequest || generationAtStart !== this.#generation || epochAtStart !== this.#hostEpoch;
     const hostChanged = this.#boundHost !== hostAtStart || (hostAtStart !== null && attemptHost !== hostAtStart);
