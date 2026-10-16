@@ -27,12 +27,34 @@ import { icon } from './icons';
  * bridge (plain browser) the panel is exactly the milestone-1 demo.
  */
 
-const MODEL_PRESETS = ['gpt-5', 'gpt-5.5', 'gpt-5.6', 'gpt-5.6-luna', 'gpt-4.1', 'gpt-4o-mini'] as const;
+/** Display labels + model presets per provider (host ids stay authoritative). */
+const PROVIDER_LABELS: Readonly<Record<string, string>> = { openai: 'OpenAI', anthropic: 'Anthropic' };
+const MODEL_PRESETS: Readonly<Record<string, readonly string[]>> = {
+  openai: ['gpt-5', 'gpt-5.5', 'gpt-5.6', 'gpt-5.6-luna', 'gpt-4.1', 'gpt-4o-mini'],
+  anthropic: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-sonnet-4-5'],
+};
+
+function providerLabel(provider: string): string {
+  return PROVIDER_LABELS[provider] ?? provider;
+}
 
 const OFFLINE_LABEL = 'Offline demo — no AI model connected. Responses are generated locally; nothing is sent outside JCad.';
-const BILLING_NOTE = 'Questions are billed to your OpenAI API account. Cancelling stops JCad from waiting, but a request already processing at OpenAI may still be charged.';
-const RETENTION_NOTE = 'Requests set store: false, so responses are not stored as API application state. That is not zero retention: OpenAI states API data is not used for training unless you opt in, while abuse-monitoring logs may retain prompts and responses for up to 30 days.';
-const PROBE_NOTE = 'Test Connection makes a real OpenAI API call with a fixed message and no drawing content. It may incur a small charge on your account.';
+
+function billingNote(provider: string): string {
+  const label = providerLabel(provider);
+  return `Questions are billed to your ${label} API account. Cancelling stops JCad from waiting, but a request already processing at ${label} may still be charged.`;
+}
+
+function retentionNote(provider: string): string {
+  if (provider === 'anthropic') {
+    return 'Requests go directly to Anthropic. Anthropic does not train on API inputs or outputs; standard API retention applies — this is not zero retention.';
+  }
+  return 'Requests set store: false, so responses are not stored as API application state. That is not zero retention: OpenAI states API data is not used for training unless you opt in, while abuse-monitoring logs may retain prompts and responses for up to 30 days.';
+}
+
+function probeNote(provider: string): string {
+  return `Test Connection makes a real ${providerLabel(provider)} API call with a fixed message and no drawing content. It may incur a small charge on your account.`;
+}
 
 export class AiAssistantPanel {
   readonly el: HTMLElement;
@@ -58,11 +80,16 @@ export class AiAssistantPanel {
   private liveProvider: LiveProvider | null = null;
   private connState: AiConnectionState | null = null;
   private settingsEls: {
+    providerSelect: HTMLSelectElement;
     modelSelect: HTMLSelectElement; modelCustom: HTMLInputElement;
+    keyLabel: HTMLElement;
     keyInput: HTMLInputElement; persistSession: HTMLInputElement; persistEncrypted: HTMLInputElement;
     saveKeyBtn: HTMLButtonElement; forgetKeyBtn: HTMLButtonElement; testBtn: HTMLButtonElement;
+    probeNoteEl: HTMLElement; retentionEl: HTMLElement;
     enableCheck: HTMLInputElement; stateEl: HTMLElement; errorEl: HTMLElement;
   } | null = null;
+  /** Provider the settings controls were last rendered for (preset rebuilds). */
+  private renderedProvider: string | null = null;
 
   constructor(editor: Editor, container: HTMLElement, provider?: AiProvider, connection?: WindowAiConnection | null) {
     this.el = container;
@@ -135,7 +162,7 @@ export class AiAssistantPanel {
 
     this.billingEl = document.createElement('div');
     this.billingEl.className = 'ai-note';
-    this.billingEl.textContent = BILLING_NOTE;
+    this.billingEl.textContent = billingNote('openai');
     this.billingEl.classList.add('hidden');
 
     this.statusEl = document.createElement('div');
@@ -225,13 +252,28 @@ export class AiAssistantPanel {
     stateEl.className = 'ai-conn-state';
     stateEl.textContent = 'Reading connection state…';
 
+    const providerRow = document.createElement('div');
+    providerRow.className = 'ai-field-row';
+    const providerLabelEl2 = document.createElement('label');
+    providerLabelEl2.textContent = 'Provider';
+    const providerSelect = document.createElement('select');
+    providerSelect.className = 'ai-provider-select';
+    for (const id of Object.keys(PROVIDER_LABELS)) {
+      const option = document.createElement('option');
+      option.value = id;
+      option.textContent = PROVIDER_LABELS[id]!;
+      providerSelect.append(option);
+    }
+    providerSelect.addEventListener('change', () => { void this.switchProvider(providerSelect.value); });
+    providerRow.append(providerLabelEl2, providerSelect);
+
     const modelRow = document.createElement('div');
     modelRow.className = 'ai-field-row';
     const modelLabel = document.createElement('label');
     modelLabel.textContent = 'Model';
     const modelSelect = document.createElement('select');
     modelSelect.className = 'ai-model';
-    for (const preset of MODEL_PRESETS) {
+    for (const preset of MODEL_PRESETS['openai']!) {
       const option = document.createElement('option');
       option.value = preset;
       option.textContent = preset;
@@ -263,6 +305,7 @@ export class AiAssistantPanel {
 
     const keyLabel = document.createElement('label');
     keyLabel.textContent = 'OpenAI API key';
+    keyLabel.className = 'ai-key-label';
     const keyInput = document.createElement('input');
     keyInput.className = 'ai-key';
     keyInput.type = 'password';
@@ -302,9 +345,9 @@ export class AiAssistantPanel {
     testBtn.addEventListener('click', () => { void this.testConnection(); });
     keyButtons.append(saveKeyBtn, forgetKeyBtn, testBtn);
 
-    const probeNote = document.createElement('div');
-    probeNote.className = 'ai-note';
-    probeNote.textContent = PROBE_NOTE;
+    const probeNoteEl = document.createElement('div');
+    probeNoteEl.className = 'ai-note';
+    probeNoteEl.textContent = probeNote('openai');
 
     const enableRow = document.createElement('div');
     enableRow.className = 'ai-field-row';
@@ -320,20 +363,40 @@ export class AiAssistantPanel {
 
     const retention = document.createElement('div');
     retention.className = 'ai-note';
-    retention.textContent = RETENTION_NOTE;
+    retention.textContent = retentionNote('openai');
 
     const errorEl = document.createElement('div');
     errorEl.className = 'ai-conn-error';
 
     section.append(
-      label, stateEl, modelRow, keyLabel, keyInput, persistRow, keyButtons,
-      probeNote, enableRow, retention, errorEl,
+      label, stateEl, providerRow, modelRow, keyLabel, keyInput, persistRow, keyButtons,
+      probeNoteEl, enableRow, retention, errorEl,
     );
     this.settingsEls = {
-      modelSelect, modelCustom, keyInput, persistSession, persistEncrypted,
-      saveKeyBtn, forgetKeyBtn, testBtn, enableCheck, stateEl, errorEl,
+      providerSelect, modelSelect, modelCustom, keyLabel, keyInput,
+      persistSession, persistEncrypted,
+      saveKeyBtn, forgetKeyBtn, testBtn, probeNoteEl, retentionEl: retention,
+      enableCheck, stateEl, errorEl,
     };
     return section;
+  }
+
+  /**
+   * Switch the selected provider. The host cancels all outstanding work
+   * on a switch; mirror that here — cancel the in-flight question and
+   * clear the displayed answer — so an answer from the previous
+   * provider can never be presented under the new one. There is no
+   * automatic fallback: questions go only to the selected provider.
+   */
+  private async switchProvider(provider: string): Promise<void> {
+    if (!this.connection || provider === this.connState?.provider) return;
+    this.controller.cancel();
+    this.answerBinding = null;
+    this.answerEl.textContent = '';
+    this.refsEl.textContent = '';
+    this.usageEl.textContent = '';
+    this.statusEl.textContent = '';
+    await this.applySettings(() => this.connection!.setProvider(provider));
   }
 
   private async refreshConnection(): Promise<void> {
@@ -379,7 +442,7 @@ export class AiAssistantPanel {
     els.stateEl.textContent = 'Testing the connection…';
     try {
       const probe = await this.connection.testConnection();
-      els.stateEl.textContent = `Connection OK — ${this.connState?.provider ?? 'openai'} · ${probe.model}`
+      els.stateEl.textContent = `Connection OK — ${providerLabel(this.connState?.provider ?? 'openai')} · ${probe.model}`
         + (probe.outputTokens !== undefined ? ` (probe used ${probe.outputTokens} output tokens)` : '')
         + '.';
     } catch (cause) {
@@ -402,10 +465,32 @@ export class AiAssistantPanel {
       : null;
     const els = this.settingsEls;
     if (els) {
+      const label = providerLabel(state.provider);
+      els.providerSelect.value = state.provider;
+      if (this.renderedProvider !== state.provider) {
+        this.renderedProvider = state.provider;
+        // Rebuild the model presets for the newly selected provider and
+        // re-render its provider-specific texts.
+        els.modelSelect.innerHTML = '';
+        for (const preset of MODEL_PRESETS[state.provider] ?? []) {
+          const option = document.createElement('option');
+          option.value = preset;
+          option.textContent = preset;
+          els.modelSelect.append(option);
+        }
+        const customOption = document.createElement('option');
+        customOption.value = '__custom__';
+        customOption.textContent = 'Custom…';
+        els.modelSelect.append(customOption);
+        els.keyLabel.textContent = `${label} API key`;
+        els.keyInput.placeholder = state.provider === 'anthropic' ? 'sk-ant-…' : 'sk-…';
+        els.probeNoteEl.textContent = probeNote(state.provider);
+        els.retentionEl.textContent = retentionNote(state.provider);
+      }
       const keyText = state.keyPresent
         ? `API key: saved (${state.keySource === 'stored' ? 'encrypted on this device' : 'this session only'})`
         : 'API key: not saved';
-      els.stateEl.textContent = `Provider: ${state.provider} · Model: ${state.model} · ${keyText}`
+      els.stateEl.textContent = `Provider: ${label} · Model: ${state.model} · ${keyText}`
         + (state.configProblem ? ` · Settings problem: ${state.configProblem} (defaults in use)` : '');
       els.saveKeyBtn.textContent = state.keyPresent ? 'Replace Key' : 'Save Key';
       els.forgetKeyBtn.disabled = !state.keyPresent;
@@ -414,7 +499,7 @@ export class AiAssistantPanel {
       els.enableCheck.disabled = !state.keyPresent;
       els.persistEncrypted.disabled = !state.encryptionAvailable;
       if (!state.encryptionAvailable && els.persistEncrypted.checked) els.persistSession.checked = true;
-      if ((MODEL_PRESETS as readonly string[]).includes(state.model)) {
+      if ((MODEL_PRESETS[state.provider] ?? []).includes(state.model)) {
         els.modelSelect.value = state.model;
         els.modelCustom.classList.add('hidden');
       } else {
@@ -424,7 +509,7 @@ export class AiAssistantPanel {
       }
     }
     this.providerLabelEl.textContent = this.liveRoute
-      ? `Live AI: ${state.provider} · ${state.model}`
+      ? `Live AI: ${providerLabel(state.provider)} · ${state.model}`
       : OFFLINE_LABEL;
     this.refreshPreview();
   }
@@ -457,9 +542,10 @@ export class AiAssistantPanel {
     this.askBtn.disabled = this.controller.status.state === 'asking';
     const live = this.liveRoute;
     this.sentLabelEl.textContent = live
-      ? `What will be sent to ${this.connState!.provider} (model: ${this.connState!.model}) — exactly`
+      ? `What will be sent to ${providerLabel(this.connState!.provider)} (model: ${this.connState!.model}) — exactly`
       : 'What will be sent (exactly)';
-    this.askBtn.textContent = live ? `Ask ${this.connState!.provider === 'openai' ? 'OpenAI' : this.connState!.provider}` : 'Ask';
+    this.askBtn.textContent = live ? `Ask ${providerLabel(this.connState!.provider)}` : 'Ask';
+    if (live) this.billingEl.textContent = billingNote(this.connState!.provider);
     this.billingEl.classList.toggle('hidden', !live);
     const { total, included, omittedCount } = snapshot.selection;
     this.summaryEl.textContent = total === 0

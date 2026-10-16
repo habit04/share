@@ -13,7 +13,10 @@ import type { AiHostBridge } from './live-provider';
  */
 
 export interface AiConnectionState {
+  /** The selected provider; the fields below describe that provider. */
   readonly provider: string;
+  /** All providers the host supports (for the selector). */
+  readonly providers?: readonly string[];
   readonly model: string;
   readonly enabled: boolean;
   readonly keyPersistence: 'session' | 'encrypted';
@@ -40,6 +43,7 @@ type AiResult<T> = { readonly ok: true } & T | { readonly ok: false; readonly er
 /** The raw preload bridge shape (electron/preload.cjs `ai` group). */
 export interface AiPreloadBridge {
   getState(): Promise<AiResult<{ state: AiConnectionState }>>;
+  setProvider(provider: string): Promise<AiResult<{ state: AiConnectionState }>>;
   setModel(model: string): Promise<AiResult<{ state: AiConnectionState }>>;
   setKey(key: string, persistence: string): Promise<AiResult<{ state: AiConnectionState }>>;
   forgetKey(): Promise<AiResult<{ state: AiConnectionState }>>;
@@ -115,6 +119,7 @@ export class WindowAiConnection {
   }
 
   async state(): Promise<AiConnectionState> { return unwrap(await this.raw.getState()).state; }
+  async setProvider(provider: string): Promise<AiConnectionState> { return unwrap(await this.raw.setProvider(provider)).state; }
   async setModel(model: string): Promise<AiConnectionState> { return unwrap(await this.raw.setModel(model)).state; }
   async setKey(key: string, persistence: 'session' | 'encrypted'): Promise<AiConnectionState> {
     return unwrap(await this.raw.setKey(key, persistence)).state;

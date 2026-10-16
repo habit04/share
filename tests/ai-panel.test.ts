@@ -200,26 +200,37 @@ describe('AiAssistantPanel connection settings (milestone 2)', () => {
     keyPresent: boolean; keySource: string | null; encryptionAvailable: boolean; configProblem: string | null;
   }
   function fakeConnection() {
-    const state: FakeState = {
-      provider: 'openai', model: 'gpt-5', enabled: false, keyPersistence: 'session',
-      keyPresent: false, keySource: null, encryptionAvailable: true, configProblem: null,
-    };
-    const raw = {
-      getState: async () => ({ ok: true, state: { ...state } }),
-      setModel: async (model: string) => { state.model = model; return { ok: true, state: { ...state } }; },
-      setKey: async (_key: string, persistence: string) => {
-        state.keyPresent = true;
-        state.keySource = persistence === 'encrypted' ? 'stored' : 'session';
-        state.keyPersistence = persistence;
-        return { ok: true, state: { ...state } };
+    const slices: Record<string, FakeState> = {
+      openai: {
+        provider: 'openai', model: 'gpt-5', enabled: false, keyPersistence: 'session',
+        keyPresent: false, keySource: null, encryptionAvailable: true, configProblem: null,
       },
-      forgetKey: async () => { state.keyPresent = false; state.keySource = null; return { ok: true, state: { ...state } }; },
-      setEnabled: async (enabled: boolean) => { state.enabled = enabled; return { ok: true, state: { ...state } }; },
-      testConnection: async () => ({ ok: true, probe: { model: state.model, inputTokens: 3, outputTokens: 1 } }),
+      anthropic: {
+        provider: 'anthropic', model: 'claude-sonnet-5-5', enabled: false, keyPersistence: 'session',
+        keyPresent: false, keySource: null, encryptionAvailable: true, configProblem: null,
+      },
+    };
+    let current = 'openai';
+    const state = slices[current]!;
+    const snapshot = () => ({ ...slices[current]! });
+    const raw = {
+      getState: async () => ({ ok: true, state: snapshot() }),
+      setProvider: async (provider: string) => { current = provider; return { ok: true, state: snapshot() }; },
+      setModel: async (model: string) => { slices[current]!.model = model; return { ok: true, state: snapshot() }; },
+      setKey: async (_key: string, persistence: string) => {
+        const s = slices[current]!;
+        s.keyPresent = true;
+        s.keySource = persistence === 'encrypted' ? 'stored' : 'session';
+        s.keyPersistence = persistence;
+        return { ok: true, state: snapshot() };
+      },
+      forgetKey: async () => { const s = slices[current]!; s.keyPresent = false; s.keySource = null; return { ok: true, state: snapshot() }; },
+      setEnabled: async (enabled: boolean) => { slices[current]!.enabled = enabled; return { ok: true, state: snapshot() }; },
+      testConnection: async () => ({ ok: true, probe: { model: slices[current]!.model, inputTokens: 3, outputTokens: 1 } }),
       ask: async () => ({
         ok: true,
         answer: {
-          text: 'Live answer about PB101.', references: ['e-text'],
+          text: current === 'anthropic' ? 'Claude answer about PB101.' : 'Live answer about PB101.', references: ['e-text'],
           usage: { inputBytes: 100, outputChars: 24, durationMs: 5 },
           providerUsage: { inputTokens: 42, outputTokens: 7 },
         },
@@ -227,11 +238,21 @@ describe('AiAssistantPanel connection settings (milestone 2)', () => {
       cancel: async () => ({ ok: true, cancelled: true }),
       usage: async () => ({ ok: true, usage: { requests: 1 } }),
     };
-    return { raw, state };
+    // Tests read `state` as "the currently selected provider's slice".
+    const stateFacade = {
+      get provider() { return slices[current]!.provider; },
+      get model() { return slices[current]!.model; },
+      get enabled() { return slices[current]!.enabled; },
+      get keyPresent() { return slices[current]!.keyPresent; },
+      get keySource() { return slices[current]!.keySource; },
+    };
+    void state;
+    return { raw, state: stateFacade as unknown as FakeState, slices };
   }
 
   type SettingsInternals = PanelInternals & {
     settingsEls: {
+      providerSelect: FakeElement & { value: string };
       keyInput: FakeElement & { value: string }; saveKeyBtn: FakeElement; forgetKeyBtn: FakeElement & { disabled: boolean };
       testBtn: FakeElement & { disabled: boolean }; enableCheck: FakeElement & { checked: boolean; disabled: boolean };
       stateEl: FakeElement; errorEl: FakeElement;
@@ -285,8 +306,8 @@ describe('AiAssistantPanel connection settings (milestone 2)', () => {
     parts.settingsEls!.enableCheck.fire('change');
     await flush();
     expect(state.enabled).toBe(true);
-    expect(parts.providerLabelEl.textContent).toContain('Live AI: openai · gpt-5');
-    expect(parts.sentLabelEl.textContent).toContain('sent to openai (model: gpt-5)');
+    expect(parts.providerLabelEl.textContent).toContain('Live AI: OpenAI · gpt-5');
+    expect(parts.sentLabelEl.textContent).toContain('sent to OpenAI (model: gpt-5)');
     expect(parts.askBtn.textContent).toBe('Ask OpenAI');
     expect(parts.billingEl.classes.has('hidden')).toBe(false);
     parts.askBtn.fire('click');
@@ -311,6 +332,48 @@ describe('AiAssistantPanel connection settings (milestone 2)', () => {
     parts.settingsEls!.testBtn.fire('click');
     await flush();
     expect(parts.settingsEls!.stateEl.textContent).toContain('Connection OK');
+    panel.dispose();
+  });
+
+  it('switching providers clears the old answer and re-reads that provider\'s separate state', async () => {
+    const { panel, parts, state } = await makeConnected();
+    panel.toggle();
+    await flush();
+    // Bring OpenAI live and get an answer on screen.
+    parts.settingsEls!.keyInput.value = 'sk-secret';
+    parts.settingsEls!.saveKeyBtn.fire('click');
+    await flush();
+    parts.settingsEls!.enableCheck.checked = true;
+    parts.settingsEls!.enableCheck.fire('change');
+    await flush();
+    parts.questionEl.value = 'find PB101';
+    parts.askBtn.fire('click');
+    await flush();
+    expect(parts.answerEl.textContent).toBe('Live answer about PB101.');
+    // Switch to Anthropic: the OpenAI answer is cleared, Anthropic has
+    // its own (empty) key state and its own default model, and routing
+    // falls back to the demo until Anthropic is configured — never to
+    // OpenAI (no automatic fallback).
+    parts.settingsEls!.providerSelect.value = 'anthropic';
+    parts.settingsEls!.providerSelect.fire('change');
+    await flush();
+    expect(state.provider).toBe('anthropic');
+    expect(parts.answerEl.textContent).toBe('');
+    expect(parts.settingsEls!.stateEl.textContent).toContain('Provider: Anthropic · Model: claude-sonnet-5-5');
+    expect(parts.settingsEls!.stateEl.textContent).toContain('API key: not saved');
+    expect(parts.providerLabelEl.textContent).toContain('Offline demo');
+    // Configure Anthropic and ask: the answer is Claude's, labelled so.
+    parts.settingsEls!.keyInput.value = 'sk-ant-secret';
+    parts.settingsEls!.saveKeyBtn.fire('click');
+    await flush();
+    parts.settingsEls!.enableCheck.checked = true;
+    parts.settingsEls!.enableCheck.fire('change');
+    await flush();
+    expect(parts.askBtn.textContent).toBe('Ask Anthropic');
+    expect(parts.sentLabelEl.textContent).toContain('sent to Anthropic (model: claude-sonnet-5-5)');
+    parts.askBtn.fire('click');
+    await flush();
+    expect(parts.answerEl.textContent).toBe('Claude answer about PB101.');
     panel.dispose();
   });
 

@@ -12,6 +12,7 @@ const request = { requestId: 'ai-salt-1', question: 'q', snapshot: {}, binding: 
 function fakeRaw(over: Partial<AiPreloadBridge> = {}): AiPreloadBridge {
   return {
     getState: async () => ({ ok: true, state }),
+    setProvider: async () => ({ ok: true, state }),
     setModel: async () => ({ ok: true, state }),
     setKey: async () => ({ ok: true, state }),
     forgetKey: async () => ({ ok: true, state }),
@@ -49,6 +50,14 @@ describe('WindowAiConnection', () => {
     const conn = new WindowAiConnection(fakeRaw());
     expect(await conn.state()).toEqual(state);
     expect(await conn.testConnection()).toEqual({ model: 'gpt-5' });
+  });
+
+  it('forwards provider switches to the host', async () => {
+    const setProvider = vi.fn(async () => ({ ok: true as const, state: { ...state, provider: 'anthropic' } }));
+    const conn = new WindowAiConnection(fakeRaw({ setProvider }));
+    const next = await conn.setProvider('anthropic');
+    expect(setProvider).toHaveBeenCalledWith('anthropic');
+    expect(next.provider).toBe('anthropic');
   });
 
   it('throws reconstructed AiErrors for failure payloads', async () => {
