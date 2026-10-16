@@ -1,5 +1,9 @@
 Muse -- priority 12.4 implementation review, 2026-10-16
 
+Historical six-patch review below. For the corrected eleven-patch disposition
+and current Windows results, see PRIORITY-12-WINDOWS-CHECKPOINT.md: three
+queue/MEMFS defects remain; corrected verifier controls now pass 10/10.
+
 Disposition: corrections required before integration. Keep the ordinary
 preview/print-font refusal active in the accepted application. Do not merge,
 publish, install, or change the other priority-12 implementations for this fix.

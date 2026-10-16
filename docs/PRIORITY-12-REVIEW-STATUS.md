@@ -14,6 +14,17 @@ The isolated unchanged case passes in 261 ms. Limits, deadlines and assertions
 remain unchanged; no further full-suite retries are used to claim clearance.
 Fresh combined native checks below have now executed; merge remains held.
 
+The later [Windows checkpoint](PRIORITY-12-WINDOWS-CHECKPOINT.md) records a normal
+6,954/0/40 pass without optional DWG inputs, followed by the required private-DWG
+combined run at **6,955/1/38** with the same unresolved unlink stall (344 ms).
+Both private DWG cases pass and do not overlap the stall. The observed two-file
+run passes 36/36 without reproducing it; this does not clear the full gate.
+An unpublished full-DWG test ASAR now passes 63 packaged F4 assertions and nine
+independent raster checks, with strict PDF still 2882/2883. Its broad E2E launch
+is confirmed blocked by Code Integrity for the intentionally unsigned EXE;
+origin acceptance remains open. Smart App Control stays enabled; the installed
+v0.5.0 reference signature is Valid. No installer or signing setting is changed.
+
 A subsequent normal run of the entire Windows export-admission file passes
 **34/34** in 1.63 seconds (large-file case 372 ms), using unchanged source,
 assertions and deadlines, without a preload or external observer. This narrows
@@ -56,7 +67,8 @@ custom-Encoding extraction failures and two fallback-control Symbol warnings
 are retained. All 52 PDFium page extractions and raw glyph/CID/Unicode mappings
 pass. A separate 67-check local-library/source-integrity classification confirms
 the pypdf limitation without turning the strict failed gate green. Installed-CFF,
-packaged-app, remote-CI and broader viewer acceptance remain open.
+broad packaged-app and broader viewer acceptance remain open; all five current
+PR CI jobs pass. The later packaged font slice is recorded in the checkpoint.
 
 | Piece | Current evidence and status | Next gate / owner |
 |---|---|---|
@@ -65,7 +77,7 @@ packaged-app, remote-CI and broader viewer acceptance remain open.
 | 12.3 glyf subsetting | Reviewed and corrected; real Windows subset/whole-control Unicode and pixels match. Added actual-byte whole-program guard for variation tables: eight failing-before/passing-after regressions. | Lead: combined suite and native gates. Variation-aware subsetting remains deferred. |
 | 12.6a variable defaults | Corrected source retains legal-name-ID guards and current TTC/used-glyph/subset/F4 behavior. Final archive adds no code. Real Bahnschrift app IPC/Plot/edit/save/reopen and whole-program identity pass on `743fdbb`; varying optical-size fonts refuse explicitly. | Lead: resolve red full/strict PDF gates, then packaged/CI/viewer acceptance. These results cover the tested default, not named instances or all variable fonts. |
 | 12.2 standalone CFF1 | Corrected parser/writer, implicit-matrix/late-width guards, aliases and resource-scoped PDF1.6 are integrated. Fresh actual-reader/capture proof produces 34 PDFs; producer 168/168, strict inspector 1873/1903, classification 67/67 as detailed above. | Lead: retain strict failures and complete acceptance. No installed standalone CFF font is available; synthetic checks do not establish real-font IPC/viewer compatibility. |
-| 12.4 preview/print permissions | New six-patch implementation inspected privately on genuine a68d; actual 768 MiB WASM cap/hashes and notices pass. Windows supplied host/registry tests pass 21/21; fresh Node child output passes the supplied positive verifier. Independent host checks have five failures, and two verifier negative cases are incorrectly accepted. Candidate source is not integrated. | Muse: correct aggregate/MEMFS bounds, active disposal/exit handling, registration retirement, unsupported Plot choices and verifier negatives; see PRIORITY-12.4-REVIEW.txt. Lead: preserve current font/DWG seams and complete native utilityProcess/Plot/IPC and viewer gates after correction. Refusal remains active. |
+| 12.4 preview/print permissions | Eleven-patch correction tree independently reproduced; fourteen manifest checks pass. Corrected verifier controls pass 10/10. Independent probes still fail six assertions covering queued quarantine and two actual MEMFS accounting paths; source is not integrated. | Muse: three reproduced corrections in the forwarded round-two bundle. Lead: preserve current font/DWG seams and complete native utilityProcess/Plot/IPC, full-suite and viewer gates after correction. Refusal remains active; see PRIORITY-12-WINDOWS-CHECKPOINT.md. |
 | 12.5 shaping | v4 design approved for additive interface/helpers and synthetic contract tests. Capped prototype passes 106 bounded Windows Node checks across 33 cases; no app/runtime/consumer adoption. | Muse: scoped interface commit with epoch, selected-face, wire/copy and exit-join tests; correct three probe labels. Lead: later runtime/Windows/render/extraction gates. |
 | DWG/F4 combined source | 63 Windows workflow assertions and 721 independent native checks pass on `167c50b`; effective STYLE, metrics, title/signature, source protection and DXF reopen verified. | Lead: maintain font/projection refusals; remote CI and packaged gates remain separate. No merge clearance. |
 
