@@ -283,8 +283,5 @@ describe('captured-PDF used-codepoint plumbing', () => {
     expect(unicodeText(pdf)).toContain('<0001> <0041>\n<0002> <4E2D>');
     const contents = pageContents(pdf, (data) => new Uint8Array(inflateSync(data)));
     expect(contents[0]).toContain('<00010002> Tj');
-    // Keep the exact bytes for the independent pypdf/Poppler validation step.
-    await fs.mkdir(path.join(process.cwd(), '..', 'validation-simsun'), { recursive: true });
-    await fs.writeFile(path.join(process.cwd(), '..', 'validation-simsun', 'simsun-used-glyphs.pdf'), await vectorPdfCompressed([page([doc.entities[0]!])], context, plotStyle, 'SimSun', (data) => new Uint8Array(deflateSync(data))));
   });
 });
