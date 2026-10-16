@@ -2450,7 +2450,11 @@ export function solveConstraints(entities: readonly Entity[], set: ConstraintSet
     perEntity: prep.participating.map((e) => ({
       entityId: e.id,
       dof: entityDof(e),
-      remaining: perEntityRemaining.get(e.id) ?? entityDof(e),
+      // §3.3: when the rank factorization itself was budget-skipped, the
+      // entities of that component were never probed — their remaining
+      // is the stated unknown (-1), not a silently-reported full DOF
+      // (30.3.4; the fallback previously claimed "nothing consumed").
+      remaining: perEntityRemaining.get(e.id) ?? (probeBudgetOut ? -1 : entityDof(e)),
     })),
   };
 
