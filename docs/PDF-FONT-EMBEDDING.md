@@ -89,8 +89,11 @@ MTEXT line leading remains approximate even when its font is embedded.
   validated outside the writer with pypdf and Poppler: the embedded FontFile2
   program is byte-identical to the extracted bold face, its BaseFont is the bold
   face's PostScript name, and both tools extract the plotted text. These are
-  Linux/headless checks over authored fixtures; native Windows Plot/IPC acceptance
-  of selected collection faces remains pending with the lead.
+  Linux/headless checks over authored fixtures. Sixteen further regression cases
+  cover reversed face order, partial/explicit style flags, TTC v2, malformed selected
+  OS/2 data and selected-face permission variants. The two reversed-order cases
+  failed before the review correction; unspecified flags now prefer the unstyled
+  value while requests naming neither family nor style retain face 0.
 - 36 resource tests and 17 integration tests use authored font fixtures. They check Unicode/CID
   mapping, program identity, permissions, capture isolation, font budgeting, placement, fallback,
   shared pages and legacy output. No third-party font programs or reference PDFs are tracked.
@@ -104,8 +107,8 @@ MTEXT line leading remains approximate even when its font is embedded.
   10,000 ms deadline. Face 0 extraction passed in 102 ms; the host was disposed and source/font
   hashes stayed unchanged. A worker-to-PDF case also passed its unchanged five-second private
   test deadline; independent pypdf and Poppler checks verified linked font bytes, extracted `AB`
-  and rendered output. Electron IPC, the Plot dialog, native CAD comparison and an installed
-  release remain unverified for TTC.
+  and rendered output. Those earlier artifacts did not exercise Electron IPC, the Plot
+  dialog, native CAD comparison or an installed release; see the later source review below.
 - Earlier auxiliary artifact producers did not pass: Cambria face 0 hit the same existing
   capital-A/origin metrics refusal on the base and candidate; the Nirmala producer wrote its
   artifacts but exceeded its original five-second private test deadline. The saved artifacts were
@@ -119,3 +122,43 @@ MTEXT line leading remains approximate even when its font is embedded.
 - AutoCAD MTEXT references remain a limit: 198/216 comparisons pass; 18 tall Times multiline
   vertical comparisons differ by 0.13–0.32 drawing units at a 0.12 tolerance. Horizontal wrapping
   and attachment checks pass. The tolerance was not widened to hide the remaining leading gap.
+
+### Collection selection: Windows source review, 2026-10-15
+
+The reviewed implementation at `338165d9cb77cff8954ecc06d64570822d6543ad`
+passes all three typecheck projects, full lint, fixture checks and a fresh production
+renderer build. Its full Windows suite passes 6,647 tests with 38 explicit skips;
+the seven targeted font suites pass all 256 tests. These local results replace the
+handoff's inconclusive full-suite contention analysis; they do not claim remote CI.
+
+A private Electron 44.7.2 source-runtime run uses the actual confined font workers,
+preload/IPC and production Plot/Save PDF path. Installed `Nirmala.ttc` contributes
+face 0 (`NirmalaUI`), face 1 (`NirmalaUI-Bold`) and face 3 (`NirmalaText`), with
+standalone `ArialMT` as control. Metrics and complete programs match each selected
+source face. Regular/bold inline MTEXT, centered/transformed TEXT, Unicode aliases,
+edit/undo/redo, DXF Save As/reopen with retained STYLE flags, plot cancellation and
+captured-font ownership pass. Only native file-dialog destinations are test doubles.
+Drawing state, source/fonts and other installations remain unchanged; owned processes exit.
+
+Independent strict pypdf inspection validates embedded programs, CID/glyph mappings,
+widths and extracted text. Five Windows Canvas/Poppler crops pass the existing
+three-pixel tolerance and visual review. The strict inspector records **1,016/1,017**
+checks: its sole failure is Poppler's `No display font for 'Symbol'` stderr on the
+Helvetica fallback case. An independent pypdf-authored Helvetica-only control, with
+no JCad code or Symbol resource, reproduces that exact warning and renders/extracts
+successfully. The failure is preserved and classified as an external-renderer limit;
+the warning-free gate is not reported as green.
+
+An isolated AutoCAD 2027 reference run over authored drawings adds 263 independent
+checks: actual PDF resources and text operations identify the three Nirmala faces
+and Arial across twelve TEXT cases. All 29 used glyph programs and advances match
+the linked source fonts; all 48 native textbox edges match within 0.0001 drawing
+units. Native AUDIT reports zero errors and source/fonts stay unchanged. AutoCAD's
+own PDF has a duplicate `/PageMode` dictionary key, so strict pypdf parsing of that
+reference fails; the diagnostic and original file are preserved, and permissive
+inspection establishes only the reference facts above. JCad PDFs use strict parsing.
+
+This is source-runtime evidence over authored Latin/unshaped text. Packaged-app
+acceptance, broader installed collections and complex scripts remain separate gates.
+Priority 12 remains partial; later SimSun, CFF, subsetting, permissions, shaping and
+variable/color deliveries require their own review and combined validation.

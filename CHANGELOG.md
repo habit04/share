@@ -18,7 +18,9 @@ messages). The date of each version is the date of the commit that set that vers
   using face 0. Metrics, glyph mappings, embedding permissions and the embedded
   program all come from the selected face; requests naming no family or style keep
   face 0, and unmatched family/style requests keep the existing explicit failures.
-  Native Windows Plot/IPC acceptance of selected faces remains pending.
+  Regular faces are preferred for unspecified style flags regardless of collection
+  order. Windows source Plot/IPC checks cover regular, bold and cross-family faces;
+  packaged-app acceptance remains pending.
 
 ## [0.5.2] - 2026-10-15
 
