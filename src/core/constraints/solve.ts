@@ -1031,6 +1031,33 @@ function shapeSupported(shape: ConstraintShape): boolean {
 // Small dense linear algebra (Gaussian elimination with partial pivoting)
 // ---------------------------------------------------------------------------
 
+/** Deterministic perturbation of a variable vector for the generic-rank
+ *  reading (F-3034-2). At an exactly-tangent configuration the tangent
+ *  row is an EXACT combination of the coincident rows of the shared
+ *  endpoint — for a line–arc tangent whose tangent point is the arc's
+ *  coincident start point, the tangent row equals the negated
+ *  coincident row component-for-component, at every point of the
+ *  solution family. The Jacobian at the point therefore undercounts
+ *  consumption by one per such tangent, and a fully-constrained
+ *  tangent system reports 'underconstrained'. That dependence is a
+ *  pointwise accident of the fold, not a property of the constraint:
+ *  a genuinely redundant constraint is implied on an open set, so its
+ *  row stays dependent at EVERY nearby point, while the fold
+ *  dependence breaks under an arbitrarily small generic displacement.
+ *  The rank is therefore also read at `vars + δ`, with δ a fixed
+ *  hash-pattern displacement of ±1e-7·S per variable (deterministic:
+ *  same input ⇒ same perturbed point ⇒ same rank), and the larger
+ *  reading governs. Taking the max is safe: the perturbed reading can
+ *  only break pointwise accidents, never functional dependencies. */
+function perturbedVars(vars: Float64Array, S: number): Float64Array {
+  const out = new Float64Array(vars);
+  for (let i = 0; i < vars.length; i += 1) {
+    const h = (Math.imul(i + 1, 2654435761) >>> 0) / 4294967296 - 0.5;
+    out[i] = out[i]! + h * 2e-7 * S;
+  }
+  return out;
+}
+
 /** Numerical rank of a dense m×n matrix; pivot threshold 1e-10 relative to
  *  the largest entry (design §5.6). Optionally restricted to a column subset. */
 function denseRank(J: Float64Array, m: number, n: number, cols?: readonly number[]): number {
@@ -2743,7 +2770,27 @@ export function solveConstraints(entities: readonly Entity[], set: ConstraintSet
         return;
       }
       const J = jacAll(comp, outcome.vars, work);
-      const rank = denseRank(J, comp.totalRows, comp.vars0.length);
+      // Generic rank (F-3034-2): see genericTangentRank — at an
+      // exactly-tangent configuration the tangent row is a pointwise
+      // combination of the coincident rows (the fold), so the rank at
+      // the point itself undercounts what the constraints consume.
+      // When a tangent row is present and the plain rank is not
+      // already maximal, the rank is also read at a deterministically
+      // perturbed point and the larger reading — the generic one —
+      // governs the DOF report, the redundancy probes and the
+      // per-entity marginals below (all three use `rankJ`).
+      let rankJ = J;
+      let rank = denseRank(J, comp.totalRows, comp.vars0.length);
+      if (rank < Math.min(comp.totalRows, comp.vars0.length) && comp.residuals.some((rs) => rs.constraint.kind === 'tangent')) {
+        if (work.used + comp.totalRows * comp.vars0.length <= work.limit) {
+          const Jp = jacAll(comp, perturbedVars(outcome.vars, comp.S), work);
+          const rankP = denseRank(Jp, comp.totalRows, comp.vars0.length);
+          if (rankP > rank) {
+            rankJ = Jp;
+            rank = rankP;
+          }
+        }
+      }
       effectiveConsumed += rank;
       // Redundancy probes (design §5.6), sequential in reverse stored
       // order: a constraint is redundant when removing it from the rows
@@ -2771,7 +2818,7 @@ export function solveConstraints(entities: readonly Entity[], set: ConstraintSet
         }
         const sub = new Float64Array(probeRows.length * comp.vars0.length);
         probeRows.forEach((rI, w) => {
-          for (let cI = 0; cI < comp.vars0.length; cI += 1) sub[w * comp.vars0.length + cI] = J[rI * comp.vars0.length + cI]!;
+          for (let cI = 0; cI < comp.vars0.length; cI += 1) sub[w * comp.vars0.length + cI] = rankJ[rI * comp.vars0.length + cI]!;
         });
         work.used += probeRows.length * comp.vars0.length;
         if (denseRank(sub, probeRows.length, comp.vars0.length) === rank) {
@@ -2794,7 +2841,7 @@ export function solveConstraints(entities: readonly Entity[], set: ConstraintSet
           continue;
         }
         work.used += comp.totalRows * colsSoFar.length;
-        const r = denseRank(J, comp.totalRows, comp.vars0.length, colsSoFar);
+        const r = denseRank(rankJ, comp.totalRows, comp.vars0.length, colsSoFar);
         perEntityRemaining.set(ev.entity.id, ev.count - (r - cumulative));
         cumulative = r;
       }
@@ -2887,10 +2934,26 @@ export function analyzeConstraints(entities: readonly Entity[], set: ConstraintS
       magById.set(rs.constraint.id, m);
     }
     const nVars = vars0.length;
-    const J = new Float64Array(totalRows * nVars);
+    let J = new Float64Array(totalRows * nVars);
     for (const rs of residuals) rs.jac(vars0, J, offsets.get(rs.constraint.id)!, nVars);
     work.used += totalRows * nVars;
     effectiveConsumed = denseRank(J, totalRows, nVars);
+    // Generic rank (F-3034-2, as in solveConstraints): with a tangent
+    // row present and the plain rank not already maximal, also read
+    // the rank at a deterministically perturbed point; the larger
+    // (generic) reading governs, and its Jacobian drives the
+    // per-entity marginals below so the report stays consistent.
+    if (effectiveConsumed < Math.min(totalRows, nVars) && residuals.some((rs) => rs.constraint.kind === 'tangent')) {
+      const pv = perturbedVars(vars0, S);
+      const Jp = new Float64Array(totalRows * nVars);
+      for (const rs of residuals) rs.jac(pv, Jp, offsets.get(rs.constraint.id)!, nVars);
+      work.used += totalRows * nVars;
+      const rankP = denseRank(Jp, totalRows, nVars);
+      if (rankP > effectiveConsumed) {
+        J = Jp;
+        effectiveConsumed = rankP;
+      }
+    }
     let cumulative = 0;
     const colsSoFar: number[] = [];
     let budgetOut = false;
