@@ -164,6 +164,20 @@ jobs:
           JCAD_E2E_OUT: e2e-output
       - name: Secure origin and one-time preference migration (Windows)
         run: npm run e2e:origin
+      # Reuse this job's built renderer, full DWG resources and locked Electron.
+      # This is an unpublished dir/ASAR test, outside every installer/release job.
+      - name: Unpublished test-ASAR packaged workflows (Windows)
+        run: node scripts/check-ci-test-asar.mjs
+        timeout-minutes: 15
+        env:
+          JCAD_TEST_ASAR_EXPECTED_SHA: ${{ github.sha }}
+      - name: Unpublished test-ASAR receipts and logs (Windows)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-test-asar-${{ matrix.os }}
+          path: test-build-output/ci-test-asar/
+          if-no-files-found: error
       - name: Development DWG writer reproduction bundle
         uses: actions/upload-artifact@v4
         if: always()
