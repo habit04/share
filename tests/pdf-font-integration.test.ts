@@ -9,6 +9,7 @@ import { plotLayoutsOrVector } from '../src/app/plot-vector';
 import { vectorPdf, vectorPdfCompressed, renderPdfPages, drawingContext, type PdfPageSpec, type PdfDrawingContext } from '../src/io/pdf-vector';
 import { parsePdfBasics, dictValue, pageContents, pageFonts, parseContentStream, type PdfBasics } from './helpers/pdf';
 import { pdfFontFixture } from './helpers/pdf-font-fixture';
+import { cffPdfFontFixture } from './helpers/cff-font-fixture';
 import { embeddableFontProgram } from '../src/io/pdf-font-subset';
 import { fontTable } from './helpers/native-font-fixture';
 
@@ -44,6 +45,36 @@ function editorStub(doc: Drawing, pdfFont?: PdfFontReader, saveResult: string | 
 }
 
 describe('captured vector PDF font integration', () => {
+  it.each([false, true])('composes CFF aliases, static subsets and whole variable resources (compressed %s)', async (compressed) => {
+    const cff = cffPdfFontFixture({ family: 'Arial', alias: true });
+    const statik = pdfFontFixture({ family: 'Times New Roman' });
+    const variable = pdfFontFixture({ family: 'Courier New', variable: true });
+    const entities = [text('cff', { text: 'AB' }), text('static', { style: 'STATIC', text: 'AB' }), text('variable', { style: 'VARIABLE', text: 'AB' })];
+    const doc = new Drawing({ entities, meta: { textStyles: { FACE: style(), STATIC: style('STATIC', 'times.ttf'), VARIABLE: style('VARIABLE', 'cour.ttf') } } });
+    const snapshot = doc.snapshot, history = doc.history();
+    const { result, context } = await prepared(doc, async (request) => ({ font: request.family === 'Arial' ? cff : request.family === 'Times New Roman' ? statik : variable }));
+    expect(result.issues).toEqual([]);
+    const pages = entities.map((entity) => page([entity]));
+    const bytes = compressed ? await vectorPdfCompressed(pages, context, plotStyle, 'Mixed outline resources', (data) => new Uint8Array(deflateSync(data))) : vectorPdf(pages, context, plotStyle, 'Mixed outline resources');
+    const pdf = parsePdfBasics(bytes);
+    expect(pdf.errors).toEqual([]); expect(pdf.version).toBe('1.6');
+    const fontFiles = [...pdf.objects.values()].filter((object) => object.stream && /\/Subtype \/OpenType/.test(object.dict));
+    expect(fontFiles).toHaveLength(1); expect(fontFiles[0]!.stream).toEqual(new Uint8Array(cff.bytes));
+    expect(pageFonts(pdf, pdf.pages[0]!.num)).toEqual({ JCF1: 'JCadCFFFixture-Regular' });
+    expect(pageFonts(pdf, pdf.pages[1]!.num)).toEqual({ JCF2: 'AAAAAB+JCadTimesNewRomanRegular' });
+    expect(pageFonts(pdf, pdf.pages[2]!.num)).toEqual({ JCF3: 'JCadCourierNewRegular' });
+    const programs = embeddedPrograms(pdf);
+    expect(programs).toHaveLength(2);
+    expect(programs).toContainEqual(new Uint8Array(variable.bytes));
+    const subset = embeddableFontProgram(statik.bytes, new Set([2, 3]));
+    expect(subset).not.toBe(statik.bytes); expect(programs).toContainEqual(subset);
+    expect(unicodeText(pdf)).toContain('<0001> 2\n<0002> 2');
+    expect(unicodeText(pdf)).toContain('<0001> <0041>\n<0002> <0042>');
+    const contents = pageContents(pdf, (data) => new Uint8Array(inflateSync(data)));
+    expect(contents).toHaveLength(3); expect(contents.every((content) => content.includes('<00010002> Tj'))).toBe(true);
+    expect(doc.snapshot).toBe(snapshot); expect(doc.history()).toEqual(history); expect(doc.dirty).toBe(false);
+  });
+
   it('snapshots checked bytes and matching metrics before the next awaited font read', async () => {
     const first = pdfFontFixture(), original = new Uint8Array(first.bytes), second = pdfFontFixture({ family: 'Times New Roman' });
     const doc = new Drawing({ entities: [text(), text('second', { style: 'SECOND' })], meta: { textStyles: { FACE: style(), SECOND: style('SECOND', 'times.ttf') } } });

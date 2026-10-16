@@ -228,11 +228,14 @@ describe('font embedding eligibility and bounds', () => {
     expect(() => new PdfFontRegistry([{ ...face(), os2Version: 5 }])).toThrow('permissions do not match');
   });
 
-  it('reports collection/CFF/variable formats without pretending the program is standalone TTF', () => {
+  it('refuses collections and forged CFF/variable programs without trusting their format labels', () => {
     const font = face();
     expect(new PdfFontRegistry([{ ...font, bytes: fontCollection(font.bytes as Buffer) }]).rejections.get(font.key)).toContain('collections');
     const cff = new Uint8Array(font.bytes); new DataView(cff.buffer).setUint32(0, 0x4f54544f);
-    expect(new PdfFontRegistry([{ ...font, bytes: cff }]).rejections.get(font.key)).toContain('glyf');
+    expect(() => new PdfFontRegistry([{ ...font, bytes: cff }])).toThrow('outline format does not match');
+    const forgedCff = new PdfFontRegistry([{ ...font, outline: 'cff', bytes: cff }]);
+    expect(forgedCff.rejections.get(font.key)).toContain('CFF');
+    expect(forgedCff.encode(font.key, 'A')).toBeNull();
     const variable = Buffer.from(font.bytes); variable.write('fvar', fontTable(variable, 'post').record, 'ascii');
     expect(new PdfFontRegistry([{ ...font, bytes: variable }]).rejections.get(font.key)).toContain('variable');
   });

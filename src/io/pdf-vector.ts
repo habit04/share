@@ -1015,6 +1015,12 @@ export function assembleVectorPdf(rendered: readonly RenderedPage[], title = 'Dr
   set(f2, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
   const fontObjects = new Map<PdfFontRegistry, ReadonlyMap<string, number>>();
   for (const pg of rendered) if (pg.embeddedFonts && !fontObjects.has(pg.embeddedFonts)) fontObjects.set(pg.embeddedFonts, writePdfFontResources(pg.embeddedFonts, { reserve, set }));
+  // Only resources actually emitted can raise the ordinary PDF 1.4 baseline.
+  let version: readonly [number, number] = [1, 4];
+  for (const registry of fontObjects.keys()) {
+    const required = registry.requiredVersion;
+    if (required[0] > version[0] || required[0] === version[0] && required[1] > version[1]) version = required;
+  }
   const kids: number[] = [];
   rendered.forEach((pg, i) => {
     const pageNum = reserve();
@@ -1063,7 +1069,7 @@ export function assembleVectorPdf(rendered: readonly RenderedPage[], title = 'Dr
   const info = reserve();
   set(info, `<< /Title ${pdfString(title)} /Producer (JCad Electrical) /Creator (JCad Electrical vector plot) >>`);
 
-  const head = enc.encode('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n');
+  const head = enc.encode(`%PDF-${version[0]}.${version[1]}\n%\xE2\xE3\xCF\xD3\n`);
   const parts: Uint8Array[] = [head];
   let offset = head.length;
   const offsets: number[] = [];

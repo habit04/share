@@ -1,4 +1,4 @@
-/** Confined, read-only installed TrueType programs for one captured Windows PDF export. */
+/** Confined, read-only installed TrueType and standalone CFF programs for one captured Windows PDF export. */
 const { readWindowsFontData } = require('./font-metrics.cjs');
 const { extractTtcFace } = require('./ttc-extract.cjs');
 
@@ -66,7 +66,9 @@ async function readWindowsPdfFont(request, options) {
   // verbatim, so the permission checks below read that same face's real OS/2.
   const collection = source.readUInt32BE(0) === 0x74746366;
   const data = collection ? extractTtcFace(source, metrics.faceIndex ?? 0) : source, signature = data.readUInt32BE(0);
-  if (signature !== 0x00010000 && signature !== 0x74727565) fail('standalone TrueType glyf outlines are required');
+  const outline = signature === 0x4f54544f ? 'cff' : signature === 0x00010000 || signature === 0x74727565 ? 'glyf' : null;
+  if (!outline) fail('standalone TrueType glyf or CFF outlines are required');
+  if (outline === 'cff' && collection) fail('CFF outlines in collections are unsupported; a standalone CFF face is required');
   // The shared metadata parser validated all SFNT table ranges, overlaps and formats.
   const tables = new Map();
   for (let i = 0; i < data.readUInt16BE(4); i++) {
@@ -78,6 +80,9 @@ async function readWindowsPdfFont(request, options) {
     if (!found || found.length < length) fail(`missing or truncated ${tag} table`);
     return found;
   };
+  if (outline === 'cff' && !tables.has('CFF ')) fail('a CFF-outline font must contain a CFF table');
+  if (tables.has('CFF2')) fail('CFF2 outlines are unsupported');
+  if (outline === 'cff' && tables.has('fvar')) fail('variable CFF font instances are unsupported');
   const os2 = table('OS/2', 78), hhea = table('hhea', 36), post = table('post', 32);
   const os2Version = os2.readUInt16BE(0), problem = pdfFontEmbeddingProblem(os2.readUInt16BE(8), os2Version);
   if (problem) fail(problem);
@@ -85,7 +90,7 @@ async function readWindowsPdfFont(request, options) {
   if (ascender < 0 || descender > 0) fail('unsupported font vertical metrics');
   if (weight < 1 || weight > 1000 || Math.abs(italicAngle) > 90) fail('invalid font weight or italic angle');
   if (![0x00010000, 0x00020000, 0x00025000, 0x00030000].includes(post.readUInt32BE(0))) fail('unsupported post table version');
-  return { bytes: collection ? data : bytes, metrics, postscriptName: postscriptName(table('name', 6)), ascender, descender,
+  return { bytes: collection ? data : bytes, metrics, outline, postscriptName: postscriptName(table('name', 6)), ascender, descender,
     italicAngle, weight, isFixedPitch: !!post.readUInt32BE(12), os2Version };
 }
 
