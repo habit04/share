@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ArcEntity, CircleEntity, Entity, LineEntity, PointEntity, PolylineEntity } from '../src/core/entities';
 import type { Constraint, ConstraintSet } from '../src/core/constraints/model';
-import { RESIDUAL_TOL, analyzeConstraints, solveConstraints } from '../src/core/constraints/solve';
+import { RESIDUAL_TOL, analyzeConstraints, solveConstraints, type ConstraintDiagnostic } from '../src/core/constraints/solve';
 
 const base = { layer: '0', color: 'ByLayer' as const };
 const line = (id: string, ax: number, ay: number, bx: number, by: number): LineEntity => ({ ...base, id, type: 'line', a: { x: ax, y: ay }, b: { x: bx, y: by } });
@@ -33,7 +33,7 @@ const asCircle = (e: Entity) => e as CircleEntity;
 const asArc = (e: Entity) => e as ArcEntity;
 const asPoint = (e: Entity) => e as PointEntity;
 const asPolyline = (e: Entity) => e as PolylineEntity;
-const diag = (r: { diagnostics: readonly { constraintId: string }[] }, id: string) => r.diagnostics.find((d) => d.constraintId === id)! as { state: string; residual: number; measured?: number; branch?: string };
+const diag = (r: { diagnostics: readonly ConstraintDiagnostic[] }, id: string): ConstraintDiagnostic => r.diagnostics.find((d) => d.constraintId === id)!;
 
 /** Distance from a point to the infinite line through a solved line entity. */
 function distToLine(p: { x: number; y: number }, l: LineEntity): number {
