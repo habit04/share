@@ -72,7 +72,7 @@ describe('AiAskController', () => {
     const controller = new AiAskController(source, new FixtureProvider());
     const snapshot = controller.previewSnapshot();
     const request: AiAskRequest = {
-      requestId: 1, question: 'find PB101', snapshot,
+      requestId: 'ai-test-1', question: 'find PB101', snapshot,
       binding: source.binding(),
     };
     const a = fixtureRespond(request);
