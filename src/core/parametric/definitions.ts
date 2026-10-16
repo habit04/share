@@ -399,7 +399,10 @@ export function validateDefinition(
       if (!isFinitePoint(param.basePoint)) {
         issues.push({ code: 'invalid-base-point', message: `Parameter '${param.id}' has a non-finite base point.`, parameterId: param.id });
       }
-      if (typeof param.defaultValue !== 'boolean') {
+      // Via a local so the typeof check guards untyped (file-sourced) data
+      // without narrowing the typed field to never.
+      const flipDefault: unknown = param.defaultValue;
+      if (typeof flipDefault !== 'boolean') {
         issues.push({ code: 'invalid-constraint', message: `Parameter '${param.id}' flip default must be a boolean.`, parameterId: param.id });
       }
     }

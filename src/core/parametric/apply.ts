@@ -122,10 +122,14 @@ export function setDynamicParameter(
     return refuse(state, 'unknown-parameter', `Block '${ins.block}' has no parameter '${parameterId}'.`);
   }
   if (param.kind !== 'linear-distance') {
+    // 30.2: angle/flip parameters also reach this refusal — this editor sets
+    // distance values only; the descriptor names the unmodeled source kind
+    // for opaque parameters and the modeled kind otherwise.
+    const descriptor = param.kind === 'opaque-parameter' ? `unmodeled '${param.sourceKind}'` : `'${param.kind}'`;
     return refuse(
       state,
       'wrong-value-kind',
-      `Parameter '${parameterId}' is an unmodeled '${param.sourceKind}' parameter and cannot take a distance value.`,
+      `Parameter '${parameterId}' is an ${descriptor} parameter and cannot take a distance value.`,
     );
   }
 
