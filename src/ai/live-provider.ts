@@ -2,17 +2,15 @@ import { AI_MAX_QUESTION_CHARS, AI_MAX_SNAPSHOT_BYTES } from './limits';
 import { AiError, type AiAnswer, type AiAskRequest, type AiProvider } from './types';
 
 /**
- * Live provider adapter — INACTIVE in this milestone
- * (docs/AI-ASSISTANT.md). The live provider has not been selected: no
- * provider, endpoint, credentials or data handling has been agreed, so
- * nothing in the application constructs this class, no host bridge is wired,
- * and `electron/ai-host.cjs` is not registered with the main process.
- *
- * The adapter exists so the eventual live path is separately reviewable:
- * it can only talk through an injected host bridge (the renderer cannot
- * reach the network — the page CSP has no connect-src), it carries no
- * endpoint or key material, and an incompletely configured instance
- * refuses every request with 'provider-not-configured'.
+ * Live provider adapter (milestone 2, docs/AI-ASSISTANT-M2.md). The panel
+ * constructs this over the guarded host bridge (`src/ai/host-bridge.ts`)
+ * when the Electron preload exposes one; the host owns configuration,
+ * credentials and the network. The adapter can only talk through the
+ * injected bridge (the renderer cannot reach the network — the page CSP
+ * has no connect-src), carries no endpoint or key material, and an
+ * incompletely configured instance refuses every request with
+ * 'provider-not-configured'. In a plain browser (no bridge) it stays
+ * inactive exactly as in milestone 1.
  */
 
 /**

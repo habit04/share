@@ -1,5 +1,5 @@
 import { buildSelectionSnapshot } from './snapshot';
-import { aiBindingsEqual, AiError, type AiAnswer, type AiAskRequest, type AiBinding, type AiProvider, type AiSnapshot, type AiSnapshotSource, type AiUsage } from './types';
+import { aiBindingsEqual, AiError, mintAiRequestId, type AiAnswer, type AiAskRequest, type AiBinding, type AiProvider, type AiSnapshot, type AiSnapshotSource, type AiUsage } from './types';
 import { AI_DEFAULT_TIMEOUT_MS, AI_MAX_ANSWER_CHARS, AI_MAX_QUESTION_CHARS, AI_MAX_REFERENCES } from './limits';
 
 /**
@@ -8,11 +8,11 @@ import { AI_DEFAULT_TIMEOUT_MS, AI_MAX_ANSWER_CHARS, AI_MAX_QUESTION_CHARS, AI_M
  */
 export type AiAskStatus =
   | { readonly state: 'idle' }
-  | { readonly state: 'asking'; readonly requestId: number }
-  | { readonly state: 'answered'; readonly requestId: number; readonly binding: AiBinding; readonly answer: AiAnswer; readonly droppedReferences: number }
-  | { readonly state: 'stale'; readonly requestId: number }
-  | { readonly state: 'cancelled'; readonly requestId: number }
-  | { readonly state: 'error'; readonly requestId: number; readonly error: AiError };
+  | { readonly state: 'asking'; readonly requestId: string }
+  | { readonly state: 'answered'; readonly requestId: string; readonly binding: AiBinding; readonly answer: AiAnswer; readonly droppedReferences: number }
+  | { readonly state: 'stale'; readonly requestId: string }
+  | { readonly state: 'cancelled'; readonly requestId: string }
+  | { readonly state: 'error'; readonly requestId: string; readonly error: AiError };
 
 export interface AiAskControllerOptions {
   readonly timeoutMs?: number;
@@ -22,7 +22,7 @@ export interface AiAskControllerOptions {
 }
 
 interface Pending {
-  readonly requestId: number;
+  readonly requestId: string;
   readonly abort: AbortController;
   timer: unknown;
   settled: boolean;
@@ -69,8 +69,8 @@ function validateAnswer(value: unknown, snapshot: AiSnapshot): { answer: AiAnswe
   let usage: AiUsage | undefined;
   if (raw.usage && typeof raw.usage === 'object' && !Array.isArray(raw.usage)) {
     const input = raw.usage as Record<string, unknown>;
-    const clean: { inputBytes?: number; outputChars?: number; durationMs?: number } = {};
-    for (const key of ['inputBytes', 'outputChars', 'durationMs'] as const) {
+    const clean: { inputBytes?: number; outputChars?: number; durationMs?: number; inputTokens?: number; outputTokens?: number } = {};
+    for (const key of ['inputBytes', 'outputChars', 'durationMs', 'inputTokens', 'outputTokens'] as const) {
       const amount = input[key];
       if (typeof amount === 'number' && Number.isFinite(amount) && amount >= 0
         && (key === 'durationMs' || Number.isSafeInteger(amount))) clean[key] = amount;
@@ -88,7 +88,7 @@ export class AiAskController {
   private readonly setTimeoutFn: (fn: () => void, ms: number) => unknown;
   private readonly clearTimeoutFn: (handle: unknown) => void;
   private readonly listeners = new Set<(status: AiAskStatus) => void>();
-  private lastRequestId = 0;
+  private lastRequestId = '';
   private pending: Pending | null = null;
   private disposed = false;
   private currentStatus: AiAskStatus = { state: 'idle' };
@@ -130,7 +130,8 @@ export class AiAskController {
       return { state: 'error', requestId: this.lastRequestId, error: new AiError('disposed', 'The AI assistant has been closed.') };
     }
     this.abortPending();
-    const requestId = ++this.lastRequestId;
+    const requestId = mintAiRequestId();
+    this.lastRequestId = requestId;
     const trimmed = typeof question === 'string' ? question.trim() : '';
     if (trimmed.length === 0 || trimmed.length > AI_MAX_QUESTION_CHARS) {
       const status: AiAskStatus = {

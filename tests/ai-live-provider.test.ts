@@ -3,7 +3,7 @@ import { LiveProvider, type AiHostBridge } from '../src/ai/live-provider';
 import { AiError, type AiAnswer, type AiAskRequest } from '../src/ai/types';
 
 const request: AiAskRequest = {
-  requestId: 1,
+  requestId: 'ai-test-1',
   question: 'how many objects?',
   snapshot: {
     kind: 'jcad.ai.selection-snapshot', version: 1,

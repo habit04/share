@@ -183,14 +183,40 @@ describe('AiAskController', () => {
     const controller = new AiAskController(source, { id: 'overlap', ask: () => gates[calls++]!.promise });
     const first = controller.ask('first');
     const second = controller.ask('second');
-    expect(await first).toEqual({ state: 'cancelled', requestId: 1 });
-    expect(controller.status).toEqual({ state: 'asking', requestId: 2 });
+    const firstStatus = await first;
+    expect(firstStatus.state).toBe('cancelled');
+    const firstId = 'requestId' in firstStatus ? firstStatus.requestId : '';
+    expect(firstId).toMatch(/^ai-[0-9a-f]+-\d+$/);
+    expect(controller.status.state).toBe('asking');
+    const secondId = controller.status.state === 'asking' ? controller.status.requestId : '';
+    expect(secondId).toMatch(/^ai-[0-9a-f]+-\d+$/);
+    expect(secondId).not.toBe(firstId);
     gates[0]!.reject(new Error('Late rejection.'));
     gates[1]!.resolve(okAnswer);
     const final = await second;
     expect(final.state).toBe('answered');
-    expect('requestId' in final && final.requestId).toBe(2);
+    expect('requestId' in final && final.requestId).toBe(secondId);
     controller.dispose();
+  });
+
+  it('mints request ids that stay unique across controller recreation (milestone 2)', async () => {
+    const { source } = makeSource();
+    const seen: string[] = [];
+    const provider: AiProvider = {
+      id: 'recorder',
+      ask: (request) => { seen.push(request.requestId); return Promise.resolve(okAnswer); },
+    };
+    const first = new AiAskController(source, provider);
+    await first.ask('one');
+    first.dispose();
+    // A recreated controller (panel rebuilt, host jobs may still exist)
+    // must never reuse an id the previous controller issued.
+    const second = new AiAskController(source, provider);
+    await second.ask('two');
+    second.dispose();
+    expect(seen).toHaveLength(2);
+    expect(new Set(seen).size).toBe(2);
+    for (const id of seen) expect(id).toMatch(/^ai-[0-9a-f]+-\d+$/);
   });
 
   it('supports synchronous subscriber cancellation without starting or stranding a provider', async () => {
@@ -199,7 +225,9 @@ describe('AiAskController', () => {
     const clearTimeoutFn = vi.fn();
     const controller = new AiAskController(source, provider, { setTimeoutFn: () => 19, clearTimeoutFn });
     controller.subscribe((status) => { if (status.state === 'asking') controller.cancel(); });
-    expect(await controller.ask('count')).toEqual({ state: 'cancelled', requestId: 1 });
+    const cancelled = await controller.ask('count');
+    expect(cancelled.state).toBe('cancelled');
+    expect('requestId' in cancelled && cancelled.requestId).toMatch(/^ai-[0-9a-f]+-\d+$/);
     expect(provider.ask).not.toHaveBeenCalled();
     expect(clearTimeoutFn).toHaveBeenCalledExactlyOnceWith(19);
     controller.dispose();

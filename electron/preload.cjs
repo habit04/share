@@ -76,6 +76,20 @@ contextBridge.exposeInMainWorld('jcad', {
     ipcRenderer.on('open-progress', (_ev, p) => cb(p));
   },
   cancelOpen: (id) => ipcRenderer.invoke('cancel-open', Number(id)),
+  // AI Assistant (milestone 2): guarded host bridge. Arguments are rebuilt
+  // field-by-field here; the API key crosses once, as a bounded string, and
+  // no host response ever contains key material.
+  ai: {
+    getState: () => ipcRenderer.invoke('ai-get-state'),
+    setModel: (model) => ipcRenderer.invoke('ai-set-model', String(model ?? '')),
+    setKey: (key, persistence) => ipcRenderer.invoke('ai-set-key', String(key ?? ''), persistence === 'encrypted' ? 'encrypted' : 'session'),
+    forgetKey: () => ipcRenderer.invoke('ai-forget-key'),
+    setEnabled: (enabled) => ipcRenderer.invoke('ai-set-enabled', enabled === true),
+    testConnection: () => ipcRenderer.invoke('ai-test-connection'),
+    ask: (request) => ipcRenderer.invoke('ai-ask', request),
+    cancel: (requestId) => ipcRenderer.invoke('ai-cancel', String(requestId ?? '')),
+    usage: () => ipcRenderer.invoke('ai-usage'),
+  },
   // Autosave / Drawing Recovery (files live in the app data folder)
   autosaveWrite: (name, text, meta) => ipcRenderer.invoke('autosave-write', name, text, meta),
   autosaveList: () => ipcRenderer.invoke('autosave-list'),

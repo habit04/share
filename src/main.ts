@@ -11,6 +11,7 @@ import { ProjectManager } from './ui/projectmanager';
 import { pickSymbolDialog, editComponentDialog, ladderDialog, textInputDialog, layerDialog, confirmDialog, saveChangesDialog, reportsDialog, templateDialog, plcDialog, terminalStripDialog, wireTypeDialog } from './ui/dialogs';
 import { PropertiesPalette } from './ui/properties';
 import { AiAssistantPanel } from './ui/ai-panel';
+import { windowAiConnection } from './ai/host-bridge';
 import { saveSettings } from './app/settings';
 import { buildTitleBar, buildFileTabs, buildLayoutTabs, installContextMenu, buildNavBar } from './ui/chrome';
 import { seedDemoDrawing } from './app/demo';
@@ -61,6 +62,7 @@ declare global {
     jcad?: {
       openShxFont?(): Promise<import('./render/shx-fonts').ShxResource | null>;
       fontMetrics?(request: import('./core/text-metrics').FontMetricsRequest): Promise<import('./core/text-metrics').NativeFontMetrics | null>;
+      ai?: import('./ai/host-bridge').AiPreloadBridge;
       pdfFont?(request: import('./core/text-metrics').FontMetricsRequest): Promise<import('./app/pdf-fonts').PdfFontResult>;
       openDxf(): Promise<{ path: string; identityPath?: string; openedSourceProof?: string; text: string } | null>;
       releaseOpenedSourceProof?(proof: string): Promise<void>;
@@ -553,7 +555,7 @@ function boot(): void {
   // AI Assistant palette (docs/AI-ASSISTANT.md): read-only, toggled directly —
   // never through runCommand, which would cancel the current drawing tool.
   // Width is not persisted in this milestone (the settings record is closed).
-  const aiPanel = new AiAssistantPanel(editor, document.getElementById('ai-assistant')!);
+  const aiPanel = new AiAssistantPanel(editor, document.getElementById('ai-assistant')!, undefined, windowAiConnection());
   makePaletteResizable(aiPanel.el, { edge: 'left', initial: 320, onWidth: () => {} });
   editor.hooks.aiAssistant = () => aiPanel.toggle();
   buildFileTabs(editor, document.getElementById('file-tabs')!);

@@ -1198,6 +1198,41 @@ canvas#drawing {
   font-size: 11px;
   opacity: 0.85;
 }
+/* AI connection settings (milestone 2, src/ui/ai-panel.ts) */
+.ai-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.ai-note {
+  font-size: 11px;
+  opacity: 0.8;
+}
+.ai-field-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.ai-key {
+  width: 100%;
+  box-sizing: border-box;
+}
+.ai-model-custom {
+  flex: 1;
+  min-width: 120px;
+}
+.ai-conn-state {
+  font-size: 11px;
+}
+.ai-conn-error {
+  font-size: 11px;
+  color: #e57373;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .prop-header {
   padding: 5px 8px;
   background: #3a3a3a;

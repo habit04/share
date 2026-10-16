@@ -1,38 +1,73 @@
 import type { Editor } from '../app/editor/editor';
 import { AiAskController, type AiAskStatus } from '../ai/ask-controller';
 import { createEditorAiSource } from '../ai/editor-source';
-import { FixtureProvider, FIXTURE_PROVIDER_ID } from '../ai/fixture-provider';
+import { FixtureProvider } from '../ai/fixture-provider';
+import { LiveProvider } from '../ai/live-provider';
 import { serializeSnapshot } from '../ai/snapshot';
-import type { AiBinding, AiProvider, AiSnapshot } from '../ai/types';
+import type { WindowAiConnection, AiConnectionState } from '../ai/host-bridge';
+import { AiError, type AiBinding, type AiProvider, type AiSnapshot } from '../ai/types';
 import { icon } from './icons';
 
 /**
- * “Ask about selected objects” palette (docs/AI-ASSISTANT.md).
+ * “Ask about selected objects” palette (docs/AI-ASSISTANT.md, milestone 2
+ * in docs/AI-ASSISTANT-M2.md).
  *
  * Strictly read-only: it reads the editor through the AI snapshot source,
  * never dispatches a command (so it can never cancel the current tool),
  * never writes selection/document/undo/dirty state, and renders every
- * dynamic string — drawing text, questions, answers — through textContent.
- * The only innerHTML uses are the compile-time icon markup every palette
- * uses for its strip, and clearing containers with ''.
+ * dynamic string — drawing text, questions, answers, host state — through
+ * textContent. The only innerHTML uses are the compile-time icon markup
+ * every palette uses for its strip, and clearing containers with ''.
+ *
+ * Milestone 2 adds the connection section when the Electron host bridge
+ * is present: host-authoritative provider/model state, a password field
+ * whose value is cleared immediately after submission, session-only key
+ * storage by default with opt-in encrypted persistence, Test Connection,
+ * Replace/Forget Key, and an explicit Enable Live AI control. Without a
+ * bridge (plain browser) the panel is exactly the milestone-1 demo.
  */
+
+const MODEL_PRESETS = ['gpt-5', 'gpt-5.5', 'gpt-5.6', 'gpt-5.6-luna', 'gpt-4.1', 'gpt-4o-mini'] as const;
+
+const OFFLINE_LABEL = 'Offline demo — no AI model connected. Responses are generated locally; nothing is sent outside JCad.';
+const BILLING_NOTE = 'Questions are billed to your OpenAI API account. Cancelling stops JCad from waiting, but a request already processing at OpenAI may still be charged.';
+const RETENTION_NOTE = 'Requests set store: false, so responses are not stored as API application state. That is not zero retention: OpenAI states API data is not used for training unless you opt in, while abuse-monitoring logs may retain prompts and responses for up to 30 days.';
+const PROBE_NOTE = 'Test Connection makes a real OpenAI API call with a fixed message and no drawing content. It may incur a small charge on your account.';
+
 export class AiAssistantPanel {
   readonly el: HTMLElement;
   private readonly controller: AiAskController;
   private readonly unsubscribes: Array<() => void> = [];
   private readonly summaryEl: HTMLElement;
   private readonly sentEl: HTMLElement;
+  private readonly sentLabelEl: HTMLElement;
   private readonly questionEl: HTMLTextAreaElement;
   private readonly askBtn: HTMLButtonElement;
   private readonly cancelBtn: HTMLButtonElement;
   private readonly statusEl: HTMLElement;
   private readonly answerEl: HTMLElement;
   private readonly refsEl: HTMLElement;
+  private readonly providerLabelEl: HTMLElement;
+  private readonly billingEl: HTMLElement;
+  private readonly usageEl: HTMLElement;
   private answerBinding: AiBinding | null = null;
 
-  constructor(editor: Editor, container: HTMLElement, provider: AiProvider = new FixtureProvider()) {
+  // Milestone 2 connection state (present only with a host bridge).
+  private readonly connection: WindowAiConnection | null;
+  private readonly fixtureProvider = new FixtureProvider();
+  private liveProvider: LiveProvider | null = null;
+  private connState: AiConnectionState | null = null;
+  private settingsEls: {
+    modelSelect: HTMLSelectElement; modelCustom: HTMLInputElement;
+    keyInput: HTMLInputElement; persistSession: HTMLInputElement; persistEncrypted: HTMLInputElement;
+    saveKeyBtn: HTMLButtonElement; forgetKeyBtn: HTMLButtonElement; testBtn: HTMLButtonElement;
+    enableCheck: HTMLInputElement; stateEl: HTMLElement; errorEl: HTMLElement;
+  } | null = null;
+
+  constructor(editor: Editor, container: HTMLElement, provider?: AiProvider, connection?: WindowAiConnection | null) {
     this.el = container;
     this.el.className = 'palette ai-assistant hidden';
+    this.connection = connection ?? null;
     // Buttons and other focused descendants need the same boundary as the
     // textarea: Enter/Delete/Escape must never reach global CAD shortcuts.
     this.el.addEventListener('keydown', (ev) => {
@@ -59,18 +94,16 @@ export class AiAssistantPanel {
 
     const content = document.createElement('div');
     content.className = 'ai-body';
-    const providerLabel = document.createElement('div');
-    providerLabel.className = 'ai-provider';
-    providerLabel.textContent = provider.id === FIXTURE_PROVIDER_ID
-      ? 'Offline demo — no AI model connected. Responses are generated locally; nothing is sent outside JCad.'
-      : `Provider: ${provider.id}`;
+    this.providerLabelEl = document.createElement('div');
+    this.providerLabelEl.className = 'ai-provider';
+    this.providerLabelEl.textContent = OFFLINE_LABEL;
 
     this.summaryEl = document.createElement('div');
     this.summaryEl.className = 'ai-summary';
 
-    const sentLabel = document.createElement('div');
-    sentLabel.className = 'ai-section-label';
-    sentLabel.textContent = 'What will be sent (exactly)';
+    this.sentLabelEl = document.createElement('div');
+    this.sentLabelEl.className = 'ai-section-label';
+    this.sentLabelEl.textContent = 'What will be sent (exactly)';
     this.sentEl = document.createElement('pre');
     this.sentEl.className = 'ai-sent';
 
@@ -100,21 +133,38 @@ export class AiAssistantPanel {
     this.cancelBtn.addEventListener('click', () => this.controller.cancel());
     buttons.append(this.askBtn, this.cancelBtn);
 
+    this.billingEl = document.createElement('div');
+    this.billingEl.className = 'ai-note';
+    this.billingEl.textContent = BILLING_NOTE;
+    this.billingEl.classList.add('hidden');
+
     this.statusEl = document.createElement('div');
     this.statusEl.className = 'ai-status';
     this.answerEl = document.createElement('div');
     this.answerEl.className = 'ai-answer';
     this.refsEl = document.createElement('div');
     this.refsEl.className = 'ai-refs';
+    this.usageEl = document.createElement('div');
+    this.usageEl.className = 'ai-refs';
 
     content.append(
-      providerLabel, this.summaryEl, sentLabel, this.sentEl, this.questionEl,
-      buttons, this.statusEl, this.answerEl, this.refsEl,
+      this.providerLabelEl, this.summaryEl, this.sentLabelEl, this.sentEl, this.questionEl,
+      buttons, this.billingEl, this.statusEl, this.answerEl, this.refsEl, this.usageEl,
     );
+    if (this.connection) content.append(this.buildSettingsSection());
     body.append(bar, content);
     this.el.append(body, strip);
 
-    this.controller = new AiAskController(createEditorAiSource(editor), provider);
+    // With a bridge, questions route per host state at ask time: live only
+    // when the host reports enabled + a key present; otherwise the offline
+    // fixture demo answers and nothing leaves the machine.
+    const routed: AiProvider = this.connection
+      ? {
+          get id() { return 'router'; },
+          ask: (request, signal) => this.routeProvider().ask(request, signal),
+        }
+      : (provider ?? this.fixtureProvider);
+    this.controller = new AiAskController(createEditorAiSource(editor), routed);
     this.unsubscribes.push(this.controller.subscribe((status) => this.renderStatus(status)));
     // Rebuild the preview when the selection or document changes. The events
     // are only a hint — the controller re-reads and compares the binding
@@ -128,7 +178,10 @@ export class AiAssistantPanel {
   toggle(): void {
     this.el.classList.toggle('hidden');
     this.refreshPreview();
-    if (this.isVisible) this.questionEl.focus();
+    if (this.isVisible) {
+      this.questionEl.focus();
+      void this.refreshConnection();
+    }
   }
 
   get isVisible(): boolean {
@@ -141,9 +194,242 @@ export class AiAssistantPanel {
     this.controller.dispose();
   }
 
+  /** Live only when the host says enabled with a key; the demo otherwise. */
+  private routeProvider(): AiProvider {
+    if (this.connection && this.connState?.enabled && this.connState.keyPresent && this.liveProvider) {
+      return this.liveProvider;
+    }
+    return this.fixtureProvider;
+  }
+
+  private get liveRoute(): boolean {
+    return this.routeProvider() !== this.fixtureProvider;
+  }
+
   private async ask(): Promise<void> {
     await this.controller.ask(this.questionEl.value);
   }
+
+  // ------------------------------------------------------------ connection
+
+  private buildSettingsSection(): HTMLElement {
+    const conn = this.connection!;
+    const section = document.createElement('div');
+    section.className = 'ai-settings';
+
+    const label = document.createElement('div');
+    label.className = 'ai-section-label';
+    label.textContent = 'Connection settings (host-managed)';
+
+    const stateEl = document.createElement('div');
+    stateEl.className = 'ai-conn-state';
+    stateEl.textContent = 'Reading connection state…';
+
+    const modelRow = document.createElement('div');
+    modelRow.className = 'ai-field-row';
+    const modelLabel = document.createElement('label');
+    modelLabel.textContent = 'Model';
+    const modelSelect = document.createElement('select');
+    modelSelect.className = 'ai-model';
+    for (const preset of MODEL_PRESETS) {
+      const option = document.createElement('option');
+      option.value = preset;
+      option.textContent = preset;
+      modelSelect.append(option);
+    }
+    const customOption = document.createElement('option');
+    customOption.value = '__custom__';
+    customOption.textContent = 'Custom…';
+    modelSelect.append(customOption);
+    const modelCustom = document.createElement('input');
+    modelCustom.className = 'ai-model-custom';
+    modelCustom.type = 'text';
+    modelCustom.placeholder = 'Custom model id';
+    modelCustom.classList.add('hidden');
+    modelSelect.addEventListener('change', () => {
+      if (modelSelect.value === '__custom__') {
+        modelCustom.classList.remove('hidden');
+        modelCustom.focus();
+        return;
+      }
+      modelCustom.classList.add('hidden');
+      void this.applySettings(() => conn.setModel(modelSelect.value));
+    });
+    modelCustom.addEventListener('change', () => {
+      const value = modelCustom.value.trim();
+      if (value) void this.applySettings(() => conn.setModel(value));
+    });
+    modelRow.append(modelLabel, modelSelect, modelCustom);
+
+    const keyLabel = document.createElement('label');
+    keyLabel.textContent = 'OpenAI API key';
+    const keyInput = document.createElement('input');
+    keyInput.className = 'ai-key';
+    keyInput.type = 'password';
+    keyInput.autocomplete = 'off';
+    keyInput.placeholder = 'sk-…';
+
+    const persistRow = document.createElement('div');
+    persistRow.className = 'ai-field-row';
+    const persistSession = document.createElement('input');
+    persistSession.type = 'radio';
+    persistSession.name = 'ai-key-persistence';
+    persistSession.checked = true;
+    const sessionLabel = document.createElement('label');
+    sessionLabel.append(persistSession, document.createTextNode(' This session only (default)'));
+    const persistEncrypted = document.createElement('input');
+    persistEncrypted.type = 'radio';
+    persistEncrypted.name = 'ai-key-persistence';
+    const encryptedLabel = document.createElement('label');
+    encryptedLabel.append(persistEncrypted, document.createTextNode(' Remember, encrypted by the OS'));
+    persistRow.append(sessionLabel, encryptedLabel);
+
+    const keyButtons = document.createElement('div');
+    keyButtons.className = 'ai-buttons';
+    const saveKeyBtn = document.createElement('button');
+    saveKeyBtn.className = 'ai-save-key';
+    saveKeyBtn.textContent = 'Save Key';
+    saveKeyBtn.addEventListener('click', () => { void this.submitKey(); });
+    const forgetKeyBtn = document.createElement('button');
+    forgetKeyBtn.className = 'ai-forget-key';
+    forgetKeyBtn.textContent = 'Forget Key';
+    forgetKeyBtn.addEventListener('click', () => {
+      void this.applySettings(() => conn.forgetKey());
+    });
+    const testBtn = document.createElement('button');
+    testBtn.className = 'ai-test-connection';
+    testBtn.textContent = 'Test Connection';
+    testBtn.addEventListener('click', () => { void this.testConnection(); });
+    keyButtons.append(saveKeyBtn, forgetKeyBtn, testBtn);
+
+    const probeNote = document.createElement('div');
+    probeNote.className = 'ai-note';
+    probeNote.textContent = PROBE_NOTE;
+
+    const enableRow = document.createElement('div');
+    enableRow.className = 'ai-field-row';
+    const enableCheck = document.createElement('input');
+    enableCheck.type = 'checkbox';
+    enableCheck.className = 'ai-enable';
+    enableCheck.addEventListener('change', () => {
+      void this.applySettings(() => conn.setEnabled(enableCheck.checked));
+    });
+    const enableLabel = document.createElement('label');
+    enableLabel.append(enableCheck, document.createTextNode(' Enable Live AI'));
+    enableRow.append(enableLabel);
+
+    const retention = document.createElement('div');
+    retention.className = 'ai-note';
+    retention.textContent = RETENTION_NOTE;
+
+    const errorEl = document.createElement('div');
+    errorEl.className = 'ai-conn-error';
+
+    section.append(
+      label, stateEl, modelRow, keyLabel, keyInput, persistRow, keyButtons,
+      probeNote, enableRow, retention, errorEl,
+    );
+    this.settingsEls = {
+      modelSelect, modelCustom, keyInput, persistSession, persistEncrypted,
+      saveKeyBtn, forgetKeyBtn, testBtn, enableCheck, stateEl, errorEl,
+    };
+    return section;
+  }
+
+  private async refreshConnection(): Promise<void> {
+    if (!this.connection) return;
+    try {
+      this.setConnState(await this.connection.state());
+    } catch (cause) {
+      this.setConnError(cause);
+    }
+  }
+
+  /** Run a settings mutation, then render the authoritative host state. */
+  private async applySettings(action: () => Promise<AiConnectionState>): Promise<void> {
+    if (!this.settingsEls) return;
+    this.settingsEls.errorEl.textContent = '';
+    try {
+      this.setConnState(await action());
+    } catch (cause) {
+      this.setConnError(cause);
+      await this.refreshConnection();
+    }
+  }
+
+  private async submitKey(): Promise<void> {
+    const els = this.settingsEls;
+    if (!els || !this.connection) return;
+    const key = els.keyInput.value;
+    // Clear the password field immediately after submission — before the
+    // host answers — so the key never lingers in the DOM.
+    els.keyInput.value = '';
+    if (!key) {
+      els.errorEl.textContent = 'Enter an API key first.';
+      return;
+    }
+    const persistence = els.persistEncrypted.checked ? 'encrypted' : 'session';
+    await this.applySettings(() => this.connection!.setKey(key, persistence));
+  }
+
+  private async testConnection(): Promise<void> {
+    const els = this.settingsEls;
+    if (!els || !this.connection) return;
+    els.errorEl.textContent = '';
+    els.stateEl.textContent = 'Testing the connection…';
+    try {
+      const probe = await this.connection.testConnection();
+      els.stateEl.textContent = `Connection OK — ${this.connState?.provider ?? 'openai'} · ${probe.model}`
+        + (probe.outputTokens !== undefined ? ` (probe used ${probe.outputTokens} output tokens)` : '')
+        + '.';
+    } catch (cause) {
+      this.setConnError(cause);
+      await this.refreshConnection();
+    }
+  }
+
+  private setConnError(cause: unknown): void {
+    if (!this.settingsEls) return;
+    this.settingsEls.errorEl.textContent = cause instanceof AiError || cause instanceof Error
+      ? cause.message
+      : 'The AI host reported a failure.';
+  }
+
+  private setConnState(state: AiConnectionState): void {
+    this.connState = state;
+    this.liveProvider = this.connection
+      ? new LiveProvider(this.connection.bridge, { providerId: state.provider, model: state.model })
+      : null;
+    const els = this.settingsEls;
+    if (els) {
+      const keyText = state.keyPresent
+        ? `API key: saved (${state.keySource === 'stored' ? 'encrypted on this device' : 'this session only'})`
+        : 'API key: not saved';
+      els.stateEl.textContent = `Provider: ${state.provider} · Model: ${state.model} · ${keyText}`
+        + (state.configProblem ? ` · Settings problem: ${state.configProblem} (defaults in use)` : '');
+      els.saveKeyBtn.textContent = state.keyPresent ? 'Replace Key' : 'Save Key';
+      els.forgetKeyBtn.disabled = !state.keyPresent;
+      els.testBtn.disabled = !state.keyPresent;
+      els.enableCheck.checked = state.enabled;
+      els.enableCheck.disabled = !state.keyPresent;
+      els.persistEncrypted.disabled = !state.encryptionAvailable;
+      if (!state.encryptionAvailable && els.persistEncrypted.checked) els.persistSession.checked = true;
+      if ((MODEL_PRESETS as readonly string[]).includes(state.model)) {
+        els.modelSelect.value = state.model;
+        els.modelCustom.classList.add('hidden');
+      } else {
+        els.modelSelect.value = '__custom__';
+        els.modelCustom.value = state.model;
+        els.modelCustom.classList.remove('hidden');
+      }
+    }
+    this.providerLabelEl.textContent = this.liveRoute
+      ? `Live AI: ${state.provider} · ${state.model}`
+      : OFFLINE_LABEL;
+    this.refreshPreview();
+  }
+
+  // ------------------------------------------------------------ preview/status
 
   private refreshPreview(): void {
     if (!this.isVisible) return;
@@ -153,6 +439,7 @@ export class AiAssistantPanel {
         this.answerBinding = null;
         this.answerEl.textContent = '';
         this.refsEl.textContent = '';
+        this.usageEl.textContent = '';
         this.statusEl.textContent = 'The drawing context changed. Ask again to refresh the answer.';
       }
       snapshot = this.controller.previewSnapshot();
@@ -163,10 +450,17 @@ export class AiAssistantPanel {
       this.answerBinding = null;
       this.answerEl.textContent = '';
       this.refsEl.textContent = '';
+      this.usageEl.textContent = '';
       this.statusEl.textContent = cause instanceof Error ? cause.message : 'The drawing context could not be read.';
       return;
     }
     this.askBtn.disabled = this.controller.status.state === 'asking';
+    const live = this.liveRoute;
+    this.sentLabelEl.textContent = live
+      ? `What will be sent to ${this.connState!.provider} (model: ${this.connState!.model}) — exactly`
+      : 'What will be sent (exactly)';
+    this.askBtn.textContent = live ? `Ask ${this.connState!.provider === 'openai' ? 'OpenAI' : this.connState!.provider}` : 'Ask';
+    this.billingEl.classList.toggle('hidden', !live);
     const { total, included, omittedCount } = snapshot.selection;
     this.summaryEl.textContent = total === 0
       ? 'Nothing is selected. Select objects in the drawing, then ask about them here.'
@@ -188,8 +482,9 @@ export class AiAssistantPanel {
         this.answerBinding = null;
         this.answerEl.textContent = '';
         this.refsEl.textContent = '';
+        this.usageEl.textContent = '';
         break;
-      case 'answered':
+      case 'answered': {
         this.statusEl.textContent = '';
         this.answerEl.textContent = status.answer.text;
         this.answerBinding = status.binding;
@@ -200,21 +495,29 @@ export class AiAssistantPanel {
           this.refsEl.textContent += `${this.refsEl.textContent ? ' ' : ''}`
             + `(${status.droppedReferences} reference(s) to objects outside the selection were removed.)`;
         }
+        const usage = status.answer.usage;
+        this.usageEl.textContent = usage && (usage.inputTokens !== undefined || usage.outputTokens !== undefined)
+          ? `Usage: ${usage.inputTokens ?? '—'} input tokens, ${usage.outputTokens ?? '—'} output tokens.`
+          : '';
         break;
+      }
       case 'stale':
         this.statusEl.textContent = 'The drawing, selection or space changed while asking, so that answer was not shown. Ask again.';
         this.answerEl.textContent = '';
         this.refsEl.textContent = '';
+        this.usageEl.textContent = '';
         break;
       case 'cancelled':
         this.statusEl.textContent = 'Cancelled.';
         this.answerEl.textContent = '';
         this.refsEl.textContent = '';
+        this.usageEl.textContent = '';
         break;
       case 'error':
         this.statusEl.textContent = status.error.message;
         this.answerEl.textContent = '';
         this.refsEl.textContent = '';
+        this.usageEl.textContent = '';
         break;
     }
     this.refreshPreview();

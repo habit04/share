@@ -1,0 +1,119 @@
+import { AiError, type AiAnswer, type AiAskRequest, type AiErrorKind } from './types';
+import type { AiHostBridge } from './live-provider';
+
+/**
+ * Renderer client for the guarded AI host bridge (milestone 2,
+ * docs/AI-ASSISTANT-M2.md). The preload exposes `window.jcad.ai` with
+ * result-value methods — expected failures resolve as
+ * `{ ok: false, error: { kind, message, retryAfterSeconds? } }` because
+ * Electron does not preserve custom error properties across IPC. This
+ * module reconstructs typed `AiError`s from those payloads explicitly and
+ * translates an AbortSignal into the host's cancel channel (signals
+ * cannot cross IPC). No key material ever appears in these payloads.
+ */
+
+export interface AiConnectionState {
+  readonly provider: string;
+  readonly model: string;
+  readonly enabled: boolean;
+  readonly keyPersistence: 'session' | 'encrypted';
+  readonly keyPresent: boolean;
+  readonly keySource: 'session' | 'stored' | null;
+  readonly encryptionAvailable: boolean;
+  readonly configProblem: string | null;
+}
+
+export interface AiProbeResult {
+  readonly model: string;
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
+}
+
+interface AiIpcErrorPayload {
+  readonly kind?: unknown;
+  readonly message?: unknown;
+  readonly retryAfterSeconds?: unknown;
+}
+
+type AiResult<T> = { readonly ok: true } & T | { readonly ok: false; readonly error: AiIpcErrorPayload };
+
+/** The raw preload bridge shape (electron/preload.cjs `ai` group). */
+export interface AiPreloadBridge {
+  getState(): Promise<AiResult<{ state: AiConnectionState }>>;
+  setModel(model: string): Promise<AiResult<{ state: AiConnectionState }>>;
+  setKey(key: string, persistence: string): Promise<AiResult<{ state: AiConnectionState }>>;
+  forgetKey(): Promise<AiResult<{ state: AiConnectionState }>>;
+  setEnabled(enabled: boolean): Promise<AiResult<{ state: AiConnectionState }>>;
+  testConnection(): Promise<AiResult<{ probe: AiProbeResult }>>;
+  ask(request: AiAskRequest): Promise<AiResult<{ answer: unknown }>>;
+  cancel(requestId: string): Promise<AiResult<{ cancelled: boolean }>>;
+  usage(): Promise<AiResult<{ usage: Record<string, number> }>>;
+}
+
+const KNOWN_KINDS: ReadonlySet<string> = new Set<AiErrorKind>([
+  'provider-not-configured', 'provider-failure', 'host-unavailable', 'timeout',
+  'cancelled', 'stale', 'invalid-question', 'invalid-context', 'invalid-answer',
+  'output-too-large', 'disposed', 'live-disabled', 'auth-failed', 'model-access',
+  'rate-limited', 'network', 'refused', 'credential-unavailable',
+  'credential-corrupt', 'credential-delete-failed',
+]);
+
+/** Rebuild a typed error from a bounded IPC payload; unknown kinds fail closed. */
+export function aiErrorFromPayload(payload: AiIpcErrorPayload | undefined): AiError {
+  const kind = typeof payload?.kind === 'string' && KNOWN_KINDS.has(payload.kind)
+    ? payload.kind as AiErrorKind
+    : 'provider-failure';
+  let message = typeof payload?.message === 'string' && payload.message.length > 0
+    ? payload.message.slice(0, 500)
+    : 'The AI host reported a failure.';
+  if (kind === 'rate-limited'
+    && typeof payload?.retryAfterSeconds === 'number'
+    && Number.isFinite(payload.retryAfterSeconds) && payload.retryAfterSeconds > 0) {
+    message += ` Try again in about ${Math.ceil(payload.retryAfterSeconds)} seconds.`;
+  }
+  return new AiError(kind, message);
+}
+
+function unwrap<T>(result: AiResult<T>): T {
+  if (!result || typeof result !== 'object') {
+    throw new AiError('host-unavailable', 'The AI host bridge returned an invalid response.');
+  }
+  if (result.ok === true) return result;
+  throw aiErrorFromPayload((result as { error?: AiIpcErrorPayload }).error);
+}
+
+export class WindowAiConnection {
+  /** AiHostBridge for LiveProvider: ask + abort→cancel translation. */
+  readonly bridge: AiHostBridge;
+
+  constructor(private readonly raw: AiPreloadBridge) {
+    this.bridge = {
+      ask: async (request: AiAskRequest, signal: AbortSignal): Promise<AiAnswer> => {
+        if (signal.aborted) throw new AiError('cancelled', 'The request was cancelled.');
+        const onAbort = () => { void this.raw.cancel(request.requestId).catch(() => {}); };
+        signal.addEventListener('abort', onAbort, { once: true });
+        try {
+          const { answer } = unwrap(await this.raw.ask(request));
+          return answer as AiAnswer;
+        } finally {
+          signal.removeEventListener('abort', onAbort);
+        }
+      },
+    };
+  }
+
+  async state(): Promise<AiConnectionState> { return unwrap(await this.raw.getState()).state; }
+  async setModel(model: string): Promise<AiConnectionState> { return unwrap(await this.raw.setModel(model)).state; }
+  async setKey(key: string, persistence: 'session' | 'encrypted'): Promise<AiConnectionState> {
+    return unwrap(await this.raw.setKey(key, persistence)).state;
+  }
+  async forgetKey(): Promise<AiConnectionState> { return unwrap(await this.raw.forgetKey()).state; }
+  async setEnabled(enabled: boolean): Promise<AiConnectionState> { return unwrap(await this.raw.setEnabled(enabled)).state; }
+  async testConnection(): Promise<AiProbeResult> { return unwrap(await this.raw.testConnection()).probe; }
+}
+
+/** The bridge when the app runs in a plain browser (no Electron preload). */
+export function windowAiConnection(): WindowAiConnection | null {
+  const raw = (window as { jcad?: { ai?: AiPreloadBridge } }).jcad?.ai;
+  return raw ? new WindowAiConnection(raw) : null;
+}

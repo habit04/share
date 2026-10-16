@@ -135,16 +135,44 @@ export interface AiSnapshot {
 }
 
 export interface AiAskRequest {
-  readonly requestId: number;
+  /**
+   * Unique across controller recreation and page reloads: minted by
+   * `mintAiRequestId()` (page-instance salt + monotonic counter), so a
+   * recreated controller can never collide with a previous controller's
+   * in-flight host job (milestone 2, docs/AI-ASSISTANT-M2.md).
+   */
+  readonly requestId: string;
   readonly question: string;
   readonly snapshot: AiSnapshot;
   readonly binding: AiBinding;
+}
+
+let requestSalt: string | null = null;
+let requestCounter = 0;
+
+/** Mint a request id unique to this page instance and monotonic within it. */
+export function mintAiRequestId(): string {
+  if (requestSalt === null) {
+    let salt = '';
+    try {
+      const bytes = new Uint8Array(8);
+      crypto.getRandomValues(bytes);
+      salt = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+    } catch { /* fall through to the time-based salt */ }
+    if (!salt) salt = `${Date.now().toString(36)}${Math.floor(Math.random() * 0xffffffff).toString(36)}`;
+    requestSalt = salt;
+  }
+  requestCounter += 1;
+  return `ai-${requestSalt}-${requestCounter}`;
 }
 
 export interface AiUsage {
   readonly inputBytes?: number;
   readonly outputChars?: number;
   readonly durationMs?: number;
+  /** Provider-reported token usage, when the provider supplies it (milestone 2). */
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
 }
 
 export interface AiAnswer {
@@ -165,7 +193,18 @@ export type AiErrorKind =
   | 'invalid-context'
   | 'invalid-answer'
   | 'output-too-large'
-  | 'disposed';
+  | 'disposed'
+  // Milestone 2 (live provider): produced host-side and reconstructed in
+  // the renderer from the structured IPC error payload.
+  | 'live-disabled'
+  | 'auth-failed'
+  | 'model-access'
+  | 'rate-limited'
+  | 'network'
+  | 'refused'
+  | 'credential-unavailable'
+  | 'credential-corrupt'
+  | 'credential-delete-failed';
 
 export class AiError extends Error {
   readonly kind: AiErrorKind;
