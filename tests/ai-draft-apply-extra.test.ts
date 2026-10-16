@@ -61,13 +61,14 @@ describe('draft save/export exclusion and inclusion', () => {
 describe('reentrant apply', () => {
   it('an apply callback that re-enters apply() commits exactly once', async () => {
     const doc = new Drawing({ entities: [], layers: [layer0], currentLayer: '0' });
-    let controller: AiDraftController;
-    controller = new AiDraftController(harness(doc, []), doc, {
+    const holder: { controller?: AiDraftController } = {};
+    const controller = new AiDraftController(harness(doc, []), doc, {
       applyFn: (capture, proposal) => {
-        controller.apply(); // reentrant attempt: must be refused by the guard
+        holder.controller?.apply(); // reentrant attempt: must be refused by the guard
         applyCompiledProposal(doc, capture, proposal);
       },
     });
+    holder.controller = controller;
     await controller.generate('a circle', providerOf(circlePlan), 'fixture');
     const revisionBefore = doc.revision;
     controller.apply();
