@@ -1,6 +1,8 @@
 /**
  * Priority 30.1 — per-instance dynamic-block parameter values + validation.
- * (30.2a adds the 'visibility' value kind: a state name, design §1.3.)
+ * (30.2a adds the 'visibility' value kind: a state name, design §1.3.
+ *  30.2b adds the 'lookup' value kind: a row name, or null for an explicitly
+ *  inactive lookup — design-visibility-lookup-array.md §2.4.)
  *
  * Instance state is deliberately tiny: just the parameter values that differ per
  * insert. It does not copy the definition, the geometry, or the insert's transform.
@@ -24,7 +26,8 @@ export interface DynamicInstanceState {
   readonly values: Readonly<Record<string, DynamicParameterValue>>;
 }
 
-/** Values are tagged so new kinds (30.2: angle, flip; 30.2a: visibility) don't reshape existing data. */
+/** Values are tagged so new kinds (30.2: angle, flip; 30.2a: visibility;
+ *  30.2b: lookup) don't reshape existing data. */
 export type DynamicParameterValue =
   | { readonly kind: 'distance'; readonly value: number }
   /** Angle in radians (the codebase's angle convention). */
@@ -33,6 +36,9 @@ export type DynamicParameterValue =
   | { readonly kind: 'flip'; readonly value: boolean }
   /** Visibility state name (an identity in the owning parameter, design §1.2). */
   | { readonly kind: 'visibility'; readonly value: string }
+  /** Lookup row choice: a row name, or null = explicitly no row (overrides
+   *  the parameter's defaultRow). Absent from the sparse map = defaultRow. */
+  | { readonly kind: 'lookup'; readonly value: string | null }
   | { readonly kind: 'opaque'; readonly payload: string };
 
 export type InstanceIssueCode =
@@ -43,6 +49,7 @@ export type InstanceIssueCode =
   | 'value-not-in-list' // list constraint violated
   | 'value-off-increment' // not min + k * increment (within EVALUATION_TOLERANCE)
   | 'unknown-visibility-state' // visibility value names a state the parameter does not have
+  | 'unknown-lookup-row' // lookup value names a row the parameter's table does not have
   | 'block-mismatch'; // state.block !== owning insert's block
 
 export interface InstanceIssue {
@@ -119,10 +126,113 @@ const defaultValueOf = (param: DynamicParameter): DynamicParameterValue => {
       return { kind: 'flip', value: param.defaultValue };
     case 'visibility':
       return { kind: 'visibility', value: param.defaultState };
+    case 'lookup':
+      return { kind: 'lookup', value: param.defaultRow };
     case 'opaque-parameter':
       return { kind: 'opaque', payload: param.payload };
   }
 };
+
+/**
+ * Check ONE supplied value against ONE parameter: kind match, finiteness, and
+ * the parameter's own constraint (distance range/increment/list, angle range,
+ * visibility state existence, lookup row existence). This is the per-value
+ * check `validateInstanceValues` applies to every supplied instance value,
+ * factored out so `validateDefinition` can validate lookup row key/assignment
+ * values with exactly the same rules (design §2.5) — because every value a row
+ * can inject is checked here at definition time, the evaluator's lookup
+ * override can never produce an invalid effective value.
+ */
+export function parameterValueIssue(param: DynamicParameter, supplied: DynamicParameterValue): InstanceIssue | undefined {
+  const wrongKind = (message: string): InstanceIssue => ({ code: 'wrong-value-kind', message, parameterId: param.id });
+  switch (param.kind) {
+    case 'opaque-parameter':
+      return supplied.kind !== 'opaque'
+        ? wrongKind(`Parameter '${param.id}' is opaque and cannot take a '${supplied.kind}' value.`)
+        : undefined;
+    case 'angle': {
+      if (supplied.kind !== 'angle') {
+        return wrongKind(`Parameter '${param.id}' cannot take a '${supplied.kind}' value.`);
+      }
+      if (typeof supplied.value !== 'number' || !Number.isFinite(supplied.value)) {
+        return { code: 'non-finite-value', message: `Parameter '${param.id}' value is not a finite number.`, parameterId: param.id };
+      }
+      return angleConstraintIssue(param, supplied.value);
+    }
+    case 'flip':
+      return supplied.kind !== 'flip' || typeof supplied.value !== 'boolean'
+        ? wrongKind(`Parameter '${param.id}' cannot take a non-boolean flip value.`)
+        : undefined;
+    case 'visibility': {
+      if (supplied.kind !== 'visibility' || typeof supplied.value !== 'string') {
+        return wrongKind(`Parameter '${param.id}' cannot take a '${supplied.kind}' value; a state name is required.`);
+      }
+      // An unknown state name is refused, never replaced by the default state
+      // as a "repair" (design §1.3): the block displays its authored geometry
+      // and the stored value is retained.
+      return param.states.some((s) => s.name === supplied.value)
+        ? undefined
+        : {
+            code: 'unknown-visibility-state',
+            message: `Parameter '${param.id}' has no visibility state named '${supplied.value}'.`,
+            parameterId: param.id,
+          };
+    }
+    case 'lookup': {
+      if (supplied.kind !== 'lookup') {
+        return wrongKind(`Parameter '${param.id}' cannot take a '${supplied.kind}' value; a row name or null is required.`);
+      }
+      const choice: unknown = supplied.value;
+      if (choice !== null && typeof choice !== 'string') {
+        return wrongKind(`Parameter '${param.id}' lookup value must be a row name or null.`);
+      }
+      // A stored choice naming a missing row (e.g. the definition was revised
+      // and the row removed) is an invalid instance value — refused, retained,
+      // displayed at authored geometry — never silently treated as "no row"
+      // (design §2.5).
+      return choice === null || param.rows.some((r) => r.name === choice)
+        ? undefined
+        : {
+            code: 'unknown-lookup-row',
+            message: `Parameter '${param.id}' has no lookup row named '${choice}'.`,
+            parameterId: param.id,
+          };
+    }
+    case 'linear-distance': {
+      if (supplied.kind !== 'distance') {
+        return wrongKind(`Parameter '${param.id}' cannot take an opaque value.`);
+      }
+      if (typeof supplied.value !== 'number' || !Number.isFinite(supplied.value)) {
+        return { code: 'non-finite-value', message: `Parameter '${param.id}' value is not a finite number.`, parameterId: param.id };
+      }
+      return constraintIssue(param, supplied.value);
+    }
+  }
+}
+
+/**
+ * The equality the lookup machinery uses (design §2.7): numeric values
+ * (distance, angle) compare within EVALUATION_TOLERANCE; flip, visibility and
+ * lookup values compare exactly; opaque payloads compare verbatim. Values of
+ * different kinds are never equal. Used by `matchingLookupRow` (the derived
+ * current-row query) and by definition validation's duplicate-key check —
+ * two rows whose keys are indistinguishable to the matcher are duplicates.
+ */
+export function parameterValuesEqual(a: DynamicParameterValue, b: DynamicParameterValue): boolean {
+  if (a.kind !== b.kind) return false;
+  switch (a.kind) {
+    case 'distance':
+    case 'angle':
+      return Math.abs(a.value - (b as { value: number }).value) <= EVALUATION_TOLERANCE;
+    case 'flip':
+    case 'visibility':
+    case 'lookup':
+      return a.value === (b as { value: unknown }).value;
+    case 'opaque':
+      return a.payload === (b as { payload: string }).payload;
+  }
+}
+
 
 /**
  * Validate per-instance values against a definition and compute the effective
@@ -158,68 +268,7 @@ export function validateInstanceValues(
       effective[param.id] = defaultValueOf(param);
       continue;
     }
-    if (param.kind === 'opaque-parameter') {
-      if (supplied.kind !== 'opaque') {
-        issues.push({ code: 'wrong-value-kind', message: `Parameter '${param.id}' is opaque and cannot take a '${supplied.kind}' value.`, parameterId: param.id });
-      } else {
-        effective[param.id] = supplied;
-      }
-      continue;
-    }
-    if (param.kind === 'angle') {
-      if (supplied.kind !== 'angle') {
-        issues.push({ code: 'wrong-value-kind', message: `Parameter '${param.id}' cannot take a '${supplied.kind}' value.`, parameterId: param.id });
-        continue;
-      }
-      if (typeof supplied.value !== 'number' || !Number.isFinite(supplied.value)) {
-        issues.push({ code: 'non-finite-value', message: `Parameter '${param.id}' value is not a finite number.`, parameterId: param.id });
-        continue;
-      }
-      const issue = angleConstraintIssue(param, supplied.value);
-      if (issue) {
-        issues.push(issue);
-        continue;
-      }
-      effective[param.id] = supplied;
-      continue;
-    }
-    if (param.kind === 'flip') {
-      if (supplied.kind !== 'flip' || typeof supplied.value !== 'boolean') {
-        issues.push({ code: 'wrong-value-kind', message: `Parameter '${param.id}' cannot take a non-boolean flip value.`, parameterId: param.id });
-        continue;
-      }
-      effective[param.id] = supplied;
-      continue;
-    }
-    if (param.kind === 'visibility') {
-      if (supplied.kind !== 'visibility' || typeof supplied.value !== 'string') {
-        issues.push({ code: 'wrong-value-kind', message: `Parameter '${param.id}' cannot take a '${supplied.kind}' value; a state name is required.`, parameterId: param.id });
-        continue;
-      }
-      // An unknown state name is refused, never replaced by the default state
-      // as a "repair" (design §1.3): the block displays its authored geometry
-      // and the stored value is retained.
-      if (!param.states.some((s) => s.name === supplied.value)) {
-        issues.push({
-          code: 'unknown-visibility-state',
-          message: `Parameter '${param.id}' has no visibility state named '${supplied.value}'.`,
-          parameterId: param.id,
-        });
-        continue;
-      }
-      effective[param.id] = supplied;
-      continue;
-    }
-    // Modeled (linear-distance) parameter.
-    if (supplied.kind !== 'distance') {
-      issues.push({ code: 'wrong-value-kind', message: `Parameter '${param.id}' cannot take an opaque value.`, parameterId: param.id });
-      continue;
-    }
-    if (typeof supplied.value !== 'number' || !Number.isFinite(supplied.value)) {
-      issues.push({ code: 'non-finite-value', message: `Parameter '${param.id}' value is not a finite number.`, parameterId: param.id });
-      continue;
-    }
-    const issue = constraintIssue(param, supplied.value);
+    const issue = parameterValueIssue(param, supplied);
     if (issue) {
       issues.push(issue);
       continue;

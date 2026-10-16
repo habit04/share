@@ -5,6 +5,10 @@
  * 30.2a (additive, same model version): the visibility parameter (named states
  * over the definition's own entities; no action — evaluation applies it as a
  * final filter, see evaluate.ts).
+ * 30.2b (additive, same model version): the lookup parameter (a named row table
+ * over the other parameters; the instance stores a row choice and evaluation
+ * applies the row over the direct values — see evaluate.ts and
+ * design-visibility-lookup-array.md §2).
  *
  * Pure data + structural validation. No I/O, no editor imports, and nothing here
  * mutates a definition: a definition that fails validation is refused, never repaired.
@@ -12,6 +16,7 @@
  * dynamic-block compatibility.
  */
 import { EPS, type Point } from '../geometry';
+import { parameterValueIssue, parameterValuesEqual, type DynamicParameterValue } from './instance';
 
 /** Version of the normalized model. A definition with a higher version is not guessed at:
  *  it is retained as opaque data and evaluation refuses (see OpaqueParameter / §1.4 of
@@ -30,7 +35,7 @@ export interface DynamicBlockDefinition {
   readonly actions: readonly DynamicAction[];
 }
 
-export type DynamicParameter = LinearDistanceParameter | AngleParameter | FlipParameter | VisibilityParameter | OpaqueParameter;
+export type DynamicParameter = LinearDistanceParameter | AngleParameter | FlipParameter | VisibilityParameter | LookupParameter | OpaqueParameter;
 
 /**
  * A linear distance parameter: a scalar length measured along a fixed direction from a
@@ -159,6 +164,66 @@ export interface VisibilityState {
    * defaulting rule at evaluation: membership is the whole semantics.
    */
   readonly visible: readonly string[];
+}
+
+/**
+ * A lookup parameter (30.2b): a named table of rows over OTHER parameters.
+ * The instance stores a row choice (or nothing); evaluation applies the
+ * chosen row over the direct effective values (design §2.6). At most ONE
+ * lookup parameter per definition in this model (a flagged model bound,
+ * design §2.5). The lookup parameter drives no action and may not be an
+ * action's parameterId.
+ */
+export interface LookupParameter {
+  readonly kind: 'lookup';
+  /** Stable id, unique in the definition. */
+  readonly id: string;
+  /** Display name, e.g. 'Preset'. Not an identity. */
+  readonly name: string;
+  /** Anchor of the lookup grip, definition space. Display data. */
+  readonly basePoint: Point;
+  /**
+   * Input parameter ids — the table's key columns (native input properties).
+   * Keys play NO role in evaluation: the row is chosen by name, not matched
+   * by key. Keys exist for the grip menu, for the derived current-row query
+   * (`matchingLookupRow` in evaluate.ts), and so a future native table decode
+   * has somewhere faithful to land. At least one input; inputs may be
+   * distance, angle, flip or visibility parameters — never the lookup
+   * itself, never an opaque parameter.
+   */
+  readonly inputs: readonly string[];
+  /** Row applied when the instance stores no choice; null = the lookup is
+   *  inactive unless a row is chosen. Must name a row when non-null. */
+  readonly defaultRow: string | null;
+  /** Rows in authoring order. At least one. */
+  readonly rows: readonly LookupRow[];
+}
+
+export interface LookupRow {
+  /**
+   * Row identity. Instance row choices refer to rows by name; names are
+   * unique within the parameter and compared exactly. NOTE the native
+   * divergence: native rows are nameless and identified by their key values.
+   * The name is a JCad modeling choice — stable under table edits that change
+   * key values, which a key-referenced choice would not survive.
+   */
+  readonly name: string;
+  /**
+   * The row's key: a value for EVERY input parameter (complete by
+   * validation). When the row is chosen, these values are applied to the
+   * input parameters as part of the row — choosing the "Width 12" row sets
+   * Width to 12, as natively.
+   */
+  readonly key: Readonly<Record<string, DynamicParameterValue>>;
+  /**
+   * Values this row sets on NON-input parameters. Partial by design:
+   * parameters not listed keep their direct effective values. Targets may be
+   * distance, angle, flip or visibility parameters — never a lookup
+   * parameter, never an opaque parameter, never one of `inputs` (an input's
+   * row value lives in `key`; the split is what makes row application
+   * unambiguous).
+   */
+  readonly assignments: Readonly<Record<string, DynamicParameterValue>>;
 }
 
 export interface ParameterGrip {
@@ -336,6 +401,12 @@ export type DefinitionIssueCode =
   | 'duplicate-visibility-state' // two states of one visibility parameter share a name
   | 'invalid-visibility-states' // no states, an empty state name, defaultState not a state, a duplicated visible entry
   | 'empty-visibility-state' // a state's visible list is empty (model rule, design §1.3 — not a native claim)
+  | 'duplicate-lookup-parameter' // more than one lookup parameter in the definition (model bound, design §2.5)
+  | 'invalid-lookup-table' // inputs or rows empty, or defaultRow names no row
+  | 'invalid-lookup-input' // an input id is unknown, the lookup itself, an opaque parameter, or duplicated
+  | 'duplicate-lookup-row' // two rows of one lookup parameter share a name
+  | 'duplicate-lookup-key' // two rows have identical key tuples (indistinguishable to matchingLookupRow)
+  | 'invalid-lookup-row' // key does not cover exactly the inputs; an assignment names an input / the lookup / an opaque or unknown parameter; or a key/assignment value is the wrong kind for, or violates, its target parameter
   | 'parameter-kind-mismatch'; // e.g. a rotate action driven by a linear-distance parameter
 
 export interface DefinitionIssue {
@@ -418,9 +489,18 @@ export function validateDefinition(
 ): readonly DefinitionIssue[] {
   const issues: DefinitionIssue[] = [];
 
+  // Complete parameter map (first occurrence wins), built up front: a lookup
+  // parameter's inputs may name parameters authored AFTER it in the list,
+  // which the incremental map below cannot see yet.
+  const allParametersById = new Map<string, DynamicParameter>();
+  for (const param of definition.parameters) {
+    if (!allParametersById.has(param.id)) allParametersById.set(param.id, param);
+  }
+
   const parameterIds = new Set<string>();
   const parameterById = new Map<string, DynamicParameter>();
   let visibilitySeen = false;
+  let lookupSeen = false;
   for (const param of definition.parameters) {
     if (parameterIds.has(param.id)) {
       issues.push({ code: 'duplicate-parameter-id', message: `Duplicate parameter id '${param.id}'.`, parameterId: param.id });
@@ -514,6 +594,147 @@ export function validateDefinition(
         issues.push({
           code: 'invalid-visibility-states',
           message: `Parameter '${param.id}' default state '${param.defaultState}' is not one of its states.`,
+          parameterId: param.id,
+        });
+      }
+    } else if (param.kind === 'lookup') {
+      // At most one lookup parameter per definition (design §2.5, model bound).
+      if (lookupSeen) {
+        issues.push({
+          code: 'duplicate-lookup-parameter',
+          message: `Parameter '${param.id}' is a second lookup parameter; a definition has at most one.`,
+          parameterId: param.id,
+        });
+      }
+      lookupSeen = true;
+      if (!isFinitePoint(param.basePoint)) {
+        issues.push({ code: 'invalid-base-point', message: `Parameter '${param.id}' has a non-finite base point.`, parameterId: param.id });
+      }
+      if (param.inputs.length === 0) {
+        issues.push({ code: 'invalid-lookup-table', message: `Lookup parameter '${param.id}' has no input parameters.`, parameterId: param.id });
+      }
+      if (param.rows.length === 0) {
+        issues.push({ code: 'invalid-lookup-table', message: `Lookup parameter '${param.id}' has no rows.`, parameterId: param.id });
+      }
+      const inputIds = new Set<string>();
+      for (const inputId of param.inputs) {
+        if (inputIds.has(inputId)) {
+          issues.push({
+            code: 'invalid-lookup-input',
+            message: `Lookup parameter '${param.id}' lists input '${inputId}' twice.`,
+            parameterId: param.id,
+          });
+          continue;
+        }
+        inputIds.add(inputId);
+        const target = allParametersById.get(inputId);
+        if (!target || inputId === param.id || target.kind === 'lookup' || target.kind === 'opaque-parameter') {
+          issues.push({
+            code: 'invalid-lookup-input',
+            message: `Lookup parameter '${param.id}' input '${inputId}' is unknown, the lookup itself, another lookup, or an opaque parameter; inputs must be distance, angle, flip or visibility parameters.`,
+            parameterId: param.id,
+          });
+        }
+      }
+      const rowNames = new Set<string>();
+      for (const row of param.rows) {
+        if (rowNames.has(row.name)) {
+          issues.push({
+            code: 'duplicate-lookup-row',
+            message: `Lookup parameter '${param.id}' has two rows named '${row.name}'; row names are identities and must be unique.`,
+            parameterId: param.id,
+          });
+        } else {
+          rowNames.add(row.name);
+        }
+        // The key covers exactly the inputs (design §2.5).
+        for (const inputId of param.inputs) {
+          if (!Object.hasOwn(row.key, inputId)) {
+            issues.push({
+              code: 'invalid-lookup-row',
+              message: `Row '${row.name}' of lookup parameter '${param.id}' has no key value for input '${inputId}'.`,
+              parameterId: param.id,
+            });
+          }
+        }
+        for (const keyId of Object.keys(row.key)) {
+          if (!inputIds.has(keyId)) {
+            issues.push({
+              code: 'invalid-lookup-row',
+              message: `Row '${row.name}' of lookup parameter '${param.id}' has a key value for '${keyId}', which is not one of its inputs.`,
+              parameterId: param.id,
+            });
+          }
+        }
+        // Assignments target non-input modeled parameters only (design §2.5).
+        for (const targetId of Object.keys(row.assignments)) {
+          const target = allParametersById.get(targetId);
+          if (inputIds.has(targetId)) {
+            issues.push({
+              code: 'invalid-lookup-row',
+              message: `Row '${row.name}' of lookup parameter '${param.id}' assigns input '${targetId}'; an input's row value lives in the row's key, not its assignments.`,
+              parameterId: param.id,
+            });
+          } else if (!target || targetId === param.id || target.kind === 'lookup' || target.kind === 'opaque-parameter') {
+            issues.push({
+              code: 'invalid-lookup-row',
+              message: `Row '${row.name}' of lookup parameter '${param.id}' assigns '${targetId}', which is unknown, the lookup itself, another lookup, or an opaque parameter.`,
+              parameterId: param.id,
+            });
+          }
+        }
+        // Every value a row can inject is validated against its target
+        // parameter NOW (design §2.5, load-bearing): the evaluation-time
+        // override can therefore never produce an invalid effective value,
+        // and the evaluator does not re-run instance validation over the
+        // overridden map. Only structurally sound entries are value-checked;
+        // the broken ones were reported above.
+        const checkRowValue = (targetId: string, value: DynamicParameterValue): void => {
+          const target = allParametersById.get(targetId);
+          if (!target || target.kind === 'lookup' || target.kind === 'opaque-parameter') return;
+          const issue = parameterValueIssue(target, value);
+          if (issue) {
+            issues.push({
+              code: 'invalid-lookup-row',
+              message: `Row '${row.name}' of lookup parameter '${param.id}' sets '${targetId}' to an invalid value: ${issue.message}`,
+              parameterId: param.id,
+            });
+          }
+        };
+        for (const inputId of param.inputs) {
+          if (Object.hasOwn(row.key, inputId)) checkRowValue(inputId, row.key[inputId]!);
+        }
+        for (const [targetId, value] of Object.entries(row.assignments)) {
+          const target = allParametersById.get(targetId);
+          if (!inputIds.has(targetId) && target && target.kind !== 'lookup' && target.kind !== 'opaque-parameter') {
+            checkRowValue(targetId, value);
+          }
+        }
+      }
+      // Two rows with identical key tuples are indistinguishable to the
+      // derived current-row query (matchingLookupRow) — duplicates (§2.5).
+      for (let i = 0; i < param.rows.length; i += 1) {
+        for (let j = i + 1; j < param.rows.length; j += 1) {
+          const a = param.rows[i]!;
+          const b = param.rows[j]!;
+          const sameKey = param.inputs.every((inputId) => {
+            const av = a.key[inputId];
+            const bv = b.key[inputId];
+            return av !== undefined && bv !== undefined && parameterValuesEqual(av, bv);
+          });
+          if (sameKey) {
+            issues.push({
+              code: 'duplicate-lookup-key',
+              message: `Rows '${a.name}' and '${b.name}' of lookup parameter '${param.id}' have identical key values for every input.`,
+              parameterId: param.id,
+            });
+          }
+        }
+      }
+      if (param.defaultRow !== null && !rowNames.has(param.defaultRow)) {
+        issues.push({
+          code: 'invalid-lookup-table',
+          message: `Lookup parameter '${param.id}' default row '${param.defaultRow}' is not one of its rows.`,
           parameterId: param.id,
         });
       }
