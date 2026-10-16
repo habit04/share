@@ -95,10 +95,6 @@ function fakeReader(files = projectFiles(), identify?: (path: string) => XrefFil
   return reader;
 }
 
-/** Identity adapter: every existing file is its own identity at its own location. */
-const selfIdentity = (files: Map<string, string>) => (path: string): XrefFileIdentity | null =>
-  files.has(path) ? { id: `file:${path}`, owningLocation: path, version: 'v1' } : null;
-
 const hostState = () => readDxf(fixture('host.dxf'));
 
 describe('path resolution (app/paths helpers)', () => {
@@ -516,7 +512,7 @@ describe('accounting and limits (20.1)', () => {
     // Layout-only content: a fabricated state whose only extra entities live in a layout.
     const layoutState = (s: DrawingState): DrawingState => ({
       ...s,
-      layouts: [{ name: 'L1', paper: { width: 297, height: 210 }, plotScale: 'fit', margins: { left: 0, right: 0, top: 0, bottom: 0 }, entities: [leaf.entities[0]!, leaf.entities[0]!, leaf.entities[0]!], viewports: [] }],
+      layouts: [{ name: 'L1', paper: { id: 'custom', width: 297, height: 210, units: 'mm', orientation: 'landscape' }, plotScale: 'fit', margins: { left: 0, right: 0, top: 0, bottom: 0 }, entities: [leaf.entities[0]!, leaf.entities[0]!, leaf.entities[0]!], viewports: [] }],
     });
     const reader = fakeReader(leafFiles());
     const outcome = await stageXrefLoad(
