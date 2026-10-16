@@ -166,7 +166,14 @@ export interface InsertEntity extends EntityBase {
    * insert only), e.g. TAG1 on poles 2 and 3 of a 3-pole device. The value is kept for reports.
    */
   readonly hiddenAttributes?: readonly string[];
-  /** Native per-insert attribute placement, stored in the block's local coordinate system. */
+  /**
+   * Native per-insert attribute placement, stored in the block's local coordinate system,
+   * relative to the AUTHORED attribute definition: for a dynamic block the evaluation's
+   * per-attribute motion is applied on top of the stored placement wherever the current
+   * state is rendered or written (see attributePlacementsForDef), so an imported override
+   * describes the attribute's offset from its authored placement — never a pin against
+   * the evaluated position (review R07).
+   */
   readonly attributePlacements?: Readonly<Record<string, TextPlacement & AttributeAppearance & { readonly style?: string }>>;
   /**
    * Priority 30: this instance's dynamic parameter values (sparse; absent values take the
@@ -1346,8 +1353,13 @@ const insertCache = new WeakMap<InsertEntity, InsertCache>();
  * expansionReport is a separate static analysis), so a refusal here cannot be
  * surfaced in-band; the same states are refused explicitly, with codes, by
  * evaluateDynamicBlock and by core/parametric/apply.ts on the edit path.
+ *
+ * Exported for the two other consumers that must agree with expansion about
+ * the evaluated definition (review R07): the DXF writer, which writes ATTRIB
+ * positions from the evaluated definition, and the DXF reader, which rebases
+ * imported attribute placements against it.
  */
-function expansionBlock(block: BlockDef, ins: InsertEntity): BlockDef {
+export function expansionBlock(block: BlockDef, ins: InsertEntity): BlockDef {
   const definition = block.dynamic;
   const instance = ins.dynamic;
   if (!definition || !instance) return block;
@@ -1361,6 +1373,129 @@ function expansionBlock(block: BlockDef, ins: InsertEntity): BlockDef {
     result.attributes.length === block.attributes.length &&
     result.attributes.every((a, i) => a === block.attributes[i]);
   return unchanged ? block : { ...block, entities: result.entities, attributes: result.attributes };
+}
+
+// ---------------------------------------------------------------------------
+// Attribute placement overrides vs dynamic evaluation (review R07)
+// ---------------------------------------------------------------------------
+
+type AttributePlacement = TextPlacement & AttributeAppearance & { readonly style?: string };
+
+/** Shift a placement's anchor points by a definition-space delta. The evaluator
+ *  moves attribute definitions by their `position` only, so a delta is the
+ *  whole motion; the placement's own anchors ride along by the same delta. */
+function shiftedAttributeAnchors(p: AttributePlacement, dx: number, dy: number): AttributePlacement {
+  if (dx === 0 && dy === 0) return p;
+  const shift = (q: Point): Point => ({ x: q.x + dx, y: q.y + dy });
+  return {
+    ...p,
+    position: shift(p.position),
+    ...(p.alignmentPoint ? { alignmentPoint: shift(p.alignmentPoint) } : {}),
+    ...(p.firstAlignmentPoint ? { firstAlignmentPoint: shift(p.firstAlignmentPoint) } : {}),
+  };
+}
+
+/** The evaluation motion of one attribute (evaluated position − authored
+ *  position), or null when the attribute is absent from the effective
+ *  definition or the evaluation did not move it. */
+function attributeMotion(authored: BlockDef, effective: BlockDef, tag: string): { dx: number; dy: number } | null {
+  const a1 = effective.attributes.find((a) => a.tag === tag);
+  if (!a1) return null;
+  const a0 = authored.attributes.find((a) => a.tag === tag);
+  if (!a0 || a0 === a1) return null;
+  const dx = a1.position.x - a0.position.x;
+  const dy = a1.position.y - a0.position.y;
+  return dx === 0 && dy === 0 ? null : { dx, dy };
+}
+
+/**
+ * The insert as attributeText must see it when placements are consumed
+ * against `effective` (a definition derived from `authored` by evaluation):
+ * each stored placement — authored-frame by definition (see the field
+ * comment) — is shifted by the evaluation motion of its attribute, so a
+ * genuine per-instance offset rides on the evaluated position instead of
+ * pinning the attribute against it. Returns `ins` itself when nothing
+ * moves (the static path is untouched, by identity).
+ */
+export function attributePlacementsForDef(ins: InsertEntity, authored: BlockDef, effective: BlockDef): InsertEntity {
+  if (effective === authored || !ins.attributePlacements) return ins;
+  let changed = false;
+  const out: Record<string, AttributePlacement> = {};
+  for (const [tag, p] of Object.entries(ins.attributePlacements)) {
+    const motion = attributeMotion(authored, effective, tag);
+    out[tag] = motion ? shiftedAttributeAnchors(p, motion.dx, motion.dy) : p;
+    if (motion) changed = true;
+  }
+  return changed ? { ...ins, attributePlacements: out } : ins;
+}
+
+/** Placement comparison tolerance for the reader's restatement check:
+ *  far above the DXF writer's 10-decimal formatting noise, far below any
+ *  deliberate user offset. */
+const PLACEMENT_EPS = 1e-7;
+
+function placementRestatesEvaluated(p: AttributePlacement, ins: InsertEntity, a: AttributeDef): boolean {
+  const near = (x: number, y: number) => Math.abs(x - y) <= PLACEMENT_EPS;
+  const pointNear = (u?: Point, v?: Point) =>
+    (u === undefined && v === undefined) || (u !== undefined && v !== undefined && near(u.x, v.x) && near(u.y, v.y));
+  if (!pointNear(p.position, a.position) || !pointNear(p.alignmentPoint, a.alignmentPoint) || !pointNear(p.firstAlignmentPoint, a.firstAlignmentPoint)) return false;
+  if (!near(p.height, a.height) || !near(p.rotation ?? 0, a.rotation ?? 0)) return false;
+  if (!near(p.widthFactor ?? 1, a.widthFactor ?? 1) || !near(p.oblique ?? 0, a.oblique ?? 0)) return false;
+  if (p.align !== a.align) return false;
+  if ((p.justification?.horizontal ?? -1) !== (a.justification?.horizontal ?? -1)) return false;
+  if ((p.justification?.vertical ?? -1) !== (a.justification?.vertical ?? -1)) return false;
+  // Appearance: a restatement matches the definition, or carries exactly the
+  // value attributeText would derive from the definition (e.g. an ATTRIB on
+  // the conventional attribute layer, or ByLayer colour) — anything else is
+  // a deliberate per-instance difference and keeps the override.
+  if (p.layer !== a.layer && p.layer !== undefined && !(a.layer === undefined && p.layer === attributeLayer(a.tag, ins.layer))) return false;
+  if (p.color !== a.color && !(a.color === undefined && (p.color === undefined || p.color === 'ByLayer'))) return false;
+  if (p.trueColor !== a.trueColor || p.colorName !== a.colorName || p.transparency !== a.transparency) return false;
+  if (p.style !== a.style) return false;
+  return true;
+}
+
+/**
+ * Rebase placements read from a file (where an ATTRIB's anchors record the
+ * attribute's position at the SAVED parameter state — the evaluated
+ * position, plus any genuine user offset) into the stored authored frame:
+ * a placement that merely restates the evaluated definition is DROPPED
+ * (evaluation reproduces it now and after any later edit), and a placement
+ * carrying a genuine offset is shifted back by the saved-state motion so
+ * attributePlacementsForDef can ride it on future evaluations. Without a
+ * modeled definition + instance state there is nothing to rebase against
+ * and the placements pass through unchanged (the static behaviour).
+ * Attributes the saved state hid have no evaluated counterpart; their
+ * placements are kept as read (documented boundary: rebasing them would
+ * require the pre-visibility evaluation).
+ */
+export function importedPlacementsToAuthoredFrame(
+  ins: InsertEntity,
+  block: BlockDef,
+  placements: Readonly<Record<string, AttributePlacement>>,
+): Readonly<Record<string, AttributePlacement>> {
+  if (!ins.dynamic || ins.dynamicRetained !== undefined) return placements;
+  if (!block.dynamic || block.dynamicRetained !== undefined) return placements;
+  const evaluated = expansionBlock(block, ins);
+  if (evaluated === block) return placements;
+  let out: Record<string, AttributePlacement> | null = null;
+  for (const [tag, p] of Object.entries(placements)) {
+    const a1 = evaluated.attributes.find((a) => a.tag === tag);
+    const a0 = block.attributes.find((a) => a.tag === tag);
+    if (!a1 || !a0) continue;
+    if (placementRestatesEvaluated(p, ins, a1)) {
+      out ??= { ...placements };
+      delete out[tag];
+      continue;
+    }
+    const dx = a0.position.x - a1.position.x;
+    const dy = a0.position.y - a1.position.y;
+    if (dx !== 0 || dy !== 0) {
+      out ??= { ...placements };
+      out[tag] = shiftedAttributeAnchors(p, dx, dy);
+    }
+  }
+  return out ?? placements;
 }
 
 function cachedInsert(ins: InsertEntity, lookup: BlockLookup): InsertCache | null {
@@ -1588,7 +1723,10 @@ function explodeSingleInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup
     transformInto(out, e, tf, ins, similar, lookup, depth + 1, budget);
   }
   // Attribute text (placements come from the possibly evaluated definition;
-  // values always come from the insert, unchanged)
+  // values always come from the insert, unchanged). Stored per-instance
+  // placements are authored-frame: rebase them by the evaluation motion so
+  // an imported override cannot pin the attribute against it (R07).
+  const textIns = attributePlacementsForDef(ins, block, expanded);
   for (const a of expanded.attributes) {
     spendExpansion(budget, 1 + a.default.length);
     if (a.invisible || ins.hiddenAttributes?.includes(a.tag)) continue;
@@ -1599,7 +1737,7 @@ function explodeSingleInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup
       break;
     }
     budget.left -= 1;
-    const text = attributeText(ins, expanded, a, value);
+    const text = attributeText(textIns, expanded, a, value);
     const inheritedWeight = text.lineWeight === -2 ? budget.resolveLineweight?.(ins) : undefined;
     if (inheritedWeight !== undefined && (!Number.isFinite(inheritedWeight) || inheritedWeight < 0)) throw new Error('Plot lineweight resolver must return finite nonnegative millimetres.');
     out.push(inheritedWeight === undefined ? text : { ...text, lineWeight: inheritedWeight });

@@ -5,7 +5,7 @@
  */
 import { Writer, writeEntityCommon, writeTextLike, writeTextStyle, emptyExtras, writeAnnotativeXdata, writePaperSpaceFlag } from './write-core';
 import type { PolylineEntity, HatchEntity, SplineEntity, Entity, BlockDef } from '../../core/entities';
-import { splineCurve, hatchPatternLines, tableParts, attributeText } from '../../core/entities';
+import { splineCurve, hatchPatternLines, tableParts, attributeText, attributePlacementsForDef, expansionBlock } from '../../core/entities';
 import { findPattern } from '../../core/hatch';
 import * as g from '../../core/geometry';
 import type { WriteExtras } from './write-core';
@@ -319,10 +319,22 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
         for (const chunk of chunkDynamicPayload(payload)) w.pair(1000, chunk);
       }
       if (hasAttribs && block) {
+        // Review R07: an ATTRIB's position is the attribute's CURRENT
+        // evaluated placement (what the editor displays), not the authored
+        // ATTDEF position — otherwise the file itself records the attribute
+        // as unmoved, and the reader's placement capture would undo the
+        // evaluation on reopen. Static inserts get `block` itself back from
+        // expansionBlock, so their output is unchanged. An attribute the
+        // current visibility state hides has no evaluated counterpart; it
+        // is still written (its value lives only in this record) at the
+        // authored placement, as before.
+        const expanded = expansionBlock(block, e);
+        const textIns = attributePlacementsForDef(e, block, expanded);
         for (const a of attribDefs) {
           const value = e.attributes[a.tag] ?? a.default;
           // Attribute position in world space
-          const label = attributeText(e, block, a, value, false);
+          const aEff = expanded === block ? a : expanded.attributes.find((x) => x.tag === a.tag);
+          const label = aEff ? attributeText(textIns, expanded, aEff, value, false) : attributeText(e, block, a, value, false);
           // The INSERT owns its followers; their paper-space flag belongs to its enclosing block.
           writeEntityCommon(w, label, insertHandle, 'ATTRIB', 'AcDbText', owner);
           w.anchor(w.lastHandle().toString(16).toUpperCase(), { kind: 'entity', id: e.id, part: `attribute:${a.tag}` });

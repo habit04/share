@@ -23,7 +23,7 @@ import { readEntityObj } from './read-entities';
 import { SplineWorkLimitError } from '../../core/spline';
 import { withTextStyle } from '../encoding';
 import { readTextPlacement } from './read-text';
-import { localAttributePlacement } from '../../core/entities';
+import { importedPlacementsToAuthoredFrame, localAttributePlacement } from '../../core/entities';
 import type { TextPlacement } from '../../core/text-placement';
 import { hatchGradientRenderProblem, hatchGradientExportProblem } from '../../core/hatch-gradient';
 import { POLYFACE_UNSUPPORTED_REASON, payloadText, native3dObject } from './mesh3d-read';
@@ -326,7 +326,12 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
       if (j < objs.length && objs[j]!.kind === 'SEQEND') j += 1;
       // An ATTRIB flagged invisible whose ATTDEF is visible hides that attribute on this insert only.
       const hiddenHere = def ? hidden.filter((t) => def.attributes.some((a) => a.tag === t && !a.invisible)) : [];
-      out.push({ ...e, attributes: attrs, ...(hiddenHere.length ? { hiddenAttributes: hiddenHere } : {}), ...(Object.keys(placements).length ? { attributePlacements: placements } : {}) });
+      // Review R07: for a dynamic insert the ATTRIB anchors record the
+      // attribute's position at the SAVED parameter state; rebase them into
+      // the stored authored frame so they cannot undo or freeze the
+      // evaluated motion after a later parameter edit.
+      const authoredPlacements = def ? importedPlacementsToAuthoredFrame(e, def, placements) : placements;
+      out.push({ ...e, attributes: attrs, ...(hiddenHere.length ? { hiddenAttributes: hiddenHere } : {}), ...(Object.keys(authoredPlacements).length ? { attributePlacements: authoredPlacements } : {}) });
       i = j;
       continue;
     }
