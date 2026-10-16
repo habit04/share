@@ -34,14 +34,16 @@ import { resolvedEffectiveValues } from './evaluate';
 import { setDynamicParameter, type SetDynamicParameterProblem } from './apply';
 
 /**
- * Result of a grip drag: exactly a `setDynamicParameter` result, plus one
- * grip-local problem code — 'degenerate-transform' when the insert's own
+ * Result of a grip drag: exactly a `setDynamicParameter` result, plus
+ * grip-local problem codes — 'degenerate-transform' when the insert's own
  * transform has no inverse (a zero scale axis), so no value can be measured
- * from the dragged point at all.
+ * from the dragged point at all, and 'grip-not-resolvable' when an index
+ * beyond the position grip on a DYNAMIC insert does not resolve to a
+ * parameter grip (resolveDynamicGripDrag, review R08).
  */
 export interface DynamicGripEditResult {
   readonly state: DrawingState;
-  readonly problem?: SetDynamicParameterProblem | 'degenerate-transform';
+  readonly problem?: SetDynamicParameterProblem | 'degenerate-transform' | 'grip-not-resolvable';
   readonly message?: string;
 }
 
@@ -171,4 +173,39 @@ export function dynamicGripEdit(state: DrawingState, insertId: string, gripIndex
     return { state, problem: 'degenerate-transform', message: `Block reference "${entity.id}" has a degenerate transform (zero scale); its ${param.name} grip cannot be dragged.` };
   }
   return setDynamicParameter(state, insertId, param.id, dynamicGripValue(param, local));
+}
+
+/**
+ * The pointer's drag resolution (review R08): like `dynamicGripEdit`,
+ * but TOTAL over dynamic inserts. `dynamicGripEdit` returns undefined
+ * whenever an index does not resolve — including when the caller handed
+ * it a state whose entity list does not contain the insert (the paper-
+ * space bug: the raw snapshot holds model-space entities only) or when
+ * the index went stale — and the pointer's fall-through then handed the
+ * index to moveGrip, which moved the WHOLE INSERT. That must never
+ * happen: an index beyond the position grip on an insert whose block is
+ * dynamic can only have come from a parameter grip, so when it does not
+ * resolve this function returns a REFUSAL (the input state, problem
+ * 'grip-not-resolvable') instead of undefined. Undefined is reserved for
+ * inserts whose block is not dynamic at all (and for the position grip),
+ * where ordinary grip handling is the correct path.
+ */
+export function resolveDynamicGripDrag(
+  state: DrawingState,
+  insertId: string,
+  gripIndex: number,
+  worldPoint: Point,
+): DynamicGripEditResult | undefined {
+  const result = dynamicGripEdit(state, insertId, gripIndex, worldPoint);
+  if (result) return result;
+  if (gripIndex < 1) return undefined;
+  const entity = state.entities.find((e) => e.id === insertId);
+  if (!entity || entity.type !== 'insert') return undefined;
+  const block = state.blocks[entity.block];
+  if (!block?.dynamic) return undefined;
+  return {
+    state,
+    problem: 'grip-not-resolvable',
+    message: `Grip ${gripIndex} on block reference "${insertId}" is not a resolvable parameter grip; the drag was refused rather than moving the whole reference.`,
+  };
 }

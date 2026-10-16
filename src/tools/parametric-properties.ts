@@ -117,16 +117,27 @@ export interface DynamicParameterHost {
 
 /**
  * Commit one parameter edit from the palette: exactly one transact on
- * success (one undo step). On refusal nothing is transacted, the refusal
+ * success (one undo step). On refusal nothing is committed, the refusal
  * code and message go to the command line (the palette's error idiom),
  * and false is returned so the caller re-renders the unchanged value.
+ *
+ * The pure edit runs INSIDE transact, against the state transact
+ * projects (review R08): in a paper-space layout that state's entity
+ * list is the layout's, not the raw snapshot's model-space list, so a
+ * paper-space insert was 'insert-not-found' here before. A refusal
+ * returns the projected state itself, which transact turns into a
+ * no-op (no undo entry, no dirty flag, no revision change).
  */
 export function setDynamicParameterValue(host: DynamicParameterHost, insertId: string, parameterId: string, value: DynamicParameterEditValue): boolean {
-  const result = setDynamicParameter(host.doc.snapshot, insertId, parameterId, value);
-  if (result.problem) {
-    host.log(`Parameter edit refused (${result.problem}): ${result.message ?? 'the edit was not applied.'}`);
-    return false;
-  }
-  host.doc.transact(() => result.state);
-  return true;
+  let accepted = false;
+  host.doc.transact((s) => {
+    const result = setDynamicParameter(s, insertId, parameterId, value);
+    if (result.problem) {
+      host.log(`Parameter edit refused (${result.problem}): ${result.message ?? 'the edit was not applied.'}`);
+      return s;
+    }
+    accepted = true;
+    return result.state;
+  });
+  return accepted;
 }

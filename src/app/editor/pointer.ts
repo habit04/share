@@ -5,9 +5,10 @@
  */
 import type { Point } from '../../core/geometry';
 import * as g from '../../core/geometry';
+import type { DrawingState } from '../../core/document';
 import type { Entity } from '../../core/entities';
 import { gripPoints, moveGrip } from '../../core/entities';
-import { dynamicGripEdit, type DynamicGripEditResult } from '../../core/parametric/grips';
+import { resolveDynamicGripDrag, type DynamicGripEditResult } from '../../core/parametric/grips';
 import { findObjectSnap, constrainDirection, snapToGrid, trackFromPoints, type SnapResult } from '../../core/snap';
 import { activeSelectionClip, pickEntity, selectByBox, selectByPolygon } from '../../core/selection';
 import { PanTool } from '../../tools/edit';
@@ -284,6 +285,22 @@ export function applyGrip(e: Entity, index: number, p: Point): Entity | null {
 }
 
 /**
+ * The document state as the ACTIVE SPACE sees it (review R08).
+ * Drawing.snapshot's `entities` are the stored model-space list; in a
+ * paper-space layout the edited entities are the layout's, which
+ * Drawing.entities returns (and which Drawing.transact projects in for
+ * its callback). Pure edit functions search `state.entities`, so they
+ * must be given this view: against the raw snapshot a paper-space insert
+ * is "not found" — DYNSET and Properties refused it, and a dynamic grip
+ * drag resolved to nothing.
+ */
+function activeSpaceState(ed: Editor): DrawingState {
+  const s = ed.doc.snapshot;
+  const entities = ed.doc.entities;
+  return entities === s.entities ? s : { ...s, entities };
+}
+
+/**
  * The parameter edit a grip drag amounts to, when the grip is a DYNAMIC
  * parameter grip (an insert grip with index >= 1 that resolves against the
  * current document): routed through core/parametric/grips.ts into
@@ -292,9 +309,14 @@ export function applyGrip(e: Entity, index: number, p: Point): Entity | null {
  * Divergence, deliberate: moveGrip cannot make this edit (it is a pure
  * entity function with no block lookup and no document state), so dynamic
  * indices are resolved HERE, at the two pointer sites that would
- * otherwise hand them to moveGrip, and never reach it.
+ * otherwise hand them to moveGrip, and never reach it. Review R08 made
+ * that guarantee total: the resolution runs against the ACTIVE SPACE's
+ * state (a paper-space insert resolves at all), and
+ * resolveDynamicGripDrag returns a refusal — never undefined — for an
+ * unresolvable index on a dynamic insert, so no dynamic drag can fall
+ * through to moving the whole INSERT.
  */
 function dynamicDrag(ed: Editor, e: Entity, index: number, world: Point): DynamicGripEditResult | undefined {
   if (e.type !== 'insert' || index < 1) return undefined;
-  return dynamicGripEdit(ed.doc.snapshot, e.id, index, world);
+  return resolveDynamicGripDrag(activeSpaceState(ed), e.id, index, world);
 }

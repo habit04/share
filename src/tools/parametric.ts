@@ -170,12 +170,21 @@ export function dynSetTool(): Tool {
       }
     }
 
-    const result = setDynamicParameter(ctx.doc.snapshot, ins.id, chosen.id, value);
-    if (result.problem) {
-      ctx.log(`DYNSET refused (${result.problem}): ${result.message ?? 'the edit was not applied.'}`);
-      return; // No transact: document, undo history, dirty flag and revision are untouched.
+    // Run the pure edit INSIDE transact, against the state transact
+    // projects (review R08): in a paper-space layout that state's entity
+    // list is the layout's — the raw snapshot's is model space only, so a
+    // paper-space insert was 'insert-not-found' here before. A refusal
+    // returns the projected state unchanged, which transact turns into a
+    // no-op: document, undo history, dirty flag and revision untouched.
+    let result: SetDynamicParameterResult | undefined;
+    ctx.doc.transact((s) => {
+      result = setDynamicParameter(s, ins.id, chosen.id, value);
+      return result.state;
+    });
+    if (!result || result.problem) {
+      ctx.log(`DYNSET refused (${result?.problem ?? 'no-change'}): ${result?.message ?? 'the edit was not applied.'}`);
+      return;
     }
-    ctx.doc.transact(() => result.state);
     const shown = value === null ? 'Custom' : typeof value === 'boolean' ? (value ? 'on' : 'off') : String(value);
     ctx.log(`${chosen.name} set to ${shown} on "${ins.block}".`);
   });
