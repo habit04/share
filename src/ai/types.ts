@@ -263,7 +263,7 @@ export interface AiDraftRequest {
   readonly contextJson: string;
   readonly binding: AiDraftBinding;
   /** Live requests pin the destination shown in the panel; the host rejects mismatches. */
-  readonly destination?: { readonly provider: string; readonly model: string };
+  readonly destination?: { readonly provider: string; readonly model: string; readonly configGeneration?: string };
 }
 
 /** A draft provider returns a validated plan response. It receives no editor access. */

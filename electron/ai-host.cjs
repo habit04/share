@@ -20,6 +20,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
+const { isDeepStrictEqual } = require('node:util');
 
 // Mirrors src/ai/limits.ts — tests pin both sides.
 const AI_LIMITS = Object.freeze({
@@ -308,11 +310,66 @@ function aiAnswer(value) {
   return result;
 }
 
+function draftContextRecord(value, fields) {
+  if (!isPlainObject(value) || Object.keys(value).length !== fields.length
+    || fields.some((field) => !Object.hasOwn(value, field))) {
+    throw new AiHostError('invalid-request', 'Invalid draft context fields.');
+  }
+  return value;
+}
+
+/** Validate without rewriting: accepted context bytes remain exactly as previewed. */
+function validateDraftContext(json, prompt) {
+  let context;
+  try { context = JSON.parse(json); }
+  catch { throw new AiHostError('invalid-request', 'Invalid draft context JSON.'); }
+  if (JSON.stringify(context) !== json) {
+    throw new AiHostError('invalid-request', 'Draft context must use canonical JSON.');
+  }
+  draftContextRecord(context, ['kind', 'version', 'prompt', 'coordinateFrame', 'creationOrigin', 'units',
+    'creationDefaults', 'permittedLayers', 'targets', 'selectionSnapshot']);
+  if (context.kind !== 'jcad.ai.draft-context' || context.version !== 1 || context.prompt !== prompt
+    || context.coordinateFrame !== 'World XY, Model tab') {
+    throw new AiHostError('invalid-request', 'Invalid draft context.');
+  }
+  const origin = draftContextRecord(context.creationOrigin, ['x', 'y', 'note']);
+  if (finite(origin.x) !== 0 || finite(origin.y) !== 0) throw new AiHostError('invalid-request', 'Invalid draft origin.');
+  snapshotString(origin.note, 1000, 'origin note');
+  const units = draftContextRecord(context.units, ['insunits', 'name', 'note']);
+  count(units.insunits); text(units.name); snapshotString(units.note, 1000, 'unit note');
+  const defaults = draftContextRecord(context.creationDefaults, ['layer', 'color', 'linetype', 'lineWeight', 'note']);
+  snapshotString(defaults.layer, 512, 'creation layer');
+  if (defaults.color !== 'ByLayer') finite(defaults.color);
+  if (defaults.linetype !== null) snapshotString(defaults.linetype, 512, 'creation linetype', false);
+  if (defaults.lineWeight !== null) finite(defaults.lineWeight);
+  snapshotString(defaults.note, 1000, 'creation note');
+  list(context.permittedLayers, AI_LIMITS.maxObjects + 1, (layer) => snapshotString(layer, 512, 'permitted layer'));
+  list(context.targets, AI_LIMITS.maxObjects, (target) => {
+    const item = draftContextRecord(target, target?.eligible === false ? ['id', 'eligible', 'reason'] : ['id', 'eligible']);
+    snapshotString(item.id, AI_LIMITS.maxDraftContextBytes, 'target id', false);
+    boolean(item.eligible);
+    if (!item.eligible) snapshotString(item.reason, 1000, 'target reason');
+    return item;
+  });
+  const snapshot = copySnapshot(context.selectionSnapshot);
+  let bytes = 0;
+  do {
+    snapshot.serializedBytes = bytes;
+    bytes = Buffer.byteLength(JSON.stringify(snapshot), 'utf8');
+  } while (snapshot.serializedBytes !== bytes);
+  if (bytes > AI_LIMITS.maxSnapshotBytes || snapshot.space.kind !== 'model'
+    || !isDeepStrictEqual(snapshot, context.selectionSnapshot)) {
+    throw new AiHostError('invalid-request', 'Invalid draft selection snapshot.');
+  }
+  if (units.insunits !== snapshot.units.insunits) throw new AiHostError('invalid-request', 'Inconsistent draft units.');
+  return context;
+}
+
 /**
  * Validate a draft envelope from the renderer (milestone 3,
  * docs/AI-ASSISTANT-M3.md) and return a fresh object with only whitelisted
  * fields, mirroring aiRequest(). The context JSON is the exact text the
- * panel previewed: it crosses as one bounded opaque string and is never
+ * panel previewed: its whitelist is checked but accepted bytes are never
  * rebuilt or re-serialized host-side. The binding is the draft binding
  * (AiDraftBinding): the ask binding whitelisted as in aiRequest() plus the
  * units/defaults/eligibility/configuration fingerprint strings, each
@@ -343,11 +400,16 @@ function aiDraftRequest(value) {
   if (contextBytes > AI_LIMITS.maxDraftContextBytes) {
     throw new AiHostError('invalid-request', 'Draft context exceeds the size limit.');
   }
+  const context = validateDraftContext(value.contextJson, prompt);
   let destination;
   if (value.destination !== undefined) {
     if (!isPlainObject(value.destination) || !AI_PROVIDERS.includes(value.destination.provider)
       || !validateAiModel(value.destination.model)) throw new AiHostError('invalid-request', 'Invalid AI destination.');
-    destination = { provider: value.destination.provider, model: value.destination.model };
+    const configGeneration = value.destination.configGeneration;
+    if (typeof configGeneration !== 'string' || !/^[a-f0-9-]{36}:\d+$/.test(configGeneration)) {
+      throw new AiHostError('invalid-request', 'Invalid AI configuration generation.');
+    }
+    destination = { provider: value.destination.provider, model: value.destination.model, configGeneration };
   }
   const binding = value.binding;
   if (!isPlainObject(binding) || !isPlainObject(binding.ask)) {
@@ -362,6 +424,13 @@ function aiDraftRequest(value) {
     || ask.selectionIds.length > AI_LIMITS.maxEnvelopeBytes
     || ask.selectionIds.some((id) => typeof id !== 'string' || id.length > AI_LIMITS.maxEnvelopeBytes)) {
     throw new AiHostError('invalid-request', 'Invalid draft binding.');
+  }
+  if (!isPlainObject(ask.space) || ask.space.layout !== null || ask.space.viewport !== null
+    || context.targets.length !== ask.selectionIds.length
+    || new Set(ask.selectionIds).size !== ask.selectionIds.length
+    || context.targets.some((target) => !ask.selectionIds.includes(target.id))
+    || new Set(context.targets.map((target) => target.id)).size !== context.targets.length) {
+    throw new AiHostError('invalid-request', 'Inconsistent draft selection binding.');
   }
   const fingerprints = {};
   for (const field of ['unitsKey', 'defaultsKey', 'eligibilityKey', 'configKey']) {
@@ -582,11 +651,14 @@ function aiDraftResult(value) {
   if (!Number.isSafeInteger(contentBytes) || contentBytes < 0) {
     throw invalidPlan('The provider returned an invalid draft.');
   }
-  if (contentBytes > AI_LIMITS.maxDraftPlanBytes) {
+  let measuredBytes;
+  try { measuredBytes = Buffer.byteLength(JSON.stringify(value.value), 'utf8'); }
+  catch { throw invalidPlan('The provider returned an invalid draft.'); }
+  if (contentBytes > AI_LIMITS.maxDraftPlanBytes || measuredBytes > AI_LIMITS.maxDraftPlanBytes) {
     throw invalidPlan('The draft plan exceeds the size limit.');
   }
   const response = parseDraftResponse(value.value);
-  const result = { response, contentBytes };
+  const result = { response, contentBytes: Math.max(contentBytes, measuredBytes) };
   // Provider-reported token usage rides along only as bounded counts.
   if (isPlainObject(value.usage)) {
     const providerUsage = {};
@@ -1165,7 +1237,7 @@ function isKeyStoreShape(value) {
  * provider: a provider's key is only ever sent to that provider, and
  * there is no automatic fallback. Nothing here logs or returns key
  * material; cached keys live only in closures of this factory.
- * @param {{ host?: { timeoutMs?: number, maxConcurrent?: number, maxPending?: number },
+ * @param {{ host?: { timeoutMs?: number, draftTimeoutMs?: number, maxConcurrent?: number, maxPending?: number },
  *           configStore: ReturnType<typeof createAiConfigStore>,
  *           keyStores: { openai: ReturnType<typeof createAiKeyStore>,
  *                        anthropic: ReturnType<typeof createAiKeyStore> },
@@ -1190,6 +1262,8 @@ function createAiService({ host: hostOptions, configStore, keyStores, transportF
   let loaded = false;
   let pendingMutations = 0;
   let workGeneration = 0;
+  const serviceEpoch = randomUUID();
+  const configGeneration = () => `${serviceEpoch}:${workGeneration}`;
   /** @type {Promise<void>} */
   let mutationTail = Promise.resolve();
   /** @type {string | null} */
@@ -1237,10 +1311,11 @@ function createAiService({ host: hostOptions, configStore, keyStores, transportF
       throw new AiHostError('cancelled', 'The AI configuration or renderer changed. Review the connection settings and ask again.');
     }
   }
-  function requireDestination(value) {
+  function requireDestination(value, draft = false) {
     const provider = selectedProvider(), model = entryFor(provider).model;
     if (!isPlainObject(value) || !isPlainObject(value.destination)
-      || value.destination.provider !== provider || value.destination.model !== model) {
+      || value.destination.provider !== provider || value.destination.model !== model
+      || (draft && value.destination.configGeneration !== configGeneration())) {
       throw new AiHostError('cancelled', 'The selected AI provider or model changed. Review the connection settings and ask again.');
     }
     return { provider, model };
@@ -1255,7 +1330,7 @@ function createAiService({ host: hostOptions, configStore, keyStores, transportF
     },
     draftTransport: async (request, signal) => {
       requireStable(workGeneration);
-      const { provider, model } = requireDestination(request);
+      const { provider, model } = requireDestination(request, true);
       if (!entryFor(provider).enabled || signal.aborted) throw new AiHostError('cancelled', 'The AI request was cancelled.');
       const transport = transportFor(provider, model, requireKey(provider));
       if (typeof transport.draft !== 'function') {
@@ -1318,6 +1393,7 @@ function createAiService({ host: hostOptions, configStore, keyStores, transportF
       }
       return {
         provider, providers: [...AI_PROVIDERS], model: entry.model, enabled: entry.enabled,
+        configGeneration: configGeneration(),
         keyPersistence: entry.keyPersistence, keyPresent, keyStored: stored, credentialProblem,
         keySource: keyPresent ? session !== null ? 'session' : 'stored' : null,
         encryptionAvailable: store.encryptionAvailable(), configProblem,
@@ -1384,10 +1460,10 @@ function createAiService({ host: hostOptions, configStore, keyStores, transportF
       const provider = selectedProvider();
       if (!entryFor(provider).enabled) throw new AiHostError('live-disabled', 'Live AI is not enabled. Enable it in the AI panel connection settings.');
       requireKey(provider);
-      requireDestination(value);
+      requireDestination(value, true);
       const result = await innerHost.draft(value, signal);
       requireStable(generation);
-      return result;
+      return { ...result, configGeneration: configGeneration() };
     },
     cancel: (requestId) => innerHost.cancel(requestId),
     cancelAll,

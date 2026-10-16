@@ -61,4 +61,36 @@ describe('parseAiDraftResponse', () => {
     const many = Array.from({ length: 65 }, () => op({}));
     expect(parseAiDraftResponse(proposal(many)).ok).toBe(false);
   });
+
+  it('rejects prototype operation names, inherited coordinates and throwing data without throwing', () => {
+    for (const name of ['toString', 'constructor', '__proto__']) {
+      expect(parseAiDraftResponse(proposal([op({ op: name })])).ok).toBe(false);
+    }
+    const inherited = Object.assign(Object.create({ x: 1, y: 2 }) as object, { left: 1, right: 2 });
+    expect(parseAiDraftResponse(proposal([op({ a: inherited })])).ok).toBe(false);
+    const accessor = Object.defineProperty({}, 'outcome', { enumerable: true, get: () => { throw new Error('not data'); } });
+    expect(() => parseAiDraftResponse(accessor)).not.toThrow();
+    expect(parseAiDraftResponse(accessor).ok).toBe(false);
+    for (const value of [null, undefined, [], 1]) expect(parseAiDraftResponse(value).ok).toBe(false);
+  });
+
+  it('takes immutable ownership of a copy, leaving provider-owned target arrays mutable', () => {
+    const ids = ['e1'];
+    const raw = proposal([op({ op: 'move', a: null, b: null, targetIds: ids, dx: 1, dy: 2 })]);
+    const parsed = parseAiDraftResponse(raw);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.response.kind !== 'plan') return;
+    ids[0] = 'e2';
+    const move = parsed.response.plan.operations[0];
+    expect(move && 'targetIds' in move && move.targetIds).toEqual(['e1']);
+    expect(Object.isFrozen(parsed.response.plan.operations)).toBe(true);
+    expect(Object.isFrozen(move)).toBe(true);
+    expect(move && 'targetIds' in move && Object.isFrozen(move.targetIds)).toBe(true);
+  });
+
+  it('rejects oversized plans even when operation and target counts fit', () => {
+    const ids = Array.from({ length: 100 }, (_, i) => `${i}-${'x'.repeat(500)}`);
+    expect(parseAiDraftResponse(proposal([op({ op: 'delete', a: null, b: null, targetIds: ids })])).ok).toBe(false);
+    expect(parseAiDraftResponse({ outcome: 'clarification', message: '   ', operations: null }).ok).toBe(false);
+  });
 });

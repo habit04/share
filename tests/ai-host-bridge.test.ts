@@ -36,6 +36,7 @@ function fakeRaw(over: Partial<AiPreloadBridge> = {}): AiPreloadBridge {
     draft: async () => ({
       ok: true,
       draft: {
+        configGeneration: 'host-1',
         value: planValue,
         usage: { inputBytes: 44, outputChars: 321, durationMs: 12 },
         providerUsage: { inputTokens: 30, outputTokens: 12 },
@@ -151,7 +152,7 @@ describe('WindowAiConnection draft bridge (milestone 3)', () => {
   it('does not plan-validate: a contract-shaped but invalid plan value passes through untouched', async () => {
     const oddValue = { outcome: 'proposal', message: null, operations: [{ op: 'explode' }] };
     const conn = new WindowAiConnection(fakeRaw({
-      draft: async () => ({ ok: true, draft: { value: oddValue } }),
+      draft: async () => ({ ok: true, draft: { value: oddValue, configGeneration: 'host-1' } }),
     }));
     const result = await conn.bridge.draft!(draftRequest, new AbortController().signal);
     expect(result.response).toEqual(oddValue);
@@ -171,6 +172,7 @@ describe('WindowAiConnection draft bridge (milestone 3)', () => {
       draft: async () => ({
         ok: true,
         draft: {
+          configGeneration: 'host-1',
           value: planValue,
           usage: { inputBytes: -1, outputChars: 3.5, durationMs: 9 },
           providerUsage: { inputTokens: 7, outputTokens: 'many' },

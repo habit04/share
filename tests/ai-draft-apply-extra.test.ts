@@ -75,6 +75,102 @@ describe('reentrant apply', () => {
     expect(doc.revision).toBe(revisionBefore + 1);
     expect(doc.snapshot.entities).toHaveLength(1);
   });
+
+  it('refuses generation re-entered by an Apply callback and consumes the preview before listeners run', async () => {
+    const doc = new Drawing({ entities: [], layers: [layer0], currentLayer: '0' });
+    const draft = vi.fn(async () => circlePlan);
+    let nested: Promise<unknown> | undefined;
+    const controller = new AiDraftController(harness(doc, []), doc, { applyFn: (capture, proposal) => {
+      expect(controller.status.state).toBe('idle');
+      nested = controller.generate('another circle', { id: 'nested', draft }, 'fixture');
+      applyCompiledProposal(doc, capture, proposal);
+    } });
+    await controller.generate('a circle', providerOf(circlePlan), 'fixture');
+    expect(controller.apply().state).toBe('idle');
+    await nested;
+    expect(draft).not.toHaveBeenCalled();
+    expect(doc.snapshot.entities).toHaveLength(1);
+    expect(doc.undo()).toBe(true);
+    expect(doc.canUndo()).toBe(false);
+  });
+});
+
+describe('authoritative atomic apply boundary', () => {
+  function compiled(doc: Drawing): { capture: ReturnType<typeof captureDraftContext>; proposal: Extract<ReturnType<typeof compileAiPlan>, { ok: true }>['proposal'] } {
+    const capture = captureDraftContext(harness(doc, []), 'a circle', 'fixture');
+    const out = compileAiPlan(circlePlan.kind === 'plan' ? circlePlan.plan : { message: null, operations: [] }, capture, () => 'new-circle', (entity) => entityBounds(entity, undefined as never));
+    if (!out.ok) throw new Error(out.error);
+    return { capture, proposal: out.proposal };
+  }
+
+  it('rejects stale quiet patches and edit-undo cycles without changing history or content', () => {
+    for (const mode of ['quiet', 'undo'] as const) {
+      const doc = new Drawing({ entities: [], layers: [layer0], currentLayer: '0' });
+      const { capture, proposal } = compiled(doc);
+      if (mode === 'quiet') doc.patchQuiet((state) => ({ ...state, meta: { persisted: true } }), false);
+      else {
+        doc.addEntities([{ id: 'manual', type: 'line', layer: '0', color: 'ByLayer', a: { x: 0, y: 0 }, b: { x: 1, y: 1 } }]);
+        doc.undo();
+        expect(doc.snapshot).toBe(capture.state);
+      }
+      const before = doc.snapshot;
+      const revision = doc.revision;
+      const redo = doc.canRedo();
+      const dirty = doc.dirty;
+      expect(() => applyCompiledProposal(doc, capture, proposal)).toThrow('changed');
+      expect(doc.snapshot).toBe(before);
+      expect(doc.revision).toBe(revision);
+      expect(doc.canRedo()).toBe(redo);
+      expect(doc.dirty).toBe(dirty);
+    }
+  });
+
+  it('rejects forged or cross-capture proposals and cannot directly apply twice', () => {
+    const doc = new Drawing({ entities: [], layers: [layer0], currentLayer: '0' });
+    const { capture, proposal } = compiled(doc);
+    const before = doc.snapshot;
+    expect(() => applyCompiledProposal(doc, capture, { ...proposal, candidateEntities: [] })).toThrow('new preview');
+    expect(() => applyCompiledProposal(doc, { ...capture }, proposal)).toThrow('new preview');
+    expect(doc.snapshot).toBe(before);
+    expect(doc.dirty).toBe(false);
+    expect(doc.canUndo()).toBe(false);
+    applyCompiledProposal(doc, capture, proposal);
+    const committed = doc.snapshot;
+    expect(committed.entities).toBe(proposal.candidateEntities);
+    expect(() => applyCompiledProposal(doc, capture, proposal)).toThrow('changed');
+    expect(doc.snapshot).toBe(committed);
+    expect(doc.undo()).toBe(true);
+    expect(doc.canUndo()).toBe(false);
+  });
+
+  it('preserves unrelated CAD graph, blocks, layouts, metadata, layers and header through Apply/Undo/Redo', () => {
+    const retained: Entity = { id: 'imported', type: 'line', layer: '0', color: 'ByLayer', cadIdentity: 'cad-node', a: { x: 5, y: 5 }, b: { x: 10, y: 5 } };
+    const doc = new Drawing({ entities: [retained], layers: [layer0], currentLayer: '0', meta: { custom: { value: 7 } },
+      cadGraph: { schema: 1, sourceFormat: 'DXF', nodes: [{ id: 'cad-node', type: 'LINE', section: 'ENTITIES', groups: [], anchor: { kind: 'entity', id: 'imported' } }] } });
+    const { capture, proposal } = compiled(doc);
+    const before = doc.snapshot;
+    applyCompiledProposal(doc, capture, proposal);
+    const committed = doc.snapshot;
+    for (const key of ['cadGraph', 'blocks', 'layouts', 'meta', 'layers', 'header', 'model3d'] as const) expect(committed[key]).toBe(before[key]);
+    expect(committed.entities[0]).toBe(retained);
+    expect(doc.undo()).toBe(true);
+    expect(doc.snapshot).toBe(before);
+    expect(doc.redo()).toBe(true);
+    expect(doc.snapshot).toBe(committed);
+  });
+
+  it('recognizes a committed edit despite a throwing document subscriber and consumes it once', async () => {
+    const doc = new Drawing({ entities: [], layers: [layer0], currentLayer: '0' });
+    const controller = new AiDraftController(harness(doc, []), doc);
+    await controller.generate('a circle', providerOf(circlePlan), 'fixture');
+    const unsubscribe = doc.subscribe(() => { throw new Error('render subscriber failed'); });
+    expect(controller.apply().state).toBe('idle');
+    unsubscribe();
+    expect(doc.snapshot.entities).toHaveLength(1);
+    expect(controller.apply().state).toBe('idle');
+    expect(doc.undo()).toBe(true);
+    expect(doc.canUndo()).toBe(false);
+  });
 });
 
 describe('frozen creation defaults', () => {

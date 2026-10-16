@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createRequire } from 'node:module';
+import { draftTestContextJson } from './ai-draft-fixture';
 import { readFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -741,9 +742,9 @@ const draftPlanValue = { outcome: 'proposal', message: null, operations: [draftL
 function draftEnvelope(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     requestId: 'ai-salt-draft-1',
-    destination: { provider: 'openai', model: 'gpt-5' },
+    destination: { provider: 'openai', model: 'gpt-5', configGeneration: '00000000-0000-4000-8000-000000000000:0' },
     prompt: 'draw a line',
-    contextJson: '{"kind":"jcad.ai.draft-context","version":1}',
+    contextJson: draftTestContextJson(['e-line', 'e-circle']),
     binding: {
       ask: {
         sessionId: 1, docId: 'doc-1', contentGeneration: 1, docRevision: 7, docLoadCount: 1,
@@ -775,8 +776,8 @@ describe('ai-host draft request validator (milestone 3)', () => {
     const result = aiDraftRequest(draftEnvelope({ apiKey: 'never-carried', stray: { deep: true } }));
     expect(result.requestId).toBe('ai-salt-draft-1');
     expect(result.prompt).toBe('draw a line');
-    expect(result.contextBytes).toBe(Buffer.byteLength('{"kind":"jcad.ai.draft-context","version":1}', 'utf8'));
-    expect(result.destination).toEqual({ provider: 'openai', model: 'gpt-5' });
+    expect(result.contextBytes).toBe(Buffer.byteLength(draftTestContextJson(['e-line', 'e-circle']), 'utf8'));
+    expect(result.destination).toEqual({ provider: 'openai', model: 'gpt-5', configGeneration: '00000000-0000-4000-8000-000000000000:0' });
     expect(result.binding).toEqual({
       ask: { sessionId: 1, docId: 'doc-1', contentGeneration: 1, docRevision: 7, selectionCount: 2 },
       unitsKey: '1|2|4',
@@ -792,7 +793,34 @@ describe('ai-host draft request validator (milestone 3)', () => {
     const envelope = draftEnvelope();
     (envelope.binding as Record<string, unknown>).eligibilityKey = '';
     ((envelope.binding as Record<string, unknown>).ask as Record<string, unknown>).selectionIds = [];
+    envelope.contextJson = draftTestContextJson([]);
     expect(aiDraftRequest(envelope).binding.ask.selectionCount).toBe(0);
+  });
+
+  it.each([501, 512])('accepts the renderer creation linetype at %i characters without rewriting', (length) => {
+    const linetype = 'L'.repeat(length);
+    const contextJson = draftTestContextJson(['e-line', 'e-circle'], 'draw a line', {
+      layer: '0', color: 'ByLayer', linetype,
+    });
+    expect(aiDraftRequest(draftEnvelope({ contextJson })).contextJson).toBe(contextJson);
+    const context = JSON.parse(contextJson) as { creationDefaults: { linetype: string } };
+    context.creationDefaults.linetype = 'L'.repeat(513);
+    expect(() => aiDraftRequest(draftEnvelope({ contextJson: JSON.stringify(context) })))
+      .toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+  });
+
+  it('rejects hidden payloads at every draft-context level before transport admission', () => {
+    const canonical = draftTestContextJson(['e-line', 'e-circle']);
+    for (const contextJson of [
+      canonical.replace('"kind":', '"filePath":"private.dwg","kind":'),
+      canonical.replace('"creationDefaults":{', '"creationDefaults":{"apiKey":"private",'),
+      canonical.replace('"targets":[{', '"targets":[{"cadGraph":"private",'),
+      canonical.replace('"selectionSnapshot":{', '"selectionSnapshot":{"raw":"private",'),
+      canonical.replace('"version":1', '"version":{"secret":"hidden"},"version":1'),
+    ]) {
+      expect(() => aiDraftRequest(draftEnvelope({ contextJson }))).toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+    }
+    expect(aiDraftRequest(draftEnvelope()).contextJson).toBe(canonical);
   });
 
   it.each([
@@ -822,6 +850,16 @@ describe('ai-host draft request validator (milestone 3)', () => {
 });
 
 describe('ai-host draft result validator (milestone 3)', () => {
+  it('rechecks plan bytes instead of trusting an understated transport count', () => {
+    const operation = (offset: number) => ({
+      ...draftLineOp, op: 'delete', a: null, b: null,
+      targetIds: Array.from({ length: 200 }, (_, index) => `${index + offset}-${'x'.repeat(100)}`),
+    });
+    const value = { outcome: 'proposal', message: null, operations: [operation(0), operation(200)] };
+    expect(Buffer.byteLength(JSON.stringify(value), 'utf8')).toBeGreaterThan(AI_LIMITS.maxDraftPlanBytes!);
+    expect(() => aiDraftResult({ value, contentBytes: 1 })).toThrow(expect.objectContaining({ kind: 'invalid-plan' }));
+  });
+
   it('normalizes a valid plan and carries bounded provider usage', () => {
     const result = aiDraftResult({ value: draftPlanValue, contentBytes: 321, usage: { inputTokens: 30, outputTokens: 12, junk: 1 } });
     expect(result.contentBytes).toBe(321);
@@ -890,7 +928,7 @@ describe('ai-host draft jobs (milestone 3)', () => {
     });
     const result = await host.draft(draftEnvelope());
     expect(result.value).toEqual(draftPlanValue);
-    expect(result.usage.inputBytes).toBe(result.value ? Buffer.byteLength('{"kind":"jcad.ai.draft-context","version":1}', 'utf8') : 0);
+    expect(result.usage.inputBytes).toBe(Buffer.byteLength(draftTestContextJson(['e-line', 'e-circle']), 'utf8'));
     expect(result.usage.outputChars).toBe(321);
     expect(result.providerUsage).toEqual({ inputTokens: 30, outputTokens: 12 });
     expect((seen[0] as { prompt: string }).prompt).toBe('draw a line');

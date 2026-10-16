@@ -92,6 +92,8 @@ export class Editor {
     dynText: [],
     cursorMode: 'idle',
   };
+  private aiPreviewOwner: object | null = null;
+  private interactionSerial = 0;
   private listeners: Record<EditorEvent, Set<() => void>> = {
     change: new Set(),
     selection: new Set(),
@@ -102,6 +104,7 @@ export class Editor {
     log: new Set(),
     space: new Set(),
     project: new Set(),
+    interaction: new Set(),
   };
   /** The private working state the editor's modules share (internals.ts). */
   private readonly internals: EditorInternals = createInternals(this.overlay);
@@ -332,9 +335,20 @@ export class Editor {
    * overlay. This is renderer state only: it never touches the document,
    * history, selection or the tool preview/ghost channels.
    */
-  setAiPreview(preview: ViewportOverlay['aiPreview']): void {
+  setAiPreview(preview: ViewportOverlay['aiPreview'], owner?: object): void {
+    if (!preview && owner && this.aiPreviewOwner !== owner) return;
+    this.aiPreviewOwner = preview ? owner ?? null : null;
     this.overlay.aiPreview = preview;
     this.render();
+  }
+
+  /** Monotonic even when a conflicting gesture starts and is cancelled without an edit. */
+  get interactionGeneration(): number { return this.interactionSerial; }
+
+  /** Pointer/view controllers call this before a new editing interaction begins. */
+  noteInteractionStart(): void {
+    this.interactionSerial += 1;
+    this.emit('interaction');
   }
 
   /**

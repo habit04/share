@@ -124,13 +124,25 @@ function draftBridge(
 ): AiHostBridge {
   return {
     ask: vi.fn(async () => ({ text: 'x', references: [] })),
-    draft: vi.fn(typeof result === 'function' ? result : async () => result),
+    draft: vi.fn(async (request: AiDraftRequest, signal: AbortSignal) => ({
+      configGeneration: 'host-1',
+      ...(typeof result === 'function' ? await result(request, signal) : result),
+    })),
   };
 }
 
 describe('LiveDraftProvider (milestone 3)', () => {
+  it('requires a verified host generation and rejects a response from another generation', async () => {
+    const bridge = draftBridge({ response: planValue, configGeneration: 'host-2' });
+    const missing = new LiveDraftProvider(bridge, { providerId: 'openai', model: 'gpt-5' });
+    expect(missing.configured).toBe(false);
+    await expect(missing.draft(draftRequest, new AbortController().signal)).rejects.toMatchObject({ kind: 'host-unavailable' });
+    expect(bridge.draft).not.toHaveBeenCalled();
+    const stale = new LiveDraftProvider(bridge, { providerId: 'openai', model: 'gpt-5', configGeneration: 'host-1' });
+    await expect(stale.draft(draftRequest, new AbortController().signal)).rejects.toMatchObject({ kind: 'stale' });
+  });
   it('refuses with host-unavailable when there is no bridge at all', async () => {
-    const provider = new LiveDraftProvider(undefined, { providerId: 'openai', model: 'gpt-5' });
+    const provider = new LiveDraftProvider(undefined, { providerId: 'openai', model: 'gpt-5', configGeneration: 'host-1' });
     // Mirrors LiveProvider: without a bridge the provider is not
     // configured, but the refusal names the missing host, not the config.
     expect(provider.configured).toBe(false);
@@ -140,7 +152,7 @@ describe('LiveDraftProvider (milestone 3)', () => {
 
   it('refuses with host-unavailable when the bridge has no draft method', async () => {
     const bridge: AiHostBridge = { ask: vi.fn(async () => ({ text: 'x', references: [] })) };
-    const provider = new LiveDraftProvider(bridge, { providerId: 'openai', model: 'gpt-5' });
+    const provider = new LiveDraftProvider(bridge, { providerId: 'openai', model: 'gpt-5', configGeneration: 'host-1' });
     await expect(provider.draft(draftRequest, new AbortController().signal))
       .rejects.toMatchObject({ name: 'AiError', kind: 'host-unavailable' });
   });
@@ -156,7 +168,7 @@ describe('LiveDraftProvider (milestone 3)', () => {
 
   it('pins its own destination, sends only prompt/context/binding, and returns the validated plan', async () => {
     const bridge = draftBridge({ response: planValue });
-    const provider = new LiveDraftProvider(bridge, { providerId: 'openai', model: 'gpt-5' });
+    const provider = new LiveDraftProvider(bridge, { providerId: 'openai', model: 'gpt-5', configGeneration: 'host-1' });
     const result = await provider.draft(
       { ...draftRequest, destination: { provider: 'anthropic', model: 'other-model' } } as AiDraftRequest,
       new AbortController().signal,
@@ -171,13 +183,13 @@ describe('LiveDraftProvider (milestone 3)', () => {
       prompt: 'draw a line',
       contextJson: '{"kind":"jcad.ai.draft-context","version":1}',
       binding: draftBinding,
-      destination: { provider: 'openai', model: 'gpt-5' },
+      destination: { provider: 'openai', model: 'gpt-5', configGeneration: 'host-1' },
     }, expect.any(AbortSignal));
   });
 
   it('passes a clarification response through untouched in shape', async () => {
     const bridge = draftBridge({ response: { outcome: 'clarification', message: 'What radius?', operations: null } });
-    const provider = new LiveDraftProvider(bridge, { providerId: 'anthropic', model: 'claude-sonnet-5-5' });
+    const provider = new LiveDraftProvider(bridge, { providerId: 'anthropic', model: 'claude-sonnet-5-5', configGeneration: 'host-1' });
     await expect(provider.draft(draftRequest, new AbortController().signal))
       .resolves.toEqual({ kind: 'clarification', message: 'What radius?' });
   });
@@ -189,14 +201,14 @@ describe('LiveDraftProvider (milestone 3)', () => {
     ['a missing value', undefined],
   ])('maps %s from the bridge to invalid-plan', async (_label, response) => {
     const bridge = draftBridge({ response });
-    const provider = new LiveDraftProvider(bridge, { providerId: 'openai', model: 'gpt-5' });
+    const provider = new LiveDraftProvider(bridge, { providerId: 'openai', model: 'gpt-5', configGeneration: 'host-1' });
     await expect(provider.draft(draftRequest, new AbortController().signal))
       .rejects.toMatchObject({ name: 'AiError', kind: 'invalid-plan' });
   });
 
   it('refuses an over-long prompt and an oversized context before delegating', async () => {
     const bridge = draftBridge({ response: planValue });
-    const provider = new LiveDraftProvider(bridge, { providerId: 'openai', model: 'gpt-5' });
+    const provider = new LiveDraftProvider(bridge, { providerId: 'openai', model: 'gpt-5', configGeneration: 'host-1' });
     await expect(provider.draft({ ...draftRequest, prompt: 'p'.repeat(2001) }, new AbortController().signal))
       .rejects.toMatchObject({ kind: 'invalid-question' });
     await expect(provider.draft({ ...draftRequest, contextJson: 'x'.repeat(96 * 1024 + 1) }, new AbortController().signal))
@@ -206,7 +218,7 @@ describe('LiveDraftProvider (milestone 3)', () => {
 
   it('honours an already-aborted signal before delegating', async () => {
     const bridge = draftBridge({ response: planValue });
-    const provider = new LiveDraftProvider(bridge, { providerId: 'openai', model: 'gpt-5' });
+    const provider = new LiveDraftProvider(bridge, { providerId: 'openai', model: 'gpt-5', configGeneration: 'host-1' });
     const controller = new AbortController();
     controller.abort();
     await expect(provider.draft(draftRequest, controller.signal)).rejects.toMatchObject({ kind: 'cancelled' });
@@ -217,14 +229,14 @@ describe('LiveDraftProvider (milestone 3)', () => {
     const hanging = draftBridge((_req: AiDraftRequest, signal: AbortSignal) => new Promise<AiDraftWireResult>((resolve) => {
       signal.addEventListener('abort', () => resolve({ response: planValue }));
     }));
-    const provider = new LiveDraftProvider(hanging, { providerId: 'openai', model: 'gpt-5' });
+    const provider = new LiveDraftProvider(hanging, { providerId: 'openai', model: 'gpt-5', configGeneration: 'host-1' });
     const abort = new AbortController();
     const pending = provider.draft(draftRequest, abort.signal);
     const cancelled = expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
     abort.abort();
     await cancelled;
     expect(hanging.draft).toHaveBeenCalledWith(expect.objectContaining({
-      destination: { provider: 'openai', model: 'gpt-5' },
+      destination: { provider: 'openai', model: 'gpt-5', configGeneration: 'host-1' },
     }), abort.signal);
   });
 });

@@ -11,16 +11,16 @@ import { LiveProvider, LiveDraftProvider } from '../ai/live-provider';
 import { serializeSnapshot } from '../ai/snapshot';
 import { INSUNIT_NAMES } from '../core/units';
 import type { WindowAiConnection, AiConnectionState } from '../ai/host-bridge';
-import { AiError, type AiBinding, type AiDraftProvider, type AiProvider, type AiSnapshot } from '../ai/types';
+import { aiBindingsEqual, AiError, type AiBinding, type AiDraftProvider, type AiProvider, type AiSnapshot } from '../ai/types';
 import { icon } from './icons';
 
 /**
  * “Ask about selected objects” palette (docs/AI-ASSISTANT.md, milestone 2
  * in docs/AI-ASSISTANT-M2.md).
  *
- * Strictly read-only: it reads the editor through the AI snapshot source,
- * never dispatches a command (so it can never cancel the current tool),
- * never writes selection/document/undo/dirty state, and renders every
+ * Ask and draft generation/preview read through the AI sources; only an
+ * explicit Apply reaches the validated atomic draft commit. The panel
+ * never dispatches a CAD command (so it cannot cancel the current tool), and renders every
  * dynamic string — drawing text, questions, answers, host state — through
  * textContent. The only innerHTML uses are the compile-time icon markup
  * every palette uses for its strip, and clearing containers with ''.
@@ -48,7 +48,7 @@ const OFFLINE_LABEL = 'Offline demo — no AI model connected. Responses are gen
 
 function billingNote(provider: string): string {
   const label = providerLabel(provider);
-  return `Questions are billed to your ${label} API account. Cancelling stops JCad from waiting, but a request already processing at ${label} may still be charged.`;
+  return `AI requests are billed to your ${label} API account. Cancelling stops JCad from waiting, but a request already processing at ${label} may still be charged.`;
 }
 
 function retentionNote(provider: string): string {
@@ -80,6 +80,10 @@ export class AiAssistantPanel {
   private readonly fixtureDraftProvider = new FixtureDraftProvider();
   private mode: 'ask' | 'draft' = 'ask';
   private applyingDraft = false;
+  private draftCommitInProgress = false;
+  private readonly draftPreviewOwner = {};
+  private draftConfigEpoch = 0;
+  private draftUiEpoch = 0;
   private askSectionEl: HTMLElement | null = null;
   private draftEls: {
     section: HTMLElement;
@@ -143,7 +147,7 @@ export class AiAssistantPanel {
       if (ev.key === 'Escape') {
         ev.preventDefault();
         this.controller.cancel();
-        this.draftController?.cancel();
+        this.draftController?.discard();
       }
     });
 
@@ -220,11 +224,11 @@ export class AiAssistantPanel {
     askSection.className = 'ai-section-wrap';
     this.askSectionEl = askSection;
     askSection.append(
-      this.providerLabelEl, this.summaryEl, this.sentLabelEl, this.sentEl, this.questionEl,
-      buttons, this.billingEl, this.statusEl, this.answerEl, this.refsEl, this.usageEl,
+      this.summaryEl, this.sentLabelEl, this.sentEl, this.questionEl,
+      buttons, this.statusEl, this.answerEl, this.refsEl, this.usageEl,
     );
     const draftBuilt = this.buildDraftSection();
-    content.append(draftBuilt.tabs, askSection, draftBuilt.section);
+    content.append(this.providerLabelEl, draftBuilt.tabs, this.billingEl, askSection, draftBuilt.section);
     if (this.connection) content.append(this.buildSettingsSection());
     body.append(bar, content);
     this.el.append(body, strip);
@@ -241,7 +245,7 @@ export class AiAssistantPanel {
     this.controller = new AiAskController(createEditorAiSource(editor), routed);
     this.unsubscribes.push(this.controller.subscribe((status) => this.renderStatus(status)));
     this.draftSource = createEditorAiDraftSource(editor);
-    this.draftController = new AiDraftController(this.draftSource, editor.doc);
+    this.draftController = new AiDraftController(this.draftSource, editor.doc, { configKeyNow: () => this.draftConfigKey() });
     this.unsubscribes.push(this.draftController.subscribe((status) => this.renderDraftStatus(status)));
     // Rebuild the preview when the selection or document changes. The events
     // are only a hint — the controller re-reads and compares the binding
@@ -252,10 +256,11 @@ export class AiAssistantPanel {
     // Draft invalidation mirrors the binding: any editor change, selection
     // change, space/file change or tool start drops a staged proposal. The
     // one exception is the change our own Apply commits, which is guarded
-    // by applyingDraft (the proposal is consumed, not invalidated).
-    for (const ev of ['selection', 'change', 'file', 'space', 'tool'] as const) {
+    // by draftCommitInProgress (the proposal is consumed, not invalidated).
+    for (const ev of ['selection', 'change', 'file', 'space', 'tool', 'interaction'] as const) {
       this.unsubscribes.push(editor.on(ev, () => {
-        if (this.applyingDraft) return;
+        if (this.draftCommitInProgress) return;
+        this.draftUiEpoch += 1;
         const state = this.draftController.status.state;
         if (state === 'staged' || state === 'generating') this.draftController.invalidate();
         if (this.mode === 'draft') this.refreshDraftPreview();
@@ -271,7 +276,7 @@ export class AiAssistantPanel {
     this.el.classList.remove('hidden');
     this.refreshPreview();
     if (this.isVisible) {
-      this.questionEl.focus();
+      (this.mode === 'draft' ? this.draftEls?.promptEl : this.questionEl)?.focus();
       void this.refreshConnection();
     }
   }
@@ -282,6 +287,7 @@ export class AiAssistantPanel {
 
   dispose(): void {
     this.disposed = true;
+    this.draftUiEpoch += 1;
     this.connectionEpoch += 1;
     this.clearKeyInput();
     for (const unsubscribe of this.unsubscribes) unsubscribe();
@@ -323,7 +329,8 @@ export class AiAssistantPanel {
     // plan for the previous wording. Enter never generates or applies —
     // generation is the button below, deliberately.
     promptEl.addEventListener('input', () => {
-      if (this.draftController.status.state === 'staged') {
+      this.draftUiEpoch += 1;
+      if (this.draftController.status.state === 'staged' || this.draftController.status.state === 'generating') {
         this.draftController.invalidate('The description changed — generate again.');
       }
       this.refreshDraftPreview();
@@ -347,6 +354,7 @@ export class AiAssistantPanel {
       const box = document.createElement('span');
       box.className = dashed ? 'ai-swatch dashed' : 'ai-swatch';
       box.style.background = color;
+      box.style.color = color;
       const text = document.createElement('span');
       text.textContent = label;
       legend.append(box, text);
@@ -366,7 +374,7 @@ export class AiAssistantPanel {
     applyBtn.className = 'ai-ask';
     applyBtn.textContent = 'Apply Changes';
     applyBtn.disabled = true;
-    applyBtn.addEventListener('click', () => this.applyDraft());
+    applyBtn.addEventListener('click', () => { void this.applyDraft(); });
     const discardBtn = document.createElement('button');
     discardBtn.textContent = 'Discard';
     discardBtn.disabled = true;
@@ -386,10 +394,12 @@ export class AiAssistantPanel {
   }
 
   private setMode(mode: 'ask' | 'draft'): void {
-    if (!this.draftEls || this.mode === mode) return;
+    if (this.disposed || !this.draftEls || this.mode === mode) return;
     this.mode = mode;
+    this.draftUiEpoch += 1;
     // Leaving Draft drops any staged proposal and its overlay.
     this.draftController.invalidate();
+    this.controller.cancel();
     this.clearDraftOverlay();
     this.draftEls.askTab.classList.toggle('active', mode === 'ask');
     this.draftEls.draftTab.classList.toggle('active', mode === 'draft');
@@ -397,60 +407,122 @@ export class AiAssistantPanel {
     this.askSectionEl?.classList.toggle('hidden', mode !== 'ask');
     if (mode === 'draft') this.refreshDraftPreview();
     else this.refreshPreview();
+    (mode === 'draft' ? this.draftEls.promptEl : this.questionEl).focus();
   }
 
   private draftConfigKey(): string {
     const s = this.connState;
-    if (!s) return 'fixture';
-    return [s.provider, s.model, s.enabled, s.keyPresent, s.keySource ?? '', s.keyPersistence, s.credentialProblem ?? ''].join('|');
+    if (!s) return `fixture|${this.draftConfigEpoch}`;
+    return [s.configGeneration ?? '', this.draftConfigEpoch, s.provider, s.model, s.enabled, s.keyPresent, s.keySource ?? '', s.keyPersistence, s.credentialProblem ?? ''].join('|');
   }
 
   private routeDraftProvider(): AiDraftProvider {
     if (this.connection && this.connState?.enabled && this.connState.keyPresent && !this.connState.credentialProblem) {
-      return new LiveDraftProvider(this.connection.bridge, { providerId: this.connState.provider, model: this.connState.model });
+      return new LiveDraftProvider(this.connection.bridge, { providerId: this.connState.provider, model: this.connState.model, configGeneration: this.connState.configGeneration });
     }
     return this.fixtureDraftProvider;
   }
 
   private async generateDraft(): Promise<void> {
-    if (this.disposed || this.connectionBusy || !this.draftEls) return;
+    if (this.disposed || this.connectionBusy || this.applyingDraft || !this.isVisible || this.mode !== 'draft' || !this.draftEls) return;
     if (this.editorRef.interactionBusy) {
       this.draftEls.statusEl.textContent = 'Finish the current command or selection first, then generate a preview.';
       return;
     }
+    const uiEpoch = this.draftUiEpoch;
+    const configAtClick = this.draftConfigKey();
+    let bindingAtClick: AiBinding;
+    let defaultsAtClick: string;
+    try {
+      bindingAtClick = this.draftSource.binding();
+      defaultsAtClick = JSON.stringify(this.draftSource.frozenDefaults());
+    } catch {
+      this.draftEls.statusEl.textContent = 'The drawing context could not be verified. Try again.';
+      return;
+    }
+    this.draftController.invalidate();
+    if (this.connection) {
+      const checked = await this.refreshConnection();
+      if (this.disposed || !this.isVisible || this.mode !== 'draft' || uiEpoch !== this.draftUiEpoch) return;
+      if (!checked) {
+        this.draftEls.statusEl.textContent = 'Connection settings could not be verified. Try again before generating.';
+        return;
+      }
+      if (configAtClick !== this.draftConfigKey()) {
+        this.draftEls.statusEl.textContent = 'Connection settings changed. Review the destination, then Generate Preview again.';
+        return;
+      }
+      try {
+        if (!aiBindingsEqual(bindingAtClick, this.draftSource.binding()) || defaultsAtClick !== JSON.stringify(this.draftSource.frozenDefaults())) {
+          this.draftEls.statusEl.textContent = 'The drawing context changed. Review it, then Generate Preview again.';
+          return;
+        }
+      } catch {
+        this.draftEls.statusEl.textContent = 'The drawing context could not be verified. Try again.';
+        return;
+      }
+    }
     await this.draftController.generate(this.draftEls.promptEl.value, this.routeDraftProvider(), this.draftConfigKey());
   }
 
-  private applyDraft(): void {
-    if (!this.draftEls) return;
+  private async applyDraft(): Promise<void> {
+    if (this.disposed || this.connectionBusy || this.applyingDraft || !this.isVisible || this.mode !== 'draft' || !this.draftEls) return;
+    if (this.draftController.status.state !== 'staged') return;
     if (this.editorRef.interactionBusy) {
       this.draftEls.statusEl.textContent = 'Finish the current command or selection first, then apply.';
       return;
     }
     this.applyingDraft = true;
     try {
-      this.draftController.apply();
+      if (this.connection) {
+        const epoch = this.startConnectionOperation('Checking connection settings before Apply…', false);
+        if (epoch === null) return;
+        try {
+          const state = await this.connection.state();
+          if (!this.currentConnectionOperation(epoch)) return;
+          this.setConnState(state);
+        } catch (cause) {
+          if (this.currentConnectionOperation(epoch)) {
+            this.draftController.invalidate('Connection settings could not be verified — generate again.');
+            this.setConnError(cause);
+          }
+          return;
+        } finally {
+          this.finishConnectionOperation(epoch);
+        }
+      }
+      if (this.disposed || !this.isVisible || this.mode !== 'draft' || this.editorRef.interactionBusy) return;
+      const staged = this.draftController.status;
+      if (staged.state !== 'staged') return;
+      if (staged.capture.prompt !== this.draftEls.promptEl.value.trim()) {
+        this.draftController.invalidate('The description changed — generate again.');
+        return;
+      }
+      this.draftCommitInProgress = true;
+      try { this.draftController.apply(); } finally { this.draftCommitInProgress = false; }
     } finally {
       this.applyingDraft = false;
+      this.refreshPreview();
+      if (this.mode === 'draft') this.refreshDraftPreview();
     }
-    this.refreshPreview();
-    if (this.mode === 'draft') this.refreshDraftPreview();
   }
 
   private fitDraftPreview(): void {
     const status = this.draftController.status;
-    if (status.state !== 'staged' || !status.proposal.bounds) return;
+    if (this.disposed || this.connectionBusy || this.applyingDraft || this.editorRef.interactionBusy || status.state !== 'staged' || !status.proposal.bounds) return;
     const { min, max } = status.proposal.bounds;
-    this.editorRef.viewport.zoomToPoints([min, max]);
+    this.editorRef.viewport.zoomToPoints([min, { x: max.x, y: min.y }, max, { x: min.x, y: max.y }]);
+    this.editorRef.render();
   }
 
   private clearDraftOverlay(): void {
-    if (typeof this.editorRef.setAiPreview === 'function') this.editorRef.setAiPreview(null);
+    if (typeof this.editorRef.setAiPreview === 'function') this.editorRef.setAiPreview(null, this.draftPreviewOwner);
   }
 
   private refreshDraftPreview(): void {
     const els = this.draftEls;
     if (!els || !this.isVisible || this.mode !== 'draft') return;
+    this.updateDraftAvailability();
     if (this.draftController.status.state === 'staged' || this.draftController.status.state === 'generating') return;
     const live = this.liveRoute;
     els.sentLabelEl.textContent = live
@@ -458,7 +530,7 @@ export class AiAssistantPanel {
       : 'What will be sent (exactly) — offline demonstration, nothing leaves JCad';
     els.generateBtn.textContent = live ? `Generate Preview with ${providerLabel(this.connState!.provider)}` : 'Generate Preview';
     if (!els.promptEl.value.trim()) {
-      els.summaryEl.textContent = 'Describe the drawing or edit above. Nothing is sent — and nothing in the drawing changes — until you click Generate Preview, review the preview, and Apply.';
+      els.summaryEl.textContent = 'Describe the drawing or edit. Generate Preview sends the request to the displayed provider when live AI is enabled. Drawing changes happen only when you click Apply Changes.';
       els.sentEl.textContent = '';
       els.generateBtn.disabled = true;
       return;
@@ -473,12 +545,24 @@ export class AiAssistantPanel {
         els.summaryEl.textContent += ` Not editable: ${ineligible.map((t) => `${t.id} (${t.reason})`).join('; ')}.`;
       }
       els.sentEl.textContent = capture.contextJson;
-      els.generateBtn.disabled = this.disposed || this.connectionBusy;
+      els.generateBtn.disabled = this.disposed || this.connectionBusy || this.applyingDraft || this.editorRef.interactionBusy;
     } catch (cause) {
       els.summaryEl.textContent = 'Draft / Edit is unavailable for the current drawing state.';
       els.sentEl.textContent = cause instanceof Error ? cause.message : 'The draft context could not be read.';
       els.generateBtn.disabled = true;
     }
+  }
+
+  private updateDraftAvailability(): void {
+    const els = this.draftEls;
+    if (!els) return;
+    const status = this.draftController.status;
+    const available = !this.disposed && this.isVisible && this.mode === 'draft' && !this.connectionBusy && !this.applyingDraft && !this.editorRef.interactionBusy;
+    els.generateBtn.disabled = !available || status.state === 'generating' || !els.promptEl.value.trim();
+    els.applyBtn.disabled = !available || status.state !== 'staged';
+    els.discardBtn.disabled = this.disposed || status.state !== 'staged';
+    els.fitBtn.disabled = !available || status.state !== 'staged';
+    els.cancelBtn.disabled = this.disposed || status.state !== 'generating';
   }
 
   private renderDraftStatus(status: AiDraftStatus): void {
@@ -502,6 +586,7 @@ export class AiAssistantPanel {
         this.clearDraftOverlay();
         break;
       case 'staged': {
+        els.sentEl.textContent = status.capture.contextJson;
         const sets = previewSets(status.proposal);
         if (typeof this.editorRef.setAiPreview === 'function') {
           this.editorRef.setAiPreview({
@@ -509,7 +594,7 @@ export class AiAssistantPanel {
             modifiedAfter: sets.modifiedAfter,
             originals: sets.originals,
             deleted: sets.deleted,
-          });
+          }, this.draftPreviewOwner);
         }
         const c = status.proposal.counts;
         els.statusEl.textContent = 'Preview ready — the drawing has not changed. Review the changes, then Apply or Discard.';
@@ -524,9 +609,15 @@ export class AiAssistantPanel {
         }
         for (const change of status.proposal.changes) {
           const row = document.createElement('div');
-          row.textContent = `• ${change.summary}`;
+          row.textContent = `• ${change.summary}\nLayer: ${change.layer}; targets: ${change.targetIds.join(', ') || 'none'}; new IDs: ${change.createdIds.join(', ') || 'none'}.`;
           els.changesEl.append(row);
         }
+        const exact = document.createElement('pre');
+        exact.className = 'ai-sent';
+        exact.textContent = JSON.stringify({ coordinateFrame: 'World XY, Model tab', units: status.capture.units, creationDefaults: status.capture.defaults, operations: status.proposal.plan.operations }, null, 2);
+        const exactLabel = document.createElement('div');
+        exactLabel.textContent = 'Exact operations in drawing units (unrounded values):';
+        els.changesEl.append(exactLabel, exact);
         break;
       }
       case 'message':
@@ -547,6 +638,7 @@ export class AiAssistantPanel {
         this.clearDraftOverlay();
         break;
     }
+    this.updateDraftAvailability();
     if (this.mode === 'draft' && status.state !== 'staged') this.refreshDraftPreview();
   }
 
@@ -572,6 +664,7 @@ export class AiAssistantPanel {
   }
 
   private hide(): void {
+    this.draftUiEpoch += 1;
     this.clearKeyInput();
     // A staged preview must not linger on the canvas with no panel to act on it.
     this.draftController.invalidate();
@@ -592,6 +685,7 @@ export class AiAssistantPanel {
     this.connectionBusy = true;
     const epoch = ++this.connectionEpoch;
     if (invalidate) {
+      this.draftConfigEpoch += 1;
       this.controller.cancel();
       this.draftController.invalidate();
       this.clearAnswer();
@@ -603,6 +697,7 @@ export class AiAssistantPanel {
     }
     this.updateSettingsAvailability();
     this.refreshPreview();
+    this.refreshDraftPreview();
     return epoch;
   }
 
@@ -615,6 +710,7 @@ export class AiAssistantPanel {
     this.connectionBusy = false;
     this.updateSettingsAvailability();
     this.refreshPreview();
+    this.refreshDraftPreview();
   }
 
   private updateSettingsAvailability(): void {
@@ -791,13 +887,15 @@ export class AiAssistantPanel {
     await this.applySettings(() => this.connection!.setProvider(provider));
   }
 
-  private async refreshConnection(): Promise<void> {
-    if (!this.connection) return;
+  private async refreshConnection(): Promise<boolean> {
+    if (!this.connection) return false;
     const epoch = this.startConnectionOperation('Reading connection state…', false);
-    if (epoch === null) return;
+    if (epoch === null) return false;
     try {
       const state = await this.connection.state();
-      if (this.currentConnectionOperation(epoch)) this.setConnState(state);
+      if (!this.currentConnectionOperation(epoch)) return false;
+      this.setConnState(state);
+      return true;
     } catch (cause) {
       if (this.currentConnectionOperation(epoch)) {
         this.connState = null;
@@ -806,6 +904,7 @@ export class AiAssistantPanel {
         if (this.settingsEls) this.settingsEls.stateEl.textContent = 'Connection unavailable — offline demo only.';
         this.setConnError(cause);
       }
+      return false;
     } finally {
       this.finishConnectionOperation(epoch);
     }
@@ -884,9 +983,10 @@ export class AiAssistantPanel {
 
   private setConnState(state: AiConnectionState): void {
     const previous = this.connState;
-    if (previous && ['provider', 'model', 'enabled', 'keyPresent', 'keyStored', 'credentialProblem', 'keySource', 'keyPersistence'].some(
+    if (previous && ['configGeneration', 'provider', 'model', 'enabled', 'keyPresent', 'keyStored', 'credentialProblem', 'keySource', 'keyPersistence'].some(
       (key) => previous[key as keyof AiConnectionState] !== state[key as keyof AiConnectionState],
     )) {
+      this.draftConfigEpoch += 1;
       this.controller.cancel();
       this.clearAnswer();
       // Any connection change also drops a staged draft proposal: switching
@@ -950,6 +1050,7 @@ export class AiAssistantPanel {
       : OFFLINE_LABEL;
     this.updateSettingsAvailability();
     this.refreshPreview();
+    this.refreshDraftPreview();
   }
 
   // ------------------------------------------------------------ preview/status

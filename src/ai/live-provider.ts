@@ -44,6 +44,7 @@ export interface AiHostBridge {
  */
 export interface AiDraftWireResult {
   readonly response: unknown;
+  readonly configGeneration?: string;
   readonly usage?: AiUsage;
 }
 
@@ -51,6 +52,7 @@ export interface AiDraftWireResult {
 export interface LiveProviderConfig {
   readonly providerId: string;
   readonly model: string;
+  readonly configGeneration?: string;
 }
 
 export class LiveProvider implements AiProvider {
@@ -128,7 +130,9 @@ export class LiveDraftProvider implements AiDraftProvider {
       && typeof this.bridge.draft === 'function'
       && this.config !== undefined
       && this.config.providerId.length > 0
-      && this.config.model.length > 0;
+      && this.config.model.length > 0
+      && typeof this.config.configGeneration === 'string'
+      && this.config.configGeneration.length > 0;
   }
 
   async draft(request: AiDraftRequest, signal: AbortSignal): Promise<AiDraftResponse> {
@@ -143,6 +147,9 @@ export class LiveDraftProvider implements AiDraftProvider {
         'provider-not-configured',
         'No live AI provider has been selected. The live adapter is inactive until a provider, endpoint, credentials and data handling are agreed.',
       );
+    }
+    if (!this.config.configGeneration) {
+      throw new AiError('host-unavailable', 'The AI host cannot verify its current connection settings. Reopen the panel or update JCad before drafting.');
     }
     if (signal.aborted) throw new AiError('cancelled', 'The request was cancelled.');
     // Defence in depth: the host re-validates everything, but an
@@ -168,9 +175,12 @@ export class LiveDraftProvider implements AiDraftProvider {
         prompt: request.prompt,
         contextJson: request.contextJson,
         binding: request.binding,
-        destination: { provider: this.config.providerId, model: this.config.model },
+        destination: { provider: this.config.providerId, model: this.config.model, configGeneration: this.config.configGeneration },
       };
       const result = await Promise.race([this.bridge.draft(pinned, signal), aborted]);
+      if (result?.configGeneration !== this.config.configGeneration) {
+        throw new AiError('stale', 'The AI connection settings changed — generate again.');
+      }
       const parsed = parseAiDraftResponse(result?.response);
       if (!parsed.ok) throw new AiError('invalid-plan', parsed.error);
       return parsed.response;

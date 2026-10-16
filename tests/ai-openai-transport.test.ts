@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
+import { DRAFT_INSTRUCTIONS, draftPlanJsonSchema } from '../src/ai/draft-schema';
 
 const require = createRequire(import.meta.url);
 
@@ -578,6 +579,8 @@ describe('ai-openai-transport draft', () => {
     expect(body.max_output_tokens).toBe(4096);
     expect(body.instructions).toContain('drafting engine');
     expect(body.instructions).toContain('eligible:true');
+    expect(body.instructions).toBe(DRAFT_INSTRUCTIONS);
+    expect(body.text.format.schema).toEqual(draftPlanJsonSchema('openai'));
     expect(body.text.format.type).toBe('json_schema');
     expect(body.text.format.name).toBe('jcad_draft_plan');
     expect(body.text.format.strict).toBe(true);

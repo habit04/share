@@ -34,6 +34,8 @@ export interface AiConnectionState {
   readonly keySource: 'session' | 'stored' | null;
   readonly encryptionAvailable: boolean;
   readonly configProblem: string | null;
+  /** Opaque host instance/configuration generation, required for live drafting. */
+  readonly configGeneration?: string;
 }
 
 export interface AiProbeResult {
@@ -114,6 +116,7 @@ function draftWireResult(value: unknown): AiDraftWireResult {
   }
   const raw = value as {
     value?: unknown;
+    configGeneration?: unknown;
     usage?: Record<string, unknown>; providerUsage?: Record<string, unknown>;
   };
   if (!raw.value || typeof raw.value !== 'object' || Array.isArray(raw.value)) {
@@ -135,7 +138,10 @@ function draftWireResult(value: unknown): AiDraftWireResult {
     if (typeof amount === 'number' && Number.isSafeInteger(amount) && amount >= 0) usage[key] = amount;
   }
   const clean: AiUsage = usage;
-  return { response, ...(Object.keys(clean).length > 0 ? { usage: clean } : {}) };
+  if (typeof raw.configGeneration !== 'string' || !raw.configGeneration || raw.configGeneration.length > 256) {
+    throw new AiError('invalid-plan', 'The AI host did not verify the draft connection settings.');
+  }
+  return { response, configGeneration: raw.configGeneration, ...(Object.keys(clean).length > 0 ? { usage: clean } : {}) };
 }
 
 export class WindowAiConnection {

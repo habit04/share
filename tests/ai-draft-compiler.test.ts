@@ -3,7 +3,7 @@ import { Drawing, type DrawingState } from '../src/core/document';
 import { entityBounds, type Entity, type Layer } from '../src/core/entities';
 import { DEFAULT_UNITS, type UnitSettings } from '../src/core/units';
 import { captureDraftContext, type AiDraftSource } from '../src/ai/draft-context';
-import { compileAiPlan } from '../src/ai/draft-compiler';
+import { compileAiPlan, previewSets } from '../src/ai/draft-compiler';
 import type { AiPlan } from '../src/ai/draft-plan';
 import type { AiBinding } from '../src/ai/types';
 
@@ -156,5 +156,106 @@ describe('compileAiPlan', () => {
     const capture = captureWith([curved, wide, dot], ['cv', 'wd', 'dt']);
     expect(capture.eligibleIds).toEqual([]);
     expect(capture.targets.map((t) => t.eligible)).toEqual([false, false, false]);
+  });
+
+  it('revalidates typed plans before compiling and rejects overflow in computed geometry', () => {
+    const capture = captureWith([line('e1', { a: { x: 9999990, y: 0 }, b: { x: 10000000, y: 0 } })], ['e1']);
+    for (const plan of [
+      { message: null, operations: [{ op: 'move', targetIds: ['e1'], dx: 1, dy: 0 }] },
+      { message: null, operations: [{ op: 'createCircle', center: { x: 10000000, y: 0 }, radius: 1, layer: null }] },
+      { message: null, operations: [{ op: 'createRectangle', origin: { x: 10000000, y: 0 }, width: 1, height: 1, rotationDeg: 0, layer: null }] },
+      { message: null, operations: [{ op: 'move', targetIds: ['e1'], dx: Number.NaN, dy: 0 }] },
+      { message: null, operations: [{ op: 'delete', targetIds: ['e1'] }, { op: 'move', targetIds: ['e1'], dx: 1, dy: 0 }] },
+      { message: null, operations: [{ op: 'createCircle', center: { x: 0, y: 0 }, radius: 0, layer: null }] },
+      { message: null, operations: [{ op: 'execute', code: 'anything' }] },
+    ]) expect(compileAiPlan(plan as AiPlan, capture, mint, boundsFor).ok).toBe(false);
+  });
+
+  it('never creates electrical content or uses a layer outside the disclosed destinations', () => {
+    const doc = new Drawing({ entities: [], layers: [layer('0'), layer('OTHER'), layer('WIRES')], currentLayer: '0' });
+    const capture = captureDraftContext(fakeSource(doc.snapshot, []), 'a line', 'fixture');
+    expect(capture.permittedLayers).toEqual(['0']);
+    for (const destination of ['OTHER', 'WIRES']) {
+      const plan: AiPlan = { message: null, operations: [{ op: 'createLine', a: { x: 0, y: 0 }, b: { x: 1, y: 1 }, layer: destination }] };
+      expect(compileAiPlan(plan, capture, mint, boundsFor).ok).toBe(false);
+    }
+    const wireDoc = new Drawing({ entities: [], layers: [layer('WIRES')], currentLayer: 'WIRES' });
+    const wires = captureDraftContext(fakeSource(wireDoc.snapshot, []), 'a line', 'fixture');
+    expect(wires.permittedLayers).toEqual([]);
+    expect(compileAiPlan({ message: null, operations: [{ op: 'createLine', a: { x: 0, y: 0 }, b: { x: 1, y: 1 }, layer: null }] }, wires, mint, boundsFor).ok).toBe(false);
+  });
+
+  it('rejects colliding minted IDs, including block entities, and repeated minted IDs', () => {
+    const doc = new Drawing({ entities: [line('e1')], layers: [layer('0')], currentLayer: '0',
+      blocks: { nested: { name: 'nested', basePoint: { x: 0, y: 0 }, entities: [line('block-id')], attributes: [] } } });
+    const capture = captureDraftContext(fakeSource(doc.snapshot, ['e1']), 'circles', 'fixture');
+    const plan: AiPlan = { message: null, operations: [{ op: 'createCircle', center: { x: 0, y: 0 }, radius: 1, layer: null }] };
+    for (const id of ['e1', 'block-id', '']) expect(compileAiPlan(plan, capture, () => id, boundsFor).ok).toBe(false);
+    const twice: AiPlan = { ...plan, operations: [...plan.operations, ...plan.operations] };
+    expect(compileAiPlan(twice, capture, () => 'same-new-id', boundsFor).ok).toBe(false);
+  });
+
+  it('keeps provider values separate and freezes the canonical preview/apply geometry and order', () => {
+    const capture = captureWith([line('e1')], ['e1']);
+    const center = { x: 2, y: 3 };
+    const targets = ['e1'];
+    const plan: AiPlan = { message: null, operations: [
+      { op: 'createCircle', center, radius: 1, layer: null }, { op: 'copy', targetIds: targets, dx: 0, dy: 2 },
+    ] };
+    const out = compileAiPlan(plan, capture, mint, boundsFor);
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    center.x = 99;
+    targets[0] = 'not-selected';
+    expect(out.proposal.created[0]?.type === 'circle' && out.proposal.created[0].center).toEqual({ x: 2, y: 3 });
+    expect(out.proposal.copies[0]?.sourceId).toBe('e1');
+    expect(previewSets(out.proposal).added).toEqual(out.proposal.candidateEntities.slice(1));
+    expect(Object.isFrozen(out.proposal)).toBe(true);
+    expect(Object.isFrozen(out.proposal.candidateEntities)).toBe(true);
+    expect(Object.isFrozen(out.proposal.created[0])).toBe(true);
+    expect(Object.isFrozen(out.proposal.created[0]?.type === 'circle' && out.proposal.created[0].center)).toBe(true);
+  });
+
+  it('rejects semantically unchanged rotations and tiny curved polylines', () => {
+    const circle: Entity = { id: 'c1', type: 'circle', layer: '0', color: 'ByLayer', center: { x: 1, y: 2 }, radius: 3 };
+    const capture = captureWith([circle], ['c1']);
+    expect(compileAiPlan({ message: null, operations: [{ op: 'rotate', targetIds: ['c1'], pivot: { x: 1, y: 2 }, angleDeg: 90 }] }, capture, mint, boundsFor).ok).toBe(false);
+    const curved: Entity = { id: 'cv', type: 'polyline', layer: '0', color: 'ByLayer', points: [{ x: 0, y: 0 }, { x: 1, y: 1 }], closed: false, bulges: [1e-15, 0] };
+    expect(captureWith([curved], ['cv']).eligibleIds).toEqual([]);
+  });
+
+  it('bounds context before snapshot reads and limits layers to the current plus included target layers', () => {
+    const doc = new Drawing({ entities: [line('e1', { layer: 'SELECTED' })], layers: [layer('0'), layer('SELECTED'), ...Array.from({ length: 1000 }, (_, i) => layer(`OTHER-${i}`))], currentLayer: '0' });
+    const source = fakeSource(doc.snapshot, ['e1']);
+    const capture = captureDraftContext(source, 'do it', 'fixture');
+    expect(capture.permittedLayers).toEqual(['0', 'SELECTED']);
+    const context = JSON.parse(capture.contextJson) as { units: { note: string }; permittedLayers: string[] };
+    expect(context.units.note).toContain('never perform model-side unit conversion');
+    expect(context.permittedLayers).toEqual(['0', 'SELECTED']);
+    const tooMany = fakeSource(doc.snapshot, Array.from({ length: 201 }, (_, i) => `s-${i}`));
+    tooMany.selectedEntities = () => { throw new Error('snapshot must not be read'); };
+    expect(() => captureDraftContext(tooMany, 'do it', 'fixture')).toThrow('at most 200');
+  });
+
+  it('never authorizes selected objects omitted by the byte-bounded snapshot', () => {
+    const longLayer = 'L'.repeat(500);
+    const entities = Array.from({ length: 200 }, (_, i) => line(`e-${i}`, { layer: longLayer }));
+    const capture = captureWith(entities, entities.map((entity) => entity.id), [layer('0'), layer(longLayer)]);
+    const context = JSON.parse(capture.contextJson) as { selectionSnapshot: { objects: { id: string }[] } };
+    const disclosed = new Set(context.selectionSnapshot.objects.map((object) => object.id));
+    expect(disclosed.size).toBeLessThan(entities.length);
+    expect(capture.eligibleIds).toEqual(entities.filter((entity) => disclosed.has(entity.id)).map((entity) => entity.id));
+    const omitted = entities.find((entity) => !disclosed.has(entity.id));
+    expect(omitted).toBeDefined();
+    expect(compileAiPlan({ message: null, operations: [{ op: 'delete', targetIds: [omitted!.id] }] }, capture, mint, boundsFor).ok).toBe(false);
+  });
+
+  it('describes actual target layers and small nonzero edits without rounding them to zero', () => {
+    const capture = captureWith([line('e1')], ['e1']);
+    const out = compileAiPlan({ message: null, operations: [{ op: 'move', targetIds: ['e1'], dx: 0.000001, dy: 0 }] }, capture, mint, boundsFor);
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.proposal.changes[0]?.layer).toBe('0');
+    expect(out.proposal.changes[0]?.summary).toContain('(0.000001, 0)');
   });
 });

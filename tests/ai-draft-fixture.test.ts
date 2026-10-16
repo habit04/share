@@ -68,4 +68,26 @@ describe('FixtureDraftProvider', () => {
     const other = await provider.draft(request('Make it look nicer', ['e1']), signal);
     expect(other.kind).toBe('clarification');
   });
+
+  it.each([
+    'Do not delete the selected objects',
+    'Move 10 units right and 20 units up',
+    'Move 10 millimeters right',
+    'Create a -100 x 60 rectangle',
+    'Create a 100 x 60 rectangle with three circles of radius 3',
+    'Create a 100 x 60 rectangle with four circles of radius 3',
+    'Circle of radius 3 at the top corner',
+    'Move .5 right',
+    'Move 1e3 right',
+    'Delete the selection create a rectangle',
+  ])('clarifies unsupported or incomplete demo wording: %s', async (prompt) => {
+    expect((await provider.draft(request(prompt, ['e1']), signal)).kind).toBe('clarification');
+  });
+
+  it('honors signed movements and explicit rectangle origins', async () => {
+    const move = await provider.draft(request('Move -5 units right', ['e1']), signal);
+    expect(move.kind === 'plan' && move.plan.operations[0]).toMatchObject({ op: 'move', dx: -5, dy: 0 });
+    const rectangle = await provider.draft(request('Create a 100 x 60 rectangle at (20, 30)'), signal);
+    expect(rectangle.kind === 'plan' && rectangle.plan.operations[0]).toMatchObject({ op: 'createRectangle', origin: { x: 20, y: 30 } });
+  });
 });

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRequire } from 'node:module';
+import { draftTestContextJson } from './ai-draft-fixture';
 import { mkdtempSync, rmSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -82,7 +83,7 @@ function draftEnvelope(requestId: string, provider = 'openai', model = provider 
     requestId,
     destination: { provider, model },
     prompt: 'draw a line',
-    contextJson: '{"kind":"jcad.ai.draft-context","version":1}',
+    contextJson: draftTestContextJson(['e-line']),
     binding: {
       ask: {
         sessionId: 1, docId: 'doc-1', contentGeneration: 1, docRevision: 7, docLoadCount: 1,
@@ -94,6 +95,14 @@ function draftEnvelope(requestId: string, provider = 'openai', model = provider 
       configKey: `${provider}|${model}|0`,
     },
   };
+}
+
+async function liveDraftEnvelope(requestId: string, provider = 'openai', model = provider === 'anthropic' ? 'claude-sonnet-5-5' : 'gpt-5'): Promise<Record<string, unknown>> {
+  const result = await harness.invoke('ai-get-state');
+  const state = result.state as { configGeneration: string };
+  const value = draftEnvelope(requestId, provider, model);
+  (value.destination as Record<string, unknown>).configGeneration = state.configGeneration;
+  return value;
 }
 
 function openAiDraftResponse(): Response {
@@ -283,7 +292,7 @@ describe('ai IPC registration (guarded context)', () => {
     harness = makeHarness(async () => openAiDraftResponse());
     await harness.invoke('ai-set-key', KEY, 'session');
     await harness.invoke('ai-set-enabled', true);
-    const drafted = await harness.invoke('ai-draft', draftEnvelope('ai-draft-1'));
+    const drafted = await harness.invoke('ai-draft', await liveDraftEnvelope('ai-draft-1'));
     expect(drafted).toMatchObject({
       ok: true,
       draft: { value: draftPlanValue(), providerUsage: { inputTokens: 30, outputTokens: 12 } },
@@ -302,7 +311,7 @@ describe('ai IPC registration (guarded context)', () => {
     await harness.invoke('ai-set-provider', 'anthropic');
     await harness.invoke('ai-set-key', ANTHROPIC_KEY, 'session');
     await harness.invoke('ai-set-enabled', true);
-    const drafted = await harness.invoke('ai-draft', draftEnvelope('ai-draft-anth-1', 'anthropic'));
+    const drafted = await harness.invoke('ai-draft', await liveDraftEnvelope('ai-draft-anth-1', 'anthropic'));
     expect(drafted).toMatchObject({
       ok: true,
       draft: { value: draftPlanValue(), providerUsage: { inputTokens: 13, outputTokens: 8 } },
@@ -328,7 +337,7 @@ describe('ai IPC registration (guarded context)', () => {
     }));
     await harness.invoke('ai-set-key', KEY, 'session');
     await harness.invoke('ai-set-enabled', true);
-    const pending = harness.invoke('ai-draft', draftEnvelope('ai-draft-cancel'));
+    const pending = harness.invoke('ai-draft', await liveDraftEnvelope('ai-draft-cancel'));
     await vi.waitFor(() => { expect(harness.fetchCalls).toHaveLength(1); });
     const cancelled = await harness.invoke('ai-cancel', 'ai-draft-cancel');
     expect(cancelled).toMatchObject({ ok: true, cancelled: true });
@@ -343,9 +352,9 @@ describe('ai IPC registration (guarded context)', () => {
     }));
     await harness.invoke('ai-set-key', KEY, 'session');
     await harness.invoke('ai-set-enabled', true);
-    const pending = harness.invoke('ai-draft', draftEnvelope('ai-draft-dupe'));
+    const pending = harness.invoke('ai-draft', await liveDraftEnvelope('ai-draft-dupe'));
     await vi.waitFor(() => { expect(harness.fetchCalls).toHaveLength(1); });
-    const duplicate = await harness.invoke('ai-draft', draftEnvelope('ai-draft-dupe'));
+    const duplicate = await harness.invoke('ai-draft', await liveDraftEnvelope('ai-draft-dupe'));
     expect(duplicate).toMatchObject({ ok: false, error: { kind: 'invalid-request' } });
     await harness.invoke('ai-cancel', 'ai-draft-dupe');
     expect(await pending).toMatchObject({ ok: false, error: { kind: 'cancelled' } });
@@ -354,7 +363,7 @@ describe('ai IPC registration (guarded context)', () => {
   it('owns cancellation before a draft has finished service admission', async () => {
     await harness.invoke('ai-set-key', KEY, 'session');
     await harness.invoke('ai-set-enabled', true);
-    const pending = harness.invoke('ai-draft', draftEnvelope('ai-draft-early-cancel'));
+    const pending = harness.invoke('ai-draft', await liveDraftEnvelope('ai-draft-early-cancel'));
     expect(await harness.invoke('ai-cancel', 'ai-draft-early-cancel')).toMatchObject({ ok: true, cancelled: true });
     expect(await pending).toMatchObject({ ok: false, error: { kind: 'cancelled' } });
     expect(harness.fetchCalls).toHaveLength(0);

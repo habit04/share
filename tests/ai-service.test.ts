@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createRequire } from 'node:module';
+import { draftTestContextJson } from './ai-draft-fixture';
 
 const require = createRequire(import.meta.url);
 
@@ -23,6 +24,7 @@ interface ConfigStoreShape {
 interface ServiceShape {
   getState: () => Promise<{
     provider: string; providers: string[]; model: string; enabled: boolean; keyPersistence: string;
+    configGeneration: string;
     keyPresent: boolean; keySource: string | null; encryptionAvailable: boolean; configProblem: string | null;
   }>;
   setProvider: (provider: string) => Promise<void>;
@@ -35,7 +37,7 @@ interface ServiceShape {
     text: string; references: string[]; providerUsage?: { inputTokens?: number; outputTokens?: number }; usage: unknown;
   }>;
   draft: (value: unknown, signal?: AbortSignal) => Promise<{
-    value: unknown; usage: { inputBytes: number; outputChars: number; durationMs: number };
+    value: unknown; configGeneration: string; usage: { inputBytes: number; outputChars: number; durationMs: number };
     providerUsage?: { inputTokens?: number; outputTokens?: number };
   }>;
   cancel: (requestId: number | string) => boolean;
@@ -74,7 +76,7 @@ function draftEnvelope(over: Record<string, unknown> = {}): Record<string, unkno
     requestId: 'ai-salt-draft-1',
     destination: { provider: 'openai', model: 'gpt-5' },
     prompt: 'draw a line',
-    contextJson: '{"kind":"jcad.ai.draft-context","version":1}',
+    contextJson: draftTestContextJson(['e-line']),
     binding: {
       ask: {
         sessionId: 1, docId: 'doc-1', contentGeneration: 1, docRevision: 7, docLoadCount: 1,
@@ -107,6 +109,11 @@ function envelope(over: Record<string, unknown> = {}): Record<string, unknown> {
     },
     ...over,
   };
+}
+
+async function liveDraftEnvelope(service: ServiceShape, over: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  const state = await service.getState();
+  return draftEnvelope({ destination: { provider: state.provider, model: state.model, configGeneration: state.configGeneration }, ...over });
 }
 
 function deferred<T = void>() {
@@ -204,6 +211,7 @@ describe('ai-service connection state', () => {
     expect(state).toEqual({
       provider: 'openai', providers: ['openai', 'anthropic'], model: 'gpt-5', enabled: false, keyPersistence: 'session',
       keyPresent: false, keyStored: false, credentialProblem: null, keySource: null, encryptionAvailable: true, configProblem: null,
+      configGeneration: state.configGeneration,
     });
     await world.service.dispose();
   });
@@ -807,11 +815,32 @@ describe('ai-service admission and persistence races', () => {
 });
 
 describe('ai-service draft path (milestone 3)', () => {
+  it('pins drafts to a host epoch even when model settings return to the same values', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-live', 'session');
+    await world.service.setEnabled(true);
+    const request = await liveDraftEnvelope(world.service);
+    const before = await world.service.getState();
+    await world.service.setModel('gpt-5-mini');
+    await world.service.setModel('gpt-5');
+    const after = await world.service.getState();
+    expect(after.model).toBe(before.model);
+    expect(after.configGeneration).not.toBe(before.configGeneration);
+    await expect(world.service.draft(request)).rejects.toMatchObject({ kind: 'cancelled' });
+    expect(world.transportFactory).not.toHaveBeenCalled();
+    const restarted = world.newService();
+    expect((await restarted.getState()).configGeneration).not.toBe(after.configGeneration);
+    await restarted.dispose();
+    await world.service.dispose();
+  });
+
   it('routes a draft to the selected provider only, with its own key and model', async () => {
     const world = makeWorld();
     await world.service.setKey('sk-live', 'session');
     await world.service.setEnabled(true);
-    const result = await world.service.draft(draftEnvelope());
+    const request = await liveDraftEnvelope(world.service);
+    const result = await world.service.draft(request);
+    expect(result.configGeneration).toBe((request.destination as { configGeneration: string }).configGeneration);
     expect(result.value).toEqual(draftPlanValue);
     expect(result.providerUsage).toEqual({ inputTokens: 30, outputTokens: 12 });
     expect(result.usage).toMatchObject({ outputChars: 321 });
@@ -820,7 +849,7 @@ describe('ai-service draft path (milestone 3)', () => {
     // The transport receives the validated request: prompt + exact context.
     const sent = world.draftCalls[0]!.request as { prompt: string; contextJson: string };
     expect(sent.prompt).toBe('draw a line');
-    expect(sent.contextJson).toBe('{"kind":"jcad.ai.draft-context","version":1}');
+    expect(sent.contextJson).toBe(draftTestContextJson(['e-line']));
     await world.service.dispose();
   });
 
@@ -830,9 +859,7 @@ describe('ai-service draft path (milestone 3)', () => {
     await world.service.setProvider('anthropic');
     await world.service.setKey('sk-anthropic', 'session');
     await world.service.setEnabled(true);
-    const result = await world.service.draft(draftEnvelope({
-      destination: { provider: 'anthropic', model: 'claude-sonnet-5-5' },
-    }));
+    const result = await world.service.draft(await liveDraftEnvelope(world.service));
     expect(result.value).toEqual(draftPlanValue);
     expect(world.factoryCalls).toEqual([{ provider: 'anthropic', model: 'claude-sonnet-5-5', apiKey: 'sk-anthropic' }]);
     expect(world.draftCalls.map((call) => call.provider)).toEqual(['anthropic']);
@@ -869,7 +896,7 @@ describe('ai-service draft path (milestone 3)', () => {
     world.setDraft(null);
     await world.service.setKey('sk-live', 'session');
     await world.service.setEnabled(true);
-    await expect(world.service.draft(draftEnvelope())).rejects.toMatchObject({ kind: 'provider-not-configured' });
+    await expect(world.service.draft(await liveDraftEnvelope(world.service))).rejects.toMatchObject({ kind: 'provider-not-configured' });
     await world.service.dispose();
   });
 
@@ -881,7 +908,7 @@ describe('ai-service draft path (milestone 3)', () => {
     }));
     await world.service.setKey('sk-live', 'session');
     await world.service.setEnabled(true);
-    await expect(world.service.draft(draftEnvelope())).rejects.toMatchObject({ kind: 'invalid-plan' });
+    await expect(world.service.draft(await liveDraftEnvelope(world.service))).rejects.toMatchObject({ kind: 'invalid-plan' });
     await world.service.dispose();
   });
 
@@ -895,7 +922,7 @@ describe('ai-service draft path (milestone 3)', () => {
       if (signal.aborted) return { value: draftPlanValue, contentBytes: 10 };
       return { value: draftPlanValue, contentBytes: 10 };
     });
-    const pending = world.service.draft(draftEnvelope());
+    const pending = world.service.draft(await liveDraftEnvelope(world.service));
     const settled = expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
     // The mutation cancels outstanding work and bumps the configuration
     // generation, so the late plan can never be delivered as current.
@@ -920,9 +947,7 @@ describe('ai-service draft path (milestone 3)', () => {
     // After the mutation settles, the new provider serves drafts.
     await world.service.setKey('sk-anthropic', 'session');
     await world.service.setEnabled(true);
-    const result = await world.service.draft(draftEnvelope({
-      destination: { provider: 'anthropic', model: 'claude-sonnet-5-5' },
-    }));
+    const result = await world.service.draft(await liveDraftEnvelope(world.service));
     expect(result.value).toEqual(draftPlanValue);
     expect(world.draftCalls.map((call) => call.provider)).toEqual(['anthropic']);
     await world.service.dispose();

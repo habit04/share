@@ -4,6 +4,7 @@ import type { UnitSettings } from '../core/units';
 import type { Editor } from '../app/editor/editor';
 import { createEditorAiSource } from './editor-source';
 import type { AiDraftSource, FrozenCreationDefaults } from './draft-context';
+import { AiError } from './types';
 
 /**
  * Adapts the real Editor to the Draft source surface. All reads, like the
@@ -18,7 +19,12 @@ export function createEditorAiDraftSource(editor: Editor): AiDraftSource {
   return {
     ...ask,
     units: (): UnitSettings => editor.doc.header.units,
-    modelState: (): DrawingState => editor.doc.snapshot,
+    modelState: (): DrawingState => {
+      if (editor.hooks?.aiDraftingAvailable?.() === false) {
+        throw new AiError('invalid-context', 'Draft / Edit requires the 2D Model view. Leave 3D mode and generate again.');
+      }
+      return editor.doc.snapshot;
+    },
     frozenDefaults: (): FrozenCreationDefaults => {
       const doc = editor.doc;
       const probe: Entity = {
@@ -38,5 +44,6 @@ export function createEditorAiDraftSource(editor: Editor): AiDraftSource {
       };
     },
     interactionBusy: (): boolean => editor.interactionBusy,
+    interactionGeneration: (): number => editor.interactionGeneration,
   };
 }

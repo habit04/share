@@ -529,6 +529,17 @@ function boot(): void {
 
   // Experimental 3D (inert unless Options > Experimental > 3D modelling was on at startup).
   const experimental3d = installExperimental3d(editor);
+  editor.hooks.aiDraftingAvailable = () => !(experimental3d?.active ?? false);
+  let aiWasIn3d = experimental3d?.active ?? false;
+  const syncAiDraftView = () => {
+    const active = experimental3d?.active ?? false;
+    if (active !== aiWasIn3d) {
+      aiWasIn3d = active;
+      editor.noteInteractionStart();
+    }
+  };
+  editor.on('view', syncAiDraftView);
+  editor.on('log', syncAiDraftView);
   setDiagnosticRenderer(() => experimental3d?.active ? 'WebGL2 experimental 3D modelling viewport' : 'Canvas 2D');
   if (__JCAD_GPU_EXPERIMENTAL__) installGpuPrototype(editor, () => experimental3d?.active ?? false);
   else installGpu2dCandidateSelector(editor, () => experimental3d?.active ?? false);

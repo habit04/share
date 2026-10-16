@@ -128,6 +128,7 @@ export function onMouseDown(ed: Editor, st: EditorInternals, ev: MouseEvent): un
       const idx = grips.findIndex((gp) => (!clip || clip.contains(gp)) && g.dist(gp, raw) <= gripTol);
       if (idx >= 0) {
         st.gripDrag = { entity: e, index: idx, start: raw };
+        ed.noteInteractionStart();
         st.overlay.trackFrom = grips[idx]!;
         ed.setPrompt('** STRETCH **  Specify stretch point:');
         st.overlay.cursorMode = 'point';
@@ -143,6 +144,7 @@ export function onMouseDown(ed: Editor, st: EditorInternals, ev: MouseEvent): un
   }
   st.dragStart = s;
   st.dragWorld = raw;
+  ed.noteInteractionStart();
 }
 
 export function onMouseUp(ed: Editor, st: EditorInternals, ev: MouseEvent): void {

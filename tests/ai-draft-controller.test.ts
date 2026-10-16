@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Drawing } from '../src/core/document';
 import { entityBounds, type Entity, type Layer } from '../src/core/entities';
 import { DEFAULT_UNITS } from '../src/core/units';
@@ -182,5 +182,152 @@ describe('AiDraftController', () => {
     const status = await controller.generate('move', failing, 'x');
     expect(status.state).toBe('error');
     if (status.state === 'error') expect(status.error.kind).toBe('rate-limited');
+  });
+
+  it('settles cancellation without waiting for a provider that ignores abort', async () => {
+    const h = harness([line('e1')]);
+    let signal: AbortSignal | undefined;
+    const provider: AiDraftProvider = { id: 'ignores-abort', draft: (_request, abortSignal) => {
+      signal = abortSignal;
+      return new Promise(() => {});
+    } };
+    const clear = vi.fn();
+    const controller = new AiDraftController(h.source, h.doc, { setTimeoutFn: () => 9, clearTimeoutFn: clear });
+    const pending = controller.generate('move', provider, 'x');
+    controller.cancel();
+    expect(await pending).toEqual({ state: 'idle' });
+    expect(signal?.aborted).toBe(true);
+    expect(clear).toHaveBeenCalledWith(9);
+    expect(h.doc.canUndo()).toBe(false);
+  });
+
+  it('settles its timeout and never stages a late response, even if abort is ignored', async () => {
+    const h = harness([line('e1')]);
+    let timeout: (() => void) | undefined;
+    let release: ((response: AiDraftResponse) => void) | undefined;
+    const controller = new AiDraftController(h.source, h.doc, { setTimeoutFn: (fn) => { timeout = fn; return 9; }, clearTimeoutFn: () => {} });
+    const pending = controller.generate('move', { id: 'slow', draft: () => new Promise((resolve) => { release = resolve; }) }, 'x');
+    timeout?.();
+    const result = await pending;
+    expect(result.state === 'error' && result.error.kind).toBe('timeout');
+    release?.(movePlan);
+    await Promise.resolve();
+    expect(controller.status).toBe(result);
+    expect(h.doc.canUndo()).toBe(false);
+  });
+
+  it('gives a superseded call its own terminal result and keeps the newer preview', async () => {
+    const h = harness([line('e1')]);
+    let release: ((response: AiDraftResponse) => void) | undefined;
+    const controller = new AiDraftController(h.source, h.doc);
+    const old = controller.generate('old', { id: 'slow', draft: () => new Promise((resolve) => { release = resolve; }) }, 'x');
+    const next = await controller.generate('new', planProvider(movePlan), 'x');
+    expect(next.state).toBe('staged');
+    expect(await old).toEqual({ state: 'idle' });
+    release?.(movePlan);
+    await Promise.resolve();
+    expect(controller.status).toBe(next);
+  });
+
+  it('does not dispatch after synchronous subscriber cancellation or disposal', async () => {
+    for (const action of ['cancel', 'dispose'] as const) {
+      const h = harness([line('e1')]);
+      const draft = vi.fn(async () => movePlan);
+      const clear = vi.fn();
+      const controller = new AiDraftController(h.source, h.doc, { setTimeoutFn: () => 9, clearTimeoutFn: clear });
+      controller.subscribe((status) => { if (status.state === 'generating') controller[action](); });
+      expect(await controller.generate('move', { id: 'fake', draft }, 'x')).toEqual({ state: 'idle' });
+      expect(draft).not.toHaveBeenCalled();
+      expect(clear).toHaveBeenCalledWith(9);
+    }
+  });
+
+  it('handles synchronous timers and source errors without rejecting or stranding state', async () => {
+    const h = harness([line('e1')]);
+    const draft = vi.fn(async () => movePlan);
+    const clear = vi.fn();
+    const immediate = new AiDraftController(h.source, h.doc, { setTimeoutFn: (fn) => { fn(); return 9; }, clearTimeoutFn: clear });
+    const result = await immediate.generate('move', { id: 'fake', draft }, 'x');
+    expect(result.state === 'error' && result.error.kind).toBe('timeout');
+    expect(draft).not.toHaveBeenCalled();
+    expect(clear).toHaveBeenCalledWith(9);
+
+    h.source.interactionBusy = () => { throw new Error('source unavailable'); };
+    const controller = new AiDraftController(h.source, h.doc);
+    const failed = await controller.generate('move', planProvider(movePlan), 'x');
+    expect(failed.state === 'error' && failed.error.kind).toBe('invalid-context');
+  });
+
+  it('rejects malformed typed provider values and synchronous provider throws', async () => {
+    const h = harness([line('e1')]);
+    const controller = new AiDraftController(h.source, h.doc);
+    for (const value of [null, undefined, {}, { kind: 'unexpected', message: 'x' }, { kind: 'clarification', message: '' },
+      { kind: 'plan', plan: { message: null, operations: [{ op: 'delete', targetIds: ['e1'], arbitrary: 'patch' }] } }]) {
+      const result = await controller.generate('move', planProvider(value as AiDraftResponse), 'x');
+      expect(result.state === 'error' && result.error.kind).toBe('invalid-plan');
+    }
+    const result = await controller.generate('move', { id: 'throws', draft: () => { throw new Error('secret'); } }, 'x');
+    expect(result.state === 'error' && result.error.kind).toBe('provider-failure');
+    expect(h.doc.canUndo()).toBe(false);
+  });
+
+  it('rechecks fresh configuration generations at admission, response and Apply', async () => {
+    const h = harness([line('e1')]);
+    let config = 'openai|model|1';
+    const controller = new AiDraftController(h.source, h.doc, { configKeyNow: () => config });
+    const draft = vi.fn(async () => movePlan);
+    const notAdmitted = await controller.generate('move', { id: 'fake', draft }, 'old');
+    expect(notAdmitted.state === 'error' && notAdmitted.error.kind).toBe('stale');
+    expect(draft).not.toHaveBeenCalled();
+    let release: ((response: AiDraftResponse) => void) | undefined;
+    const pending = controller.generate('move', { id: 'slow', draft: () => new Promise((resolve) => { release = resolve; }) }, config);
+    config = 'openai|model|2';
+    release?.(movePlan);
+    expect((await pending).state).toBe('invalidated');
+    expect((await controller.generate('move', planProvider(movePlan), config)).state).toBe('staged');
+    config = 'openai|model|3';
+    expect(controller.apply().state).toBe('invalidated');
+    expect(h.doc.canUndo()).toBe(false);
+  });
+
+  it('invalidates after a command started and cancelled without changing content', async () => {
+    const h = harness([line('e1')]);
+    let interactions = 0;
+    h.source.interactionGeneration = () => interactions;
+    const controller = new AiDraftController(h.source, h.doc);
+    await controller.generate('move', planProvider(movePlan), 'x');
+    interactions += 1;
+    expect(h.busy).toBe(false);
+    expect(controller.apply().state).toBe('invalidated');
+    expect(h.doc.canUndo()).toBe(false);
+  });
+
+  it('checks quiet state replacements even if a source binding erroneously retains its revision', async () => {
+    const h = harness([line('e1')]);
+    const binding = h.source.binding();
+    h.source.binding = () => binding;
+    const controller = new AiDraftController(h.source, h.doc);
+    await controller.generate('move', planProvider(movePlan), 'x');
+    h.doc.patchQuiet((state) => ({ ...state, meta: { retained: 'quiet' } }), false);
+    expect(controller.apply().state).toBe('invalidated');
+    expect(h.doc.snapshot.meta).toEqual({ retained: 'quiet' });
+    expect(h.doc.canUndo()).toBe(false);
+  });
+
+  it('contains source failures at response and Apply, and never retains an applicable old preview', async () => {
+    const h = harness([line('e1')]);
+    let release: ((response: AiDraftResponse) => void) | undefined;
+    const controller = new AiDraftController(h.source, h.doc);
+    const pending = controller.generate('move', { id: 'slow', draft: () => new Promise((resolve) => { release = resolve; }) }, 'x');
+    const defaults = h.source.frozenDefaults;
+    h.source.frozenDefaults = () => { throw new Error('source failed'); };
+    release?.(movePlan);
+    expect((await pending).state).toBe('error');
+    h.source.frozenDefaults = defaults;
+    await controller.generate('move', planProvider(movePlan), 'x');
+    h.source.binding = () => { throw new Error('source failed'); };
+    expect(() => controller.apply()).not.toThrow();
+    expect(controller.status.state).toBe('error');
+    expect(h.doc.canUndo()).toBe(false);
   });
 });

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
+import { DRAFT_INSTRUCTIONS, draftPlanJsonSchema } from '../src/ai/draft-schema';
 
 const require = createRequire(import.meta.url);
 
@@ -617,6 +618,17 @@ describe('ai-anthropic-transport draft', () => {
     expect(body.max_tokens).toBe(4096);
     expect(body.system).toContain('drafting engine');
     expect(body.system).toContain('eligible:true');
+    expect(body.system).toBe(DRAFT_INSTRUCTIONS);
+    expect(body.output_config.format.schema).toEqual(draftPlanJsonSchema('anthropic'));
+    const unions = (value: unknown): number => {
+      if (Array.isArray(value)) return value.reduce((sum, child) => sum + unions(child), 0);
+      if (typeof value !== 'object' || value === null) return 0;
+      const record = value as Record<string, unknown>;
+      return (Array.isArray(record.anyOf) || Array.isArray(record.type) ? 1 : 0)
+        + Object.values(record).reduce<number>((sum, child) => sum + unions(child), 0);
+    };
+    // Native Anthropic schemas allow at most sixteen union-typed parameters.
+    expect(unions(body.output_config.format.schema)).toBeLessThanOrEqual(16);
     expect(body.output_config.format.type).toBe('json_schema');
     // Anthropic rejects maxItems in structured-output schemas: it must
     // appear nowhere in the schema (the plan bounds are enforced locally).

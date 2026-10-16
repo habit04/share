@@ -1,5 +1,6 @@
 import { parseAiDraftResponse, type AiDraftResponse } from './draft-plan';
 import { AiError, type AiDraftProvider, type AiDraftRequest } from './types';
+import { AI_DRAFT_MAX_CONTEXT_BYTES, AI_MAX_QUESTION_CHARS } from './limits';
 
 /**
  * Deterministic offline draft demonstrations (docs/AI-ASSISTANT-M3.md). A
@@ -31,12 +32,13 @@ function number(text: string, pattern: RegExp): number | null {
 function vector(text: string): { dx: number; dy: number } | null {
   const by = /by\s*\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)/i.exec(text);
   if (by) return { dx: Number(by[1]), dy: Number(by[2]) };
-  const amount = number(text, /(\d+(?:\.\d+)?)/);
-  if (amount === null) return null;
-  if (/\bright\b/i.test(text)) return { dx: amount, dy: 0 };
-  if (/\bleft\b/i.test(text)) return { dx: -amount, dy: 0 };
-  if (/\bup(?:ward)?\b/i.test(text)) return { dx: 0, dy: amount };
-  if (/\bdown(?:ward)?\b/i.test(text)) return { dx: 0, dy: -amount };
+  const directional = /\b(?:move|copy)\s+(?:(?:the\s+)?(?:selected\s+)?(?:objects?|entities|selection)\s+)?(-?\d+(?:\.\d+)?)\s*(?:units?\s*)?(right|left|up(?:ward)?|down(?:ward)?)\b/i.exec(text);
+  if (!directional) return null;
+  const amount = Number(directional[1]);
+  if (directional[2] === 'right') return { dx: amount, dy: 0 };
+  if (directional[2] === 'left') return { dx: -amount, dy: 0 };
+  if (directional[2]?.startsWith('up')) return { dx: 0, dy: amount };
+  if (directional[2]?.startsWith('down')) return { dx: 0, dy: -amount };
   return null;
 }
 
@@ -56,8 +58,26 @@ export class FixtureDraftProvider implements AiDraftProvider {
 
   async draft(request: AiDraftRequest, signal: AbortSignal): Promise<AiDraftResponse> {
     if (signal.aborted) throw new AiError('cancelled', 'The draft request was cancelled.');
+    if (request.prompt.length > AI_MAX_QUESTION_CHARS) throw new AiError('invalid-question', 'The draft description is too long.');
+    if (request.contextJson.length > AI_DRAFT_MAX_CONTEXT_BYTES || new TextEncoder().encode(request.contextJson).length > AI_DRAFT_MAX_CONTEXT_BYTES) {
+      throw new AiError('invalid-context', 'The draft context exceeds the offline demonstration limit.');
+    }
     const text = request.prompt.toLowerCase();
     const ids = eligibleIds(request);
+    // The demo recognizes simple examples, not arbitrary prose. Refuse
+    // wording it would otherwise partly interpret or silently discard.
+    if (/\b(?:not|never|without|except|only|dont|don't|don’t|then|also|and|layer)\b/.test(text)) {
+      return { kind: 'clarification', message: 'The offline demo needs one simple instruction without conditions or layer changes. Connect a live provider for more detailed requests.' };
+    }
+    if (/\b(?:mm|millimet(?:er|re)s?|cm|centimet(?:er|re)s?|inch(?:es)?|feet|foot|ft|met(?:er|re)s?|yards?)\b/.test(text)) {
+      return { kind: 'clarification', message: 'The offline demo uses drawing units only. Specify drawing-unit values or connect a live provider for physical-unit conversion.' };
+    }
+    if (/(?<![\d.])[-+]?\.\d|\d[eE][-+]?\d|[-+]\s+\d/.test(text)) {
+      return { kind: 'clarification', message: 'Use ordinary decimal numbers with a leading digit in the offline demo, e.g. 0.5 or -0.5.' };
+    }
+    const actionWords = new Set((text.match(/\b(?:delete|erase|remove|rotate|move|copy|create|draw)\b/g) ?? [])
+      .map((word) => word === 'erase' || word === 'remove' ? 'delete' : word === 'draw' ? 'create' : word));
+    if (actionWords.size > 1) return { kind: 'clarification', message: 'The offline demo handles one action at a time. Generate and review each action separately.' };
 
     if (/\bdelete\b|\berase\b|\bremove\b/.test(text)) {
       if (ids.length === 0) return { kind: 'clarification', message: 'Select at least one eligible object first, then ask to delete it.' };
@@ -79,24 +99,33 @@ export class FixtureDraftProvider implements AiDraftProvider {
       const isCopy = /\bcopy\b/.test(text);
       if (ids.length === 0) return { kind: 'clarification', message: `Select at least one eligible object first, then ask to ${isCopy ? 'copy' : 'move'} it.` };
       const v = vector(text);
-      if (!v) return { kind: 'clarification', message: `Say how far, e.g. "${isCopy ? 'copy' : 'move'} 10 units right" or "${isCopy ? 'copy' : 'move'} by (5, -2)".` };
+      const directions = text.match(/\b(?:right|left|up(?:ward)?|down(?:ward)?)\b/g) ?? [];
+      if (!v || directions.length > 1) return { kind: 'clarification', message: `Say how far in one direction, e.g. "${isCopy ? 'copy' : 'move'} 10 units right" or "${isCopy ? 'copy' : 'move'} by (5, -2)".` };
       return build({
         outcome: 'proposal', message: 'Offline demonstration plan.',
         operations: [{ op: isCopy ? 'copy' : 'move', targetIds: ids, dx: v.dx, dy: v.dy }],
       });
     }
     if (/\brectangle\b/.test(text)) {
-      const dims = /(\d+(?:\.\d+)?)\s*(?:x|×|by)\s*(\d+(?:\.\d+)?)/i.exec(text);
+      const dims = /(-?\d+(?:\.\d+)?)\s*(?:x|×|by)\s*(-?\d+(?:\.\d+)?)/i.exec(text);
       if (!dims) return { kind: 'clarification', message: 'What size rectangle? E.g. "create a 100 x 60 rectangle".' };
       const width = Number(dims[1]);
       const height = Number(dims[2]);
-      const operations: unknown[] = [{ op: 'createRectangle', origin: { x: 0, y: 0 }, width, height, rotationDeg: null, layer: null }];
+      if (/\brotat/.test(text)) return { kind: 'clarification', message: 'The offline rectangle demo is axis aligned. Use a separate rotation instruction or connect a live provider.' };
+      const origin = /at\s*\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)/i.exec(text);
+      if (/\bat\b/.test(text) && !origin) return { kind: 'clarification', message: 'Give the rectangle origin explicitly, e.g. "at (5, 10)".' };
+      const x = origin ? Number(origin[1]) : 0;
+      const y = origin ? Number(origin[2]) : 0;
+      const operations: unknown[] = [{ op: 'createRectangle', origin: { x, y }, width, height, rotationDeg: null, layer: null }];
       if (/\bcircle/.test(text)) {
         const radius = number(text, /radius\s*(?:of\s*)?(\d+(?:\.\d+)?)/);
-        const inset = number(text, /(\d+(?:\.\d+)?)\s*(?:units?\s*)?from each corner/) ?? 10;
+        const inset = number(text, /(-?\d+(?:\.\d+)?)\s*(?:units?\s*)?from each corner/);
+        if (!/\b(?:four|4)\s+circles\b/.test(text) || inset === null || inset < 0) {
+          return { kind: 'clarification', message: 'For the offline rectangle-and-circles demo, specify four circles and their distance from each corner.' };
+        }
         if (radius === null) return { kind: 'clarification', message: 'What circle radius? E.g. "four circles of radius 3".' };
-        for (const [cx, cy] of [[inset, inset], [width - inset, inset], [width - inset, height - inset], [inset, height - inset]]) {
-          operations.push({ op: 'createCircle', center: { x: cx, y: cy }, radius, layer: null });
+        for (const [cx, cy] of [[inset, inset], [width - inset, inset], [width - inset, height - inset], [inset, height - inset]] as const) {
+          operations.push({ op: 'createCircle', center: { x: x + cx, y: y + cy }, radius, layer: null });
         }
       }
       return build({ outcome: 'proposal', message: 'Offline demonstration plan.', operations });
@@ -113,6 +142,7 @@ export class FixtureDraftProvider implements AiDraftProvider {
       const radius = number(text, /radius\s*(?:of\s*)?(\d+(?:\.\d+)?)/);
       const center = /at\s*\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)/i.exec(text);
       if (radius === null) return { kind: 'clarification', message: 'What circle radius? E.g. "circle of radius 5 at (10, 10)".' };
+      if (/\bat\b/.test(text) && !center) return { kind: 'clarification', message: 'Give the circle center explicitly, e.g. "at (10, 10)".' };
       return build({
         outcome: 'proposal', message: 'Offline demonstration plan.',
         operations: [{ op: 'createCircle', center: center ? { x: Number(center[1]), y: Number(center[2]) } : { x: 0, y: 0 }, radius, layer: null }],

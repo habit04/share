@@ -5,8 +5,10 @@ import {
   AI_DRAFT_MAX_DIMENSION,
   AI_DRAFT_MAX_MESSAGE_CHARS,
   AI_DRAFT_MAX_OPERATIONS,
+  AI_DRAFT_MAX_PLAN_BYTES,
   AI_DRAFT_MAX_TARGETS_PER_OP,
 } from './limits';
+import { sealImmutableData } from '../core/immutable-data';
 
 /**
  * The milestone-3 plan contract (docs/AI-ASSISTANT-M3.md): a bounded,
@@ -50,7 +52,13 @@ const OP_KEYS: ReadonlySet<string> = new Set([
 const ID_MAX_CHARS = 512;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+  const prototype = Object.getPrototypeOf(v);
+  return (prototype === Object.prototype || prototype === null)
+    && Reflect.ownKeys(v).every((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(v, key)!;
+      return typeof key === 'string' && descriptor.enumerable && 'value' in descriptor;
+    });
 }
 
 function fail(error: string): { ok: false; error: string } {
@@ -60,7 +68,7 @@ function fail(error: string): { ok: false; error: string } {
 function parsePoint(v: unknown): AiPlanPoint | null {
   if (!isRecord(v)) return null;
   const keys = Object.keys(v);
-  if (keys.length !== 2 || typeof v.x !== 'number' || typeof v.y !== 'number') return null;
+  if (keys.length !== 2 || !keys.includes('x') || !keys.includes('y') || typeof v.x !== 'number' || typeof v.y !== 'number') return null;
   if (!Number.isFinite(v.x) || !Number.isFinite(v.y)) return null;
   if (Math.abs(v.x) > AI_DRAFT_MAX_COORDINATE || Math.abs(v.y) > AI_DRAFT_MAX_COORDINATE) return null;
   return { x: v.x, y: v.y };
@@ -91,7 +99,7 @@ function parseTargets(v: unknown): readonly string[] | null {
     if (seen.has(id)) return null;
     seen.add(id);
   }
-  return v as string[];
+  return [...v] as string[];
 }
 
 /** Fields that must be null for each op (non-null = misplaced data). */
@@ -109,7 +117,7 @@ function parseOperation(raw: unknown): AiPlanOperation | null {
   if (!isRecord(raw)) return null;
   for (const key of Object.keys(raw)) if (!OP_KEYS.has(key)) return null;
   const op = raw.op;
-  if (typeof op !== 'string' || !(op in NULL_FIELDS)) return null;
+  if (typeof op !== 'string' || !Object.hasOwn(NULL_FIELDS, op)) return null;
   for (const field of NULL_FIELDS[op]!) if (raw[field] !== null && raw[field] !== undefined) return null;
   switch (op) {
     case 'createLine': {
@@ -173,7 +181,7 @@ function parseOperation(raw: unknown): AiPlanOperation | null {
  * targets (an id targeted by more than one edit operation) and excessive
  * counts. Eligibility/authorization of targets is the compiler's job.
  */
-export function parseAiDraftResponse(value: unknown): { ok: true; response: AiDraftResponse } | { ok: false; error: string } {
+function parseResponse(value: unknown): { ok: true; response: AiDraftResponse } | { ok: false; error: string } {
   if (!isRecord(value)) return fail('The provider response was not an object.');
   for (const key of Object.keys(value)) if (!TOP_KEYS.has(key)) return fail('The provider response carried unexpected fields.');
   const outcome = value.outcome;
@@ -188,7 +196,7 @@ export function parseAiDraftResponse(value: unknown): { ok: true; response: AiDr
     if (value.operations !== null && value.operations !== undefined) {
       return fail('A clarification or unsupported response must not carry operations.');
     }
-    if (typeof message !== 'string' || message.length === 0) {
+    if (typeof message !== 'string' || message.trim().length === 0) {
       return fail('The provider response did not explain itself.');
     }
     return { ok: true, response: { kind: outcome, message } };
@@ -224,4 +232,39 @@ export function parseAiDraftResponse(value: unknown): { ok: true; response: AiDr
     ok: true,
     response: { kind: 'plan', plan: { message: typeof message === 'string' && message.length > 0 ? message : null, operations } },
   };
+}
+
+type ParsedResponse = ReturnType<typeof parseResponse>;
+
+/** Defensive entry point: no malformed provider value may throw or retain mutable aliases. */
+export function parseAiDraftResponse(value: unknown): ParsedResponse {
+  try {
+    const result = parseResponse(value);
+    if (!result.ok) return result;
+    if (new TextEncoder().encode(JSON.stringify(value)).length > AI_DRAFT_MAX_PLAN_BYTES
+      || new TextEncoder().encode(JSON.stringify(result.response)).length > AI_DRAFT_MAX_PLAN_BYTES) {
+      return fail('The proposal exceeds the plan size limit.');
+    }
+    return { ok: true, response: sealImmutableData(result.response) };
+  } catch {
+    return fail('The provider response was not valid plan data.');
+  }
+}
+
+/** Revalidate even typed provider/fixture results at the controller/compiler boundary. */
+export function validateAiDraftResponse(value: unknown): ParsedResponse {
+  try {
+    if (!isRecord(value)) return fail('The provider response was not an object.');
+    if (value.kind === 'plan') {
+      if (Object.keys(value).some((key) => key !== 'kind' && key !== 'plan') || !isRecord(value.plan)
+        || Object.keys(value.plan).some((key) => key !== 'message' && key !== 'operations')) {
+        return fail('The proposal carried unexpected fields.');
+      }
+      return parseAiDraftResponse({ outcome: 'proposal', message: value.plan.message, operations: value.plan.operations });
+    }
+    if (Object.keys(value).some((key) => key !== 'kind' && key !== 'message')) return fail('The response carried unexpected fields.');
+    return parseAiDraftResponse({ outcome: value.kind, message: value.message, operations: null });
+  } catch {
+    return fail('The provider response was not valid plan data.');
+  }
 }
