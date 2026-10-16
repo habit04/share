@@ -2151,11 +2151,34 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
     return { ok: true, vars: x, mag };
   }
 
+  // Mid-solve degeneracy of a candidate point: a driven radius
+  // crossing the degenerate band, or a length/direction-reading
+  // segment collapsing from outside the band into it (§5.7).
+  const trialDegenerate = (tv: Float64Array): boolean => {
+    for (const ev of comp.list) {
+      if (ev.entity.type === 'circle' || ev.entity.type === 'arc') {
+        if (tv[ev.offset + 2]! < DEGENERATE_REL * comp.S) return true;
+      }
+    }
+    for (const sv of collapseSegVars) {
+      if (sv.entry < DEGENERATE_REL * comp.S) continue;
+      const dx = tv[sv.b]! - tv[sv.a]!;
+      const dy = tv[sv.b + 1]! - tv[sv.a + 1]!;
+      if (Math.hypot(dx, dy) < DEGENERATE_REL * comp.S) return true;
+    }
+    return false;
+  };
+
   let lambda = 1e-3;
   let lastStep = Infinity;
   let iterations = 0;
   let converged = false;
   let stationary = false;
+  // F-3034 crawl extrapolation state (see the jump site below): the
+  // previous accepted step and the last two step-contraction ratios.
+  let prevStepVec: Float64Array | null = null;
+  let ratioPrev: number | null = null;
+  let ratioCurr: number | null = null;
   for (iterations = 1; iterations <= MAX_ITERATIONS; iterations += 1) {
     if (poll()) {
       return { ok: false, vars: x, mag, failure: { code: 'cancelled', constraintIds: comp.active.map((a) => a.c.id), message: 'Solve cancelled.' } };
@@ -2214,33 +2237,16 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
         if (lambda > 1e6) break;
         continue;
       }
-      const trial = new Float64Array(x);
       step = new Float64Array(nVars);
-      for (let i = 0; i < f; i += 1) {
-        trial[free[i]!] = trial[free[i]!]! + delta[i]!;
-        step[free[i]!] = delta[i]!;
-      }
+      for (let i = 0; i < f; i += 1) step[free[i]!] = delta[i]!;
+      const trial = new Float64Array(x);
+      for (let i = 0; i < f; i += 1) trial[free[i]!] = trial[free[i]!]! + step[free[i]!]!;
       if (![...trial].every((v) => Number.isFinite(v))) {
         lambda *= 10;
         if (lambda > 1e6) break;
         continue;
       }
-      // Mid-solve degeneracy: a driven radius crossing the degenerate
-      // band, or a length/direction-reading segment collapsing from
-      // outside the band into it.
-      let degenerate = false;
-      for (const ev of comp.list) {
-        if (ev.entity.type === 'circle' || ev.entity.type === 'arc') {
-          if (trial[ev.offset + 2]! < DEGENERATE_REL * comp.S) degenerate = true;
-        }
-      }
-      for (const sv of collapseSegVars) {
-        if (sv.entry < DEGENERATE_REL * comp.S) continue;
-        const dx = trial[sv.b]! - trial[sv.a]!;
-        const dy = trial[sv.b + 1]! - trial[sv.a + 1]!;
-        if (Math.hypot(dx, dy) < DEGENERATE_REL * comp.S) degenerate = true;
-      }
-      if (degenerate) {
+      if (trialDegenerate(trial)) {
         return {
           ok: false,
           vars: x,
@@ -2281,6 +2287,59 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
     if (lastStep <= STEP_TOL * comp.S && maxAbs(r) > RESIDUAL_TOL) {
       stationary = true;
       break;
+    }
+    // F-3034 crawl extrapolation (Anderson(1) / Aitken Δ² on the
+    // accepted-step sequence). Near a fold — a tangent configuration,
+    // or the collinear optimum of an inconsistent distance triangle —
+    // the Jacobian is singular at the target point and the damped
+    // Gauss–Newton iteration contracts only linearly, at a nearly
+    // constant ratio, so the step size cannot reach STEP_TOL·S within
+    // MAX_ITERATIONS even though the iterate is converging steadily.
+    // Measured on conflict-triangle-1: the contraction ratio is
+    // −0.830084 (the iteration zigzags across the optimum, each step
+    // reversing and shrinking by 0.83), stable to six digits. When the
+    // last two step-contraction ratios ρ̂ = ⟨d_k, d_{k−1}⟩/‖d_{k−1}‖²
+    // agree (|ρ̂| in [0.55, 0.97], within 0.08 of each other), the
+    // dominant contraction mode is identified and the remaining
+    // distance along it is ρ̂/(1−ρ̂)·d_k (capped at 20×; for a negative
+    // ratio this steps BACKWARD along d_k, to the centre of the
+    // zigzag). The extrapolated point is PROPOSED, never trusted — it
+    // replaces the iterate only if it passes the same degeneracy
+    // guard and strictly decreases the max residual, exactly like an
+    // accepted step, and the history resets either way so a failed
+    // proposal cannot retrigger immediately. Verdicts are untouched:
+    // satisfaction and the §5.6 stationary evidence are still judged
+    // at genuine iterates by the tests above — the jump only moves
+    // the starting point of the next iteration closer to where the
+    // crawl was heading.
+    if (prevStepVec !== null) {
+      let num = 0;
+      let den = 0;
+      for (let i = 0; i < nVars; i += 1) {
+        num += step[i]! * prevStepVec[i]!;
+        den += prevStepVec[i]! * prevStepVec[i]!;
+      }
+      if (den > 0) {
+        ratioPrev = ratioCurr;
+        ratioCurr = num / den;
+      }
+    }
+    prevStepVec = new Float64Array(step);
+    if (ratioPrev !== null && ratioCurr !== null && Math.abs(ratioCurr) >= 0.55 && Math.abs(ratioCurr) <= 0.97 && Math.abs(ratioCurr - ratioPrev) <= 0.08) {
+      const factor = Math.max(-20, Math.min(20, ratioCurr / (1 - ratioCurr)));
+      const cand = new Float64Array(x);
+      for (let i = 0; i < nVars; i += 1) cand[i] = cand[i]! + factor * step[i]!;
+      if ([...cand].every((v) => Number.isFinite(v)) && !trialDegenerate(cand)) {
+        const rCand = evalAll(comp, cand, work);
+        if (maxAbs(rCand) < maxAbs(r)) {
+          x = cand;
+          r = rCand;
+          mag = magMap(comp, r);
+        }
+      }
+      prevStepVec = null;
+      ratioPrev = null;
+      ratioCurr = null;
     }
   }
   if (converged) {
