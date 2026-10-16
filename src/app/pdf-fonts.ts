@@ -44,6 +44,11 @@ export async function capturedPdfLookup(state: DrawingState, reader?: PdfFontRea
             // reader point-validates only those glyphs (plus closure and capital
             // A). Anything this walk somehow misses stays unvalidated, and the
             // writer falls back for that run instead of trusting it.
+            // Collection is keyed by the face discover() finally returns for
+            // the run — never by the pre-fallback style font — so a face that
+            // resolution substituted (including a Unicode fallback face) still
+            // receives its plotted characters. Stroke faces collect nothing:
+            // native SHX glyphs keep priority whenever they cover a run.
             const key = pdfFontKey(face);
             let used = usedByKey.get(key);
             if (!used) usedByKey.set(key, used = new Set());

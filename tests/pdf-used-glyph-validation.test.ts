@@ -228,6 +228,35 @@ describe('captured-PDF used-codepoint plumbing', () => {
     expect(seen[0]!.usedCodepoints).toEqual([0x41, 0x42, 0x4e2d]);
   });
 
+  it('keys collection to the finally resolved face, not the style (F1)', async () => {
+    // Two styles naming the same font resolve to one final face; both runs'
+    // characters must arrive merged in that face's single request.
+    const seen: Request[] = [];
+    const reader: PdfFontReader = async (request) => { seen.push(request); return { font: pdfFontFixture({ family: 'Arial' }) }; };
+    const doc = new Drawing({
+      entities: [text('first', { text: 'A' }), text('second', { style: 'ALT', text: 'B' })],
+      meta: { textStyles: { FACE: style('FACE', 'arial.ttf'), ALT: style('ALT', 'arial.ttf') } },
+    });
+    await capturedPdfLookup(doc.snapshot, reader);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.usedCodepoints).toEqual([0x41, 0x42]);
+  });
+
+  it('keeps a clear refusal when the plotted used set itself exceeds the cap (F3)', async () => {
+    const bytes = withPostscriptName(HEAVY, 'Simsunlike-Regular');
+    const fontsDirectory = await writeFont(bytes);
+    const reader: PdfFontReader = async (request) => {
+      try { return { font: await readWindowsPdfFont(request, { fontsDirectory }) }; }
+      catch (error) { return { font: null, problem: error instanceof Error ? error.message : 'font unavailable' }; }
+    };
+    const allHeavy = String.fromCodePoint(...heavyCodes);
+    const doc = new Drawing({ entities: [text('first', { text: `A${allHeavy}` })], meta: { textStyles: { FACE: style() } } });
+    const result = await capturedPdfLookup(doc.snapshot, reader);
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toContain('glyph point work exceeds the safe limit');
+    expect(result.fonts?.usedFaces ?? 0).toBe(0);
+  });
+
   it('embeds an over-cap face for the glyphs a drawing uses and never encodes an unvalidated glyph', async () => {
     const bytes = withPostscriptName(HEAVY, 'Simsunlike-Regular');
     const fontsDirectory = await writeFont(bytes);
