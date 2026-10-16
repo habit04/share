@@ -1139,27 +1139,57 @@ function guardProblems(entities: readonly Entity[]): ConstraintProblem[] {
   const problems: ConstraintProblem[] = [];
   const bad = (e: Entity, what: string) =>
     problems.push({ code: 'invalid-value', entityId: e.id, message: `Entity '${e.id}' (${e.type}) has ${what}; the solver refuses non-finite or out-of-range input.` });
+  // Duplicate ids (30.3.4): every lookup in the engine — and in §4
+  // validation — is keyed by entity id, so a duplicate makes refs
+  // ambiguous and would silently alias two distinct entities' variables
+  // (one entity's geometry overwriting the other's in the result). The
+  // whole input is refused, naming each duplicated id once.
+  const seen = new Set<string>();
+  const dupReported = new Set<string>();
+  for (const e of entities) {
+    if (seen.has(e.id) && !dupReported.has(e.id)) {
+      dupReported.add(e.id);
+      problems.push({ code: 'duplicate-entity', entityId: e.id, message: `Entity id '${e.id}' appears more than once in the input; constraint references would be ambiguous.` });
+    }
+    seen.add(e.id);
+  }
+  // Defensive numeric reads (30.3.4): entities are plain data and may
+  // arrive JSON-shaped with fields missing or of the wrong type. A
+  // missing field must surface as this refusal, never as a TypeError.
+  const num = (v: unknown): number => (typeof v === 'number' ? v : NaN);
+  const coords = (p: unknown): [number, number] => {
+    const q = p as { x?: unknown; y?: unknown } | null | undefined;
+    return [num(q?.x), num(q?.y)];
+  };
   for (const e of entities) {
     if (!isConstrainable(e)) continue;
     const nums: number[] = [];
     switch (e.type) {
       case 'point':
-        nums.push(e.position.x, e.position.y);
+        nums.push(...coords(e.position));
         break;
       case 'line':
-        nums.push(e.a.x, e.a.y, e.b.x, e.b.y);
+        nums.push(...coords(e.a), ...coords(e.b));
         break;
       case 'circle':
-        nums.push(e.center.x, e.center.y, e.radius);
-        if (!(e.radius > 0)) bad(e, 'a non-positive radius');
+        nums.push(...coords(e.center), num(e.radius));
+        if (!(num(e.radius) > 0)) bad(e, 'a non-positive radius');
         break;
       case 'arc':
-        nums.push(e.center.x, e.center.y, e.radius, e.startAngle, e.endAngle);
-        if (!(e.radius > 0)) bad(e, 'a non-positive radius');
+        nums.push(...coords(e.center), num(e.radius), num(e.startAngle), num(e.endAngle));
+        if (!(num(e.radius) > 0)) bad(e, 'a non-positive radius');
         break;
-      case 'polyline':
-        for (const p of e.points) nums.push(p.x, p.y);
+      case 'polyline': {
+        // A polyline with no points has no anchors to resolve: its
+        // 'start' would alias the *next* entity's variables (30.3.4).
+        const pts = Array.isArray(e.points) ? e.points : [];
+        if (pts.length === 0) {
+          bad(e, 'no points');
+          break;
+        }
+        for (const p of pts) nums.push(...coords(p));
         break;
+      }
     }
     if (nums.some((v) => !Number.isFinite(v) || Math.abs(v) > 1e15)) bad(e, 'a non-finite coordinate or a coordinate beyond 1e15');
   }

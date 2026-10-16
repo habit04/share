@@ -32,7 +32,12 @@ export type ConstraintProblemCode =
   | 'invalid-value'
   | 'invalid-role'
   | 'duplicate-constraint'
-  | 'self-reference';
+  | 'self-reference'
+  /** Input-guard code (30.3.4): two entities sharing one id. Every
+   *  reference in the engine resolves through the id, so a duplicate
+   *  makes refs ambiguous; the solver's input guards refuse the input
+   *  (guardProblems in solve.ts) rather than aliasing two entities. */
+  | 'duplicate-entity';
 
 export interface ConstraintProblem {
   readonly code: ConstraintProblemCode;
@@ -267,7 +272,10 @@ export function validateConstraints(entities: readonly Entity[], set: Constraint
         problems.push({ code: 'self-reference', constraintId: c.id, message: `Constraint '${c.id}' references the same anchor twice.` });
       } else if (c.kind === 'coincident' && s0.entity === s1.entity && s0.entity.type === 'polyline' && s0.entity.closed) {
         const poly = s0.entity;
-        const n = poly.points.length;
+        // Defensive read (30.3.4): a malformed polyline with a missing
+        // points array is refused by the solver's input guards; here it
+        // simply has no vertices to alias.
+        const n = Array.isArray(poly.points) ? poly.points.length : 0;
         const i0 = s0.ref.anchor === 'vertex' && s0.ref.index !== undefined ? s0.ref.index % n : -1;
         const i1 = s1.ref.anchor === 'vertex' && s1.ref.index !== undefined ? s1.ref.index % n : -1;
         if (i0 >= 0 && i1 >= 0 && i0 !== i1 && (i0 === 0 || i1 === 0) && (i0 === n - 1 || i1 === n - 1)) {

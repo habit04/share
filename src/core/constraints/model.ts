@@ -116,6 +116,14 @@ export function isConstrainable(e: Entity): e is ConstrainableEntity {
   return e.type === 'line' || e.type === 'circle' || e.type === 'arc' || e.type === 'polyline' || e.type === 'point';
 }
 
+/** A polyline's points as an array. Entities are plain data and may
+ *  arrive malformed (30.3.4 hardening): a missing or non-array `points`
+ *  reads as empty here — never a throw — and the solver's input guards
+ *  refuse such an entity before any anchor is resolved for solving. */
+function polyPoints(e: Extract<Entity, { type: 'polyline' }>): readonly Point[] {
+  return Array.isArray(e.points) ? e.points : [];
+}
+
 /** Degrees of freedom of one entity under the §3.1 parametrization.
  *  Non-constrainable entities are not in the system: 0. */
 export function entityDof(e: Entity): number {
@@ -129,7 +137,7 @@ export function entityDof(e: Entity): number {
     case 'arc':
       return 5;
     case 'polyline':
-      return 2 * e.points.length;
+      return 2 * polyPoints(e).length;
     default:
       return 0;
   }
@@ -181,7 +189,7 @@ export function anchorValidFor(e: Entity, ref: AnchorRef): boolean {
     case 'point':
       return ref.anchor === 'position' && idx === undefined;
     case 'polyline': {
-      const n = e.points.length;
+      const n = polyPoints(e).length;
       // Closed polylines: indices are modulo n (design §2.5), so index n is
       // accepted and resolves to vertex/segment 0.
       const segCount = e.closed ? n : n - 1;
@@ -210,8 +218,8 @@ export function anchorValidFor(e: Entity, ref: AnchorRef): boolean {
 // ---------------------------------------------------------------------------
 
 function vertexAt(e: Extract<Entity, { type: 'polyline' }>, index: number): Point {
-  const n = e.points.length;
-  return e.points[e.closed ? index % n : index]!;
+  const pts = polyPoints(e);
+  return pts[e.closed ? index % pts.length : index]!;
 }
 
 function arcPoint(e: Extract<Entity, { type: 'arc' }>, angle: number): Point {
@@ -240,13 +248,14 @@ export function resolveAnchorPoint(e: Entity, ref: AnchorRef): Point {
       if (ref.anchor === 'position') return e.position;
       break;
     case 'polyline': {
-      const n = e.points.length;
-      if (ref.anchor === 'start') return e.points[0]!;
-      if (ref.anchor === 'end') return e.closed ? e.points[0]! : e.points[n - 1]!;
+      const pts = polyPoints(e);
+      const n = pts.length;
+      if (ref.anchor === 'start') return pts[0]!;
+      if (ref.anchor === 'end') return e.closed ? pts[0]! : pts[n - 1]!;
       if (ref.anchor === 'vertex') return vertexAt(e, ref.index!);
       if (ref.anchor === 'midpoint') {
         const i = e.closed ? ref.index! % n : ref.index!;
-        return mid(e.points[i]!, e.points[(i + 1) % n]!);
+        return mid(pts[i]!, pts[(i + 1) % n]!);
       }
       break;
     }
@@ -261,9 +270,10 @@ export function resolveAnchorPoint(e: Entity, ref: AnchorRef): Point {
 export function segmentEndpoints(e: Entity, ref: AnchorRef): readonly [Point, Point] | null {
   if (e.type === 'line' && ref.anchor === 'whole') return [e.a, e.b];
   if (e.type === 'polyline' && ref.anchor === 'segment') {
-    const n = e.points.length;
+    const pts = polyPoints(e);
+    const n = pts.length;
     const i = e.closed ? ref.index! % n : ref.index!;
-    return [e.points[i]!, e.points[(i + 1) % n]!];
+    return [pts[i]!, pts[(i + 1) % n]!];
   }
   return null;
 }
@@ -272,8 +282,8 @@ export function segmentEndpoints(e: Entity, ref: AnchorRef): readonly [Point, Po
  *  checks: entity + anchor kind + resolved index. */
 export function anchorKey(e: Entity, ref: AnchorRef): string {
   let index = ref.index;
-  if (e.type === 'polyline' && index !== undefined) index = e.closed ? index % e.points.length : index;
-  if (e.type === 'polyline' && ref.anchor === 'end') return `${e.id}|vertex|${e.closed ? 0 : e.points.length - 1}`;
+  if (e.type === 'polyline' && index !== undefined) index = e.closed ? index % polyPoints(e).length : index;
+  if (e.type === 'polyline' && ref.anchor === 'end') return `${e.id}|vertex|${e.closed ? 0 : polyPoints(e).length - 1}`;
   if (e.type === 'polyline' && ref.anchor === 'start') return `${e.id}|vertex|0`;
   return `${e.id}|${ref.anchor}|${index === undefined ? '' : index}`;
 }
@@ -281,11 +291,11 @@ export function anchorKey(e: Entity, ref: AnchorRef): string {
 /** Does this polyline carry any non-zero bulge? (Design §2.5: bulges are
  *  carried data, never variables.) */
 export function hasBulge(e: Entity): boolean {
-  return e.type === 'polyline' && (e.bulges?.some((b) => b !== 0) ?? false);
+  return e.type === 'polyline' && Array.isArray(e.bulges) && e.bulges.some((b) => b !== 0);
 }
 
 /** The bulge of the segment starting at vertex `index` (0 when absent). */
 export function segmentBulge(e: Entity, index: number): number {
-  if (e.type !== 'polyline') return 0;
-  return e.bulges?.[index] ?? 0;
+  if (e.type !== 'polyline' || !Array.isArray(e.bulges)) return 0;
+  return e.bulges[index] ?? 0;
 }
