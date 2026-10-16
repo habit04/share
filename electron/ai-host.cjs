@@ -1,21 +1,21 @@
 'use strict';
 
 /**
- * Host-side AI request service — INACTIVE in this milestone
- * (docs/AI-ASSISTANT.md). This module is deliberately NOT required by
- * electron/main.cjs and its channel is NOT exposed by electron/preload.cjs:
- * no live provider, endpoint, credentials or data handling has been agreed.
- * It is delivered now so the eventual live adapter is separately reviewable.
+ * Host-side AI request service (docs/AI-ASSISTANT.md milestone 1,
+ * docs/AI-ASSISTANT-M2.md milestone 2). Milestone 2 wires this module
+ * through electron/main/ipc-ai.cjs, which registers guarded, sender-scoped
+ * IPC channels: ask enqueues a request and renderer aborts cancel its
+ * request id. Never register a request-only handler that loses aborts.
+ * electron/main.cjs itself requires only ipc-ai.cjs, never this module.
  *
  * Shape follows electron/font-metrics-host.cjs: a pure validator that copies
  * only whitelisted, bounded fields; bounded concurrency; timeout; disposal;
  * usage counters that never contain content or keys.
  *
- * When a provider is agreed, the lead supplies a guarded, sender-scoped
- * request/cancel bridge: ask enqueues a request and renderer aborts cancel
- * its request id. Never register a request-only handler that loses aborts.
- * Its transport reads keys from createAiKeyStore() and never returns key
- * material to the renderer. No bridge is registered in this milestone.
+ * createAiService() owns the live configuration (createAiConfigStore) and
+ * the credentials (createAiKeyStore): provider/model/credentials stay
+ * host-side, no request leaves the machine before the user explicitly
+ * enables Live AI, and key material is never returned to the renderer.
  */
 
 const fs = require('node:fs');
@@ -215,7 +215,12 @@ function aiRequest(value) {
   if (envelopeBytes > AI_LIMITS.maxEnvelopeBytes) {
     throw new AiHostError('invalid-request', 'AI request exceeds the size limit.');
   }
-  if (!Number.isSafeInteger(value.requestId) || value.requestId < 0) {
+  // Integer ids (milestone 1) and string ids (milestone 2: the renderer
+  // mints `<page-instance salt>-<counter>`, docs/AI-ASSISTANT-M2.md) are
+  // both accepted; the job maps key them as-is, so 5 and '5' are distinct.
+  const requestId = value.requestId;
+  if (!((Number.isSafeInteger(requestId) && requestId >= 0)
+    || (typeof requestId === 'string' && /^[A-Za-z0-9][A-Za-z0-9-]{7,95}$/.test(requestId)))) {
     throw new AiHostError('invalid-request', 'Invalid request id.');
   }
   const question = boundedString(value.question, AI_LIMITS.maxQuestionChars, 'question');
@@ -272,7 +277,18 @@ function aiAnswer(value) {
   if (Buffer.byteLength(JSON.stringify({ text: value.text, references }), 'utf8') > AI_LIMITS.maxEnvelopeBytes) {
     throw new AiHostError('output-too-large', 'The provider answer exceeds the output size limit.');
   }
-  return { text: value.text, references };
+  const result = { text: value.text, references };
+  // Provider-reported token usage rides along only as bounded counts;
+  // anything malformed is dropped field by field, never trusted.
+  if (isPlainObject(value.providerUsage)) {
+    const providerUsage = {};
+    for (const field of ['inputTokens', 'outputTokens']) {
+      const tokens = value.providerUsage[field];
+      if (Number.isSafeInteger(tokens) && tokens >= 0) providerUsage[field] = tokens;
+    }
+    if (Object.keys(providerUsage).length > 0) result.providerUsage = providerUsage;
+  }
+  return result;
 }
 
 /**
@@ -354,10 +370,10 @@ function createAiHost({ transport, timeoutMs = 30000, maxConcurrent = 2, maxPend
   }
 
   return {
-    // An injected same-process bridge passes its AbortSignal directly. A
-    // future IPC bridge must instead translate abort into cancel(requestId)
-    // within a host instance scoped to that guarded sender; signals are not
-    // serializable IPC values. No IPC channel is registered in this milestone.
+    // An injected same-process bridge passes its AbortSignal directly. The
+    // IPC bridge (electron/main/ipc-ai.cjs) instead translates a renderer
+    // abort into cancel(requestId) within the host instance scoped to that
+    // guarded sender; signals are not serializable IPC values.
     async ask(value, signal) {
       if (disposed) throw new AiHostError('disposed', 'The AI host has been disposed.');
       if (signal && (typeof signal.aborted !== 'boolean' || typeof signal.addEventListener !== 'function'
@@ -393,6 +409,12 @@ function createAiHost({ transport, timeoutMs = 30000, maxConcurrent = 2, maxPend
       cancel(job);
       return true;
     },
+    /** Cancel every outstanding job (queued and running); returns how many. */
+    cancelAll() {
+      const outstanding = [...jobs.values()];
+      for (const job of outstanding) cancel(job);
+      return outstanding.length;
+    },
     usage: () => ({ ...usage }),
     async dispose() {
       disposed = true;
@@ -401,19 +423,42 @@ function createAiHost({ transport, timeoutMs = 30000, maxConcurrent = 2, maxPend
   };
 }
 
+const LINUX_KEYRING_BACKENDS = Object.freeze(['gnome_libsecret', 'kwallet', 'kwallet5', 'kwallet6']);
+
+/** The one API-key shape rule, shared by the key store and the service. */
+function validateApiKey(key) {
+  if (typeof key !== 'string' || key.length === 0 || key.length > AI_LIMITS.maxKeyChars
+    || /[\u0000-\u001f]/.test(key)) {
+    throw new AiHostError('invalid-request', 'Invalid API key.');
+  }
+  return key;
+}
+
 /**
  * API-key store backed by Electron safeStorage (OS-backed encryption:
- * DPAPI / Keychain / libsecret). Stores only ciphertext at `filePath`.
- * The key is host-internal: readKey() exists for the transport factory and
- * must never be exposed over IPC. If OS encryption is unavailable the
- * store refuses to persist anything.
+ * DPAPI / Keychain / libsecret). Stores only ciphertext at `filePath`
+ * (a fixed application-data path; registration supplies it). Since
+ * milestone 2 the store is wired by electron/main/ipc-ai.cjs, which also
+ * injects the fs seams — production writes/deletes go through the app's
+ * atomic writer (electron/atomic-write.cjs), so a failed save never
+ * destroys the previously stored key. The `fsImpl`-derived defaults keep
+ * the milestone-1 behaviour for callers that inject nothing new.
+ * The key is host-internal: readKey() exists for the service's transport
+ * factory and must never be exposed over IPC. If OS encryption is
+ * unavailable the store refuses to persist anything — plaintext fallback
+ * is refused, always.
  * @param {{ safeStorage: { isEncryptionAvailable: () => boolean,
  *                          getSelectedStorageBackend?: () => string,
  *                          encryptString: (plain: string) => Buffer,
  *                          decryptString: (cipher: Buffer) => string },
- *           filePath: string, fsImpl?: typeof fs, platform?: string }} options
+ *           filePath: string, fsImpl?: typeof fs, platform?: string,
+ *           writeFileAtomic?: (filePath: string, data: Buffer) => Promise<void>,
+ *           readFile?: (filePath: string) => Buffer,
+ *           removeFile?: (filePath: string) => Promise<void> | void,
+ *           fileExists?: (filePath: string) => boolean }} options
  */
-function createAiKeyStore({ safeStorage, filePath, fsImpl = fs, platform = process.platform }) {
+function createAiKeyStore({ safeStorage, filePath, fsImpl = fs, platform = process.platform,
+  writeFileAtomic, readFile, removeFile, fileExists }) {
   if (!safeStorage || typeof safeStorage.isEncryptionAvailable !== 'function'
     || typeof safeStorage.encryptString !== 'function' || typeof safeStorage.decryptString !== 'function') {
     throw new AiHostError('host-unavailable', 'safeStorage is required for the AI key store.');
@@ -421,37 +466,467 @@ function createAiKeyStore({ safeStorage, filePath, fsImpl = fs, platform = proce
   if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
     throw new AiHostError('host-unavailable', 'The AI key store needs an absolute file path.');
   }
+  const writeAtomic = writeFileAtomic ?? (async (target, data) => {
+    fsImpl.mkdirSync(path.dirname(target), { recursive: true });
+    fsImpl.writeFileSync(target, data, { mode: 0o600 });
+  });
+  const read = readFile ?? ((target) => fsImpl.readFileSync(target));
+  const remove = removeFile ?? ((target) => { fsImpl.unlinkSync(target); });
+  const exists = fileExists ?? ((target) => fsImpl.existsSync(target));
+  function osEncryptionAvailable() {
+    try {
+      const backend = platform === 'linux' ? safeStorage.getSelectedStorageBackend?.() : null;
+      return !!safeStorage.isEncryptionAvailable() && (platform !== 'linux'
+        || (typeof backend === 'string' && LINUX_KEYRING_BACKENDS.includes(backend)));
+    } catch {
+      return false;
+    }
+  }
   function requireOsEncryption() {
-    const backend = platform === 'linux' ? safeStorage.getSelectedStorageBackend?.() : null;
-    if (!safeStorage.isEncryptionAvailable() || (platform === 'linux'
-      && (typeof backend !== 'string' || !['gnome_libsecret', 'kwallet', 'kwallet5', 'kwallet6'].includes(backend)))) {
+    if (!osEncryptionAvailable()) {
       throw new AiHostError('host-unavailable', 'OS-backed encryption is unavailable; refusing to store or read the API key.');
     }
   }
   return {
-    hasKey() {
-      return fsImpl.existsSync(filePath);
+    /** Whether OS-backed encryption can be used at all; never throws. */
+    encryptionAvailable() {
+      return osEncryptionAvailable();
     },
-    saveKey(key) {
-      if (typeof key !== 'string' || key.length === 0 || key.length > AI_LIMITS.maxKeyChars
-        || /[\u0000-\u001f]/.test(key)) {
-        throw new AiHostError('invalid-request', 'Invalid API key.');
-      }
+    hasKey() {
+      return exists(filePath);
+    },
+    async saveKey(key) {
+      validateApiKey(key);
       requireOsEncryption();
-      const ciphertext = safeStorage.encryptString(key);
-      fsImpl.mkdirSync(path.dirname(filePath), { recursive: true });
-      fsImpl.writeFileSync(filePath, ciphertext, { mode: 0o600 });
+      let ciphertext;
+      try {
+        ciphertext = safeStorage.encryptString(key);
+        await writeAtomic(filePath, ciphertext);
+      } catch {
+        throw new AiHostError('credential-unavailable', 'The API key could not be stored securely.');
+      }
     },
     readKey() {
-      if (!fsImpl.existsSync(filePath)) return null;
+      if (!exists(filePath)) return null;
       requireOsEncryption();
-      const ciphertext = fsImpl.readFileSync(filePath);
-      return safeStorage.decryptString(ciphertext);
+      const ciphertext = read(filePath);
+      try {
+        return safeStorage.decryptString(ciphertext);
+      } catch {
+        throw new AiHostError('credential-corrupt', 'The stored API key could not be decrypted. It may be corrupt or from another machine/user. Forget the key and save it again.');
+      }
     },
-    clearKey() {
-      if (fsImpl.existsSync(filePath)) fsImpl.unlinkSync(filePath);
+    async clearKey() {
+      if (!exists(filePath)) return;
+      try {
+        await remove(filePath);
+      } catch {
+        throw new AiHostError('credential-delete-failed', 'The stored API key could not be deleted.');
+      }
     },
   };
 }
 
-module.exports = { AI_LIMITS, AiHostError, aiRequest, aiAnswer, createAiHost, createAiKeyStore };
+const AI_PROVIDERS = Object.freeze(['openai']);
+const AI_DEFAULT_MODEL = 'gpt-5';
+const AI_KEY_PERSISTENCE_MODES = Object.freeze(['session', 'encrypted']);
+/** Config JSON is tiny by construction; anything larger on disk is invalid. */
+const AI_MAX_CONFIG_BYTES = 4 * 1024;
+
+/** A model id is a bounded provider token, never a path or URL fragment. */
+function validateAiModel(model) {
+  return typeof model === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(model);
+}
+
+function defaultAiConfig() {
+  return { version: 1, provider: 'openai', model: AI_DEFAULT_MODEL, enabled: false, keyPersistence: 'session' };
+}
+
+/** Strictly validate a parsed config value; returns a clean copy or null. */
+function parseAiConfig(value) {
+  if (!isPlainObject(value) || value.version !== 1
+    || !AI_PROVIDERS.includes(/** @type {string} */ (value.provider))
+    || !validateAiModel(value.model)
+    || typeof value.enabled !== 'boolean'
+    || !AI_KEY_PERSISTENCE_MODES.includes(/** @type {string} */ (value.keyPersistence))) {
+    return null;
+  }
+  return {
+    version: 1,
+    provider: /** @type {string} */ (value.provider),
+    model: /** @type {string} */ (value.model),
+    enabled: value.enabled,
+    keyPersistence: /** @type {string} */ (value.keyPersistence),
+  };
+}
+
+/**
+ * Host-authoritative AI connection settings (provider, model, enabled,
+ * key persistence mode — never the key itself), persisted as bounded JSON
+ * at a fixed application-data path through injected fs seams. A missing
+ * file is the defaults; an unreadable or invalid file falls back to the
+ * defaults with a `problem` code ('config-unreadable' / 'config-invalid')
+ * so the UI can say so instead of silently misbehaving.
+ * @param {{ filePath: string,
+ *           writeFileAtomic: (filePath: string, data: Buffer) => Promise<void>,
+ *           readFile: (filePath: string) => Buffer,
+ *           fileExists: (filePath: string) => boolean }} options
+ */
+function createAiConfigStore({ filePath, writeFileAtomic, readFile, fileExists }) {
+  if (typeof filePath !== 'string' || !path.isAbsolute(filePath)
+    || typeof writeFileAtomic !== 'function' || typeof readFile !== 'function'
+    || typeof fileExists !== 'function') {
+    throw new AiHostError('host-unavailable', 'The AI config store needs an absolute file path and fs seams.');
+  }
+  /** @type {ReturnType<typeof defaultAiConfig> | null} */
+  let cache = null;
+  return {
+    /** Load (or reload) from disk; caches and reports any problem. */
+    async load() {
+      let problem = null;
+      let config = defaultAiConfig();
+      if (fileExists(filePath)) {
+        let raw = null;
+        try {
+          raw = readFile(filePath);
+        } catch {
+          problem = 'config-unreadable';
+        }
+        if (raw !== null) {
+          const buffer = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+          if (buffer.length >= AI_MAX_CONFIG_BYTES) {
+            problem = 'config-invalid';
+          } else {
+            let parsed;
+            try {
+              parsed = JSON.parse(buffer.toString('utf8'));
+            } catch {
+              problem = 'config-unreadable';
+            }
+            if (problem === null) {
+              const valid = parseAiConfig(parsed);
+              if (valid) config = valid;
+              else problem = 'config-invalid';
+            }
+          }
+        }
+      }
+      cache = config;
+      return { config: { ...config }, problem };
+    },
+    /** The cached config (defaults until load() has run). */
+    get() {
+      return { ...(cache ?? defaultAiConfig()) };
+    },
+    /**
+     * Merge a validated patch (unknown keys ignored) and persist it. The
+     * cache changes only after the write succeeds.
+     */
+    async update(patch) {
+      if (!isPlainObject(patch)) throw new AiHostError('invalid-request', 'Invalid AI settings.');
+      const next = { ...(cache ?? defaultAiConfig()) };
+      if (Object.hasOwn(patch, 'provider')) {
+        if (!AI_PROVIDERS.includes(/** @type {string} */ (patch.provider))) {
+          throw new AiHostError('invalid-request', 'Invalid AI provider.');
+        }
+        next.provider = /** @type {string} */ (patch.provider);
+      }
+      if (Object.hasOwn(patch, 'model')) {
+        if (!validateAiModel(patch.model)) throw new AiHostError('invalid-request', 'Invalid AI model.');
+        next.model = /** @type {string} */ (patch.model);
+      }
+      if (Object.hasOwn(patch, 'enabled')) {
+        if (typeof patch.enabled !== 'boolean') throw new AiHostError('invalid-request', 'Invalid AI enabled flag.');
+        next.enabled = patch.enabled;
+      }
+      if (Object.hasOwn(patch, 'keyPersistence')) {
+        if (!AI_KEY_PERSISTENCE_MODES.includes(/** @type {string} */ (patch.keyPersistence))) {
+          throw new AiHostError('invalid-request', 'Invalid AI key persistence mode.');
+        }
+        next.keyPersistence = /** @type {string} */ (patch.keyPersistence);
+      }
+      try {
+        await writeFileAtomic(filePath, Buffer.from(JSON.stringify(next), 'utf8'));
+      } catch {
+        throw new AiHostError('credential-unavailable', 'The AI settings could not be saved.');
+      }
+      cache = next;
+      return { ...next };
+    },
+  };
+}
+
+const AI_PROBE_TIMEOUT_MS = 15000;
+
+/**
+ * A provider transport: answers a validated request, and may carry a
+ * `probe` for the connection test.
+ * @typedef {((request: object, signal: AbortSignal) => Promise<object>)
+ *   & { probe?: (signal: AbortSignal) => Promise<object> }} AiTransportFn
+ */
+
+/**
+ * The live AI service: the single owner of connection state. It combines
+ * the config store (authoritative provider/model), the key store
+ * (encrypted persistence) plus an in-memory session key, and a request
+ * host it constructs internally with a dispatching transport — the real
+ * provider transport is built lazily by `transportFactory` for the
+ * current provider/model/key and rebuilt whenever the model or key
+ * changes. Nothing here logs or returns key material; the cached key
+ * lives only in closures of this factory.
+ * @param {{ host?: { timeoutMs?: number, maxConcurrent?: number, maxPending?: number },
+ *           configStore: ReturnType<typeof createAiConfigStore>,
+ *           keyStore: ReturnType<typeof createAiKeyStore>,
+ *           transportFactory: (options: { provider: string, model: string, apiKey: string }) =>
+ *             AiTransportFn }} options
+ */
+function createAiService({ host: hostOptions, configStore, keyStore, transportFactory }) {
+  if (!configStore || typeof configStore.load !== 'function' || typeof configStore.get !== 'function'
+    || typeof configStore.update !== 'function'
+    || !keyStore || typeof keyStore.readKey !== 'function' || typeof keyStore.saveKey !== 'function'
+    || typeof keyStore.clearKey !== 'function' || typeof keyStore.hasKey !== 'function'
+    || typeof transportFactory !== 'function') {
+    throw new AiHostError('host-unavailable', 'The AI service needs a config store, a key store and a transport factory.');
+  }
+  /** @type {string | null} Session-only key: memory only, never persisted. */
+  let sessionKey = null;
+  /** @type {{ transport: AiTransportFn, model: string, key: string } | null} */
+  let transportCache = null;
+  /** @type {AbortController | null} */
+  let probeController = null;
+  /** @type {string | null} */
+  let configProblem = null;
+  /** @type {Promise<void> | null} */
+  let loadPromise = null;
+
+  function ensureLoaded() {
+    if (!loadPromise) {
+      loadPromise = Promise.resolve()
+        .then(() => configStore.load())
+        .then(({ problem }) => { configProblem = problem; });
+    }
+    return loadPromise;
+  }
+
+  /** The effective key, or null. Corrupt/unreadable stored keys throw. */
+  function resolveKey() {
+    if (sessionKey !== null) return sessionKey;
+    if (keyStore.hasKey()) return keyStore.readKey();
+    return null;
+  }
+
+  function requireKey() {
+    const key = resolveKey();
+    if (key === null) {
+      throw new AiHostError('provider-not-configured', 'No API key is saved for Live AI. Save a key in the AI panel connection settings.');
+    }
+    return key;
+  }
+
+  /** Build (or reuse) the provider transport for this model + key. */
+  function transportFor(model, key) {
+    if (transportCache && transportCache.model === model && transportCache.key === key) {
+      return transportCache.transport;
+    }
+    const transport = transportFactory({ provider: configStore.get().provider, model, apiKey: key });
+    if (typeof transport !== 'function') {
+      throw new AiHostError('provider-not-configured', 'The selected provider is not available.');
+    }
+    transportCache = { transport, model, key };
+    return transport;
+  }
+
+  const innerHost = createAiHost({
+    ...(isPlainObject(hostOptions) ? hostOptions : {}),
+    transport: async (request, signal) => {
+      const key = requireKey();
+      return transportFor(configStore.get().model, key)(request, signal);
+    },
+  });
+
+  function cancelAll() {
+    if (probeController) probeController.abort();
+    return innerHost.cancelAll();
+  }
+
+  /**
+   * Set (or replace) the API key. All outstanding work is cancelled
+   * first. On any persistence failure the previously effective key
+   * remains in effect.
+   * @param {string} key
+   * @param {string} persistence  'session' | 'encrypted'
+   */
+  async function setKey(key, persistence) {
+    cancelAll();
+    validateApiKey(key);
+    if (!AI_KEY_PERSISTENCE_MODES.includes(persistence)) {
+      throw new AiHostError('invalid-request', 'Invalid AI key persistence mode.');
+    }
+    await ensureLoaded();
+    if (persistence === 'encrypted') {
+      // Atomic save: a failure leaves the previously stored key readable
+      // and the session key untouched.
+      await keyStore.saveKey(key);
+      sessionKey = null;
+      transportCache = null;
+      await configStore.update({ keyPersistence: 'encrypted' });
+    } else {
+      const hadStored = keyStore.hasKey();
+      let previousStoredKey = null;
+      if (hadStored) {
+        try { previousStoredKey = keyStore.readKey(); } catch { previousStoredKey = null; }
+        await keyStore.clearKey();
+      }
+      try {
+        await configStore.update({ keyPersistence: 'session' });
+      } catch (error) {
+        // Best effort: put the previous stored key back so the failure
+        // leaves the previous key in effect.
+        if (previousStoredKey !== null) {
+          try { await keyStore.saveKey(previousStoredKey); } catch { /* the original error wins */ }
+        }
+        throw error;
+      }
+      sessionKey = key;
+      transportCache = null;
+    }
+  }
+
+  return {
+    /** Connection state for the UI; never contains key material. */
+    async getState() {
+      await ensureLoaded();
+      const config = configStore.get();
+      const stored = keyStore.hasKey();
+      return {
+        provider: config.provider,
+        model: config.model,
+        enabled: config.enabled,
+        keyPersistence: config.keyPersistence,
+        keyPresent: sessionKey !== null || stored,
+        keySource: sessionKey !== null ? 'session' : stored ? 'stored' : null,
+        encryptionAvailable: keyStore.encryptionAvailable(),
+        configProblem,
+      };
+    },
+
+    /** Set (or replace) the API key; see the inner setKey for semantics. */
+    setKey,
+
+    /** Replace the key, keeping the current persistence mode. */
+    async replaceKey(key) {
+      await ensureLoaded();
+      return setKey(key, configStore.get().keyPersistence);
+    },
+
+    /** Forget the key everywhere: session copy and stored ciphertext. */
+    async forgetKey() {
+      cancelAll();
+      sessionKey = null;
+      transportCache = null;
+      if (keyStore.hasKey()) await keyStore.clearKey();
+    },
+
+    async setModel(model) {
+      if (!validateAiModel(model)) throw new AiHostError('invalid-request', 'Invalid AI model.');
+      cancelAll();
+      await ensureLoaded();
+      await configStore.update({ model });
+    },
+
+    async setEnabled(enabled) {
+      if (typeof enabled !== 'boolean') throw new AiHostError('invalid-request', 'Invalid AI enabled flag.');
+      await ensureLoaded();
+      if (!enabled) {
+        cancelAll();
+        await configStore.update({ enabled: false });
+        return;
+      }
+      if (sessionKey === null && !keyStore.hasKey()) {
+        throw new AiHostError('provider-not-configured', 'Save an API key before enabling Live AI.');
+      }
+      await configStore.update({ enabled: true });
+    },
+
+    /**
+     * Ask a question through the request host. Refuses before any
+     * transport is built while Live AI is disabled or no key is saved.
+     */
+    async ask(value, signal) {
+      await ensureLoaded();
+      if (!configStore.get().enabled) {
+        throw new AiHostError('live-disabled', 'Live AI is not enabled. Enable it in the AI panel connection settings.');
+      }
+      requireKey();
+      return innerHost.ask(value, signal);
+    },
+
+    cancel(requestId) {
+      return innerHost.cancel(requestId);
+    },
+
+    /** Cancel every outstanding ask and any in-flight connection test. */
+    cancelAll,
+
+    usage() {
+      return innerHost.usage();
+    },
+
+    /**
+     * A small canned probe through the provider transport (no drawing
+     * content, no host queue). Bounded by a 15 s deadline and aborted by
+     * cancelAll()/dispose() like any other work.
+     */
+    async testConnection() {
+      await ensureLoaded();
+      const key = requireKey();
+      const model = configStore.get().model;
+      const transport = transportFor(model, key);
+      const probe = transport.probe;
+      if (typeof probe !== 'function') {
+        throw new AiHostError('provider-not-configured', 'The selected provider cannot run a connection test.');
+      }
+      const controller = new AbortController();
+      probeController = controller;
+      let timedOut = false;
+      const timer = setTimeout(() => { timedOut = true; controller.abort(); }, AI_PROBE_TIMEOUT_MS);
+      const abortRejection = new Promise((_resolve, reject) => {
+        controller.signal.addEventListener('abort', () => {
+          reject(new AiHostError(timedOut ? 'timeout' : 'cancelled', timedOut
+            ? `The connection test did not answer within ${AI_PROBE_TIMEOUT_MS} ms.`
+            : 'The connection test was cancelled.'));
+        }, { once: true });
+      });
+      try {
+        const raw = await Promise.race([
+          Promise.resolve().then(() => probe(controller.signal)),
+          abortRejection,
+        ]);
+        const result = { model };
+        const usage = isPlainObject(raw) ? raw : {};
+        const counts = isPlainObject(usage.usage) ? usage.usage : usage;
+        for (const field of ['inputTokens', 'outputTokens']) {
+          const tokens = counts[field];
+          if (Number.isSafeInteger(tokens) && tokens >= 0) result[field] = tokens;
+        }
+        return result;
+      } catch (cause) {
+        if (cause instanceof AiHostError) throw cause;
+        throw new AiHostError('provider-failure', cause instanceof Error ? cause.message : 'The connection test failed.');
+      } finally {
+        clearTimeout(timer);
+        if (probeController === controller) probeController = null;
+      }
+    },
+
+    async dispose() {
+      cancelAll();
+      await innerHost.dispose();
+    },
+  };
+}
+
+module.exports = {
+  AI_LIMITS, AiHostError, aiRequest, aiAnswer, createAiHost, createAiKeyStore,
+  AI_PROVIDERS, AI_DEFAULT_MODEL, validateAiModel, createAiConfigStore, createAiService,
+};

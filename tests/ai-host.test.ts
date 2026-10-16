@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createRequire } from 'node:module';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Entity } from '../src/core/entities';
 import { DEFAULT_UNITS } from '../src/core/units';
@@ -8,30 +9,57 @@ import { buildSelectionSnapshot, serializeSnapshot } from '../src/ai/snapshot';
 import type { AiBinding, AiSnapshotSource } from '../src/ai/types';
 
 const require = createRequire(import.meta.url);
-const { AI_LIMITS, aiRequest, aiAnswer, createAiHost, createAiKeyStore } = require('../electron/ai-host.cjs') as {
+const {
+  AI_LIMITS, aiRequest, aiAnswer, createAiHost, createAiKeyStore,
+  AI_PROVIDERS, AI_DEFAULT_MODEL, validateAiModel, createAiConfigStore, createAiService,
+} = require('../electron/ai-host.cjs') as {
   AI_LIMITS: Record<string, number>;
-  aiRequest: (value: unknown) => { requestId: number; question: string; snapshotBytes: number; snapshot: Record<string, unknown> };
-  aiAnswer: (value: unknown) => { text: string; references: string[] };
+  aiRequest: (value: unknown) => { requestId: number | string; question: string; snapshotBytes: number; snapshot: Record<string, unknown> };
+  aiAnswer: (value: unknown) => { text: string; references: string[]; providerUsage?: { inputTokens?: number; outputTokens?: number } };
   createAiHost: (options?: {
     transport?: (request: unknown, signal: AbortSignal) => Promise<unknown>;
     timeoutMs?: number;
     maxConcurrent?: number;
     maxPending?: number;
   }) => {
-    ask: (value: unknown, signal?: AbortSignal) => Promise<{ text: string; references: string[]; usage: unknown }>;
-    cancel: (requestId: number) => boolean;
+    ask: (value: unknown, signal?: AbortSignal) => Promise<{ text: string; references: string[]; usage: unknown; providerUsage?: { inputTokens?: number; outputTokens?: number } }>;
+    cancel: (requestId: number | string) => boolean;
+    cancelAll: () => number;
     usage: () => Record<string, number>;
     dispose: () => Promise<void>;
   };
   createAiKeyStore: (options: {
     safeStorage: unknown; filePath: string; fsImpl?: unknown; platform?: string;
+    writeFileAtomic?: unknown; readFile?: unknown; removeFile?: unknown; fileExists?: unknown;
   }) => {
     hasKey: () => boolean;
-    saveKey: (key: string) => void;
+    encryptionAvailable: () => boolean;
+    saveKey: (key: string) => Promise<void>;
     readKey: () => string | null;
-    clearKey: () => void;
+    clearKey: () => Promise<void>;
+  };
+  AI_PROVIDERS: string[];
+  AI_DEFAULT_MODEL: string;
+  validateAiModel: (model: unknown) => boolean;
+  createAiConfigStore: (options: {
+    filePath: string; writeFileAtomic: unknown; readFile: unknown; fileExists: unknown;
+  }) => {
+    load: () => Promise<{ config: AiConfigShape; problem: string | null }>;
+    get: () => AiConfigShape;
+    update: (patch: Record<string, unknown>) => Promise<AiConfigShape>;
+  };
+  createAiService: (options: {
+    configStore: unknown; keyStore: unknown; transportFactory: unknown;
+  }) => {
+    getState: () => Promise<{ enabled: boolean; keyPresent: boolean }>;
+    ask: (value: unknown) => Promise<unknown>;
+    dispose: () => Promise<void>;
   };
 };
+
+interface AiConfigShape {
+  version: number; provider: string; model: string; enabled: boolean; keyPersistence: string;
+}
 
 const root = join(__dirname, '..');
 
@@ -69,6 +97,30 @@ describe('ai-host request validator', () => {
     expect(() => aiRequest(envelope({ question: '' }))).toThrow(/question/);
     expect(() => aiRequest(envelope({ question: 'x'.repeat(AI_LIMITS.maxQuestionChars! + 1) }))).toThrow(/question/);
     expect(() => aiRequest(envelope({ snapshot: { kind: 'nope' } }))).toThrow(/snapshot/);
+  });
+
+  it('accepts milestone-2 string request ids (salt-counter scheme)', () => {
+    const req = aiRequest(envelope({ requestId: 'a1b2c3d4e5f60708-12' }));
+    expect(req.requestId).toBe('a1b2c3d4e5f60708-12');
+    expect(aiRequest(envelope({ requestId: 'A2345678' })).requestId).toBe('A2345678');
+    expect(aiRequest(envelope({ requestId: 'z'.repeat(96) })).requestId).toBe('z'.repeat(96));
+  });
+
+  it.each(['short', '-abcdefgh', 'abcd efgh', 'under_score-1', 'z'.repeat(97), 1.5, Number.NaN, null, undefined])(
+    'rejects an invalid request id: %o', (requestId) => {
+      expect(() => aiRequest(envelope({ requestId }))).toThrow(/request id/);
+    },
+  );
+
+  it('carries bounded provider token usage through the answer, field by field', () => {
+    expect(aiAnswer({ text: 'ok', references: [], providerUsage: { inputTokens: 3, outputTokens: 4 } }).providerUsage)
+      .toEqual({ inputTokens: 3, outputTokens: 4 });
+    expect(aiAnswer({ text: 'ok', references: [], providerUsage: { inputTokens: 3, outputTokens: -1 } }).providerUsage)
+      .toEqual({ inputTokens: 3 });
+    expect(aiAnswer({ text: 'ok', references: [], providerUsage: { inputTokens: 1.5, outputTokens: '4' } }).providerUsage)
+      .toBeUndefined();
+    expect(aiAnswer({ text: 'ok', references: [], providerUsage: 'lots' }).providerUsage).toBeUndefined();
+    expect(aiAnswer({ text: 'ok', references: [] }).providerUsage).toBeUndefined();
   });
 
   it('rejects a snapshot over the byte limit even if its header claims otherwise', () => {
@@ -192,6 +244,32 @@ describe('ai-host service', () => {
     await host.dispose();
   });
 
+  it('runs and cancels string-id requests; integer and string ids never collide', async () => {
+    const gate = new Promise(() => {});
+    const host = createAiHost({ transport: () => gate, timeoutMs: 60000 });
+    const byString = host.ask(envelope({ requestId: 'a1b2c3d4e5f60708-1' }));
+    const byInt = host.ask(envelope({ requestId: 5 }));
+    const stringLikeInt = host.ask(envelope({ requestId: 'a1b2c3d4e5f60708-5' }));
+    const cancelled = expect(byString).rejects.toMatchObject({ kind: 'cancelled' });
+    expect(host.cancel('a1b2c3d4e5f60708-1')).toBe(true);
+    await cancelled;
+    expect(host.cancelAll()).toBe(2);
+    await expect(byInt).rejects.toMatchObject({ kind: 'cancelled' });
+    await expect(stringLikeInt).rejects.toMatchObject({ kind: 'cancelled' });
+    expect(host.cancelAll()).toBe(0);
+    await host.dispose();
+  });
+
+  it('reports provider token usage alongside host usage, without content', async () => {
+    const host = createAiHost({
+      transport: async () => ({ text: 'Two objects.', references: [], providerUsage: { inputTokens: 120, outputTokens: 9 } }),
+    });
+    const answer = await host.ask(envelope());
+    expect(answer.providerUsage).toEqual({ inputTokens: 120, outputTokens: 9 });
+    expect(answer.usage).toMatchObject({ outputChars: 'Two objects.'.length });
+    await host.dispose();
+  });
+
   it('rejects oversized transport output', async () => {
     const host = createAiHost({ transport: async () => ({ text: 'z'.repeat(AI_LIMITS.maxAnswerChars! + 1), references: [] }) });
     await expect(host.ask(envelope())).rejects.toMatchObject({ kind: 'output-too-large' });
@@ -301,55 +379,234 @@ describe('ai-host key store', () => {
     return { safeStorage, fsImpl, files };
   }
 
-  it('stores only ciphertext and round-trips host-side', () => {
+  it('stores only ciphertext and round-trips host-side', async () => {
     const { safeStorage, fsImpl, files } = fakeStorage();
     const store = createAiKeyStore({ safeStorage, filePath: '/tmp/jcad-ai-key.bin', fsImpl });
     expect(store.hasKey()).toBe(false);
-    store.saveKey('sk-test-secret');
+    await store.saveKey('sk-test-secret');
     expect(store.hasKey()).toBe(true);
     expect(files.get('/tmp/jcad-ai-key.bin')!.toString('utf8')).not.toContain('sk-test-secret');
     expect(store.readKey()).toBe('sk-test-secret');
-    store.clearKey();
+    await store.clearKey();
     expect(store.hasKey()).toBe(false);
     expect(store.readKey()).toBeNull();
   });
 
-  it('refuses to persist when OS encryption is unavailable', () => {
+  it('refuses to persist when OS encryption is unavailable', async () => {
     const { safeStorage, fsImpl, files } = fakeStorage(false);
     const store = createAiKeyStore({ safeStorage, filePath: '/tmp/jcad-ai-key.bin', fsImpl });
-    expect(() => store.saveKey('sk-test-secret')).toThrow(/refusing to store/);
+    await expect(store.saveKey('sk-test-secret')).rejects.toThrow(/refusing to store/);
     expect(files.size).toBe(0);
   });
 
-  it('rejects malformed keys', () => {
+  it('rejects malformed keys', async () => {
     const { safeStorage, fsImpl } = fakeStorage();
     const store = createAiKeyStore({ safeStorage, filePath: '/tmp/jcad-ai-key.bin', fsImpl });
-    expect(() => store.saveKey('')).toThrow(/Invalid API key/);
-    expect(() => store.saveKey('x'.repeat(AI_LIMITS.maxKeyChars! + 1))).toThrow(/Invalid API key/);
+    await expect(store.saveKey('')).rejects.toThrow(/Invalid API key/);
+    await expect(store.saveKey('x'.repeat(AI_LIMITS.maxKeyChars! + 1))).rejects.toThrow(/Invalid API key/);
   });
 
-  it.each(['basic_text', 'unknown'])('refuses Linux %s even when encryption claims to be available', (backend) => {
+  it.each(['basic_text', 'unknown'])('refuses Linux %s even when encryption claims to be available', async (backend) => {
     const { safeStorage, fsImpl, files } = fakeStorage();
     safeStorage.getSelectedStorageBackend = () => backend;
     const store = createAiKeyStore({ safeStorage, filePath: '/tmp/jcad-ai-key.bin', fsImpl, platform: 'linux' });
-    expect(() => store.saveKey('sk-test-secret')).toThrow(/OS-backed encryption/);
+    await expect(store.saveKey('sk-test-secret')).rejects.toThrow(/OS-backed encryption/);
     expect(files.size).toBe(0);
     files.set('/tmp/jcad-ai-key.bin', Buffer.from('existing'));
     expect(() => store.readKey()).toThrow(/OS-backed encryption/);
   });
-});
 
-describe('ai-host activation boundary', () => {
-  it('is not registered in main.cjs and not exposed in preload.cjs', () => {
-    const main = readFileSync(join(root, 'electron/main.cjs'), 'utf8');
-    const preload = readFileSync(join(root, 'electron/preload.cjs'), 'utf8');
-    expect(main).not.toContain('ai-host');
-    expect(main).not.toContain('ai-ask');
-    expect(preload).not.toContain('aiAsk');
-    expect(preload).not.toContain('ai-ask');
+  function seamStorage() {
+    const files = new Map<string, Buffer>();
+    const safeStorage = {
+      isEncryptionAvailable: () => true,
+      getSelectedStorageBackend: () => 'gnome_libsecret',
+      encryptString: (plain: string) => Buffer.from(`enc:${[...plain].reverse().join('')}`, 'utf8'),
+      decryptString: (cipher: Buffer) => {
+        const text = cipher.toString('utf8');
+        if (!text.startsWith('enc:')) throw new Error('bad cipher');
+        return [...text.slice(4)].reverse().join('');
+      },
+    };
+    const seams = {
+      failWrites: false,
+      failDeletes: false,
+      writeFileAtomic: async (p: string, data: Buffer) => {
+        if (seams.failWrites) throw new Error('disk full');
+        files.set(p, Buffer.from(data));
+      },
+      readFile: (p: string) => files.get(p)!,
+      removeFile: async (p: string) => {
+        if (seams.failDeletes) throw new Error('locked');
+        files.delete(p);
+      },
+      fileExists: (p: string) => files.has(p),
+    };
+    return { safeStorage, seams, files };
+  }
+
+  it('round-trips through the injected fs seams without fsImpl', async () => {
+    const { safeStorage, seams, files } = seamStorage();
+    const store = createAiKeyStore({ safeStorage, filePath: '/data/ai-key.bin', ...seams });
+    expect(store.encryptionAvailable()).toBe(true);
+    await store.saveKey('sk-seams');
+    expect(files.get('/data/ai-key.bin')!.toString('utf8')).not.toContain('sk-seams');
+    expect(store.readKey()).toBe('sk-seams');
+    await store.clearKey();
+    expect(store.readKey()).toBeNull();
   });
 
-  it('the live provider is not constructed anywhere in src outside src/ai', () => {
+  it('a failed atomic write keeps the previously stored key readable', async () => {
+    const { safeStorage, seams } = seamStorage();
+    const store = createAiKeyStore({ safeStorage, filePath: '/data/ai-key.bin', ...seams });
+    await store.saveKey('sk-old');
+    seams.failWrites = true;
+    await expect(store.saveKey('sk-new')).rejects.toMatchObject({ kind: 'credential-unavailable' });
+    expect(store.readKey()).toBe('sk-old');
+  });
+
+  it('reports a corrupt stored key distinctly from a missing one', async () => {
+    const { safeStorage, seams, files } = seamStorage();
+    const store = createAiKeyStore({ safeStorage, filePath: '/data/ai-key.bin', ...seams });
+    expect(store.readKey()).toBeNull();
+    files.set('/data/ai-key.bin', Buffer.from('not-ciphertext'));
+    let caught: unknown = null;
+    try { store.readKey(); } catch (error) { caught = error; }
+    expect(caught).toMatchObject({ kind: 'credential-corrupt' });
+    expect((caught as Error).message).toMatch(/could not be decrypted/);
+  });
+
+  it('clearKey resolves with no stored key and reports deletion failures', async () => {
+    const { safeStorage, seams } = seamStorage();
+    const store = createAiKeyStore({ safeStorage, filePath: '/data/ai-key.bin', ...seams });
+    await expect(store.clearKey()).resolves.toBeUndefined();
+    await store.saveKey('sk-test-secret');
+    seams.failDeletes = true;
+    await expect(store.clearKey()).rejects.toMatchObject({ kind: 'credential-delete-failed' });
+    expect(store.hasKey()).toBe(true);
+  });
+
+  it('encryptionAvailable never throws, even with a broken safeStorage', () => {
+    const { fsImpl } = fakeStorage();
+    const broken = {
+      isEncryptionAvailable: () => { throw new Error('nope'); },
+      encryptString: (plain: string) => Buffer.from(plain),
+      decryptString: (cipher: Buffer) => cipher.toString('utf8'),
+    };
+    const store = createAiKeyStore({ safeStorage: broken, filePath: '/tmp/jcad-ai-key.bin', fsImpl });
+    expect(store.encryptionAvailable()).toBe(false);
+  });
+});
+
+describe('ai-host config store', () => {
+  const CONFIG_PATH = '/data/ai-config.json';
+
+  function configSeams() {
+    const files = new Map<string, Buffer>();
+    const seams = {
+      failWrites: false,
+      writeFileAtomic: async (p: string, data: Buffer) => {
+        if (seams.failWrites) throw new Error('disk full');
+        files.set(p, Buffer.from(data));
+      },
+      readFile: (p: string) => {
+        const data = files.get(p);
+        if (!data) throw new Error('ENOENT');
+        return Buffer.from(data);
+      },
+      fileExists: (p: string) => files.has(p),
+    };
+    return { seams, files };
+  }
+
+  it('exposes the provider/model constants and model validation', () => {
+    expect(AI_PROVIDERS).toEqual(['openai']);
+    expect(AI_DEFAULT_MODEL).toBe('gpt-5');
+    expect(validateAiModel('gpt-5')).toBe(true);
+    expect(validateAiModel('gpt-5.1-mini_x')).toBe(true);
+    expect(validateAiModel('')).toBe(false);
+    expect(validateAiModel('-leading')).toBe(false);
+    expect(validateAiModel('has space')).toBe(false);
+    expect(validateAiModel('a'.repeat(129))).toBe(false);
+    expect(validateAiModel(42)).toBe(false);
+  });
+
+  it('defaults when no file exists', async () => {
+    const { seams } = configSeams();
+    const store = createAiConfigStore({ filePath: CONFIG_PATH, ...seams });
+    expect(store.get()).toEqual({ version: 1, provider: 'openai', model: 'gpt-5', enabled: false, keyPersistence: 'session' });
+    const { config, problem } = await store.load();
+    expect(problem).toBeNull();
+    expect(config).toEqual(store.get());
+  });
+
+  it('persists validated updates, ignores unknown keys, and reloads', async () => {
+    const { seams, files } = configSeams();
+    const store = createAiConfigStore({ filePath: CONFIG_PATH, ...seams });
+    await store.update({ model: 'gpt-5-mini', enabled: true, keyPersistence: 'encrypted', evil: 'ignored' });
+    expect(store.get()).toEqual({ version: 1, provider: 'openai', model: 'gpt-5-mini', enabled: true, keyPersistence: 'encrypted' });
+    const onDisk = JSON.parse(files.get(CONFIG_PATH)!.toString('utf8')) as Record<string, unknown>;
+    expect(onDisk).not.toHaveProperty('evil');
+    const reloaded = createAiConfigStore({ filePath: CONFIG_PATH, ...seams });
+    const { config, problem } = await reloaded.load();
+    expect(problem).toBeNull();
+    expect(config.model).toBe('gpt-5-mini');
+  });
+
+  it('rejects invalid patch values before writing anything', async () => {
+    const { seams, files } = configSeams();
+    const store = createAiConfigStore({ filePath: CONFIG_PATH, ...seams });
+    await expect(store.update({ model: 'bad model!' })).rejects.toMatchObject({ kind: 'invalid-request' });
+    await expect(store.update({ provider: 'anthropic' })).rejects.toMatchObject({ kind: 'invalid-request' });
+    await expect(store.update({ enabled: 'yes' })).rejects.toMatchObject({ kind: 'invalid-request' });
+    await expect(store.update({ keyPersistence: 'forever' })).rejects.toMatchObject({ kind: 'invalid-request' });
+    expect(files.size).toBe(0);
+  });
+
+  it('falls back to defaults with a problem code for corrupt or invalid files', async () => {
+    const { seams, files } = configSeams();
+    const store = createAiConfigStore({ filePath: CONFIG_PATH, ...seams });
+    files.set(CONFIG_PATH, Buffer.from('{not json'));
+    await expect(store.load()).resolves.toMatchObject({ problem: 'config-unreadable' });
+    expect(store.get().model).toBe('gpt-5');
+    files.set(CONFIG_PATH, Buffer.from(JSON.stringify({ version: 2, provider: 'openai', model: 'gpt-5', enabled: false, keyPersistence: 'session' })));
+    await expect(store.load()).resolves.toMatchObject({ problem: 'config-invalid' });
+    files.set(CONFIG_PATH, Buffer.from('x'.repeat(5000)));
+    await expect(store.load()).resolves.toMatchObject({ problem: 'config-invalid' });
+  });
+
+  it('a failed write reports credential-unavailable and leaves the cache unchanged', async () => {
+    const { seams } = configSeams();
+    const store = createAiConfigStore({ filePath: CONFIG_PATH, ...seams });
+    await store.update({ model: 'gpt-5-mini' });
+    seams.failWrites = true;
+    await expect(store.update({ model: 'gpt-5' })).rejects.toMatchObject({ kind: 'credential-unavailable' });
+    expect(store.get().model).toBe('gpt-5-mini');
+  });
+});
+
+describe('ai wiring boundary (milestone 2)', () => {
+  it('is registered only through the guarded context module, never directly in main.cjs', () => {
+    const main = readFileSync(join(root, 'electron/main.cjs'), 'utf8');
+    const ipcAi = readFileSync(join(root, 'electron/main/ipc-ai.cjs'), 'utf8');
+    expect(main).toContain("require('./main/ipc-ai.cjs')");
+    expect(main).toContain('registerAiIpc(ctx)');
+    // No AI channel is registered in main.cjs itself, and the AI module
+    // never touches Electron's raw ipcMain (the guard would be bypassed).
+    expect(main).not.toContain("handle('ai-");
+    expect(ipcAi).not.toContain('rawIpcMain');
+    for (const channel of ['ai-get-state', 'ai-set-model', 'ai-set-key', 'ai-forget-key',
+      'ai-set-enabled', 'ai-test-connection', 'ai-ask', 'ai-cancel', 'ai-usage']) {
+      expect(ipcAi).toContain(`'${channel}'`);
+    }
+    // The preload exposes exactly the ai group over those channels.
+    const preload = readFileSync(join(root, 'electron/preload.cjs'), 'utf8');
+    expect(preload).toContain('ai-ask');
+    expect(preload).toContain('ai-cancel');
+  });
+
+  it('the live provider is constructed only in the AI panel and src/ai', () => {
+    const allowed = new Set([join(root, 'src', 'ui', 'ai-panel.ts')]);
     const hits: string[] = [];
     function inspect(directory: string): void {
       for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -360,6 +617,40 @@ describe('ai-host activation boundary', () => {
       }
     }
     inspect(join(root, 'src'));
-    expect(hits).toEqual([]);
+    expect(hits.every((file) => allowed.has(file))).toBe(true);
+  });
+
+  it('makes no provider request before explicit enablement', async () => {
+    // A fresh service over empty stores: state defaults to disabled with
+    // no key, and ask refuses before any transport is built.
+    const factory = vi.fn(() => { throw new Error('transport must not be built'); });
+    const dir = mkdtempSync(join(tmpdir(), 'jcad-ai-boundary-'));
+    try {
+      const safeStorage = {
+        isEncryptionAvailable: () => true,
+        getSelectedStorageBackend: () => 'gnome_libsecret',
+        encryptString: (plain: string) => Buffer.from(`enc:${plain}`, 'utf8'),
+        decryptString: (cipher: Buffer) => cipher.toString('utf8').slice(4),
+      };
+      const files = new Map<string, Buffer>();
+      const fsImpl = {
+        existsSync: (p: string) => files.has(p),
+        mkdirSync: () => {},
+        writeFileSync: (p: string, data: Buffer) => { files.set(p, Buffer.from(data)); },
+        readFileSync: (p: string) => files.get(p)!,
+        unlinkSync: (p: string) => { files.delete(p); },
+      };
+      const keyStore = createAiKeyStore({ safeStorage, filePath: join(dir, 'key.bin'), fsImpl });
+      const configStore = createAiConfigStore({ filePath: join(dir, 'config.json'), writeFileAtomic: async () => {}, readFile: () => { throw new Error('missing'); }, fileExists: () => false });
+      const service = createAiService({ configStore, keyStore, transportFactory: factory });
+      const state = await service.getState();
+      expect(state.enabled).toBe(false);
+      expect(state.keyPresent).toBe(false);
+      await expect(service.ask(envelope())).rejects.toMatchObject({ kind: 'live-disabled' });
+      expect(factory).not.toHaveBeenCalled();
+      await service.dispose();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
