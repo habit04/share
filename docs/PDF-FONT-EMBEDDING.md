@@ -367,3 +367,35 @@ An independently authored parser control observes pypdf 6.10.0 extracting shown
 model extracts `AA` for one logical `A`. These are synthetic extraction controls,
 not HarfBuzz, bidi, native-font or Windows shaping acceptance. Contract/interface
 approval and runtime adoption remain held; no shaping consumer is added.
+
+### Shaping v4: interface-only approval, 2026-10-15
+
+V4 addresses the earlier occurrence identity, context/line keys, direct-boundary,
+host-selected face, x/y/outline and transport design findings. The next additive
+interface/helper and synthetic contract-test commit is approved; engine,
+dependency, IPC, Canvas/layout and PDF consumers remain unadmitted. The interface
+tests must settle opaque epoch identity, original TTC versus extracted-program
+indices, concrete wire/copy accounting and exit-joined release on every outcome.
+
+All three supplied manifests verify. Raw measurements, wrapper, stock/control
+artifacts, tarball and build/provenance inputs are now delivered; the completed
+performance/stress series is not repeated. Three new probe cases report different
+Unicode text from what they shape and require a small input/log correction.
+
+The lead's own bounded Windows Node 24.19 probe uses the verified 256-MiB build,
+exact-input-derived labels and private font copies. It passes **106 checks across
+33 flag-case rows**, with empty stderr and unchanged installed-font hashes.
+These cover actual Arabic ZWJ, decomposed acute, default hiding versus explicit
+remove/preserve and a selected TTC face extracted to a standalone program.
+They do not exercise app IPC, lifecycle survival, Canvas, PDF or broad script/font
+compatibility. Original source selection index and standalone engine index are
+distinct concepts; this engine happens to accept both tested indices on the
+standalone control, so an invalid-index failure is not claimed.
+
+An initial extra last-beh contrast assertion was an invalid Arial discriminator:
+the full word also used its nominal final glyph. The failed receipt is retained.
+Corrected first-beh controls show context working across four transparent marks,
+while an eight-mark item split differs from whole-word shaping. Future producer
+admission must keep a safe shaping unit or refuse an unsafe boundary; passing a
+whole context string does not expand the engine's five-codepoint context storage.
+No runtime consumer or compatibility claim follows from interface-only approval.

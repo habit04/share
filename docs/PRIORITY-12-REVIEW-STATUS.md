@@ -11,7 +11,7 @@ or released. Earlier released TTC support remains the v0.5.2 baseline.
 | 12.6a variable defaults | ZIP integrity verified; production admission held. Executed probes reproduce malformed-record admission and missing coordinate policy; delivered gvar fixture is invalid. | Muse: record validation, genuine variation fixtures, default-coordinate identity policy. Lead: Windows Canvas/Plot and viewer matrix. Keep current refusal until proved. |
 | 12.2 standalone CFF1 | All ZIP hashes verified. Integration held: nine independent Type2 goldens fail; same-glyph Unicode aliases extract incorrectly; supplied OpenType PDF declares 1.4. Basic supplied artifacts pass 60/61 independent checks, failing the version gate. | Muse: parser/alias/validation corrections and feature-scoped PDF1.6. Lead: reader/writer composition and Windows proof. No CFF acceptance yet. |
 | 12.4 preview/print permissions | qpdf 12.4.2 self-build selected for implementation; delivered binary remains a prototype. Windows Node smoke passes 89 strict independent assertions and exact encrypted/plain pixels on one small authored fixture. Actual WASM max is 2 GiB; MEMFS/IPC copies need separate bounds. | Muse: capped rebuild, aggregate resource/lifecycle/IPC guards, strict evidence and full notices. Lead: eventual Windows app/viewer acceptance and shipping pin. Refusal remains active. |
-| 12.5 shaping | v3 delivery reviewed. Actual WASM maximum is independently verified at 256 MiB; contract still has repeated-GID extraction, context/cache and validation gaps. No interface/runtime adoption. | Muse: bounded contract corrections and existing raw build/measurement evidence. Lead: interface review, then Windows/runtime acceptance. |
+| 12.5 shaping | v4 design approved for additive interface/helpers and synthetic contract tests. Capped prototype passes 106 bounded Windows Node checks across 33 cases; no app/runtime/consumer adoption. | Muse: scoped interface commit with epoch, selected-face, wire/copy and exit-join tests; correct three probe labels. Lead: later runtime/Windows/render/extraction gates. |
 | DWG/F4 combined source | 63 Windows workflow assertions and 721 independent native checks pass on `167c50b`; effective STYLE, metrics, title/signature, source protection and DXF reopen verified. | Lead: maintain font/projection refusals; remote CI and packaged gates remain separate. No merge clearance. |
 
 The combined two-worker Windows suite passes **6,822 tests, zero failures and
@@ -31,6 +31,13 @@ remote CI and Muse's outstanding corrections still prevent merge clearance.
 The updated five-patch 12.3 delivery is verified but not replayed: its sole added
 source/test patch duplicates the existing lead variation guard. Replacing the
 integrated tree would omit later empty-glyph, overflow and subset-name repairs.
+
+V4 supplies the missing raw shaping-spike evidence and addresses the earlier
+design blockers. Its three mislabeled ignorable cases still need correction;
+the lead's own Windows probe shapes the exact strings it reports. Passing full
+input to an item-range API does not give unlimited engine context: the observed
+eight-mark split needs a safe-unit or explicit-refusal rule before consumption.
+This is a producer/runtime gate, not a reason to delay additive interface tests.
 
 The long 2D roadmap stays paused. DWG and GPU ownership remains separate. CFF2,
 CID-keyed CFF, CFF collections/subsetting, true variable instancing and faithful

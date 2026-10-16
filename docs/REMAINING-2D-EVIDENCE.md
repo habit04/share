@@ -187,3 +187,26 @@ integration notes. Current status and final gates are in `REMAINING-2D-CHECKLIST
   real SHX font/shape decoding, authorized resource loading and shared drawing/plot geometry.
   Native spatial references remain required for nonlinear/shifted gradients. Full plugin
   capability isolation, external-reference loading and other missing rows remain open.
+
+## Priority 20 delivery review, 2026-10-15
+
+The delivered five-patch DXF loading/refresh core is not adopted or wired into the
+application. Archive integrity verifies all ten declared hashes and nineteen
+patch operations against the published base. The exact candidate runs privately
+against current DXF dependencies: all 27 delivered tests pass. Independent bounded
+in-memory probes have nine passing controls and ten failing expected invariants.
+
+More than 64 empty-path, nested-overlay, cycle or depth-limit nodes bypass the
+advertised total cap; strict and partial stores can commit an over-cap snapshot.
+Canonical forward-UNC paths also lose the loader's declared Windows case identity,
+duplicating reads and delaying cycle detection. Both require owner corrections,
+exact-boundary regressions and seeded-store identity/generation preservation.
+The UNC checks use strings and fake readers, not a network share or native grant.
+
+The package's reported full suite has 29 failures; its two-file baseline control
+does not prove all are unrelated. No combined full pass, UI/Windows IPC, DWG,
+AutoCAD, rendering or save/capture compatibility is claimed. Later wiring must
+keep reference reads separate from normal Open write/source grants, preserve
+host/runtime data separation and electrical XREF aliases, and handle native path
+identity, stale refresh/session results and frozen plotting. Completed DWG/font/
+GPU work remains separate; the long roadmap and merge hold remain in place.
