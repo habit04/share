@@ -16,10 +16,11 @@
  */
 import type { DrawingState } from '../document';
 import type { BlockDef, InsertEntity } from '../entities';
-import { validateDefinition, type DefinitionIssueCode } from './definitions';
+import { validateDefinition, type DefinitionIssueCode, type DynamicParameter, type LookupParameter } from './definitions';
 import {
   validateInstanceValues,
   type DynamicInstanceState,
+  type DynamicParameterValue,
   type InstanceIssueCode,
 } from './instance';
 
@@ -67,8 +68,67 @@ export function seedDynamicInstanceState(block: BlockDef): DynamicInstanceState 
   return { block: block.name, values: {} };
 }
 
+/** The raw edit value `setDynamicParameter` accepts, mapped to the tagged
+ *  instance value by the TARGET parameter's kind: a number for a
+ *  linear-distance or angle parameter, a boolean for flip, a state name
+ *  (string) for visibility, and a row name (string) or null for lookup.
+ *  A raw value of any other shape for the parameter's kind is refused
+ *  'wrong-value-kind' — values are never coerced. */
+export type DynamicParameterEditValue = number | boolean | string | null;
+
+function taggedEditValue(param: DynamicParameter, value: DynamicParameterEditValue): DynamicParameterValue | undefined {
+  switch (param.kind) {
+    case 'linear-distance':
+      return typeof value === 'number' ? { kind: 'distance', value } : undefined;
+    case 'angle':
+      return typeof value === 'number' ? { kind: 'angle', value } : undefined;
+    case 'flip':
+      return typeof value === 'boolean' ? { kind: 'flip', value } : undefined;
+    case 'visibility':
+      return typeof value === 'string' ? { kind: 'visibility', value } : undefined;
+    case 'lookup':
+      return typeof value === 'string' || value === null ? { kind: 'lookup', value } : undefined;
+    case 'opaque-parameter':
+      return undefined;
+  }
+}
+
+/** Exact structural equality of two sparse value records — the edit path's
+ *  no-change test. (Evaluation's tolerance-based `parameterValuesEqual` is
+ *  for derived queries like row matching; an edit that changes a stored
+ *  value by any amount is a real edit.) */
+function storedValuesEqual(
+  a: Readonly<Record<string, DynamicParameterValue>>,
+  b: Readonly<Record<string, DynamicParameterValue>>,
+): boolean {
+  const aKeys = Object.keys(a);
+  if (aKeys.length !== Object.keys(b).length) return false;
+  return aKeys.every((id) => {
+    const va = a[id]!;
+    const vb = b[id];
+    if (!vb || va.kind !== vb.kind) return false;
+    return va.kind === 'opaque'
+      ? va.payload === (vb as { payload: string }).payload
+      : va.value === (vb as { value: unknown }).value;
+  });
+}
+
 /**
- * Set one linear-distance parameter value on one insert.
+ * Set one parameter value on one insert: a distance or angle (number), a
+ * flip state (boolean), a visibility state (name), or a lookup row choice
+ * (row name, or null for no row) — generalized in 30.4 from the 30.1
+ * distance-only editor. (The DYNSET command still offers distance
+ * parameters only; the generalization is at this apply layer.)
+ *
+ * Lookup contract (design-visibility-lookup-array.md §2.7): choosing a row
+ * changes only the lookup parameter's own stored value. Directly editing a
+ * parameter COVERED by the active row — an input of the row, or one of its
+ * assignment targets — clears the row choice (stores lookup = null, the
+ * native "Custom" outcome) in the SAME returned state, so the caller's
+ * single transact keeps the whole edit to one undo step. The active row is
+ * the stored choice, or the lookup parameter's defaultRow when no choice
+ * is stored (the edit then materializes the cleared state). Editing an
+ * uncovered parameter leaves the choice untouched.
  *
  * On success the returned state has a NEW entities array containing a NEW
  * insert object (same id) whose `dynamic.values` carries the value sparsely;
@@ -81,7 +141,7 @@ export function setDynamicParameter(
   state: DrawingState,
   insertId: string,
   parameterId: string,
-  value: number,
+  value: DynamicParameterEditValue,
 ): SetDynamicParameterResult {
   const entity = state.entities.find((e) => e.id === insertId);
   if (!entity) return refuse(state, 'insert-not-found', `No entity with id '${insertId}'.`);
@@ -121,15 +181,16 @@ export function setDynamicParameter(
   if (!param) {
     return refuse(state, 'unknown-parameter', `Block '${ins.block}' has no parameter '${parameterId}'.`);
   }
-  if (param.kind !== 'linear-distance') {
-    // 30.2: angle/flip parameters also reach this refusal — this editor sets
-    // distance values only; the descriptor names the unmodeled source kind
-    // for opaque parameters and the modeled kind otherwise.
+  const tagged = taggedEditValue(param, value);
+  if (tagged === undefined) {
+    // The raw value's shape does not match the parameter's kind (including
+    // any edit at all on an opaque parameter, whose descriptor names the
+    // unmodeled source kind).
     const descriptor = param.kind === 'opaque-parameter' ? `unmodeled '${param.sourceKind}'` : `'${param.kind}'`;
     return refuse(
       state,
       'wrong-value-kind',
-      `Parameter '${parameterId}' is an ${descriptor} parameter and cannot take a distance value.`,
+      `Parameter '${parameterId}' is an ${descriptor} parameter and cannot take a ${value === null ? 'null' : typeof value} value.`,
     );
   }
 
@@ -143,15 +204,29 @@ export function setDynamicParameter(
     );
   }
 
-  const current = ins.dynamic?.values[parameterId];
-  if (current?.kind === 'distance' && current.value === value) {
-    return refuse(state, 'no-change', `Parameter '${parameterId}' already has the value ${value}.`);
+  const stored = ins.dynamic?.values ?? {};
+  const values: Record<string, DynamicParameterValue> = { ...stored, [parameterId]: tagged };
+
+  // §2.7 rule 2: a direct edit of a parameter covered by the ACTIVE lookup
+  // row clears the row choice in the same edit. Editing the lookup
+  // parameter itself is a row choice (rule 1), never a clearing.
+  const lookup = definition.parameters.find((p): p is LookupParameter => p.kind === 'lookup');
+  if (lookup && parameterId !== lookup.id) {
+    const storedChoice = stored[lookup.id];
+    const activeRowName = storedChoice !== undefined
+      ? (storedChoice.kind === 'lookup' ? storedChoice.value : undefined)
+      : lookup.defaultRow;
+    const activeRow = activeRowName ? lookup.rows.find((r) => r.name === activeRowName) : undefined;
+    if (activeRow && (lookup.inputs.includes(parameterId) || parameterId in activeRow.assignments)) {
+      values[lookup.id] = { kind: 'lookup', value: null };
+    }
   }
 
-  const candidate: DynamicInstanceState = {
-    block: ins.block,
-    values: { ...(ins.dynamic?.values ?? {}), [parameterId]: { kind: 'distance', value } },
-  };
+  if (storedValuesEqual(values, stored)) {
+    return refuse(state, 'no-change', `Parameter '${parameterId}' already has the value ${String(value)}.`);
+  }
+
+  const candidate: DynamicInstanceState = { block: ins.block, values };
   // Validate the whole resulting instance: pre-existing invalid stored values
   // block the edit too, exactly as they block evaluation.
   const validation = validateInstanceValues(definition, candidate, ins.block);
