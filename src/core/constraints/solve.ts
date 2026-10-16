@@ -1033,31 +1033,181 @@ function shapeSupported(shape: ConstraintShape): boolean {
 // Small dense linear algebra (Gaussian elimination with partial pivoting)
 // ---------------------------------------------------------------------------
 
-/** Deterministic perturbation of a variable vector for the generic-rank
- *  reading (F-3034-2). At an exactly-tangent configuration the tangent
- *  row is an EXACT combination of the coincident rows of the shared
- *  endpoint — for a line–arc tangent whose tangent point is the arc's
- *  coincident start point, the tangent row equals the negated
- *  coincident row component-for-component, at every point of the
- *  solution family. The Jacobian at the point therefore undercounts
- *  consumption by one per such tangent, and a fully-constrained
- *  tangent system reports 'underconstrained'. That dependence is a
- *  pointwise accident of the fold, not a property of the constraint:
- *  a genuinely redundant constraint is implied on an open set, so its
- *  row stays dependent at EVERY nearby point, while the fold
- *  dependence breaks under an arbitrarily small generic displacement.
- *  The rank is therefore also read at `vars + δ`, with δ a fixed
- *  hash-pattern displacement of ±1e-7·S per variable (deterministic:
- *  same input ⇒ same perturbed point ⇒ same rank), and the larger
- *  reading governs. Taking the max is safe: the perturbed reading can
- *  only break pointwise accidents, never functional dependencies. */
-function perturbedVars(vars: Float64Array, S: number): Float64Array {
-  const out = new Float64Array(vars);
-  for (let i = 0; i < vars.length; i += 1) {
-    const h = (Math.imul(i + 1, 2654435761) >>> 0) / 4294967296 - 0.5;
-    out[i] = out[i]! + h * 2e-7 * S;
+/** Generic rank for tangent systems (F-3034-2, corrected in review
+ *  round 2, C02). At an exactly-tangent configuration the tangent row
+ *  can be a combination of the other rows AT THAT POINT — the fold —
+ *  so the pointwise Jacobian undercounts consumption (a fully
+ *  constrained fillet plate reported two DOF remaining). Round 1 read
+ *  the rank again at an ambiently perturbed point and took the max;
+ *  that is UNSOUND: a tangent can also be implied by the other
+ *  constraints on their whole solution manifold (e.g. a circle resting
+ *  on a line it is pinned to: every radius is an exact solution), and
+ *  an ambient step leaves that manifold and breaks the implication,
+ *  inventing a consumed DOF that does not exist — worse, the ambient
+ *  step scaled with the absolute world position, so the verdict
+ *  changed under translation (C02: correct at offset 0, wrong at 1e6).
+ *
+ *  The sound question is whether the tangent rows are dependent on the
+ *  other rows AT A NEARBY POINT OF THE OTHER CONSTRAINTS' MANIFOLD.
+ *  This probe therefore: takes a deterministic hash-pattern step,
+ *  PROJECTS it onto the null space of the non-tangent Jacobian (a
+ *  damped least-squares projection through the same QR step as the
+ *  relaxation), then corrects the stepped point back onto the
+ *  non-tangent manifold with a few Gauss–Newton steps on those rows
+ *  only, and finally reads the FULL Jacobian's rank at the corrected
+ *  point. On the manifold of the others, a manifold-implied tangent
+ *  stays dependent (its rank contribution is honestly zero — the
+ *  constraint is redundant), while a fold tangent becomes independent
+ *  (it genuinely consumes). Everything the probe reads is built from
+ *  the normalized residuals, so the verdict is translation-invariant;
+ *  the step pattern and all iteration orders are fixed, so the reading
+ *  is deterministic.
+ *
+ *  Limits, stated plainly: the probe accepts a point whose non-tangent
+ *  residual is no worse than the entry point's (and no worse than
+ *  RESIDUAL_TOL); if the projection finds no on-manifold direction or
+ *  the correction does not settle, the probe returns null and the
+ *  caller keeps the POINTWISE reading — which can undercount fold
+ *  consumption (the documented F-3034-2 direction) but never invents
+ *  rank. Work is charged on the same conventions as the relaxation
+ *  (rows per evaluation, rows·vars per Jacobian, (rows+vars)·vars per
+ *  QR step); when `budgeted`, every charge is pre-checked against the
+ *  shared budget and exhaustion aborts the probe (null), exactly like
+ *  the round-1 budget skip of the second Jacobian. */
+function manifoldRankProbe(args: {
+  readonly residuals: readonly ResidualSet[];
+  readonly rowOffset: ReadonlyMap<string, number>;
+  readonly totalRows: number;
+  readonly vars: Float64Array;
+  readonly S: number;
+  readonly work: Work;
+  readonly budgeted: boolean;
+}): { J: Float64Array<ArrayBuffer>; rank: number } | null {
+  const { residuals, rowOffset, totalRows, vars, S, work, budgeted } = args;
+  const n = vars.length;
+  const others = residuals.filter((rs) => rs.constraint.kind !== 'tangent');
+  if (others.length === 0 || others.length === residuals.length) return null;
+  const sink: Work = budgeted ? work : { used: 0, limit: Number.POSITIVE_INFINITY };
+  const afford = (units: number): boolean => sink.used + units <= sink.limit;
+  const mO = others.reduce((m, rs) => m + rs.rowCount, 0);
+
+  const jacRows = (rows: readonly ResidualSet[], at: Float64Array): Float64Array<ArrayBuffer> => {
+    const J = new Float64Array(totalRows * n);
+    for (const rs of rows) rs.jac(at, J, rowOffset.get(rs.constraint.id)!, n);
+    return J;
+  };
+  const compact = (J: Float64Array, rows: readonly ResidualSet[]): Float64Array => {
+    const out = new Float64Array(rows.reduce((m, rs) => m + rs.rowCount, 0) * n);
+    let w = 0;
+    for (const rs of rows) {
+      const at = rowOffset.get(rs.constraint.id)!;
+      for (let r = 0; r < rs.rowCount; r += 1) {
+        out.set(J.subarray((at + r) * n, (at + r + 1) * n), w * n);
+        w += 1;
+      }
+    }
+    return out;
+  };
+  /** Compact non-tangent residual vector at `at`, plus its max |·|. */
+  const evalOthers = (at: Float64Array): { vec: Float64Array; max: number } => {
+    const full = new Float64Array(totalRows);
+    for (const rs of others) rs.eval(at, full, rowOffset.get(rs.constraint.id)!);
+    const vec = new Float64Array(mO);
+    let w = 0;
+    let max = 0;
+    for (const rs of others) {
+      const at0 = rowOffset.get(rs.constraint.id)!;
+      for (let r = 0; r < rs.rowCount; r += 1) {
+        const v = full[at0 + r]!;
+        vec[w] = v;
+        w += 1;
+        if (Math.abs(v) > max) max = Math.abs(v);
+      }
+    }
+    return { vec, max };
+  };
+  const kappaOf = (Jc: Float64Array, rows: number): number => {
+    let kappa = 0;
+    for (let j = 0; j < n; j += 1) {
+      let s = 0;
+      for (let r = 0; r < rows; r += 1) s += Jc[r * n + j]! * Jc[r * n + j]!;
+      if (s > kappa) kappa = s;
+    }
+    return kappa === 0 ? 1 : kappa;
+  };
+
+  if (!afford(mO * n)) return null;
+  sink.used += mO * n;
+  const JoC = compact(jacRows(others, vars), others);
+  if (!afford(mO)) return null;
+  sink.used += mO;
+  const baseMax = evalOthers(vars).max;
+  const acceptTol = Math.max(baseMax, RESIDUAL_TOL);
+
+  for (let pattern = 0; pattern < 2; pattern += 1) {
+    // Deterministic step patterns (the round-1 hash; the second is the
+    // first reversed and negated, in case the first is near-orthogonal
+    // to the manifold).
+    const disp = new Float64Array(n);
+    for (let i = 0; i < n; i += 1) {
+      const src = pattern === 0 ? i : n - 1 - i;
+      const h = (Math.imul(src + 1, 2654435761) >>> 0) / 4294967296 - 0.5;
+      disp[i] = (pattern === 0 ? h : -h) * 2e-7 * S;
+    }
+    // Project the step onto the null space of the non-tangent rows:
+    // δ = disp − y, where y is the damped least-squares solution of
+    // Jo·y ≈ Jo·disp.
+    const b = new Float64Array(mO);
+    for (let r = 0; r < mO; r += 1) {
+      let s = 0;
+      for (let j = 0; j < n; j += 1) s += JoC[r * n + j]! * disp[j]!;
+      b[r] = s;
+    }
+    if (!afford(mO)) return null;
+    sink.used += mO;
+    if (!afford((mO + n) * n)) return null;
+    sink.used += (mO + n) * n;
+    const y = qrLeastSquaresStep(JoC, mO, n, b.map((v) => -v), Math.sqrt(1e-9 * kappaOf(JoC, mO)));
+    if (y === null) continue;
+    const delta = new Float64Array(n);
+    let dMax = 0;
+    let dispMax = 0;
+    for (let i = 0; i < n; i += 1) {
+      delta[i] = disp[i]! - y[i]!;
+      if (Math.abs(delta[i]!) > dMax) dMax = Math.abs(delta[i]!);
+      if (Math.abs(disp[i]!) > dispMax) dispMax = Math.abs(disp[i]!);
+    }
+    if (dMax < 1e-3 * dispMax) continue; // the pattern has no on-manifold component
+    // Step, then correct back onto the non-tangent manifold.
+    const x1 = new Float64Array(vars);
+    for (let i = 0; i < n; i += 1) x1[i] = x1[i]! + delta[i]!;
+    let settled = false;
+    for (let k = 0; k <= 4; k += 1) {
+      if (!afford(mO)) return null;
+      sink.used += mO;
+      const cur = evalOthers(x1);
+      if (cur.max <= acceptTol) {
+        settled = true;
+        break;
+      }
+      if (k === 4) break;
+      if (!afford(mO * n)) return null;
+      sink.used += mO * n;
+      const JkC = compact(jacRows(others, x1), others);
+      if (!afford((mO + n) * n)) return null;
+      sink.used += (mO + n) * n;
+      const step = qrLeastSquaresStep(JkC, mO, n, cur.vec, Math.sqrt(1e-3 * kappaOf(JkC, mO)));
+      if (step === null) break;
+      for (let i = 0; i < n; i += 1) x1[i] = x1[i]! + step[i]!;
+    }
+    if (!settled) continue;
+    // Read the full Jacobian at the corrected manifold point.
+    if (work.used + totalRows * n > work.limit && budgeted) return null;
+    work.used += totalRows * n;
+    const J = jacRows(residuals, x1);
+    return { J, rank: denseRank(J, totalRows, n) };
   }
-  return out;
+  return null;
 }
 
 /** Numerical rank of a dense m×n matrix; pivot threshold 1e-10 relative to
@@ -2945,24 +3095,33 @@ export function solveConstraints(entities: readonly Entity[], set: ConstraintSet
         return;
       }
       const J = jacAll(comp, outcome.vars, work);
-      // Generic rank (F-3034-2): see genericTangentRank — at an
-      // exactly-tangent configuration the tangent row is a pointwise
-      // combination of the coincident rows (the fold), so the rank at
-      // the point itself undercounts what the constraints consume.
-      // When a tangent row is present and the plain rank is not
-      // already maximal, the rank is also read at a deterministically
-      // perturbed point and the larger reading — the generic one —
-      // governs the DOF report, the redundancy probes and the
-      // per-entity marginals below (all three use `rankJ`).
+      // Generic rank (F-3034-2 / round-2 C02): see manifoldRankProbe —
+      // at an exactly-tangent configuration the tangent row can be a
+      // pointwise combination of the other rows (the fold), so the
+      // rank at the point itself undercounts consumption. When a
+      // tangent row is present and the plain rank is not already
+      // maximal, the rank is ALSO read at a nearby point of the
+      // NON-TANGENT constraints' manifold; that reading (never an
+      // ambient off-manifold one, which invented rank for
+      // manifold-implied tangency) governs the DOF report, the
+      // redundancy probes and the per-entity marginals below (all
+      // three use `rankJ`) whenever it exceeds the pointwise reading.
       let rankJ = J;
       let rank = denseRank(J, comp.totalRows, comp.vars0.length);
       if (rank < Math.min(comp.totalRows, comp.vars0.length) && comp.residuals.some((rs) => rs.constraint.kind === 'tangent')) {
         if (work.used + comp.totalRows * comp.vars0.length <= work.limit) {
-          const Jp = jacAll(comp, perturbedVars(outcome.vars, comp.S), work);
-          const rankP = denseRank(Jp, comp.totalRows, comp.vars0.length);
-          if (rankP > rank) {
-            rankJ = Jp;
-            rank = rankP;
+          const probe = manifoldRankProbe({
+            residuals: comp.residuals,
+            rowOffset: comp.rowOffset,
+            totalRows: comp.totalRows,
+            vars: outcome.vars,
+            S: comp.S,
+            work,
+            budgeted: true,
+          });
+          if (probe && probe.rank > rank) {
+            rankJ = probe.J;
+            rank = probe.rank;
           }
         }
       }
@@ -3113,20 +3272,17 @@ export function analyzeConstraints(entities: readonly Entity[], set: ConstraintS
     for (const rs of residuals) rs.jac(vars0, J, offsets.get(rs.constraint.id)!, nVars);
     work.used += totalRows * nVars;
     effectiveConsumed = denseRank(J, totalRows, nVars);
-    // Generic rank (F-3034-2, as in solveConstraints): with a tangent
-    // row present and the plain rank not already maximal, also read
-    // the rank at a deterministically perturbed point; the larger
-    // (generic) reading governs, and its Jacobian drives the
-    // per-entity marginals below so the report stays consistent.
+    // Generic rank (F-3034-2 / round-2 C02, as in solveConstraints):
+    // with a tangent row present and the plain rank not already
+    // maximal, also read the rank at a nearby point of the non-tangent
+    // constraints' manifold (manifoldRankProbe); the larger reading
+    // governs, and its Jacobian drives the per-entity marginals below
+    // so the report stays consistent.
     if (effectiveConsumed < Math.min(totalRows, nVars) && residuals.some((rs) => rs.constraint.kind === 'tangent')) {
-      const pv = perturbedVars(vars0, S);
-      const Jp = new Float64Array(totalRows * nVars);
-      for (const rs of residuals) rs.jac(pv, Jp, offsets.get(rs.constraint.id)!, nVars);
-      work.used += totalRows * nVars;
-      const rankP = denseRank(Jp, totalRows, nVars);
-      if (rankP > effectiveConsumed) {
-        J = Jp;
-        effectiveConsumed = rankP;
+      const probe = manifoldRankProbe({ residuals, rowOffset: offsets, totalRows, vars: vars0, S, work, budgeted: false });
+      if (probe && probe.rank > effectiveConsumed) {
+        J = probe.J;
+        effectiveConsumed = probe.rank;
       }
     }
     let cumulative = 0;
