@@ -279,3 +279,30 @@ remote CI, DWG/Han composition or native CFF/variable-font acceptance.
 
 See [priority-12 review status](PRIORITY-12-REVIEW-STATUS.md) for delivery,
 ownership and the remaining integration gates.
+
+### Restricted-export engine spike review, 2026-10-15
+
+The pinned qpdf 12.4.2 self-build route is selected for implementation. The
+delivered binary is a prototype, not an approved runtime/shipping artifact.
+Static inspection verifies its actual maximum is 2 GiB; the proposed 768 MiB
+requires relinking. MEMFS input/output uses additional JavaScript arrays, so
+that linear-memory cap alone cannot bound the complete process or IPC copies.
+The implementation still needs aggregate bounds, child termination/join,
+capture/mode isolation, strict evidence and complete distributable notices.
+
+A separate bounded Windows Node smoke runs two fresh encryptions and one
+decryption over an exact 3,465-byte authored/private PDF with embedded synthetic
+font, text, Info and XMP metadata. All 89 independent strict-pypdf assertions
+pass: R6/AESV3, P2 `/P=-1324`, encrypted metadata, empty-user and owner
+authentication, wrong-password refusal, PDF 1.7 Extension Level 8, and linked
+stored/decoded streams, Unicode and metadata preservation. Individual security
+fields and ciphertext differ between jobs; permanent document IDs need not.
+The 144-dpi Poppler renders have identical RGB pixels and empty stderr. Whole
+serialized PDF byte identity is not claimed because qpdf rewrites structure.
+
+The first smoke failed a raw marker-presence assertion because pypdf escaped
+the fixture's Info marker. The marker was corrected; the failed receipt and
+every assertion are retained. This source-runtime prototype evidence does not
+exercise production Plot/IPC, utilityProcess isolation, installed fonts,
+AutoCAD or viewer restriction enforcement. Preview/print-font refusal remains
+active until the implementation and its acceptance gates pass.
