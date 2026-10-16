@@ -240,5 +240,8 @@ Two complete two-worker Windows runs each pass 6,700 tests with 38 skips and tim
 out in the same unchanged 128-MiB file-hashing admission case, including its
 cleanup hook. That suite passes alone with unchanged deadlines. Its concurrency
 cause is unresolved; those failures are preserved and the two-worker gate is
-not green. A serial full-suite control is recorded separately. No remote CI,
+not green. The serial control passes all 6,701 tests with 38 skips across 376
+files (375 passed, one skipped) in 317 seconds, with every deadline and assertion
+unchanged. This establishes serial acceptance, not the cause of the concurrent
+failure or a green two-worker gate. No remote CI,
 packaged installer, new AutoCAD run or release is certified by this review.

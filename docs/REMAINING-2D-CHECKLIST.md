@@ -5,8 +5,9 @@ retains the tested 12.1 correction and reviews delivered used-glyph validation a
 12.3 glyf subsetting. Static checks and real Windows subset Plot/save/reopen pass;
 subset/whole-control Unicode and pixels match. Installed SimSun remains refused,
 and the actual DWG/missing-SHX/Han composition remains unvalidated. Two full
-concurrent Windows runs retain one unchanged large-file hashing timeout; do not
-call their gate green. Packaged checks, remote CI and release integration remain
+concurrent Windows runs retain one unchanged large-file hashing timeout; the
+serial control passes 6,701 tests with 38 skips and unchanged deadlines. The
+concurrent gate remains unresolved. Packaged checks, remote CI and release integration remain
 separate. See [PDF source-review evidence](PDF-FONT-EMBEDDING.md). The rest of the
 long roadmap stays paused and GPU/DWG ownership is unchanged.
 
