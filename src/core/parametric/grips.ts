@@ -31,7 +31,7 @@ import * as g from '../geometry';
 import type { Point } from '../geometry';
 import type { AngleParameter, LinearDistanceParameter } from './definitions';
 import { resolvedEffectiveValues } from './evaluate';
-import { setDynamicParameter, type SetDynamicParameterProblem } from './apply';
+import { entityInActiveSpace, setDynamicParameter, type SetDynamicParameterProblem } from './apply';
 
 /**
  * Result of a grip drag: exactly a `setDynamicParameter` result, plus
@@ -111,12 +111,14 @@ function unitDirection(param: LinearDistanceParameter): Point {
 
 /**
  * Resolve an ENTITY grip index (position grip = 0, appended grips from 1)
- * to its dynamic grip descriptor for the insert as stored in `state`, or
- * undefined when the index is not a dynamic grip.
+ * to its dynamic grip descriptor for the insert as resolved in `state`'s
+ * active space (entityInActiveSpace: the stored list, else the active
+ * layout's paper entities), or undefined when the index is not a dynamic
+ * grip.
  */
 export function dynamicGripDescriptor(state: DrawingState, insertId: string, gripIndex: number): DynamicGrip | undefined {
   if (gripIndex < 1) return undefined;
-  const entity = state.entities.find((e) => e.id === insertId);
+  const entity = entityInActiveSpace(state, insertId);
   if (!entity || entity.type !== 'insert') return undefined;
   const block = state.blocks[entity.block];
   if (!block) return undefined;
@@ -157,9 +159,16 @@ export function worldToDefinitionPoint(ins: InsertEntity, block: BlockDef, world
  * IS a dynamic grip, the result is exactly a `setDynamicParameter` result:
  * accepted (commit `state` through one transact) or refused with the
  * unchanged state object and a problem code.
+ *
+ * The insert resolves against the state's ACTIVE SPACE
+ * (entityInActiveSpace): a raw snapshot whose active space is a layout
+ * resolves the layout's inserts, and the delegated setDynamicParameter
+ * returns a raw state whose layout carries the edit — the earlier R08
+ * fix only made this work for callers that passed a projected state
+ * themselves (review R08 residual).
  */
 export function dynamicGripEdit(state: DrawingState, insertId: string, gripIndex: number, worldPoint: Point): DynamicGripEditResult | undefined {
-  const entity = state.entities.find((e) => e.id === insertId);
+  const entity = entityInActiveSpace(state, insertId);
   if (!entity || entity.type !== 'insert' || gripIndex < 1) return undefined;
   const block = state.blocks[entity.block];
   if (!block?.dynamic || block.dynamicRetained !== undefined || entity.dynamicRetained !== undefined) return undefined;
@@ -178,17 +187,18 @@ export function dynamicGripEdit(state: DrawingState, insertId: string, gripIndex
 /**
  * The pointer's drag resolution (review R08): like `dynamicGripEdit`,
  * but TOTAL over dynamic inserts. `dynamicGripEdit` returns undefined
- * whenever an index does not resolve — including when the caller handed
- * it a state whose entity list does not contain the insert (the paper-
- * space bug: the raw snapshot holds model-space entities only) or when
- * the index went stale — and the pointer's fall-through then handed the
- * index to moveGrip, which moved the WHOLE INSERT. That must never
- * happen: an index beyond the position grip on an insert whose block is
- * dynamic can only have come from a parameter grip, so when it does not
- * resolve this function returns a REFUSAL (the input state, problem
- * 'grip-not-resolvable') instead of undefined. Undefined is reserved for
- * inserts whose block is not dynamic at all (and for the position grip),
- * where ordinary grip handling is the correct path.
+ * whenever an index does not resolve — a stale index past the insert's
+ * last parameter grip, or stored values that no longer validate — and
+ * the pointer's fall-through then handed the index to moveGrip, which
+ * moved the WHOLE INSERT. That must never happen: an index beyond the
+ * position grip on an insert whose block is dynamic can only have come
+ * from a parameter grip, so when it does not resolve this function
+ * returns a REFUSAL (the input state, problem 'grip-not-resolvable')
+ * instead of undefined. Undefined is reserved for inserts whose block
+ * is not dynamic at all (and for the position grip), where ordinary
+ * grip handling is the correct path. The insert lookup here is the
+ * same active-space resolution dynamicGripEdit uses, so totality
+ * holds for raw snapshots as well as projected states.
  */
 export function resolveDynamicGripDrag(
   state: DrawingState,
@@ -199,7 +209,7 @@ export function resolveDynamicGripDrag(
   const result = dynamicGripEdit(state, insertId, gripIndex, worldPoint);
   if (result) return result;
   if (gripIndex < 1) return undefined;
-  const entity = state.entities.find((e) => e.id === insertId);
+  const entity = entityInActiveSpace(state, insertId);
   if (!entity || entity.type !== 'insert') return undefined;
   const block = state.blocks[entity.block];
   if (!block?.dynamic) return undefined;
