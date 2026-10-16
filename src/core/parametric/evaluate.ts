@@ -23,6 +23,13 @@
  * `effective` values before any geometry, and everything downstream (grip
  * positions, action deltas, the visibility filter) reads `finalEffective`
  * only.
+ *
+ * 30.2c: the array action (design §3) is the first action kind that changes
+ * the LENGTH of the working entity list. Working-list bookkeeping below
+ * (baseSlot / sourceIds) keeps two invariants while it does: actions after
+ * an array still resolve their selections against base ids and see copy 0
+ * only, and the visibility filter drops array products by their SOURCE id
+ * (provenance tracked internally, never parsed back out of derived ids).
  */
 import { EPS, add, dot, normalize, rotate, scale as scalePoint, sub, type Point } from '../geometry';
 import {
@@ -36,6 +43,7 @@ import {
 import {
   validateDefinition,
   type AngleParameter,
+  type ArrayAction,
   type DefinitionIssue,
   type DynamicBlockDefinition,
   type FlipAction,
@@ -68,9 +76,10 @@ export interface EvaluationLimits {
   readonly maxChainDepth: number;
   /** Work budget, charged 1 per entity examined + 1 per movable point tested. */
   readonly maxWork: number;
-  /** Max entities in the result (base + any produced). 30.1 actions produce none,
-   *  so this binds at baseEntities.length; it exists now so 30.2 array actions
-   *  inherit the bound instead of adding a second limits shape. */
+  /** Max entities in the result (base + any produced). Binds at
+   *  baseEntities.length for the non-producing actions; an array action
+   *  (30.2c) pre-checks its production against it BEFORE creating any copy
+   *  (design §3.5). */
   readonly maxOutputEntities: number;
 }
 
@@ -131,6 +140,7 @@ export type EvaluationRefusalCode =
   | 'chain-depth-exceeded' // dependency path longer than limits.maxChainDepth
   | 'work-limit-exceeded' // limits.maxWork / maxActions / maxOutputEntities hit
   | 'degenerate-transform' // a computed whole-entity transform is degenerate (scale factor <= 0 / non-finite)
+  | 'unsupported-selection' // an array action selects an attribute definition, which cannot be arrayed (design §3.4)
   | 'unstretchable-entity'; // selection names an entity type with no movable points
 
 export interface EvaluationDiagnostic {
@@ -248,7 +258,7 @@ function reflectPoint(p: Point, a: Point, b: Point): Point {
 }
 
 /** The action kinds this build evaluates (opaque actions refused earlier). */
-type ModeledAction = StretchAction | MoveAction | RotateAction | ScaleAction | FlipAction;
+type ModeledAction = StretchAction | MoveAction | RotateAction | ScaleAction | FlipAction | ArrayAction;
 
 /** A modeled (non-opaque) parameter: the kinds an action can be driven by. */
 type ModeledParameter = LinearDistanceParameter | AngleParameter | FlipParameter;
@@ -492,6 +502,14 @@ export function evaluateDynamicBlock(
   //    for or from them: they compose in authoring order, which is the
   //    topological tie-break. Deriving dependency edges from whole-action
   //    grip movement is later 30.2 chaining work (spec §3.2, final bullet).
+  //    The array action (30.2c) is whole-entity-class for dependency
+  //    purposes (design §3.2): it sources no edges, and the selection-point
+  //    rule does not apply to it as a sink either — an array takes its
+  //    copies from copy 0's position at the moment it applies, so
+  //    stretch↔array order is authoring order (design §3.4 "pipeline order
+  //    is the semantics", pinned by case A5). The grip rule above DOES
+  //    still apply to it: its driving parameter is a linear distance, and
+  //    grip coupling is parameter coupling, as for move/scale.
   const gripPointOf = (param: LinearDistanceParameter): Point | undefined => {
     const grip = param.grips.find((gr) => gr.role === 'value' && gr.movesWithValue);
     if (!grip) return undefined;
@@ -514,7 +532,7 @@ export function evaluateDynamicBlock(
       if (actionA.kind !== 'stretch') continue; // whole actions source no edges (above)
       let depends = false;
       if (actionA.parameterId !== actionB.parameterId && gripB && inFrame(gripB, actionA.frame)) depends = true;
-      if (!depends) {
+      if (!depends && actionB.kind !== 'array') {
         for (const sel of actionB.selection) {
           const target = targetFor(sel.entityId);
           if (!target) continue;
@@ -582,6 +600,22 @@ export function evaluateDynamicBlock(
   const appliedActions: string[] = [];
   const defaultedReported = new Set<string>();
 
+  // Working-list bookkeeping for array production (design §3.4). outEntities
+  // starts as the base list in base order; an array action inserts copies
+  // into it, after which base indices no longer address it directly:
+  // - baseSlot maps a base entity index to its CURRENT working index (the
+  //   slot of copy 0), so the appliers below — which resolve selections
+  //   against base ids via targetFor — keep seeing copy 0 only, never a
+  //   copy, exactly as the design requires. Attributes are never arrayed,
+  //   so outAttributes needs no such mapping.
+  // - sourceIds runs parallel to outEntities and records each working
+  //   entity's provenance: its own id for a base entity, the base source's
+  //   id for an array copy. The visibility filter (§1.4 step 8) drops array
+  //   products by this source id; provenance is tracked, never parsed back
+  //   out of the derived id format.
+  const baseSlot: number[] = baseEntities.map((_, i) => i);
+  const sourceIds: string[] = baseEntities.map((e) => e.id);
+
   /** Apply one stretch action to the working copies. Returns a refusal, or
    *  undefined on success (including a zero-delta no-op). */
   const applyStretchAction = (action: StretchAction, param: LinearDistanceParameter): EvaluationResult | undefined => {
@@ -607,9 +641,11 @@ export function evaluateDynamicBlock(
       const baseTarget = targetFor(sel.entityId);
       if (!baseTarget) continue; // validateDefinition already refused unknown ids.
       // Current (possibly already moved by an earlier action) target state.
+      // Entity reads go through baseSlot: after an array action, the working
+      // slot of a base entity is no longer its base index (design §3.4).
       const target: Target =
         baseTarget.kind === 'entity'
-          ? { kind: 'entity', index: baseTarget.index, entity: outEntities[baseTarget.index]! }
+          ? { kind: 'entity', index: baseTarget.index, entity: outEntities[baseSlot[baseTarget.index]!]! }
           : { kind: 'attribute', index: baseTarget.index, attribute: outAttributes[baseTarget.index]! };
       const points = movablePoints(target);
       if (points === null) {
@@ -654,7 +690,7 @@ export function evaluateDynamicBlock(
       }
       anyMoved = true;
       if (target.kind === 'entity') {
-        outEntities[target.index] = withMovedPoints(target.entity, moves);
+        outEntities[baseSlot[target.index]!] = withMovedPoints(target.entity, moves);
       } else {
         outAttributes[target.index] = { ...target.attribute, position: moves.get(0) ?? target.attribute.position };
       }
@@ -764,18 +800,155 @@ export function evaluateDynamicBlock(
       const baseTarget = targetFor(sel.entityId);
       if (!baseTarget) continue; // validateDefinition already refused unknown ids.
       // Current (possibly already transformed by an earlier action) state.
+      // Entity reads go through baseSlot, as in applyStretchAction.
       const target: Target =
         baseTarget.kind === 'entity'
-          ? { kind: 'entity', index: baseTarget.index, entity: outEntities[baseTarget.index]! }
+          ? { kind: 'entity', index: baseTarget.index, entity: outEntities[baseSlot[baseTarget.index]!]! }
           : { kind: 'attribute', index: baseTarget.index, attribute: outAttributes[baseTarget.index]! };
       const points = movablePoints(target);
       if (!charge(1 + (points ? points.length : 1))) return workRefusal();
       if (target.kind === 'entity') {
-        outEntities[target.index] = transformEntity(target.entity);
+        outEntities[baseSlot[target.index]!] = transformEntity(target.entity);
       } else {
         outAttributes[target.index] = { ...target.attribute, position: transformPoint(target.attribute.position) };
       }
     }
+    return undefined;
+  };
+
+  /**
+   * Apply one array action (30.2c, design §3) to the working list. The
+   * selection is repeated as a unit along the driving parameter's
+   * direction; copies are inserted immediately after their source entity,
+   * inherit the source's CURRENT geometry (actions before the array have
+   * already transformed it — pipeline order is the semantics), and get
+   * deterministic derived ids. Later actions resolve selections against
+   * base ids and therefore see copy 0 only; a second array on the same
+   * source arrays copy 0's current geometry, so two arrays on one source
+   * are additive (n₁ + n₂ − 1 entities), never multiplicative (design
+   * §3.4; whether native evaluation multiplies is fixture-gated, §9).
+   */
+  const applyArrayAction = (action: ArrayAction): EvaluationResult | undefined => {
+    // Definition validation guarantees the driving parameter is a
+    // linear-distance parameter.
+    const param = parametersById.get(action.parameterId)! as LinearDistanceParameter;
+    const valueEntry = finalEffective[param.id]!;
+    const value = valueEntry.kind === 'distance' ? valueEntry.value : param.defaultValue;
+    // Count rule (design §3.3) — JCad's own rule, stated here as ours and
+    // NOT as a native claim (the native rule is undocumented at field
+    // level; fixture question Q13): count(v) = floor(v / spacing) + 1,
+    // endpoint inclusive at exact multiples — at v = m·spacing the count
+    // is m + 1 and the last copy sits exactly at offset v. There is no
+    // rounding mode and no tolerance fudge in the rule: floor on the
+    // exact quotient. Copy 0 is the selection itself, present at any
+    // value; v = 0 gives count 1. No valid value gives zero copies.
+    const copies = Math.floor(value / action.spacing) + 1;
+    if (copies < 1) {
+      // Only reachable with a negative effective value, which design §3.1
+      // treats as impossible (distance values are ≥ 0 by validation).
+      // Refuse rather than produce zero copies or silently clamp.
+      return refuse({
+        code: 'degenerate-transform',
+        message: `Array action '${action.id}' computed a copy count of ${copies} from value ${value} at spacing ${action.spacing}; the driving value must not be negative.`,
+        actionId: action.id,
+        parameterId: param.id,
+      });
+    }
+
+    // Resolve the selection against base ids (validation refused unknown
+    // ids). Attribute definitions may NOT be arrayed (design §3.4): an
+    // evaluation refusal, not a validation issue, because ids and tags
+    // share one identity space at validation time. A duplicated selection
+    // entry names the same source twice; the source is arrayed once.
+    const selectedBase: number[] = [];
+    const seenBase = new Set<number>();
+    for (const sel of action.selection) {
+      const target = targetFor(sel.entityId);
+      if (!target) continue; // validateDefinition already refused unknown ids.
+      if (target.kind === 'attribute') {
+        return refuse({
+          code: 'unsupported-selection',
+          message: `Array action '${action.id}' selects attribute definition '${sel.entityId}'; attribute definitions cannot be arrayed (attribute text is generated per insert from the definition list, not per entity copy).`,
+          actionId: action.id,
+        });
+      }
+      if (!seenBase.has(target.index)) {
+        seenBase.add(target.index);
+        selectedBase.push(target.index);
+      }
+    }
+
+    // Limit pre-check BEFORE any copy is created (design §3.5): the
+    // post-array working count is known exactly, so an over-limit array
+    // refuses here and no copy is ever made.
+    const added = (copies - 1) * selectedBase.length;
+    if (outEntities.length + added > limits.maxOutputEntities) {
+      return refuse({
+        code: 'work-limit-exceeded',
+        message: `Array action '${action.id}' would produce ${outEntities.length + added} entities, exceeding the output limit of ${limits.maxOutputEntities}.`,
+        actionId: action.id,
+      });
+    }
+    if (copies === 1 || selectedBase.length === 0) {
+      // A no-op: either the count rule gives one copy (possible off-default,
+      // when v < spacing — the message states the count and does not claim
+      // the parameter is at its default, design §3.5), or the selection is
+      // empty, which validation allows (design §3.6).
+      diagnostics.push({
+        severity: 'info',
+        code: 'action-no-op',
+        message:
+          selectedBase.length === 0
+            ? `Array action '${action.id}' selects no entities; nothing was arrayed.`
+            : `Array action '${action.id}' produced a copy count of 1 at value ${value} and spacing ${action.spacing}; nothing was arrayed.`,
+        parameterId: param.id,
+        actionId: action.id,
+      });
+      return undefined;
+    }
+
+    const directionLen = Math.hypot(param.direction.x, param.direction.y);
+    const unit = { x: param.direction.x / directionLen, y: param.direction.y / directionLen };
+    const selectedSlots = new Set(selectedBase.map((bi) => baseSlot[bi]!));
+    // Reverse of baseSlot: working slot -> base index (-1 for array copies,
+    // which are never selection targets).
+    const baseIndexOfSlot: number[] = outEntities.map(() => -1);
+    baseSlot.forEach((slot, bi) => {
+      baseIndexOfSlot[slot] = bi;
+    });
+
+    // Build the new working list in one pass: each entity in working order,
+    // a selected source immediately followed by its copies. Work is charged
+    // per copy at the whole-action convention (1 + movable point count)
+    // before the copy is created; a mid-production work refusal discards
+    // the new list untouched — the working list is only spliced once every
+    // copy exists, so refusal stays atomic by purity.
+    const newEntities: Entity[] = [];
+    const newSourceIds: string[] = [];
+    const newBaseSlot: number[] = baseSlot.map(() => -1);
+    for (let slot = 0; slot < outEntities.length; slot += 1) {
+      const entity = outEntities[slot]!;
+      const bi = baseIndexOfSlot[slot]!;
+      if (bi >= 0) newBaseSlot[bi] = newEntities.length;
+      newEntities.push(entity);
+      newSourceIds.push(sourceIds[slot]!);
+      if (!selectedSlots.has(slot)) continue;
+      // The entity in this slot IS copy 0 (a base entity, by the slot
+      // bookkeeping), so its id is the base source id the derived ids are
+      // built from. Copies are the exact core translation of the source's
+      // current geometry, then the id replacement (design §3.4) — for a
+      // nested insert member the copy shares the source's `dynamic` state
+      // object by reference and is evaluated independently at expansion.
+      const points = movablePoints({ kind: 'entity', index: bi, entity });
+      for (let k = 1; k < copies; k += 1) {
+        if (!charge(1 + (points ? points.length : 1))) return workRefusal();
+        newEntities.push({ ...translateEntity(entity, scalePoint(unit, k * action.spacing)), id: `${entity.id}#${action.id}#${k}` });
+        newSourceIds.push(sourceIds[slot]!);
+      }
+    }
+    outEntities.splice(0, outEntities.length, ...newEntities);
+    sourceIds.splice(0, sourceIds.length, ...newSourceIds);
+    for (let bi = 0; bi < baseSlot.length; bi += 1) baseSlot[bi] = newBaseSlot[bi]!;
     return undefined;
   };
 
@@ -800,7 +973,9 @@ export function evaluateDynamicBlock(
     const refusal =
       action.kind === 'stretch'
         ? applyStretchAction(action, param as LinearDistanceParameter)
-        : applyWholeAction(action);
+        : action.kind === 'array'
+          ? applyArrayAction(action)
+          : applyWholeAction(action);
     if (refusal) return refusal;
     appliedActions.push(action.id);
   }
@@ -809,7 +984,8 @@ export function evaluateDynamicBlock(
   //    applied to the FULL authored set above, hidden entities included — so
   //    a state switch reveals geometry already consistent with the parameter
   //    values. The filter is the last step: it drops every working entity
-  //    whose id and every working attribute whose tag is not in the effective
+  //    whose SOURCE id (array products follow their source, design §3.4)
+  //    and every working attribute whose tag is not in the effective
   //    state's visible set, and changes nothing else — appliedActions,
   //    diagnostics and work accounting are exactly as produced by step 7,
   //    and budgets stay pre-filter (the filter only shrinks what expansion
@@ -829,7 +1005,13 @@ export function evaluateDynamicBlock(
   const visible = new Set<string>(state.visible);
   return {
     ok: true,
-    entities: outEntities.filter((e) => visible.has(e.id)),
+    // Entities are filtered by SOURCE id (design §3.4): an array copy's
+    // derived id is never in a state's visible set, but its source's
+    // membership decides for the whole family — if the source is hidden,
+    // all its copies are dropped; if visible, all are kept. For a base
+    // entity the source id is its own id, so non-array results are
+    // filtered exactly as before.
+    entities: outEntities.filter((_, i) => visible.has(sourceIds[i]!)),
     attributes: outAttributes.filter((a) => visible.has(a.tag)),
     appliedActions,
     diagnostics,
