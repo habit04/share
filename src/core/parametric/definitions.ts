@@ -2,6 +2,9 @@
  * Priority 30.1/30.2 — dynamic-block definitions (authored normalized model).
  * 30.1: linear-distance parameter + stretch action. 30.2 (additive, same model
  * version): angle + flip parameters; move / rotate / uniform-scale / flip actions.
+ * 30.2a (additive, same model version): the visibility parameter (named states
+ * over the definition's own entities; no action — evaluation applies it as a
+ * final filter, see evaluate.ts).
  *
  * Pure data + structural validation. No I/O, no editor imports, and nothing here
  * mutates a definition: a definition that fails validation is refused, never repaired.
@@ -27,7 +30,7 @@ export interface DynamicBlockDefinition {
   readonly actions: readonly DynamicAction[];
 }
 
-export type DynamicParameter = LinearDistanceParameter | AngleParameter | FlipParameter | OpaqueParameter;
+export type DynamicParameter = LinearDistanceParameter | AngleParameter | FlipParameter | VisibilityParameter | OpaqueParameter;
 
 /**
  * A linear distance parameter: a scalar length measured along a fixed direction from a
@@ -115,6 +118,47 @@ export interface FlipParameter {
   readonly basePoint: Point;
   /** State of a fresh instance, and the state the base entities are authored at. */
   readonly defaultValue: boolean;
+}
+
+/**
+ * A visibility parameter (30.2a): a named-state switch over the definition's own
+ * entities. At most ONE visibility parameter per definition (the native rule).
+ * The parameter has no actions and drives no action; evaluation applies it as a
+ * final filter over the evaluated entities/attributes (design §1.4).
+ */
+export interface VisibilityParameter {
+  readonly kind: 'visibility';
+  /** Stable id, unique in the definition. */
+  readonly id: string;
+  /** Display name, e.g. 'Visibility'. Not an identity. */
+  readonly name: string;
+  /** Anchor of the visibility grip, definition space. Display data, as on the
+   *  flip parameter; evaluation never reads it. */
+  readonly basePoint: Point;
+  /** Name of the state a fresh instance is in, and the state the authored
+   *  geometry is presented in at default. Must be one of `states[].name`. */
+  readonly defaultState: string;
+  /** The states, in authoring order. At least one. */
+  readonly states: readonly VisibilityState[];
+}
+
+export interface VisibilityState {
+  /**
+   * State name. Unlike a parameter's display name this IS an identity:
+   * instance values refer to states by name, so renaming a state orphans
+   * stored instance values exactly as renaming a parameter id would.
+   * Unique within the parameter, non-empty, compared exactly
+   * (case-sensitive) — the same identity rules as parameter ids.
+   */
+  readonly name: string;
+  /**
+   * Positive visible set: the ids of base entities and the tags of attribute
+   * definitions visible in this state, in ONE identity space — the same
+   * merged id+tag space selections and validateDefinition already use. An
+   * entity/tag not listed is hidden in this state. There is no complement or
+   * defaulting rule at evaluation: membership is the whole semantics.
+   */
+  readonly visible: readonly string[];
 }
 
 export interface ParameterGrip {
@@ -288,6 +332,10 @@ export type DefinitionIssueCode =
   | 'invalid-base-point' // non-finite base point on an angle/flip parameter
   | 'invalid-action-geometry' // non-finite rotate centre / scale base point, degenerate flip axis
   | 'invalid-scale-base' // scale action whose driving parameter default is <= 0 (factor = value / default)
+  | 'duplicate-visibility-parameter' // more than one visibility parameter in the definition
+  | 'duplicate-visibility-state' // two states of one visibility parameter share a name
+  | 'invalid-visibility-states' // no states, an empty state name, defaultState not a state, a duplicated visible entry
+  | 'empty-visibility-state' // a state's visible list is empty (model rule, design §1.3 — not a native claim)
   | 'parameter-kind-mismatch'; // e.g. a rotate action driven by a linear-distance parameter
 
 export interface DefinitionIssue {
@@ -372,6 +420,7 @@ export function validateDefinition(
 
   const parameterIds = new Set<string>();
   const parameterById = new Map<string, DynamicParameter>();
+  let visibilitySeen = false;
   for (const param of definition.parameters) {
     if (parameterIds.has(param.id)) {
       issues.push({ code: 'duplicate-parameter-id', message: `Duplicate parameter id '${param.id}'.`, parameterId: param.id });
@@ -404,6 +453,69 @@ export function validateDefinition(
       const flipDefault: unknown = param.defaultValue;
       if (typeof flipDefault !== 'boolean') {
         issues.push({ code: 'invalid-constraint', message: `Parameter '${param.id}' flip default must be a boolean.`, parameterId: param.id });
+      }
+    } else if (param.kind === 'visibility') {
+      // At most one visibility parameter per definition (design §1.2).
+      if (visibilitySeen) {
+        issues.push({
+          code: 'duplicate-visibility-parameter',
+          message: `Parameter '${param.id}' is a second visibility parameter; a definition has at most one.`,
+          parameterId: param.id,
+        });
+      }
+      visibilitySeen = true;
+      if (!isFinitePoint(param.basePoint)) {
+        issues.push({ code: 'invalid-base-point', message: `Parameter '${param.id}' has a non-finite base point.`, parameterId: param.id });
+      }
+      if (param.states.length === 0) {
+        issues.push({ code: 'invalid-visibility-states', message: `Parameter '${param.id}' has no visibility states.`, parameterId: param.id });
+      }
+      const stateNames = new Set<string>();
+      for (const state of param.states) {
+        if (state.name.length === 0) {
+          issues.push({ code: 'invalid-visibility-states', message: `Parameter '${param.id}' has a state with an empty name.`, parameterId: param.id });
+        } else if (stateNames.has(state.name)) {
+          issues.push({
+            code: 'duplicate-visibility-state',
+            message: `Parameter '${param.id}' has two states named '${state.name}'; state names are identities and must be unique.`,
+            parameterId: param.id,
+          });
+        } else {
+          stateNames.add(state.name);
+        }
+        if (state.visible.length === 0) {
+          issues.push({
+            code: 'empty-visibility-state',
+            message: `State '${state.name}' of parameter '${param.id}' shows nothing; an empty visible set is refused as an authoring error (design §1.3).`,
+            parameterId: param.id,
+          });
+        }
+        const visibleSeen = new Set<string>();
+        for (const ref of state.visible) {
+          if (visibleSeen.has(ref)) {
+            issues.push({
+              code: 'invalid-visibility-states',
+              message: `State '${state.name}' of parameter '${param.id}' lists '${ref}' twice.`,
+              parameterId: param.id,
+            });
+          } else {
+            visibleSeen.add(ref);
+          }
+          if (!baseEntityIds.has(ref)) {
+            issues.push({
+              code: 'unknown-entity-ref',
+              message: `State '${state.name}' of parameter '${param.id}' lists unknown entity or attribute '${ref}'.`,
+              parameterId: param.id,
+            });
+          }
+        }
+      }
+      if (param.states.length > 0 && !stateNames.has(param.defaultState)) {
+        issues.push({
+          code: 'invalid-visibility-states',
+          message: `Parameter '${param.id}' default state '${param.defaultState}' is not one of its states.`,
+          parameterId: param.id,
+        });
       }
     }
   }

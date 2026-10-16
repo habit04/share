@@ -39,6 +39,7 @@ import {
   type RotateAction,
   type ScaleAction,
   type StretchAction,
+  type VisibilityParameter,
 } from './definitions';
 import { validateInstanceValues, type DynamicParameterValue, type DynamicInstanceState, type InstanceIssue } from './instance';
 
@@ -76,10 +77,16 @@ export type EvaluationResult =
   | {
       readonly ok: true;
       /** Evaluated entities in DEFINITION space. Entities no action touched are
-       *  returned by identity (same object). */
+       *  returned by identity (same object) — with one stated exception: when
+       *  the definition has a visibility parameter, the post-pass filter
+       *  (§1.4 step 8) DROPS the entities/attributes the effective state hides,
+       *  so "all parameters at defaults ⇒ base lists returned whole" holds iff
+       *  the default state's visible set covers every entity and attribute
+       *  definition. What the filter keeps, it keeps by identity. */
       readonly entities: readonly Entity[];
       /** Attribute definitions whose placement point moved; untouched ones are
-       *  returned by identity. Attribute VALUES live on the insert and are never
+       *  returned by identity (subject to the same visibility filter as
+       *  `entities`). Attribute VALUES live on the insert and are never
        *  an evaluation output. */
       readonly attributes: readonly AttributeDef[];
       /** Action ids in the order they were applied (topological). */
@@ -271,6 +278,8 @@ export function evaluationKey(
           return `${id}=a:${String(value.value)}`;
         case 'flip':
           return `${id}=f:${String(value.value)}`;
+        case 'visibility':
+          return `${id}=v:${value.value}`;
         case 'opaque':
           return `${id}=o:${value.payload}`;
       }
@@ -342,9 +351,12 @@ export function evaluateDynamicBlock(
     });
   }
 
+  // Action-drivable parameters only: a visibility parameter drives no action
+  // (an action naming one is refused by definition validation), and opaque
+  // parameters were refused above.
   const parametersById = new Map<string, ModeledParameter>();
   for (const param of definition.parameters) {
-    if (param.kind !== 'opaque-parameter') parametersById.set(param.id, param);
+    if (param.kind !== 'opaque-parameter' && param.kind !== 'visibility') parametersById.set(param.id, param);
   }
   // Opaque actions were refused above, so every remaining action is modeled.
   const actions = definition.actions as readonly ModeledAction[];
@@ -699,5 +711,32 @@ export function evaluateDynamicBlock(
     appliedActions.push(action.id);
   }
 
-  return { ok: true, entities: outEntities, attributes: outAttributes, appliedActions, diagnostics };
+  // 6. Visibility post-pass filter (design §1.4 step 8; the design's step-3
+  //    lookup override does not exist until 30.2b). Actions have been applied
+  //    to the FULL authored set above, hidden entities included — so a state
+  //    switch reveals geometry already consistent with the parameter values.
+  //    The filter is the last step: it drops every working entity whose id
+  //    and every working attribute whose tag is not in the effective state's
+  //    visible set, and changes nothing else — appliedActions, diagnostics
+  //    and work accounting are exactly as produced by step 5, and budgets
+  //    stay pre-filter (the filter only shrinks what expansion receives).
+  //    What it keeps, it keeps by identity.
+  const visibility = definition.parameters.find(
+    (p): p is VisibilityParameter => p.kind === 'visibility',
+  );
+  if (!visibility) {
+    return { ok: true, entities: outEntities, attributes: outAttributes, appliedActions, diagnostics };
+  }
+  const stateEntry = effective[visibility.id];
+  const stateName = stateEntry && stateEntry.kind === 'visibility' ? stateEntry.value : visibility.defaultState;
+  // Instance validation (step 2) guarantees the name is one of the states.
+  const state = visibility.states.find((s) => s.name === stateName)!;
+  const visible = new Set<string>(state.visible);
+  return {
+    ok: true,
+    entities: outEntities.filter((e) => visible.has(e.id)),
+    attributes: outAttributes.filter((a) => visible.has(a.tag)),
+    appliedActions,
+    diagnostics,
+  };
 }

@@ -1,5 +1,6 @@
 /**
  * Priority 30.1 — per-instance dynamic-block parameter values + validation.
+ * (30.2a adds the 'visibility' value kind: a state name, design §1.3.)
  *
  * Instance state is deliberately tiny: just the parameter values that differ per
  * insert. It does not copy the definition, the geometry, or the insert's transform.
@@ -23,13 +24,15 @@ export interface DynamicInstanceState {
   readonly values: Readonly<Record<string, DynamicParameterValue>>;
 }
 
-/** Values are tagged so new kinds (30.2: angle, flip) don't reshape existing data. */
+/** Values are tagged so new kinds (30.2: angle, flip; 30.2a: visibility) don't reshape existing data. */
 export type DynamicParameterValue =
   | { readonly kind: 'distance'; readonly value: number }
   /** Angle in radians (the codebase's angle convention). */
   | { readonly kind: 'angle'; readonly value: number }
   /** Flip state: true = mirrored relative to the authored orientation. */
   | { readonly kind: 'flip'; readonly value: boolean }
+  /** Visibility state name (an identity in the owning parameter, design §1.2). */
+  | { readonly kind: 'visibility'; readonly value: string }
   | { readonly kind: 'opaque'; readonly payload: string };
 
 export type InstanceIssueCode =
@@ -39,6 +42,7 @@ export type InstanceIssueCode =
   | 'value-out-of-range' // range or increment bounds violated (also negative for unbounded)
   | 'value-not-in-list' // list constraint violated
   | 'value-off-increment' // not min + k * increment (within EVALUATION_TOLERANCE)
+  | 'unknown-visibility-state' // visibility value names a state the parameter does not have
   | 'block-mismatch'; // state.block !== owning insert's block
 
 export interface InstanceIssue {
@@ -113,6 +117,8 @@ const defaultValueOf = (param: DynamicParameter): DynamicParameterValue => {
       return { kind: 'angle', value: param.defaultValue };
     case 'flip':
       return { kind: 'flip', value: param.defaultValue };
+    case 'visibility':
+      return { kind: 'visibility', value: param.defaultState };
     case 'opaque-parameter':
       return { kind: 'opaque', payload: param.payload };
   }
@@ -180,6 +186,25 @@ export function validateInstanceValues(
     if (param.kind === 'flip') {
       if (supplied.kind !== 'flip' || typeof supplied.value !== 'boolean') {
         issues.push({ code: 'wrong-value-kind', message: `Parameter '${param.id}' cannot take a non-boolean flip value.`, parameterId: param.id });
+        continue;
+      }
+      effective[param.id] = supplied;
+      continue;
+    }
+    if (param.kind === 'visibility') {
+      if (supplied.kind !== 'visibility' || typeof supplied.value !== 'string') {
+        issues.push({ code: 'wrong-value-kind', message: `Parameter '${param.id}' cannot take a '${supplied.kind}' value; a state name is required.`, parameterId: param.id });
+        continue;
+      }
+      // An unknown state name is refused, never replaced by the default state
+      // as a "repair" (design §1.3): the block displays its authored geometry
+      // and the stored value is retained.
+      if (!param.states.some((s) => s.name === supplied.value)) {
+        issues.push({
+          code: 'unknown-visibility-state',
+          message: `Parameter '${param.id}' has no visibility state named '${supplied.value}'.`,
+          parameterId: param.id,
+        });
         continue;
       }
       effective[param.id] = supplied;
