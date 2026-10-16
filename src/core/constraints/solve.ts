@@ -2177,6 +2177,23 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
     };
   };
 
+  // Budget honesty (review round 2, C03): a success may only be
+  // returned while the work budget holds. Work is charged as it is
+  // executed (jacAll / evalAll / QR charges below), and a converged or
+  // discharged state discovered AFTER the cap was crossed must not
+  // ride out as a success with changed geometry — every success return
+  // in this function goes through here and converts to the standard
+  // work-limit refusal, which installs nothing.
+  const succeed = (vars: Float64Array, mag: Map<string, number>): CompOutcome =>
+    work.used > work.limit
+      ? {
+          ok: false,
+          vars,
+          mag,
+          failure: { code: 'work-limit-exceeded', constraintIds: comp.active.map((a) => a.c.id), message: `Work limit of ${work.limit} exceeded.` },
+        }
+      : { ok: true, vars, mag };
+
   // Which constraints did stage 2 discharge? Satisfied at the determined
   // values with every variable they read determined. Satisfaction is the
   // R02-aware predicate: a length-dimensional constraint whose raw error
@@ -2196,7 +2213,7 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
   if (freeSet.size === 0) {
     const cf = collapseFailure(vals, mag0);
     if (cf) return cf;
-    return { ok: true, vars: vals, mag: mag0 };
+    return succeed(vals, mag0);
   }
   const free = [...freeSet].sort((a, b) => a - b);
 
@@ -2236,7 +2253,7 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
   if (allSatisfied(comp, mag)) {
     const cf = collapseFailure(x, mag);
     if (cf) return cf;
-    return { ok: true, vars: x, mag };
+    return succeed(x, mag);
   }
 
   // Mid-solve degeneracy of a candidate point: a driven radius
@@ -2272,6 +2289,12 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
       return { ok: false, vars: x, mag, failure: { code: 'cancelled', constraintIds: comp.active.map((a) => a.c.id), message: 'Solve cancelled.' } };
     }
     if (work.used > work.limit) {
+      return { ok: false, vars: x, mag, failure: { code: 'work-limit-exceeded', constraintIds: comp.active.map((a) => a.c.id), message: `Work limit of ${work.limit} exceeded during relaxation.` } };
+    }
+    // C03: guard BEFORE the expensive evaluation — the Jacobian's
+    // charge is known in advance, so a cap it would cross refuses here
+    // instead of executing the factorization and noticing afterwards.
+    if (work.used + comp.totalRows * nVars > work.limit) {
       return { ok: false, vars: x, mag, failure: { code: 'work-limit-exceeded', constraintIds: comp.active.map((a) => a.c.id), message: `Work limit of ${work.limit} exceeded during relaxation.` } };
     }
     const J = jacAll(comp, x, work);
@@ -2318,6 +2341,14 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
     }
     if (kappa === 0) kappa = 1;
     for (let attempt = 0; attempt < 80; attempt += 1) {
+      // C03: the QR factorization's charge is known before it runs;
+      // refuse instead of executing work the cap cannot pay for. (The
+      // post-hoc check at the loop head converts any overrun an
+      // accepted step's evaluations caused; succeed() guards the
+      // success returns.)
+      if (work.used + (comp.totalRows + f) * f > work.limit) {
+        return { ok: false, vars: x, mag, failure: { code: 'work-limit-exceeded', constraintIds: comp.active.map((a) => a.c.id), message: `Work limit of ${work.limit} exceeded during relaxation.` } };
+      }
       work.used += (comp.totalRows + f) * f;
       const delta = qrLeastSquaresStep(Jf, comp.totalRows, f, r, Math.sqrt(lambda * kappa));
       if (delta === null) {
@@ -2433,7 +2464,7 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
   if (converged) {
     const cf = collapseFailure(x, mag);
     if (cf) return cf;
-    return { ok: true, vars: x, mag };
+    return succeed(x, mag);
   }
   // F-3034 exit correction: a satisfied final iterate is a success
   // even when the loop ended by exhausting MAX_ITERATIONS. At the
@@ -2451,7 +2482,7 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
   if (allSatisfied(comp, mag)) {
     const cf = collapseFailure(x, mag);
     if (cf) return cf;
-    return { ok: true, vars: x, mag };
+    return succeed(x, mag);
   }
   if (stationary || iterations > MAX_ITERATIONS) {
     const finalMag = maxAbs(r);
