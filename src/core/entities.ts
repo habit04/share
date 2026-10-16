@@ -1811,6 +1811,40 @@ export function expansionReport(blocks: Readonly<Record<string, BlockDef>>, topL
   return { cyclic: [...cyclic].sort(), oversized: oversized.sort(), total };
 }
 
+/** One dynamic-block reference whose displayed geometry is NOT its evaluated
+ *  geometry (see dynamicEvaluationNotices). */
+export interface DynamicEvaluationNotice {
+  readonly insertId: string;
+  readonly block: string;
+  /** The refusal code (insertEvaluationRefusal / the evaluator's codes). */
+  readonly code: string;
+  readonly message: string;
+}
+
+/**
+ * The dynamic-block sibling of expansionReport (priority 30 review §3):
+ * every reference in `topLevel` whose expansion fell back to authored
+ * geometry — evaluation refused, or the dynamic data is retained unmodeled —
+ * with its refusal code and message. This is the queryable per-drawing
+ * diagnostic behind the editor's open-time log lines
+ * (app/editor/documents.ts) and the LIST evaluation status: expansion itself
+ * stays silent by design (it has no diagnostic channel), so this report is
+ * what keeps a refused evaluation from being invisible to the user.
+ * Read-only: it runs the same evaluation the expansion runs
+ * (insertEvaluationRefusal probes each reference, nested refusals included)
+ * and changes nothing.
+ */
+export function dynamicEvaluationNotices(blocks: Readonly<Record<string, BlockDef>>, topLevel: readonly Entity[]): DynamicEvaluationNotice[] {
+  const lookup: BlockLookup = (name) => blocks[name];
+  const out: DynamicEvaluationNotice[] = [];
+  for (const e of topLevel) {
+    if (e.type !== 'insert') continue;
+    const r = insertEvaluationRefusal(e, lookup);
+    if (r) out.push({ insertId: e.id, block: e.block, code: r.code, message: r.message });
+  }
+  return out;
+}
+
 /** Attribute text lives on the conventional AutoCAD Electrical layers. */
 export function attributeLayer(tag: string, fallback: string): string {
   const t = tag.toUpperCase();
