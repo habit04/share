@@ -838,6 +838,14 @@ function createAiService({ host: hostOptions, configStore, keyStores, transportF
     return innerHost.cancelAll();
   }
 
+  // Configuration generation (brief §4): every mutation of provider,
+  // model, credential or enablement bumps this counter. Mutations also
+  // cancel outstanding work, so the post-ask check in ask() is defence
+  // in depth — an answer produced under a stale generation can never be
+  // delivered, even if a future mutation path forgets to cancel.
+  let configGeneration = 0;
+  function noteConfigChange() { configGeneration += 1; }
+
   /**
    * Set (or replace) the selected provider's API key. All outstanding
    * work is cancelled first. On any persistence failure the previously
@@ -847,6 +855,7 @@ function createAiService({ host: hostOptions, configStore, keyStores, transportF
    */
   async function setKey(key, persistence) {
     cancelAll();
+    noteConfigChange();
     validateApiKey(key);
     if (!AI_KEY_PERSISTENCE_MODES.includes(persistence)) {
       throw new AiHostError('invalid-request', 'Invalid AI key persistence mode.');
@@ -919,6 +928,7 @@ function createAiService({ host: hostOptions, configStore, keyStores, transportF
       await ensureLoaded();
       if (provider === selectedProvider()) return;
       cancelAll();
+      noteConfigChange();
       await configStore.update({ provider: /** @type {AiProviderId} */ (provider) });
     },
 
@@ -934,6 +944,7 @@ function createAiService({ host: hostOptions, configStore, keyStores, transportF
     /** Forget the selected provider's key: session copy and stored ciphertext. */
     async forgetKey() {
       cancelAll();
+      noteConfigChange();
       const provider = selectedProvider();
       sessionKeys[provider] = null;
       transportCaches[provider] = null;
@@ -944,6 +955,7 @@ function createAiService({ host: hostOptions, configStore, keyStores, transportF
     async setModel(model) {
       if (!validateAiModel(model)) throw new AiHostError('invalid-request', 'Invalid AI model.');
       cancelAll();
+      noteConfigChange();
       await ensureLoaded();
       await configStore.update({ model });
     },
@@ -953,9 +965,11 @@ function createAiService({ host: hostOptions, configStore, keyStores, transportF
       await ensureLoaded();
       if (!enabled) {
         cancelAll();
+        noteConfigChange();
         await configStore.update({ enabled: false });
         return;
       }
+      noteConfigChange();
       const provider = selectedProvider();
       if (sessionKeys[provider] === null && !keyStores[provider].hasKey()) {
         throw new AiHostError('provider-not-configured', 'Save an API key before enabling Live AI.');
@@ -975,7 +989,12 @@ function createAiService({ host: hostOptions, configStore, keyStores, transportF
         throw new AiHostError('live-disabled', 'Live AI is not enabled. Enable it in the AI panel connection settings.');
       }
       requireKey(provider);
-      return innerHost.ask(value, signal);
+      const generation = configGeneration;
+      const answer = await innerHost.ask(value, signal);
+      if (generation !== configGeneration) {
+        throw new AiHostError('cancelled', 'The AI configuration changed while the question was running.');
+      }
+      return answer;
     },
 
     cancel(requestId) {
