@@ -54,7 +54,8 @@ export const MAX_VARIABLES = 512;
 export const MAX_CONSTRAINTS = 1024;
 export const MAX_ITERATIONS = 50;
 export const SOLVE_WORK_LIMIT = 200_000;
-/** Variable movement below CHANGE_EPS_FACTOR · S counts as unmoved. */
+/** Variable movement below CHANGE_EPS_FACTOR · (the entity's local
+ *  scale — see entityLocalScale) counts as unmoved at materialization. */
 export const CHANGE_EPS_FACTOR = 1e-12;
 
 // ---------------------------------------------------------------------------
@@ -2671,6 +2672,30 @@ function shapeMap(prep: Prep, set: ConstraintSet, entities: readonly Entity[]): 
   return map;
 }
 
+/** The translation-invariant local scale of one entity, measured on
+ *  its ENTRY variables: the radius for a circle/arc, the spread of the
+ *  defining points about the first point for the rest, never below 1.
+ *  The materialization change threshold (review round 2, C01) is
+ *  judged against THIS scale, not the component scale S: S includes
+ *  the absolute world position, so at a centre offset of 1e13 the old
+ *  threshold (1e-12 · S = 10) discarded a solved radius change of a
+ *  full unit — a valid local dimensional correction dropped by an
+ *  absolute-world yardstick. A variable's change is significant
+ *  relative to the size of the entity it belongs to; the success
+ *  revalidation in solveConstraints is the backstop for any delta the
+ *  threshold still misjudges. */
+function entityLocalScale(e: ConstrainableEntity, vars: Float64Array, offset: number): number {
+  let scale = 1;
+  if (e.type === 'circle' || e.type === 'arc') scale = Math.max(scale, Math.abs(vars[offset + 2]!));
+  const ax = vars[offset]!;
+  const ay = vars[offset + 1]!;
+  const points = e.type === 'polyline' ? e.points.length : e.type === 'line' ? 2 : 1;
+  for (let i = 1; i < points; i += 1) {
+    scale = Math.max(scale, Math.abs(vars[offset + 2 * i]! - ax), Math.abs(vars[offset + 2 * i + 1]! - ay));
+  }
+  return scale;
+}
+
 // ---------------------------------------------------------------------------
 // Materialization (design §5.1/§5.5): rebuild only entities whose variables
 // moved beyond CHANGE_EPS; everything else keeps object identity.
@@ -2820,20 +2845,64 @@ export function solveConstraints(entities: readonly Entity[], set: ConstraintSet
   if (poll()) return fail('cancelled', [], 'Solve cancelled.');
 
   // Materialize.
-  const finalVarsByEntity = new Map<string, { vars: Float64Array; initial: Float64Array; ev: EntVars; S: number }>();
+  const finalVarsByEntity = new Map<string, { vars: Float64Array; initial: Float64Array; ev: EntVars; scale: number }>();
   comps.forEach((comp, i) => {
     const outcome = outcomes[i]!;
-    for (const ev of comp.list) finalVarsByEntity.set(ev.entity.id, { vars: outcome.vars, initial: comp.vars0, ev, S: comp.S });
-  });
-  const resultEntities: Entity[] = entities.map((e) => {
-    const fin = finalVarsByEntity.get(e.id);
-    if (!fin) return e;
-    let moved = false;
-    for (let i = 0; i < fin.ev.count; i += 1) {
-      if (Math.abs(fin.vars[fin.ev.offset + i]! - fin.initial[fin.ev.offset + i]!) > CHANGE_EPS_FACTOR * fin.S) moved = true;
+    for (const ev of comp.list) {
+      finalVarsByEntity.set(ev.entity.id, { vars: outcome.vars, initial: comp.vars0, ev, scale: entityLocalScale(ev.entity, comp.vars0, ev.offset) });
     }
-    return moved ? materialize(fin.ev.entity, fin.vars, fin.ev.offset) : e;
   });
+  const materializeAll = (onlyMoved: boolean): Entity[] =>
+    entities.map((e) => {
+      const fin = finalVarsByEntity.get(e.id);
+      if (!fin) return e;
+      if (!onlyMoved) return materialize(fin.ev.entity, fin.vars, fin.ev.offset);
+      let moved = false;
+      for (let i = 0; i < fin.ev.count; i += 1) {
+        if (Math.abs(fin.vars[fin.ev.offset + i]! - fin.initial[fin.ev.offset + i]!) > CHANGE_EPS_FACTOR * fin.scale) moved = true;
+      }
+      return moved ? materialize(fin.ev.entity, fin.vars, fin.ev.offset) : e;
+    });
+  let resultEntities: Entity[] = materializeAll(true);
+
+  // Success is validated against the ACTUAL materialized geometry
+  // (review round 2, C01). The identity shortcut above may keep an
+  // entity whose variables moved by less than the change threshold;
+  // if that shortcut (or anything else) leaves a driving constraint
+  // unmet ON THE RETURNED ENTITIES, the shortcut is forfeited — every
+  // participating entity is rebuilt from the solved variables — and
+  // the check runs again. A solve whose solved variables themselves
+  // do not satisfy on materialization is refused, never reported as a
+  // success over unmet geometry. The check reads residuals directly
+  // (a verification read, like the diagnostics' measured values) and
+  // does not charge the work budget, so workUsed is unchanged.
+  const unmetOnMaterialized = (ents: readonly Entity[]): string[] => {
+    const byIdNow = new Map<string, Entity>(ents.map((e) => [e.id, e]));
+    const unmet: string[] = [];
+    for (const comp of comps) {
+      const vec = new Float64Array(comp.vars0.length);
+      for (const ev of comp.list) readVars(byIdNow.get(ev.entity.id) as ConstrainableEntity, vec, ev.offset);
+      const r = new Float64Array(comp.totalRows);
+      for (const rs of comp.residuals) rs.eval(vec, r, comp.rowOffset.get(rs.constraint.id)!);
+      const mag = magMap(comp, r);
+      for (const rs of comp.residuals) {
+        if (!drivingSatisfied(rs.constraint, mag.get(rs.constraint.id) ?? Infinity, comp.S)) unmet.push(rs.constraint.id);
+      }
+    }
+    return unmet;
+  };
+  let unmet = unmetOnMaterialized(resultEntities);
+  if (unmet.length > 0) {
+    resultEntities = materializeAll(false);
+    unmet = unmetOnMaterialized(resultEntities);
+    if (unmet.length > 0) {
+      return fail(
+        'numeric-failure',
+        unmet,
+        `The solved geometry does not satisfy driving constraint(s) ${unmet.map((id) => `'${id}'`).join(', ')} once materialized; the result is refused rather than installed unmet.`,
+      );
+    }
+  }
 
   // Bulge-carried notes (design §2.5): a moved bulged polyline vertex.
   const notes: SolveNote[] = [];
