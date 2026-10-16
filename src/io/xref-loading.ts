@@ -247,6 +247,7 @@ export type XrefNodeStatus =
   | 'unresolved-path'
   | 'unresolved-location'
   | 'inconsistent-version'
+  | 'inconsistent-location'
   | 'inconsistent-response'
   | 'cycle'
   | 'depth-limit'
@@ -431,6 +432,8 @@ interface StageContext {
   readonly failures: XrefFailure[];
   readonly files: Map<string, XrefLoadedFile>;
   readonly parsed: Map<string, ParsedFile>;
+  /** Identity keys of unique sources admitted for reading in this load (parse success or not). */
+  readonly admitted: Set<string>;
   referencesSeen: number;
   bytesDelivered: number;
   loadedBytes: number;
@@ -488,6 +491,7 @@ export async function stageXrefLoad(input: XrefLoadInput, deps: XrefLoaderDeps, 
     failures: [],
     files: new Map(),
     parsed: new Map(),
+    admitted: new Set(),
     referencesSeen: 0,
     bytesDelivered: 0,
     loadedBytes: 0,
@@ -498,23 +502,49 @@ export async function stageXrefLoad(input: XrefLoadInput, deps: XrefLoaderDeps, 
     if (ctx.signal?.aborted) {
       throw new StagingFatal({ kind: 'cancelled', blockName: '', originalPath: '', resolvedPath: null, depth: 0, message: 'xref load cancelled before it started' });
     }
-    // Seed ancestry (and the resolution anchor) with the host whenever its
-    // identity or location is known, so host -> host is cut on the first
-    // edge and root-relative paths anchor at the host's owning location.
+    // Seed ancestry (and the resolution anchor) with the host identity, so
+    // host -> host is cut on the first edge and root-relative paths anchor
+    // at the host's owning location. When the adapter offers canonical
+    // identity, a host that cannot be identified FAILS CLOSED (20.1
+    // review): canonical mode is never silently downgraded to lexical
+    // identity, because without the seed a SELF edge could identify and
+    // reload the host as external geometry. Every root is then reported
+    // unresolved-location and nothing is read; the result is an explicit
+    // incomplete candidate, not a successful lexical load.
     let hostIdentity = input.hostIdentity;
-    if (!hostIdentity && deps.reader.identify && hostPath !== null && isAbsolutePath(hostPath)) {
-      try {
-        hostIdentity = (await deps.reader.identify(hostPath, { resolvedPath: hostPath, originalPath: hostPath, blockName: '', depth: 0, ...(ctx.signal ? { signal: ctx.signal } : {}) })) ?? undefined;
-      } catch (error) {
-        if (isAbort(error, ctx.signal)) throw new StagingFatal({ kind: 'cancelled', blockName: '', originalPath: '', resolvedPath: hostPath, depth: 0, message: 'xref load cancelled' });
-        hostIdentity = undefined; // identity unavailable: lexical anchor, no seed (documented fallback)
+    let hostIdentityFailed = false;
+    if (!hostIdentity && deps.reader.identify && hostPath !== null) {
+      if (!isAbsolutePath(hostPath)) {
+        hostIdentityFailed = true;
+      } else {
+        try {
+          hostIdentity = (await deps.reader.identify(hostPath, { resolvedPath: hostPath, originalPath: hostPath, blockName: '', depth: 0, ...(ctx.signal ? { signal: ctx.signal } : {}) })) ?? undefined;
+        } catch (error) {
+          if (isAbort(error, ctx.signal)) throw new StagingFatal({ kind: 'cancelled', blockName: '', originalPath: '', resolvedPath: hostPath, depth: 0, message: 'xref load cancelled' });
+          hostIdentityFailed = true;
+        }
+        if (!hostIdentity) hostIdentityFailed = true;
+        throwIfAborted(ctx, { blockName: '', path: '' }, hostPath, 0);
       }
-      throwIfAborted(ctx, { blockName: '', path: '' }, hostPath, 0);
     }
     const hostAnchor = hostIdentity?.owningLocation ?? hostPath;
     const ancestors: Ancestor[] = hostIdentity ? [{ key: `id:${hostIdentity.id}`, location: hostIdentity.owningLocation }] : [];
     const nodes: XrefNode[] = [];
-    for (const ref of roots) nodes.push(await buildNode(ctx, ref, hostAnchor, 1, ancestors));
+    if (hostIdentityFailed) {
+      const message = 'the host identity could not be established by the adapter; canonical mode fails closed and no reference is read';
+      ctx.failures.push({ kind: 'unresolved-location', blockName: '', originalPath: hostPath ?? '', resolvedPath: hostPath, depth: 0, message });
+      for (const ref of roots) {
+        ctx.referencesSeen += 1;
+        throwIfAborted(ctx, ref, null, 1);
+        if (ctx.referencesSeen > ctx.limits.maxReferences) {
+          throw new StagingFatal({ kind: 'total-limit', blockName: ref.blockName, originalPath: ref.path, resolvedPath: null, depth: 1, message: `declaration-edge count exceeds the limit of ${ctx.limits.maxReferences}` });
+        }
+        ctx.failures.push({ kind: 'unresolved-location', blockName: ref.blockName, originalPath: ref.path, resolvedPath: null, depth: 1, message });
+        nodes.push({ blockName: ref.blockName, originalPath: ref.path, overlay: ref.overlay === true, depth: 1, resolvedPath: null, status: 'unresolved-location', message, children: [] });
+      }
+    } else {
+      for (const ref of roots) nodes.push(await buildNode(ctx, ref, hostAnchor, 1, ancestors));
+    }
     throwIfAborted(ctx, { blockName: '', path: '' }, null, 0);
     const snapshot: XrefSnapshot = {
       generation: 0,
@@ -581,6 +611,11 @@ async function buildNode(ctx: StageContext, ref: XrefReferenceInput, containingL
       identified = await ctx.deps.reader.identify(resolvedPath, adapterContext);
     } catch (error) {
       if (isAbort(error, ctx.signal)) throw cancelledFatal(ref, resolvedPath, depth);
+      // Identification is part of the adapter's authoritative answer:
+      // its missing/denied refusals keep their classification (20.1).
+      const code = errorCode(error);
+      if (code === 'ENOENT' || code === 'ENOTDIR') return fail('missing', resolvedPath, `referenced file not found at ${resolvedPath} (reported during identification)`);
+      if (code === 'EACCES' || code === 'EPERM') return fail('denied', resolvedPath, `the adapter refused access to ${resolvedPath} during identification (${code})`);
       return fail('unresolved-location', resolvedPath, `the adapter could not identify this location: ${errorMessage(error)}`);
     }
     throwIfAborted(ctx, ref, resolvedPath, depth);
@@ -599,18 +634,19 @@ async function buildNode(ctx: StageContext, ref: XrefReferenceInput, containingL
     return fail('cycle', resolvedPath, `circular reference: ${chain.join(' -> ')}`, { chain });
   }
 
-  // (4) A cached file is shared by identity. Version evidence must agree
-  // within the load, or the snapshot would mix two contents of one file.
+  // (4) A cached file is shared by identity. Its evidence must agree
+  // within the load — version AND the single stable owning location —
+  // or the snapshot would mix two contents, or resolve one file's
+  // children under two different anchors, without any diagnostic.
   let parsed = ctx.parsed.get(fileKey);
   if (parsed && identity?.version && parsed.version && identity.version !== parsed.version) {
     return fail('inconsistent-version', resolvedPath, `identity ${identity.id} reported version ${identity.version} after ${parsed.version} in the same load`);
   }
+  if (parsed && owningLocation !== parsed.owningLocation) {
+    return fail('inconsistent-location', resolvedPath, `identity for ${fileKey} reported owning location ${owningLocation}, but this load already anchored it at ${parsed.owningLocation}; one identity has one stable anchor per load`);
+  }
   if (!parsed) {
-    // (5) Unique-file budget, before spending a read on a new file.
-    if (ctx.files.size >= ctx.limits.maxFiles) {
-      throw new StagingFatal({ kind: 'total-limit', blockName: ref.blockName, originalPath: ref.path, resolvedPath, depth, message: `distinct-file count exceeds the limit of ${ctx.limits.maxFiles}` });
-    }
-    // (6) Authorization gate (the reader itself may still refuse: below).
+    // (5) Authorization gate (the reader itself may still refuse: below).
     if (ctx.deps.authorize) {
       let allowed = false;
       try {
@@ -621,6 +657,17 @@ async function buildNode(ctx: StageContext, ref: XrefReferenceInput, containingL
       }
       throwIfAborted(ctx, ref, resolvedPath, depth);
       if (!allowed) return fail('denied', resolvedPath, 'the permission gate denied this read');
+    }
+    // (6) Unique-source budget over ADMITTED sources (20.1): a source is
+    // admitted when the loader commits to reading it, and it keeps its
+    // budget slot even if the read or the parse then fails — otherwise
+    // failed parses would let unbounded distinct sources be sampled
+    // under a small maxFiles. Enforced before the read is scheduled.
+    if (!ctx.admitted.has(fileKey)) {
+      if (ctx.admitted.size >= ctx.limits.maxFiles) {
+        throw new StagingFatal({ kind: 'total-limit', blockName: ref.blockName, originalPath: ref.path, resolvedPath, depth, message: `distinct admitted source count exceeds the limit of ${ctx.limits.maxFiles}` });
+      }
+      ctx.admitted.add(fileKey);
     }
     // (7) Read, with the remaining allowance. Delivered bytes are charged
     // whether or not the content is then accepted, and once the
@@ -645,20 +692,29 @@ async function buildNode(ctx: StageContext, ref: XrefReferenceInput, containingL
     if (typeof text !== 'string') return fail('inconsistent-response', resolvedPath, 'the reader returned a non-string result');
     const deliveredBytes = new TextEncoder().encode(text).length;
     ctx.bytesDelivered += deliveredBytes;
+    // The cumulative budget is enforced on ACTUAL delivered bytes before
+    // any per-node response diagnostic (20.1): a response that breaks
+    // the total budget aborts staging fatally even when it is also
+    // inconsistent or oversize per-file, so no publication mode can
+    // commit a graph staged past the budget.
+    if (ctx.bytesDelivered > ctx.limits.maxTotalBytes) {
+      throw new StagingFatal({ kind: 'total-limit', blockName: ref.blockName, originalPath: ref.path, resolvedPath, depth, message: `cumulative delivered bytes exceed the limit of ${ctx.limits.maxTotalBytes}` });
+    }
     const declaredBytes = typeof result === 'string' ? undefined : result.byteLength;
     if (declaredBytes !== undefined && declaredBytes !== deliveredBytes) {
       return fail('inconsistent-response', resolvedPath, `the reader declared ${declaredBytes} bytes but delivered ${deliveredBytes}`);
     }
+    // The read must be bound to the identified snapshot (20.1): if both
+    // the identification and the read carry version evidence, a
+    // disagreement means the content is not the identified snapshot and
+    // it is rejected — never silently tagged with the identified version.
+    const resultVersion = typeof result === 'string' ? undefined : result.version;
+    if (identity?.version && resultVersion && identity.version !== resultVersion) {
+      return fail('inconsistent-version', resolvedPath, `read of ${resolvedPath} returned version ${resultVersion}, but identification bound this source to version ${identity.version}`);
+    }
     if (deliveredBytes > ctx.limits.maxFileBytes) {
-      if (ctx.bytesDelivered > ctx.limits.maxTotalBytes) {
-        throw new StagingFatal({ kind: 'total-limit', blockName: ref.blockName, originalPath: ref.path, resolvedPath, depth, message: `cumulative delivered bytes exceed the limit of ${ctx.limits.maxTotalBytes}` });
-      }
       return fail('file-limit', resolvedPath, `referenced file delivered ${deliveredBytes} bytes, over the per-file limit of ${ctx.limits.maxFileBytes}`);
     }
-    if (ctx.bytesDelivered > ctx.limits.maxTotalBytes) {
-      throw new StagingFatal({ kind: 'total-limit', blockName: ref.blockName, originalPath: ref.path, resolvedPath, depth, message: `cumulative delivered bytes exceed the limit of ${ctx.limits.maxTotalBytes}` });
-    }
-    const resultVersion = typeof result === 'string' ? undefined : result.version;
     const version = identity?.version ?? resultVersion;
     // (8) Parse, with the parser's own allocation bounds lowered from the
     // caller's budgets (source length) and never raised (string/pair/
@@ -754,9 +810,11 @@ export interface XrefCommitResult {
  *
  * Refresh semantics (20.1): `refresh` never publishes an incomplete
  * snapshot, in any mode — an incomplete refresh returns its staged
- * snapshot as an inspection candidate with `committed: false`. `load`
- * (the initial load, where no last-good graph exists yet) may publish a
- * partial snapshot only under the explicit `partial` mode.
+ * snapshot as an inspection candidate with `committed: false`. Partial
+ * publication under the explicit `partial` mode is a state condition,
+ * not a method-name condition: it is allowed only while the store holds
+ * no committed graph (the initial load). Once a last-good graph exists,
+ * ANY incomplete attempt — refresh or load — is candidate-only.
  */
 export class XrefStore {
   #current: XrefSnapshot | null = null;
@@ -817,9 +875,13 @@ export class XrefStore {
     }
     const incomplete = outcome.failures.length > 0;
     const mode = options.mode ?? 'strict';
-    if (incomplete && (isRefresh || mode === 'strict')) {
-      // Strict loads, and ALL refreshes: an incomplete snapshot is an
-      // inspection candidate only; the last good graph stays published.
+    // Partial publication is a STATE condition, not just a mode (20.1):
+    // it is allowed only for an initial load — when the store holds no
+    // committed graph. Any incomplete attempt while a last-good graph
+    // exists (any refresh, and any later load in partial mode alike)
+    // returns its snapshot as an inspection candidate only.
+    const partialAllowed = mode === 'partial' && !isRefresh && this.#current === null;
+    if (incomplete && !partialAllowed) {
       return { committed: false, preserved: true, stale: false, current: this.#current, staged: outcome.snapshot, failures: outcome.failures, cancelled: false };
     }
     this.#generation += 1;
