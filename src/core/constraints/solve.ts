@@ -1,22 +1,26 @@
 /**
- * Priority 30.3.1 — bounded 2D constraint solver (design §5), first slice.
+ * Priority 30.3 — bounded 2D constraint solver (design §5).
  *
- * Coverage in this slice: model + validation (validate.ts), DOF accounting,
- * stage-1 analysis, stage-2 direct construction rules 1–6 (`fixed`,
- * `coincident` point↔point, `concentric`, `horizontal`/`vertical`,
- * `equal` radius, `radius`/`diameter`), and the stage-3 damped
- * Gauss–Newton skeleton exercised by coincident cycles. Kinds scheduled
- * for later slices (parallel, perpendicular, distance, angle, tangent,
- * equal length, point-on-object coincident) are validated by the model
- * but refused here with 'unsupported-constraint' — never silently ignored,
- * because a driving constraint the solver skipped would fake success.
+ * Coverage: model + validation (validate.ts), DOF accounting, stage-1
+ * analysis, stage-2 direct construction rules 1–10, and the stage-3
+ * damped Gauss–Newton relaxation. Slice 30.3.1 landed rules 1–6
+ * (`fixed`, `coincident` point↔point, `concentric`, `horizontal`/
+ * `vertical`, `equal` radius, `radius`/`diameter`); slice 30.3.2 adds
+ * rules 7–10 (`distance` point↔point construction, `parallel`/
+ * `perpendicular` orientation adoption, `equal` length, `angle`) and
+ * the remaining residual forms: direction pairs, equal length, all
+ * distance modes, and point-on-object coincident (line / circle / arc
+ * objects). Still refused with 'unsupported-constraint' — never silently
+ * ignored, because a driving constraint the solver skipped would fake
+ * success: `tangent` and point-on-object coincident on a polyline
+ * 'whole' (slice 30.3.3).
  *
  * Pure and deterministic: same input ⇒ same output, bit-for-bit. Work is
  * bounded by an integer counter, never a timer. A failed or cancelled
  * solve returns no entities; inputs are never mutated, so the document
  * is unchanged by construction (design §6).
  */
-import { dist, normAngle, type Point } from '../geometry';
+import { circleCircleIntersections, dist, normAngle, type Point } from '../geometry';
 import type { Entity } from '../entities';
 import {
   anchorKey,
@@ -390,9 +394,149 @@ function scalarResidual(c: Constraint, vars: readonly number[], value: (vs: Floa
   };
 }
 
-/** Slice-1 supported shapes. Everything else returns null (unsupported in
- *  this slice) — the caller refuses, never skips. */
-function buildResidual(c: Constraint, shape: ConstraintShape, layout: ReadonlyMap<string, EntVars>, S: number): ResidualSet | null {
+/** A scalar residual whose gradient is expressed as point gradients over
+ *  point expressions plus direct variable terms — the pattern shared by
+ *  every slice-2 form (direction pairs, lengths, distances, point-on-
+ *  object). `value`/`grads` return RAW quantities; `norm` normalizes
+ *  (1/S for length forms, 1 for the scale-free direction forms, §5.4). */
+interface PointGrad {
+  readonly expr: PointExpr;
+  readonly gx: number;
+  readonly gy: number;
+}
+interface ScalarGrads {
+  readonly points: readonly PointGrad[];
+  readonly varTerms: readonly { v: number; g: number }[];
+}
+
+function scalarFormResidual(
+  c: Constraint,
+  vars: readonly number[],
+  norm: number,
+  value: (vs: Float64Array) => number,
+  grads: (vs: Float64Array) => ScalarGrads,
+): ResidualSet {
+  return {
+    constraint: c,
+    rowCount: 1,
+    vars,
+    eval: (vs, out, at) => {
+      out[at] = value(vs) * norm;
+    },
+    jac: (vs, out, rowAt, nVars) => {
+      const g = grads(vs);
+      for (const t of g.points) {
+        for (const d of t.expr.derivs(vs)) {
+          out[rowAt * nVars + d.v] = out[rowAt * nVars + d.v]! + norm * (t.gx * d.px + t.gy * d.py);
+        }
+      }
+      for (const t of g.varTerms) out[rowAt * nVars + t.v] = out[rowAt * nVars + t.v]! + norm * t.g;
+    },
+  };
+}
+
+interface SegGeom {
+  readonly d: Point;
+  readonly L: number;
+  readonly ux: number;
+  readonly uy: number;
+}
+
+function segGeom(p: PointExpr, q: PointExpr, vs: Float64Array): SegGeom {
+  const pp = p.eval(vs);
+  const qq = q.eval(vs);
+  const d = { x: qq.x - pp.x, y: qq.y - pp.y };
+  const L = Math.hypot(d.x, d.y);
+  return { d, L, ux: L > 0 ? d.x / L : 0, uy: L > 0 ? d.y / L : 0 };
+}
+
+/** Point-grad terms for a scalar depending on a segment's unit direction
+ *  through g = ∂f/∂û: the projection (I − ûûᵀ)·g / L applied at the end
+ *  point, negated at the start point. Zero-length ⇒ zero gradient (the
+ *  stage-1 degenerate check refuses such segments for direction kinds). */
+function dirGradTerms(p: PointExpr, q: PointExpr, s: SegGeom, gx: number, gy: number): PointGrad[] {
+  if (s.L === 0) {
+    return [
+      { expr: p, gx: 0, gy: 0 },
+      { expr: q, gx: 0, gy: 0 },
+    ];
+  }
+  const dotUG = s.ux * gx + s.uy * gy;
+  const vx = (gx - s.ux * dotUG) / s.L;
+  const vy = (gy - s.uy * dotUG) / s.L;
+  return [
+    { expr: q, gx: vx, gy: vy },
+    { expr: p, gx: -vx, gy: -vy },
+  ];
+}
+
+/** Point-grad terms for a scalar depending on a segment's length:
+ *  ∂len/∂end = û, ∂len/∂start = −û. */
+function lenGradTerms(p: PointExpr, q: PointExpr, s: SegGeom): PointGrad[] {
+  return [
+    { expr: q, gx: s.ux, gy: s.uy },
+    { expr: p, gx: -s.ux, gy: -s.uy },
+  ];
+}
+
+function exprVars(...exprs: readonly PointExpr[]): readonly number[] {
+  return [...new Set(exprs.flatMap((e) => [...e.vars]))];
+}
+
+/** The point-on-line scalar f = cross(d, w) / L, with d = B − A the
+ *  segment vector and w = P − A — shared by coincident point-on-line and
+ *  point–line distance (§5.4), plus its analytic gradients:
+ *  ∂f/∂P = perp(d)/L; ∂f/∂d = perp-components (w.y, −w.x)/L − f·d/L²;
+ *  ∂f/∂A = −∂f/∂P − ∂f/∂d; ∂f/∂B = ∂f/∂d. */
+function lineCrossForm(pE: PointExpr, aE: PointExpr, bE: PointExpr, vs: Float64Array): { f: number; grads: ScalarGrads } {
+  const A = aE.eval(vs);
+  const B = bE.eval(vs);
+  const P = pE.eval(vs);
+  const d = { x: B.x - A.x, y: B.y - A.y };
+  const w = { x: P.x - A.x, y: P.y - A.y };
+  const L = Math.hypot(d.x, d.y);
+  if (L === 0) {
+    return {
+      f: 0,
+      grads: {
+        points: [
+          { expr: pE, gx: 0, gy: 0 },
+          { expr: aE, gx: 0, gy: 0 },
+          { expr: bE, gx: 0, gy: 0 },
+        ],
+        varTerms: [],
+      },
+    };
+  }
+  const f = (d.x * w.y - d.y * w.x) / L;
+  const gp = { x: -d.y / L, y: d.x / L }; // ∂f/∂P = ∂f/∂w
+  const gd = { x: w.y / L - (f * d.x) / (L * L), y: -w.x / L - (f * d.y) / (L * L) }; // ∂f/∂d
+  return {
+    f,
+    grads: {
+      points: [
+        { expr: pE, gx: gp.x, gy: gp.y },
+        { expr: bE, gx: gd.x, gy: gd.y },
+        { expr: aE, gx: -gp.x - gd.x, gy: -gp.y - gd.y },
+      ],
+      varTerms: [],
+    },
+  };
+}
+
+function scaleGrads(g: ScalarGrads, k: number): ScalarGrads {
+  if (k === 1) return g;
+  return {
+    points: g.points.map((t) => ({ expr: t.expr, gx: t.gx * k, gy: t.gy * k })),
+    varTerms: g.varTerms.map((t) => ({ v: t.v, g: t.g * k })),
+  };
+}
+
+/** Supported shapes. Everything else returns null (unsupported in this
+ *  build) — the caller refuses, never skips. `entry` is the component's
+ *  entry variable vector: entry-fixed signs (§5.4 distance modes,
+ *  point–line distance) are captured from it, never re-derived mid-solve. */
+function buildResidual(c: Constraint, shape: ConstraintShape, layout: ReadonlyMap<string, EntVars>, S: number, entry: Float64Array): ResidualSet | null {
   switch (shape.form) {
     case 'coincident-points':
       return pointPairResidual(c, pointExpr(shape.a, layout), pointExpr(shape.b, layout), S);
@@ -421,6 +565,199 @@ function buildResidual(c: Constraint, shape: ConstraintShape, layout: ReadonlyMa
       const r = radiusVar(shape.target, layout);
       const target = c.kind === 'diameter' ? c.value! / 2 : c.value!;
       return scalarResidual(c, [r], (vs) => (vs[r]! - target) / S, [{ v: r, g: 1 / S }]);
+    }
+    case 'direction-pair': {
+      const [p1, q1] = segmentExprs(shape.a, layout);
+      const [p2, q2] = segmentExprs(shape.b, layout);
+      const vars = exprVars(p1, q1, p2, q2);
+      if (c.kind === 'angle') {
+        // wrap(θ₂ − θ₁ − value), scale-free (§5.4). ∂θ/∂end = perp(d)/L²,
+        // ∂θ/∂start = −perp(d)/L²; side a enters with the opposite sign.
+        return scalarFormResidual(
+          c,
+          vars,
+          1,
+          (vs) => {
+            const s1 = segGeom(p1, q1, vs);
+            const s2 = segGeom(p2, q2, vs);
+            return normAngle(Math.atan2(s2.d.y, s2.d.x) - Math.atan2(s1.d.y, s1.d.x) - c.value!);
+          },
+          (vs) => {
+            const s1 = segGeom(p1, q1, vs);
+            const s2 = segGeom(p2, q2, vs);
+            const terms: PointGrad[] = [];
+            if (s2.L > 0) {
+              const gx = -s2.d.y / (s2.L * s2.L);
+              const gy = s2.d.x / (s2.L * s2.L);
+              terms.push({ expr: q2, gx, gy }, { expr: p2, gx: -gx, gy: -gy });
+            }
+            if (s1.L > 0) {
+              const gx = s1.d.y / (s1.L * s1.L);
+              const gy = -s1.d.x / (s1.L * s1.L);
+              terms.push({ expr: q1, gx, gy }, { expr: p1, gx: -gx, gy: -gy });
+            }
+            return { points: terms, varTerms: [] };
+          },
+        );
+      }
+      // parallel: cross(û₁, û₂) · perpendicular: dot(û₁, û₂) — both
+      // scale-free (§5.4). ∂cross/∂û₁ = (û₂.y, −û₂.x), ∂cross/∂û₂ =
+      // (−û₁.y, û₁.x); ∂dot/∂û₁ = û₂, ∂dot/∂û₂ = û₁.
+      const parallel = c.kind === 'parallel';
+      return scalarFormResidual(
+        c,
+        vars,
+        1,
+        (vs) => {
+          const s1 = segGeom(p1, q1, vs);
+          const s2 = segGeom(p2, q2, vs);
+          return parallel ? s1.ux * s2.uy - s1.uy * s2.ux : s1.ux * s2.ux + s1.uy * s2.uy;
+        },
+        (vs) => {
+          const s1 = segGeom(p1, q1, vs);
+          const s2 = segGeom(p2, q2, vs);
+          const g1: [number, number] = parallel ? [s2.uy, -s2.ux] : [s2.ux, s2.uy];
+          const g2: [number, number] = parallel ? [-s1.uy, s1.ux] : [s1.ux, s1.uy];
+          return {
+            points: [...dirGradTerms(p1, q1, s1, g1[0], g1[1]), ...dirGradTerms(p2, q2, s2, g2[0], g2[1])],
+            varTerms: [],
+          };
+        },
+      );
+    }
+    case 'equal-length': {
+      const [p1, q1] = segmentExprs(shape.a, layout);
+      const [p2, q2] = segmentExprs(shape.b, layout);
+      return scalarFormResidual(
+        c,
+        exprVars(p1, q1, p2, q2),
+        1 / S,
+        (vs) => segGeom(p2, q2, vs).L - segGeom(p1, q1, vs).L,
+        (vs) => {
+          const s1 = segGeom(p1, q1, vs);
+          const s2 = segGeom(p2, q2, vs);
+          return {
+            points: [
+              ...lenGradTerms(p2, q2, s2),
+              ...lenGradTerms(p1, q1, s1).map((t) => ({ expr: t.expr, gx: -t.gx, gy: -t.gy })),
+            ],
+            varTerms: [],
+          };
+        },
+      );
+    }
+    case 'distance-points': {
+      const pE = pointExpr(shape.a, layout);
+      const qE = pointExpr(shape.b, layout);
+      const mode = c.distanceMode ?? 'aligned';
+      if (mode === 'horizontal' || mode === 'vertical') {
+        // ((q − p)·axis − σ·value)/S with σ the entry sign, fixed during
+        // the solve so the constraint never flips its points (§2.7/§5.4).
+        const axis = mode === 'horizontal' ? 'x' : 'y';
+        const sigma = (axis === 'x' ? qE.eval(entry).x - pE.eval(entry).x : qE.eval(entry).y - pE.eval(entry).y) < 0 ? -1 : 1;
+        const gq: [number, number] = axis === 'x' ? [1, 0] : [0, 1];
+        return scalarFormResidual(
+          c,
+          exprVars(pE, qE),
+          1 / S,
+          (vs) => (axis === 'x' ? qE.eval(vs).x - pE.eval(vs).x : qE.eval(vs).y - pE.eval(vs).y) - sigma * c.value!,
+          () => ({
+            points: [
+              { expr: qE, gx: gq[0], gy: gq[1] },
+              { expr: pE, gx: -gq[0], gy: -gq[1] },
+            ],
+            varTerms: [],
+          }),
+        );
+      }
+      // (dist − value)/S. At dist = 0 the gradient is undefined; the
+      // zero gradient is used (a subgradient choice), so the row reports
+      // its residual but cannot by itself separate coincident points —
+      // construction rule 7 or another row must do that.
+      return scalarFormResidual(
+        c,
+        exprVars(pE, qE),
+        1 / S,
+        (vs) => dist(pE.eval(vs), qE.eval(vs)) - c.value!,
+        (vs) => {
+          const pp = pE.eval(vs);
+          const qq = qE.eval(vs);
+          const d = dist(pp, qq);
+          const ux = d > 0 ? (qq.x - pp.x) / d : 0;
+          const uy = d > 0 ? (qq.y - pp.y) / d : 0;
+          return {
+            points: [
+              { expr: qE, gx: ux, gy: uy },
+              { expr: pE, gx: -ux, gy: -uy },
+            ],
+            varTerms: [],
+          };
+        },
+      );
+    }
+    case 'distance-length': {
+      const [pE, qE] = segmentExprs(shape.seg, layout);
+      return scalarFormResidual(
+        c,
+        exprVars(pE, qE),
+        1 / S,
+        (vs) => segGeom(pE, qE, vs).L - c.value!,
+        (vs) => ({ points: lenGradTerms(pE, qE, segGeom(pE, qE, vs)), varTerms: [] }),
+      );
+    }
+    case 'distance-point-line': {
+      const pE = pointExpr(shape.point, layout);
+      const [aE, bE] = segmentExprs(shape.seg, layout);
+      // (σ·signedDist − value)/S; σ is the entry sign of the signed
+      // distance, fixed during the solve (§5.4).
+      const sigma = lineCrossForm(pE, aE, bE, entry).f < 0 ? -1 : 1;
+      return scalarFormResidual(
+        c,
+        exprVars(pE, aE, bE),
+        1 / S,
+        (vs) => sigma * lineCrossForm(pE, aE, bE, vs).f - c.value!,
+        (vs) => scaleGrads(lineCrossForm(pE, aE, bE, vs).grads, sigma),
+      );
+    }
+    case 'coincident-object': {
+      const pE = pointExpr(shape.point, layout);
+      if (shape.object.entity.type === 'line') {
+        const [aE, bE] = segmentExprs(shape.object, layout);
+        return scalarFormResidual(
+          c,
+          exprVars(pE, aE, bE),
+          1 / S,
+          (vs) => lineCrossForm(pE, aE, bE, vs).f,
+          (vs) => lineCrossForm(pE, aE, bE, vs).grads,
+        );
+      }
+      if (shape.object.entity.type === 'circle' || shape.object.entity.type === 'arc') {
+        // (dist(p, c) − r)/S over the full circle (§5.4).
+        const cE = pointExpr({ entity: shape.object.entity, ref: { entityId: shape.object.entity.id, anchor: 'center' } }, layout);
+        const rv = radiusVar(shape.object, layout);
+        const vars = [...new Set([...exprVars(pE, cE), rv])];
+        return scalarFormResidual(
+          c,
+          vars,
+          1 / S,
+          (vs) => dist(pE.eval(vs), cE.eval(vs)) - vs[rv]!,
+          (vs) => {
+            const pp = pE.eval(vs);
+            const cc = cE.eval(vs);
+            const d = dist(pp, cc);
+            const ux = d > 0 ? (pp.x - cc.x) / d : 0;
+            const uy = d > 0 ? (pp.y - cc.y) / d : 0;
+            return {
+              points: [
+                { expr: pE, gx: ux, gy: uy },
+                { expr: cE, gx: -ux, gy: -uy },
+              ],
+              varTerms: [{ v: rv, g: -1 }],
+            };
+          },
+        );
+      }
+      return null; // polyline 'whole' object — later slice (§5.4 has no form for it)
     }
     default:
       return null;
@@ -462,7 +799,16 @@ function shapeSupported(shape: ConstraintShape): boolean {
     case 'hv-points':
     case 'equal-radius':
     case 'radius':
+    case 'direction-pair': // parallel / perpendicular / angle (30.3.2)
+    case 'equal-length': // 30.3.2
+    case 'distance-points': // all modes (30.3.2)
+    case 'distance-point-line': // 30.3.2
+    case 'distance-length': // 30.3.2
       return true;
+    case 'coincident-object':
+      // Line / circle / arc objects have §5.4 residual forms; a polyline
+      // 'whole' does not — it stays refused until a later slice.
+      return shape.object.entity.type === 'line' || shape.object.entity.type === 'circle' || shape.object.entity.type === 'arc';
     default:
       return false;
   }
@@ -694,7 +1040,7 @@ function buildComp(list: readonly ConstrainableEntity[], active: readonly Active
   let S = 1;
   for (const v of vars0) if (Math.abs(v) > S) S = Math.abs(v);
   for (const { c } of active) if (c.value !== undefined && Math.abs(c.value) > S) S = Math.abs(c.value);
-  const residuals = active.map(({ c, shape }) => buildResidual(c, shape, layout, S)!);
+  const residuals = active.map(({ c, shape }) => buildResidual(c, shape, layout, S, vars0)!);
   const rowOffset = new Map<string, number>();
   let totalRows = 0;
   for (const r of residuals) {
@@ -775,6 +1121,59 @@ function axisValue(expr: PointExpr, axis: 'x' | 'y', det: Uint8Array, vals: Floa
 
 function fullyDetermined(expr: PointExpr, det: Uint8Array): boolean {
   return expr.vars.every((v) => det[v]);
+}
+
+/** Rule 7 locus: the known line or circle a point is constrained to, from
+ *  an already-determined point-on-object coincident or a second distance
+ *  to a determined point (design §5.3 rule 7). Stored order decides when
+ *  several loci exist. Null when no determined locus exists — the rule
+ *  then does not fire (rules never guess). */
+type Locus = { readonly kind: 'line'; readonly a: Point; readonly b: Point } | { readonly kind: 'circle'; readonly c: Point; readonly r: number };
+
+function findLocus(comp: Comp, pSide: Side, selfId: string, det: Uint8Array, vals: Float64Array): Locus | null {
+  const key = anchorKey(pSide.entity, pSide.ref);
+  for (const { shape } of comp.active) {
+    if (shape.form !== 'coincident-object' || anchorKey(shape.point.entity, shape.point.ref) !== key) continue;
+    const obj = shape.object;
+    if (obj.entity.type === 'line') {
+      const [e0, e1] = segmentExprs(obj, comp.layout);
+      if (fullyDetermined(e0, det) && fullyDetermined(e1, det)) return { kind: 'line', a: e0.eval(vals), b: e1.eval(vals) };
+    } else if (obj.entity.type === 'circle' || obj.entity.type === 'arc') {
+      const ce = pointExpr({ entity: obj.entity, ref: { entityId: obj.entity.id, anchor: 'center' } }, comp.layout);
+      const rv = radiusVar(obj, comp.layout);
+      if (fullyDetermined(ce, det) && det[rv]) return { kind: 'circle', c: ce.eval(vals), r: vals[rv]! };
+    }
+  }
+  for (const { c: other, shape } of comp.active) {
+    if (other.id === selfId || shape.form !== 'distance-points' || (other.distanceMode ?? 'aligned') !== 'aligned') continue;
+    for (const [s, o] of [
+      [shape.a, shape.b],
+      [shape.b, shape.a],
+    ] as const) {
+      if (anchorKey(s.entity, s.ref) !== key) continue;
+      const oe = pointExpr(o, comp.layout);
+      if (fullyDetermined(oe, det)) return { kind: 'circle', c: oe.eval(vals), r: other.value! };
+    }
+  }
+  return null;
+}
+
+/** Intersections of the circle (center, v) with a rule-7 locus. The line
+ *  is the infinite line through the locus segment (the §5.4 point-on-line
+ *  form is an infinite-line form). */
+function intersectLocus(center: Point, v: number, locus: Locus): Point[] {
+  if (locus.kind === 'circle') return circleCircleIntersections(center, v, locus.c, locus.r);
+  const d = { x: locus.b.x - locus.a.x, y: locus.b.y - locus.a.y };
+  const w = { x: locus.a.x - center.x, y: locus.a.y - center.y };
+  const A = d.x * d.x + d.y * d.y;
+  if (A === 0) return [];
+  const B = w.x * d.x + w.y * d.y;
+  const Cc = w.x * w.x + w.y * w.y - v * v;
+  const disc = B * B - A * Cc;
+  if (disc < 0) return [];
+  const sq = Math.sqrt(disc);
+  const at = (t: number): Point => ({ x: locus.a.x + t * d.x, y: locus.a.y + t * d.y });
+  return disc === 0 ? [at(-B / A)] : [at((-B + sq) / A), at((-B - sq) / A)];
 }
 
 /** Run stage 2 over a component. Returns the determined-value vector, or a
@@ -937,6 +1336,191 @@ function stage2(comp: Comp, work: Work, poll: Poll): { vals: Float64Array; det: 
         fire();
       }
     }
+    // Rule 7 — distance point↔point (design §5.3.7). Horizontal/vertical
+    // modes set the one coordinate directly (entry sign kept, §2.7). The
+    // aligned form fires only when one point is determined and the other
+    // is constrained to a known line/circle: intersect, and choose the
+    // intersection closest to the point's current position (ties: the
+    // smaller angle around the known point). Never a guess: no locus, no
+    // firing. A determined coordinate that disagrees with the chosen
+    // point is left for stage 3, exactly as in rule 2 adoption.
+    for (const { c, shape } of comp.active) {
+      if (shape.form !== 'distance-points') continue;
+      const mode = c.distanceMode ?? 'aligned';
+      const aE = pointExpr(shape.a, comp.layout);
+      const bE = pointExpr(shape.b, comp.layout);
+      if (mode === 'horizontal' || mode === 'vertical') {
+        const off = mode === 'horizontal' ? 0 : 1;
+        const axis = mode === 'horizontal' ? 'x' : 'y';
+        for (const [pE, cE] of [
+          [aE, bE],
+          [bE, aE],
+        ] as const) {
+          const cVal = axisValue(cE, axis, det, vals);
+          if (cVal === null || pE.varPair === null || det[pE.varPair + off]) continue;
+          const sigma = vals[pE.varPair + off]! - cVal < 0 ? -1 : 1;
+          vals[pE.varPair + off] = cVal + sigma * c.value!;
+          det[pE.varPair + off] = 1;
+          fire();
+        }
+        continue;
+      }
+      for (const [pSide, pE, cE] of [
+        [shape.a, aE, bE],
+        [shape.b, bE, aE],
+      ] as const) {
+        if (pE.varPair === null || fullyDetermined(pE, det) || !fullyDetermined(cE, det)) continue;
+        const locus = findLocus(comp, pSide, c.id, det, vals);
+        if (!locus) continue;
+        const center = cE.eval(vals);
+        const candidates = intersectLocus(center, c.value!, locus);
+        if (candidates.length === 0) continue;
+        const current = pE.eval(vals);
+        candidates.sort(
+          (p, q) => dist(p, current) - dist(q, current) || Math.atan2(p.y - center.y, p.x - center.x) - Math.atan2(q.y - center.y, q.x - center.x),
+        );
+        const chosen = candidates[0]!;
+        const at = pE.varPair;
+        if ((det[at] && vals[at] !== chosen.x) || (det[at + 1] && vals[at + 1] !== chosen.y)) continue;
+        vals[at] = chosen.x;
+        vals[at + 1] = chosen.y;
+        det[at] = 1;
+        det[at + 1] = 1;
+        fire();
+      }
+    }
+    // Rule 8 — parallel / perpendicular orientation adoption (§5.3.8):
+    // one direction determined, the other segment has a determined
+    // endpoint — rotate the free endpoint about the fixed one to the
+    // target direction, preserving current length; of the two target
+    // directions (±), the branch closest to the current endpoint wins.
+    for (const { c, shape } of comp.active) {
+      if (shape.form !== 'direction-pair' || (c.kind !== 'parallel' && c.kind !== 'perpendicular')) continue;
+      for (const [known, free] of [
+        [shape.a, shape.b],
+        [shape.b, shape.a],
+      ] as const) {
+        const [kp, kq] = segmentExprs(known, comp.layout);
+        if (!fullyDetermined(kp, det) || !fullyDetermined(kq, det)) continue;
+        const ka = kp.eval(vals);
+        const kb = kq.eval(vals);
+        const kd = { x: kb.x - ka.x, y: kb.y - ka.y };
+        const kL = Math.hypot(kd.x, kd.y);
+        if (kL < DEGENERATE_REL * comp.S) continue;
+        const ku = { x: kd.x / kL, y: kd.y / kL };
+        const targets =
+          c.kind === 'parallel'
+            ? [ku, { x: -ku.x, y: -ku.y }]
+            : [
+                { x: -ku.y, y: ku.x },
+                { x: ku.y, y: -ku.x },
+              ];
+        const [fp, fq] = segmentExprs(free, comp.layout);
+        let placed = false;
+        for (const [fixedE, freeE] of [
+          [fp, fq],
+          [fq, fp],
+        ] as const) {
+          if (!fullyDetermined(fixedE, det) || freeE.varPair === null || det[freeE.varPair] || det[freeE.varPair + 1]) continue;
+          const fixedPt = fixedE.eval(vals);
+          const freePt = freeE.eval(vals);
+          const L = dist(freePt, fixedPt);
+          if (L < DEGENERATE_REL * comp.S) continue;
+          let best = targets[0]!;
+          let bestDist = Infinity;
+          for (const t of targets) {
+            const dd = dist({ x: fixedPt.x + L * t.x, y: fixedPt.y + L * t.y }, freePt);
+            if (dd < bestDist) {
+              bestDist = dd;
+              best = t;
+            }
+          }
+          vals[freeE.varPair] = fixedPt.x + L * best.x;
+          vals[freeE.varPair + 1] = fixedPt.y + L * best.y;
+          det[freeE.varPair] = 1;
+          det[freeE.varPair + 1] = 1;
+          fire();
+          placed = true;
+          break;
+        }
+        if (placed) break;
+      }
+    }
+    // Rule 9 — equal length rescale (§5.3.9): known length on one
+    // segment, the other has a determined endpoint — rescale the free
+    // endpoint about the fixed one to the known length.
+    for (const { shape } of comp.active) {
+      if (shape.form !== 'equal-length') continue;
+      for (const [known, free] of [
+        [shape.a, shape.b],
+        [shape.b, shape.a],
+      ] as const) {
+        const [kp, kq] = segmentExprs(known, comp.layout);
+        if (!fullyDetermined(kp, det) || !fullyDetermined(kq, det)) continue;
+        const lenK = dist(kp.eval(vals), kq.eval(vals));
+        if (lenK < DEGENERATE_REL * comp.S) continue;
+        const [fp, fq] = segmentExprs(free, comp.layout);
+        let placed = false;
+        for (const [fixedE, freeE] of [
+          [fp, fq],
+          [fq, fp],
+        ] as const) {
+          if (!fullyDetermined(fixedE, det) || freeE.varPair === null || det[freeE.varPair] || det[freeE.varPair + 1]) continue;
+          const fixedPt = fixedE.eval(vals);
+          const freePt = freeE.eval(vals);
+          const lenC = dist(freePt, fixedPt);
+          if (lenC < DEGENERATE_REL * comp.S) continue;
+          const k = lenK / lenC;
+          vals[freeE.varPair] = fixedPt.x + (freePt.x - fixedPt.x) * k;
+          vals[freeE.varPair + 1] = fixedPt.y + (freePt.y - fixedPt.y) * k;
+          det[freeE.varPair] = 1;
+          det[freeE.varPair + 1] = 1;
+          fire();
+          placed = true;
+          break;
+        }
+        if (placed) break;
+      }
+    }
+    // Rule 10 — angle to the target absolute direction (§5.3.10): one
+    // line determined, the other has a determined endpoint — rotate the
+    // free endpoint about the fixed one, preserving current length.
+    // The residual is θ_b − θ_a = value, so a determined side b fixes
+    // side a's target at θ_b − value.
+    for (const { c, shape } of comp.active) {
+      if (shape.form !== 'direction-pair' || c.kind !== 'angle') continue;
+      for (const [detSide, freeSide, sign] of [
+        [shape.a, shape.b, 1],
+        [shape.b, shape.a, -1],
+      ] as const) {
+        const [dp, dq] = segmentExprs(detSide, comp.layout);
+        if (!fullyDetermined(dp, det) || !fullyDetermined(dq, det)) continue;
+        const da = dp.eval(vals);
+        const db = dq.eval(vals);
+        const theta = Math.atan2(db.y - da.y, db.x - da.x) + sign * c.value!;
+        const target = { x: Math.cos(theta), y: Math.sin(theta) };
+        const [fp, fq] = segmentExprs(freeSide, comp.layout);
+        let placed = false;
+        for (const [fixedE, freeE] of [
+          [fp, fq],
+          [fq, fp],
+        ] as const) {
+          if (!fullyDetermined(fixedE, det) || freeE.varPair === null || det[freeE.varPair] || det[freeE.varPair + 1]) continue;
+          const fixedPt = fixedE.eval(vals);
+          const freePt = freeE.eval(vals);
+          const L = dist(freePt, fixedPt);
+          if (L < DEGENERATE_REL * comp.S) continue;
+          vals[freeE.varPair] = fixedPt.x + L * target.x;
+          vals[freeE.varPair + 1] = fixedPt.y + L * target.y;
+          det[freeE.varPair] = 1;
+          det[freeE.varPair + 1] = 1;
+          fire();
+          placed = true;
+          break;
+        }
+        if (placed) break;
+      }
+    }
     if (!fired) break;
   }
   return { vals, det };
@@ -987,19 +1571,32 @@ function maxAbs(a: Float64Array): number {
 
 function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
   const nVars = comp.vars0.length;
-  // Stage 1 degenerate detection for slice-1 kinds (design §5.3): a
-  // horizontal/vertical segment of ~zero length has no direction; a
-  // concentric partner with ~zero radius is degenerate.
+  // Stage 1 degenerate detection (design §5.3): a segment of ~zero length
+  // has no direction, so any kind that reads its direction (horizontal/
+  // vertical, parallel/perpendicular/angle, point-on-line forms) refuses;
+  // a concentric partner with ~zero radius is degenerate.
   for (const { c, shape } of comp.active) {
-    if (shape.form === 'hv-segment') {
-      const ends = segmentEndpoints(shape.seg.entity, shape.seg.ref)!;
-      if (dist(ends[0], ends[1]) < DEGENERATE_REL * comp.S) {
-        return {
-          ok: false,
-          vars: comp.vars0,
-          mag: new Map(),
-          failure: { code: 'degenerate-geometry', constraintIds: [c.id], message: `Constraint '${c.id}' (${c.kind}) references a zero-length segment, which has no direction.` },
-        };
+    const dirSides: readonly Side[] | null =
+      shape.form === 'hv-segment'
+        ? [shape.seg]
+        : shape.form === 'direction-pair'
+          ? [shape.a, shape.b]
+          : shape.form === 'distance-point-line'
+            ? [shape.seg]
+            : shape.form === 'coincident-object' && shape.object.entity.type === 'line'
+              ? [shape.object]
+              : null;
+    if (dirSides) {
+      for (const s of dirSides) {
+        const ends = segmentEndpoints(s.entity, s.ref)!;
+        if (dist(ends[0], ends[1]) < DEGENERATE_REL * comp.S) {
+          return {
+            ok: false,
+            vars: comp.vars0,
+            mag: new Map(),
+            failure: { code: 'degenerate-geometry', constraintIds: [c.id], message: `Constraint '${c.id}' (${c.kind}) references a zero-length segment, which has no direction.` },
+          };
+        }
       }
     }
     if (shape.form === 'concentric') {
@@ -1049,6 +1646,18 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
     return { ok: true, vars: vals, mag: mag0 };
   }
   const free = [...freeSet].sort((a, b) => a - b);
+
+  // Endpoint variable pairs of every direction-pair segment, for the
+  // mid-solve degeneracy check (a direction collapsing to zero length
+  // leaves its residual form undefined, design §5.7).
+  const dirSegVars: { a: number; b: number }[] = [];
+  for (const { shape } of comp.active) {
+    if (shape.form !== 'direction-pair') continue;
+    for (const s of [shape.a, shape.b]) {
+      const [e0, e1] = segmentExprs(s, comp.layout);
+      if (e0.varPair !== null && e1.varPair !== null) dirSegVars.push({ a: e0.varPair, b: e1.varPair });
+    }
+  }
 
   let x = new Float64Array(vals);
   let r = r0;
@@ -1104,19 +1713,25 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
         if (lambda > 1e6) break;
         continue;
       }
-      // Mid-solve degeneracy: a driven radius crossing the degenerate band.
+      // Mid-solve degeneracy: a driven radius crossing the degenerate
+      // band, or a direction-pair segment collapsing to zero length.
       let degenerate = false;
       for (const ev of comp.list) {
         if (ev.entity.type === 'circle' || ev.entity.type === 'arc') {
           if (trial[ev.offset + 2]! < DEGENERATE_REL * comp.S) degenerate = true;
         }
       }
+      for (const sv of dirSegVars) {
+        const dx = trial[sv.b]! - trial[sv.a]!;
+        const dy = trial[sv.b + 1]! - trial[sv.a + 1]!;
+        if (Math.hypot(dx, dy) < DEGENERATE_REL * comp.S) degenerate = true;
+      }
       if (degenerate) {
         return {
           ok: false,
           vars: x,
           mag,
-          failure: { code: 'degenerate-geometry', constraintIds: comp.active.map((a) => a.c.id), message: 'A driven radius collapsed toward zero during the solve.' },
+          failure: { code: 'degenerate-geometry', constraintIds: comp.active.map((a) => a.c.id), message: 'A driven radius or direction collapsed toward zero during the solve.' },
         };
       }
       const rTrial = evalAll(comp, trial, work);
@@ -1452,25 +2067,38 @@ export function solveConstraints(entities: readonly Entity[], set: ConstraintSet
       const J = jacAll(comp, outcome.vars, work);
       const rank = denseRank(J, comp.totalRows, comp.vars0.length);
       effectiveConsumed += rank;
-      // Redundancy probes.
-      for (const rs of comp.residuals) {
-        const rowsExcept = comp.totalRows - rs.rowCount;
-        if (work.used + rowsExcept * comp.vars0.length > work.limit) {
+      // Redundancy probes (design §5.6), sequential in reverse stored
+      // order: a constraint is redundant when removing it from the rows
+      // that remain (its own rows plus those of constraints not already
+      // marked) does not reduce the rank, and its residual is satisfied.
+      // Probing last-to-first makes the earliest-stored constraint the
+      // keeper and a later duplicate the redundant one; each marked
+      // constraint was removable at its probe, so the marked set is
+      // jointly removable — marking both members of a dependent pair
+      // (the simultaneous reading) would be wrong, because deleting
+      // both would lose rank the report claims is preserved.
+      const excluded = new Uint8Array(comp.totalRows);
+      for (let ri = comp.residuals.length - 1; ri >= 0; ri -= 1) {
+        const rs = comp.residuals[ri]!;
+        if ((magById.get(rs.constraint.id) ?? Infinity) > RESIDUAL_TOL) continue;
+        const at = comp.rowOffset.get(rs.constraint.id)!;
+        const probeRows: number[] = [];
+        for (let rI = 0; rI < comp.totalRows; rI += 1) {
+          if (excluded[rI] || (rI >= at && rI < at + rs.rowCount)) continue;
+          probeRows.push(rI);
+        }
+        if (work.used + probeRows.length * comp.vars0.length > work.limit) {
           probeBudgetOut = true;
           break;
         }
-        const sub = new Float64Array(rowsExcept * comp.vars0.length);
-        let w = 0;
-        for (let rI = 0; rI < comp.totalRows; rI += 1) {
-          if (rI >= comp.rowOffset.get(rs.constraint.id)! && rI < comp.rowOffset.get(rs.constraint.id)! + rs.rowCount) continue;
-          for (let cI = 0; cI < comp.vars0.length; cI += 1) {
-            sub[w] = J[rI * comp.vars0.length + cI]!;
-            w += 1;
-          }
-        }
-        work.used += rowsExcept * comp.vars0.length;
-        if (denseRank(sub, rowsExcept, comp.vars0.length) === rank && (magById.get(rs.constraint.id) ?? Infinity) <= RESIDUAL_TOL) {
+        const sub = new Float64Array(probeRows.length * comp.vars0.length);
+        probeRows.forEach((rI, w) => {
+          for (let cI = 0; cI < comp.vars0.length; cI += 1) sub[w * comp.vars0.length + cI] = J[rI * comp.vars0.length + cI]!;
+        });
+        work.used += probeRows.length * comp.vars0.length;
+        if (denseRank(sub, probeRows.length, comp.vars0.length) === rank) {
           redundant.add(rs.constraint.id);
+          for (let rI = at; rI < at + rs.rowCount; rI += 1) excluded[rI] = 1;
         }
       }
       // Per-entity remaining: sequential marginal rank in input order.
@@ -1556,7 +2184,7 @@ export function analyzeConstraints(entities: readonly Entity[], set: ConstraintS
   const perEntityRemaining = new Map<string, number>();
   const supportedActive = prep.active.filter(({ shape }) => shapeSupported(shape));
   if (supportedActive.length > 0) {
-    const residuals = supportedActive.map(({ c, shape }) => buildResidual(c, shape, layout, S)!);
+    const residuals = supportedActive.map(({ c, shape }) => buildResidual(c, shape, layout, S, vars0)!);
     let totalRows = 0;
     const offsets = new Map<string, number>();
     for (const r of residuals) {

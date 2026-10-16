@@ -344,9 +344,11 @@ describe('honest failure reporting', () => {
     expect(tangent.failure?.code).toBe('unsupported-constraint');
     expect(tangent.failure?.constraintIds).toEqual(['t']);
 
+    // Point-on-object coincident on a line / circle / arc is solved since
+    // 30.3.2; on a polyline 'whole' it still belongs to a later slice.
     const onObject = solveConstraints(
-      [point('P', 1, 1), C],
-      set({ id: 'k', kind: 'coincident', role: 'driving', refs: [ref('P', 'position'), ref('C', 'whole')] }),
+      [point('P', 1, 1), polyline('PL', [[0, 0], [10, 0], [10, 10]])],
+      set({ id: 'k', kind: 'coincident', role: 'driving', refs: [ref('P', 'position'), ref('PL', 'whole')] }),
     );
     expect(onObject.failure?.code).toBe('unsupported-constraint');
   });
