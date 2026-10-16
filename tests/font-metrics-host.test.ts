@@ -138,7 +138,8 @@ describe('bounded font metric descriptors', () => {
 
   it('rejects sparse used sets before allocating a worker', async () => {
     const f = fixture();
-    for (const usedCodepoints of [Array<number>(1), [65, , 66]]) {
+    const partial = Array<number>(3); partial[0] = 65; partial[2] = 66;
+    for (const usedCodepoints of [Array<number>(1), partial]) {
       const request = { font: 'simsun.ttc', usedCodepoints };
       expect(() => fontRequest(request)).toThrow('Invalid used codepoints');
       await expect(f.host.readPdf(request)).rejects.toThrow('Invalid used codepoints');
