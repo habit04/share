@@ -11,9 +11,11 @@
  * by parameter id so the encoding is canonical.
  *
  * Model version stays 1 for the 30.2 kinds (angle/flip parameters; move/rotate/scale/flip
- * actions), the 30.2a visibility parameter + value, and the 30.2b lookup parameter +
+ * actions), the 30.2a visibility parameter + value, the 30.2b lookup parameter +
  * value (row key/assignment values reuse the tagged instance-value encoding; the
- * instance choice is {"kind":"lookup","value":<row name or null>}): they are additive
+ * instance choice is {"kind":"lookup","value":<row name or null>}), and the 30.2c
+ * array action ({"kind":"array", selection refs in the existing #<ordinal>/tag
+ * encoding, plus "spacing"}): they are additive
  * union members, as the design planned (§1.3, visibility design §6.2). A v1 payload written before
  * those slices contains only the earlier members and decodes identically; a payload
  * using the new kinds, read by an older build, fails that build's structural decode
@@ -239,6 +241,13 @@ function encodeAction(a: DynamicAction, entityIdsInOrder?: readonly string[]): R
         axisA: { x: a.axisA.x, y: a.axisA.y },
         axisB: { x: a.axisB.x, y: a.axisB.y },
         selection: encodeWholeSelection(a.selection, entityIdsInOrder),
+      };
+    case 'array':
+      return {
+        kind: 'array',
+        ...base,
+        selection: encodeWholeSelection(a.selection, entityIdsInOrder),
+        spacing: a.spacing,
       };
   }
 }
@@ -516,6 +525,12 @@ function decodeAction(raw: unknown, entityIdsInOrder?: readonly string[]): Dynam
       axisB: { x: raw.axisB.x, y: raw.axisB.y },
       selection,
     };
+  }
+  if (raw.kind === 'array') {
+    if (!isFiniteNumber(raw.spacing)) return undefined;
+    const selection = decodeWholeSelection(raw.selection, entityIdsInOrder);
+    if (!selection) return undefined;
+    return { kind: 'array', ...base, selection, spacing: raw.spacing as number };
   }
   if (raw.kind !== 'stretch') return undefined;
   if (!isRecord(raw.frame) || raw.frame.kind !== 'rectangle' || !isPoint(raw.frame.min) || !isPoint(raw.frame.max)) return undefined;
