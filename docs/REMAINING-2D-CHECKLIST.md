@@ -1,6 +1,16 @@
 # Windows 2D and reliability implementation checklist
 
-Latest completed checkpoint (2026-10-16): `74369d3` passes **7,022 Windows/private-DWG
+Current check (2026-10-16): packaging head `e72c9f8` passes **7,029/0/38** locally;
+both actual CI archives verify license/notices and desktop 257/257. Push CI
+passes; PR CI fails the first packaged-origin launch. Diagnostics show the
+hidden legacy-storage window without a main window. The repair bounds migration
+and stops visibly before failed reads can acknowledge empty settings. Focused
+tests pass 68/68 and catch 28 failures against the original source. Broader
+source and fresh packaged CI remain required; the native stall cause is
+unproven. Muse owns the two 12.4 memory-guard corrections. **Merge held; long
+roadmap paused.** The draft PR records final head/results.
+
+Historical completed checkpoint: `74369d3` passes **7,022 Windows/private-DWG
 tests, zero failures, 38 skips**, and both five-job CI runs, including actual
 packaged desktop 257/257 and origin 3/3 each. Chrome passes 31/31 native checks
 and a separate 12/12 authored-CFF/mixed gate. The next packaging follow-up

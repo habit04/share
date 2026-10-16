@@ -15,7 +15,7 @@
  *   updates.cjs       app info, external links, update checks and status
  *   handover.cjs      files handed over by the OS and by a second launch
  */
-const { app, BrowserWindow, session, ipcMain: rawIpcMain, protocol, net } = require('electron');
+const { app, BrowserWindow, session, ipcMain: rawIpcMain, protocol, net, dialog } = require('electron');
 const { createGPUCollector } = require('./gpu-diagnostics.cjs');
 const gpuCollector = createGPUCollector(app, { versions: {
   jcad: app.getVersion(), electron: process.versions.electron, chromium: process.versions.chrome,
@@ -187,11 +187,19 @@ app.whenReady().then(async () => {
       if (checkpoint !== null) rendererStorage = { values: checkpoint, source: 'checkpoint' };
       else if (!fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated'))) {
         const values = fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')) ? await legacyStorage({ BrowserWindow, protocol, indexFile: path.join(__dirname, '..', 'dist', 'index.html') }) : {};
-        rendererStorage = values === null ? null : { values, source: 'legacy' };
+        if (values === null) throw new Error('Legacy settings could not be read completely');
+        rendererStorage = { values, source: 'legacy' };
       }
     } catch (error) {
       // An unreadable/corrupt checkpoint must not fall back to stale legacy values.
       logMainError('renderer preference migration', error);
+      // Opening an empty origin here would let its preload commit an empty
+      // checkpoint and permanent marker over settings we never read successfully.
+      try {
+        dialog.showErrorBox('JCad Electrical could not read its saved settings',
+          'Startup stopped to preserve your existing settings. No settings were reset. Restart JCad Electrical to retry. If the problem continues, contact support before resetting settings.');
+      } finally { app.quit(); }
+      return;
     }
   }
   loadPersistedPaths();

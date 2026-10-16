@@ -6,7 +6,16 @@ embedding and conservative variable-glyf default admission. It does not complete
 priority 12, the font roadmap or certify an installed release. Native acceptance
 and source gates are recorded separately from historical candidate reviews below.
 
-Latest complete source checkpoint `74369d3` passes **7,022 Windows/private-DWG
+Current packaging head `e72c9f8` passes **7,029 Windows/private-DWG tests, zero
+failures, 38 skips**. Both actual CI archives verify license/notices and desktop
+257/257. Push CI passes; PR CI fails the first packaged-origin launch. A bounded
+settings-migration repair passes 68 focused checks and prevents failed reads
+from permanently acknowledging empty settings. Its broader/fresh packaged
+gates remain required; the underlying native stall is unproven. No font/PDF
+behavior is changed by that repair. Muse's two 12.4 guard corrections and
+native/composed acceptance remain required. Merge is held.
+
+Historical complete source checkpoint `74369d3` passes **7,022 Windows/private-DWG
 tests, zero failures and 38 skips**, both five-job CI runs and both actual
 packaged desktop/origin gates. The cleanup and Chrome comparison failures
 described in historical entries below have separate passing follow-up evidence;

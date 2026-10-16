@@ -13,6 +13,9 @@ messages). The date of each version is the date of the commit that set that vers
 
 ### Fixed
 
+- Bound legacy settings migration during startup and stop with a visible error
+  if settings cannot be read completely. Failed migration keeps existing settings
+  intact instead of allowing an empty checkpoint to acknowledge it permanently.
 - Include the project license and third-party notices in the application archive;
   packaged CI verifies both against their exact source bytes.
 

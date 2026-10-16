@@ -4,7 +4,21 @@ Windows development review, 2026-10-16. The combined branch is published as
 draft PR #23; it is not merged or released. Earlier released TTC support remains
 the v0.5.2 baseline.
 
-Latest complete checkpoint: `74369d3` passes the full Windows/private-DWG suite
+Current packaging head `e72c9f8` passes **7,029/0/38** locally. Both actual CI
+archives verify exact license/notices and desktop 257/257. Push CI passes all
+five jobs; PR CI fails the first packaged-origin launch while its other four
+jobs pass. Diagnostics localize startup to the hidden legacy-storage window;
+the underlying native stall is unproven. No retry or sibling pass clears it.
+
+The startup repair bounds migration load/readiness and execution, cleans up
+owned resources and stops visibly before an incomplete read can acknowledge
+an empty settings checkpoint. Focused tests pass 68/68; 28 of the 36 new cases
+fail against the original source, with exact restoration afterward. Broader
+source and fresh packaged CI remain required on the repaired head. Muse still
+owns the two outstanding 12.4 memory-guard corrections. Merge remains held;
+final head/results belong to the draft PR. Earlier evidence is historical.
+
+Historical complete checkpoint: `74369d3` passes the full Windows/private-DWG suite
 **7,022/0/38** and both five-job CI runs. Both actual Windows artifacts pass
 desktop 257/257 and origin 3/3, with unchanged inputs/package identity. Chrome
 native text passes 31/31; the separate authored-CFF/mixed check passes 12/12.

@@ -1,6 +1,32 @@
 # Priority 12 Windows validation checkpoint
 
-## Latest completed source gate and packaging follow-up
+## Current startup repair and packaging evidence
+
+Packaging head `e72c9f8` passes the full Windows/private-DWG suite **7,029/0/38**.
+Both ordinary CI artifacts contain byte-identical source license/notices and
+pass packaged desktop 257/257 with unchanged inputs/package identity. All five
+push jobs pass. The PR Windows job fails its first packaged-origin launch at
+the original 60-second deadline; its other four jobs pass. No retry or sibling
+pass clears that failure.
+
+The diagnostic shows only the hidden legacy-storage window, with no main
+window. The original migration has unbounded load/read awaits; its catch can
+also open an empty origin whose preload permanently acknowledges an empty
+checkpoint. The repair bounds load/readiness to 15 seconds and storage execution
+to five seconds, handles renderer failure and cleans up the owned window and
+protocol handler. An incomplete read now stops startup with a visible error
+before creating a main window or acknowledging migration. Existing settings and
+checkpoints remain intact. These are failure-handling repairs; the underlying
+native promise stall is not established.
+
+The four-file focused gate passes **68/68**. Running the 36 new cases against
+the original two source files produces **28 failures and eight passes**; exact
+candidate bytes and the Git index are restored afterward. Broader source and
+fresh packaged CI on the repaired head remain required. The draft PR records
+their exact final head and receipts. Merge remains held for these gates and
+Muse's separate 12.4 corrections. Historical evidence follows.
+
+## Historical complete checkpoint and packaging follow-up
 
 The exact `74369d3` Windows/private-DWG suite passes **7,022 tests, zero failures,
 38 skips** (398 files, 204.70 s). Both ordinary PR/push CI runs pass all five
