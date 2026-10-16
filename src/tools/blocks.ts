@@ -7,6 +7,7 @@ import * as g from '../core/geometry';
 import type { Entity, BlockDef, InsertEntity } from '../core/entities';
 import { newId } from '../core/entities';
 import type { DrawingState } from '../core/document';
+import { seedDynamicInstanceState } from '../core/parametric/apply';
 import type { Tool } from './types';
 import { scriptTool, point, pointOrKeyword, text, number, keyword, select, dflt } from './script';
 import { cadCloneBatch } from './cad-edits';
@@ -138,6 +139,9 @@ export function insertTool(arg?: string): Tool {
     const block = ctx.doc.blocks[name]!;
     let scale = 1;
     let rotation = 0;
+    // Priority 30.1: a fresh reference of a dynamic block starts from the
+    // definition's defaults (sparse instance state; static blocks get none).
+    const dynamicSeed = seedDynamicInstanceState(block);
     const make = (pos: Point, attrs: Record<string, string> = {}): InsertEntity => ({
       id: newId(),
       layer: ctx.doc.currentLayer,
@@ -148,6 +152,7 @@ export function insertTool(arg?: string): Tool {
       rotation,
       scale,
       attributes: attrs,
+      ...(dynamicSeed ? { dynamic: dynamicSeed } : {}),
     });
     let position: Point | null = null;
     while (!position) {

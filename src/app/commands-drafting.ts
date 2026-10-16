@@ -21,6 +21,7 @@ import { plineTool, ellipseTool, pointTool, xlineTool, rayTool, donutTool, polyg
 import { filletTool, chamferTool, arrayTool, arrayRectTool, arrayPolarTool, stretchTool, breakTool, joinTool, lengthenTool, alignTool, matchPropTool, DraftingExplodeTool } from '../tools/drafting-modify';
 import { hatchTool, hatchEditTool, leaderTool, mleaderTool, tableTool, tableEditTool, fieldTool, updateFieldTool, updateFields, fieldContextFor } from '../tools/drafting-annot';
 import { blockTool, insertTool, referencedBlocks, unusedLayers, unusedLinetypes } from '../tools/blocks';
+import { dynSetTool } from '../tools/parametric';
 import { distTool, idTool, areaTool, listTool } from '../tools/inquiry';
 import { selectTool, qselectTool, selectionKeyword, selectionHistory } from '../tools/select';
 import { layoutController } from '../tools/layouts';
@@ -848,6 +849,7 @@ export function registerDraftingCommands(editor: Editor): void {
   // Blocks
   reg('BLOCK', ['B', '-BLOCK', 'BMAKE'], 'Define a block from selected objects', (ed) => ed.startTool(blockTool()));
   reg('INSERT', ['I', '-INSERT', 'DDINSERT', 'CLASSICINSERT'], 'Insert a block [name, scale, rotation, attributes]', (ed, arg) => ed.startTool(insertTool(arg)));
+  reg('DYNSET', ['-DYNSET'], 'Set a dynamic-block parameter value on a selected block reference', (ed) => ed.startTool(dynSetTool()));
   reg('PURGE', ['PU', '-PURGE'], 'Purge unused blocks, layers, linetypes [Blocks/LAyers/LTypes/All]', (ed, arg) => ed.startTool(purgeTool(ed, arg)));
 
   // Inquiry
