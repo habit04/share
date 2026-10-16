@@ -902,11 +902,6 @@ describe('atomic store and refresh (20.1 semantics)', () => {
 });
 
 describe('20.1 round-2 review regressions', () => {
-  const leafFiles = () => {
-    const files = projectFiles();
-    files.set('/proj/leaf.dxf', fixture('leaf.dxf'));
-    return files;
-  };
   const hostId = { id: 'HOST', owningLocation: '/proj/host.dxf', version: 'v1' };
 
   it('item 1: a read whose version disagrees with the identified snapshot is rejected, never tagged with the identified version', async () => {
