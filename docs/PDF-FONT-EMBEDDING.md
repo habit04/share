@@ -199,3 +199,46 @@ This is source-runtime evidence over authored Latin/unshaped text. Packaged-app
 acceptance, broader installed collections and complex scripts remain separate gates.
 Priority 12 remains partial; later SimSun, CFF, subsetting, permissions, shaping and
 variable/color deliveries require their own review and combined validation.
+
+### Used-glyph validation and subsetting: Windows source review, 2026-10-15
+
+The combined review retains 12.1 and adds the delivered used-glyph and 12.3 glyf
+subsetting work. Review fixes cover sparse request arrays before worker launch,
+selected-face/used-set composition, valid empty glyphs, optional instruction
+bounds, representable `maxp` values and consistent, distinct PDF subset names.
+An auxiliary test producer that wrote outside the worktree was removed before
+successful execution. Targeted tests pass: 155 across eleven font files; a
+separate admission/host control passes 55. Three typecheck projects, full lint,
+fixture checks and a fresh production renderer build pass.
+
+On source `8cc7fc9b78a60419adfa5c3a7cc474cf5e9f4556`, private Electron 44.7.2
+exercises real workers/IPC and production Plot/Save PDF, including Nirmala regular,
+bold and cross-family faces, Arial, precomposed composite accents, inline MTEXT,
+edit/undo/redo, DXF Save As/reopen, cancellation and captured-font ownership.
+Independent inspection checks retained glyph/component bytes, emptied unused
+glyphs, preserved maps/metrics/permissions/tables, rebuilt checksums/maxima and
+subset names. It records **2,377/2,378** checks; the sole failure is the same
+external Poppler warning on Helvetica fallback documented above. Five Canvas/PDF
+crops pass the unchanged three-pixel tolerance and visual review.
+
+The authored sparse-text comparison PDF is 1,323,959 bytes with subsets versus
+5,572,795 bytes for the whole-font control. Extracted Unicode, CID mappings,
+widths and literal 144-dpi rendered RGB pixels match. The control changes only
+the no-subsetting permission field and matching metrics on private program
+copies; native font files are unchanged. This measures one fixture, not a
+general size or performance guarantee.
+
+Real SimSun remains a negative control. Its used-glyph PDF request fails the
+preserved bitmap/capital-A origin gate. Production Han plotting reports legacy
+stroke substitution; that PDF has no embedded font resources or extracted text.
+This is not faithful Chinese embedding/extraction acceptance. YaHei's conflicting
+PostScript names and absent SimHei/FangSong remain explicit limits. The separate
+DWG/missing-SHX/Han/raster-guidance composition (F1-F4) is not integrated or
+certified here. No bitmap policy or permission gate is weakened.
+
+Two complete two-worker Windows runs each pass 6,700 tests with 38 skips and time
+out in the same unchanged 128-MiB file-hashing admission case, including its
+cleanup hook. That suite passes alone with unchanged deadlines. Its concurrency
+cause is unresolved; those failures are preserved and the two-worker gate is
+not green. A serial full-suite control is recorded separately. No remote CI,
+packaged installer, new AutoCAD run or release is certified by this review.
