@@ -92,6 +92,14 @@ reopening therefore yields a block reference rather than a standalone polyline. 
 an invalid or degenerate frame, a generated expansion exceeding the geometry budget, or wrappers
 that would push currently visible geometry beyond the depth-eight block limit. These restrictions
 do not change native widths saved inside an existing nonuniform block reference.
+The affine frame is the single authoritative representation of such a polyline: its stored
+`points` are exactly the frame's image of the native source vertices, and rendering, bounds,
+snapping and export all derive from the frame. Whole-entity transforms compose the frame, and
+vertex-preserving edits (grip moves, STRETCH) are applied to the frame's source vertices
+through the frame inverse, so the two can never desync. Topology-changing vertex edits
+(BREAK, polyline FILLET) refuse a framed polyline — and any polyline carrying per-vertex
+widths, which they cannot reslice — explicitly, without changing state; a constant width is
+unaffected. (Review R05; `tests/wide-polyline-review-r05.test.ts`.)
 
 ## Drawing-level data
 
