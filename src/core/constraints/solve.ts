@@ -1773,6 +1773,57 @@ interface CompOutcome {
   readonly failure?: { readonly code: SolveFailureCode; readonly constraintIds: readonly string[]; readonly message: string };
 }
 
+// ---------------------------------------------------------------------------
+// Result-geometry validation (review R03). The stage-1 checks and the
+// mid-solve trial check only watch the forms they enumerate, so the
+// delivered engine could return SUCCESS with collapsed geometry: a
+// coincident pull joining a line's own endpoints, a horizontal+vertical
+// pair on one segment, an equal-length/radius adoption of a sub-band
+// measure, or a stage-2 construction writing both endpoints onto one
+// point. Before any success is returned, the result is validated
+// against the entry geometry: any segment length or radius that was
+// at/above the engine's own degenerate band (DEGENERATE_REL·S, §5.5)
+// at entry and falls below it in the result refuses the solve with
+// 'degenerate-geometry' — the collapsed geometry is never returned.
+// Geometry already below the band at entry is not a collapse (it was
+// never valid by the band's reading) and is left to the other checks.
+// ---------------------------------------------------------------------------
+
+function geometryMeasures(e: ConstrainableEntity, vars: Float64Array, offset: number): readonly number[] {
+  switch (e.type) {
+    case 'line':
+      return [Math.hypot(vars[offset + 2]! - vars[offset]!, vars[offset + 3]! - vars[offset + 1]!)];
+    case 'circle':
+    case 'arc':
+      return [vars[offset + 2]!];
+    case 'polyline': {
+      const n = e.points.length;
+      const segCount = e.closed ? n : n - 1;
+      const ms: number[] = [];
+      for (let i = 0; i < segCount; i += 1) {
+        const j = (i + 1) % n;
+        ms.push(Math.hypot(vars[offset + 2 * j]! - vars[offset + 2 * i]!, vars[offset + 2 * j + 1]! - vars[offset + 2 * i + 1]!));
+      }
+      return ms;
+    }
+    default:
+      return [];
+  }
+}
+
+/** The first entity whose valid-at-entry geometry `vars` collapses, if any. */
+function findCollapse(comp: Comp, vars: Float64Array): { readonly entityId: string } | null {
+  const band = DEGENERATE_REL * comp.S;
+  for (const ev of comp.list) {
+    const before = geometryMeasures(ev.entity, comp.vars0, ev.offset);
+    const after = geometryMeasures(ev.entity, vars, ev.offset);
+    for (let i = 0; i < before.length; i += 1) {
+      if (before[i]! >= band && after[i]! < band) return { entityId: ev.entity.id };
+    }
+  }
+  return null;
+}
+
 function evalAll(comp: Comp, vars: Float64Array, work: Work): Float64Array {
   const out = new Float64Array(comp.totalRows);
   for (const r of comp.residuals) r.eval(vars, out, comp.rowOffset.get(r.constraint.id)!);
@@ -1954,6 +2005,23 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
   }
   const { vals, det } = s2;
 
+  // R03 gate: every success path below passes through here first.
+  const collapseFailure = (vars: Float64Array, mag: ReadonlyMap<string, number>): CompOutcome | null => {
+    const hit = findCollapse(comp, vars);
+    if (!hit) return null;
+    const ids = comp.active.filter((a) => shapeEntities(a.shape).some((s) => s.entity.id === hit.entityId)).map((a) => a.c.id);
+    return {
+      ok: false,
+      vars: comp.vars0,
+      mag,
+      failure: {
+        code: 'degenerate-geometry',
+        constraintIds: ids.length > 0 ? ids : comp.active.map((a) => a.c.id),
+        message: `The solve would collapse entity '${hit.entityId}' — a segment length or radius that was valid at entry falls below the degenerate band (DEGENERATE_REL·S); the collapsed result is refused.`,
+      },
+    };
+  };
+
   // Which constraints did stage 2 discharge? Satisfied at the determined
   // values with every variable they read determined. Satisfaction is the
   // R02-aware predicate: a length-dimensional constraint whose raw error
@@ -1971,6 +2039,8 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
     for (const v of rs.vars) freeSet.add(v);
   }
   if (freeSet.size === 0) {
+    const cf = collapseFailure(vals, mag0);
+    if (cf) return cf;
     return { ok: true, vars: vals, mag: mag0 };
   }
   const free = [...freeSet].sort((a, b) => a - b);
@@ -2008,7 +2078,11 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
   let x = new Float64Array(vals);
   let r = r0;
   let mag = mag0;
-  if (allSatisfied(comp, mag)) return { ok: true, vars: x, mag };
+  if (allSatisfied(comp, mag)) {
+    const cf = collapseFailure(x, mag);
+    if (cf) return cf;
+    return { ok: true, vars: x, mag };
+  }
 
   let lambda = 1e-3;
   let lastStep = Infinity;
@@ -2129,7 +2203,11 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
       break;
     }
   }
-  if (converged) return { ok: true, vars: x, mag };
+  if (converged) {
+    const cf = collapseFailure(x, mag);
+    if (cf) return cf;
+    return { ok: true, vars: x, mag };
+  }
   if (stationary || iterations > MAX_ITERATIONS) {
     const finalMag = maxAbs(r);
     // Conflict evidence (§5.6): a normalized residual above CONFLICT_TOL,
@@ -2168,7 +2246,11 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
   }
   // Defensive: the loop always exits through a flag above; never claim
   // success the satisfaction predicate cannot back.
-  if (allSatisfied(comp, mag)) return { ok: true, vars: x, mag };
+  if (allSatisfied(comp, mag)) {
+    const cf = collapseFailure(x, mag);
+    if (cf) return cf;
+    return { ok: true, vars: x, mag };
+  }
   return {
     ok: false,
     vars: x,

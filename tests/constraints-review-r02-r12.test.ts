@@ -131,3 +131,139 @@ describe('R02 — driving-distance accuracy is translation-invariant', () => {
     expect(diag(result, 'rd')?.measured).toBe(10);
   });
 });
+
+// ---------------------------------------------------------------------------
+// R03 — a successful solve must not collapse valid segments. The delivered
+// engine returned ok with zero-length geometry whenever the collapsing
+// form was not one of the few the mid-solve check happened to watch
+// (coincident pulls, H/V pairs, stage-2 constructions). Constructed and
+// final geometry are now validated before any success is returned: a
+// segment length or radius that was at/above the engine's own degenerate
+// band (DEGENERATE_REL·S) at entry and falls below it in the result
+// refuses the solve as degenerate-geometry instead.
+// ---------------------------------------------------------------------------
+
+describe('R03 — successful solves never collapse valid geometry', () => {
+  it('coincident of a line’s own start and end refuses instead of returning a zero-length line', () => {
+    const L = line('L', 0, 0, 5, 0);
+    const result = solveConstraints([L], set({ id: 'k', kind: 'coincident', role: 'driving', refs: [ref('L', 'start'), ref('L', 'end')] }));
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe('unsolved');
+    expect(result.failure?.code).toBe('degenerate-geometry');
+    expect(result.failure?.constraintIds).toContain('k');
+    expect(result.entities).toBeUndefined();
+  });
+
+  it('horizontal + vertical on the same line refuses instead of collapsing it to a point', () => {
+    const L = line('L', 0, 0, 5, 3);
+    const result = solveConstraints(
+      [L],
+      set(
+        { id: 'h', kind: 'horizontal', role: 'driving', refs: [ref('L', 'whole')] },
+        { id: 'v', kind: 'vertical', role: 'driving', refs: [ref('L', 'whole')] },
+      ),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.failure?.code).toBe('degenerate-geometry');
+    expect(result.failure?.constraintIds).toEqual(expect.arrayContaining(['h', 'v']));
+    expect(result.entities).toBeUndefined();
+  });
+
+  it('stage-2 adoption of both endpoints onto one fixed point refuses (constructed collapse)', () => {
+    const L = line('L', 0, 0, 5, 0);
+    const P = point('P', 100, 100);
+    const result = solveConstraints(
+      [L, P],
+      set(
+        { id: 'f', kind: 'fixed', role: 'driving', refs: [ref('P', 'position')] },
+        { id: 'ka', kind: 'coincident', role: 'driving', refs: [ref('L', 'start'), ref('P', 'position')] },
+        { id: 'kb', kind: 'coincident', role: 'driving', refs: [ref('L', 'end'), ref('P', 'position')] },
+      ),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.failure?.code).toBe('degenerate-geometry');
+    expect(result.entities).toBeUndefined();
+  });
+
+  it('an equal-radius copy of a sub-band radius refuses instead of collapsing the partner circle', () => {
+    const A = circle('A', 0, 0, 5);
+    const B = circle('B', 20, 0, 1e-13);
+    const result = solveConstraints(
+      [A, B],
+      set(
+        { id: 'rb', kind: 'radius', role: 'driving', value: 1e-13, refs: [ref('B', 'whole')] },
+        { id: 'eq', kind: 'equal', role: 'driving', refs: [ref('A', 'whole'), ref('B', 'whole')] },
+      ),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.failure?.code).toBe('degenerate-geometry');
+    expect(result.failure?.constraintIds).toContain('eq');
+    expect(result.entities).toBeUndefined();
+  });
+
+  it('equal length against a fully-fixed sub-band segment refuses instead of shrinking the free line into the band', () => {
+    const L1 = line('L1', 0, 0, 5, 0);
+    const L2 = line('L2', 0, 10, 1e-13, 10);
+    const result = solveConstraints(
+      [L1, L2],
+      set(
+        { id: 'fa', kind: 'fixed', role: 'driving', refs: [ref('L2', 'start')] },
+        { id: 'fb', kind: 'fixed', role: 'driving', refs: [ref('L2', 'end')] },
+        { id: 'eq', kind: 'equal', role: 'driving', refs: [ref('L1', 'whole'), ref('L2', 'whole')] },
+      ),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.failure?.code).toBe('degenerate-geometry');
+    expect(result.entities).toBeUndefined();
+  });
+
+  it('a polyline segment pulled coincident with its neighbour refuses', () => {
+    const PL = {
+      ...base,
+      id: 'PL',
+      type: 'polyline' as const,
+      points: [
+        { x: 0, y: 0 },
+        { x: 5, y: 0 },
+        { x: 5, y: 5 },
+      ],
+      closed: false,
+    };
+    const result = solveConstraints([PL], set({ id: 'k', kind: 'coincident', role: 'driving', refs: [ref('PL', 'vertex', 0), ref('PL', 'vertex', 1)] }));
+    expect(result.ok).toBe(false);
+    expect(result.failure?.code).toBe('degenerate-geometry');
+    expect(result.entities).toBeUndefined();
+  });
+
+  it('shrinking a segment to a small but above-band length still succeeds', () => {
+    const L = line('L', 0, 0, 5, 0);
+    const result = solveConstraints([L], set({ id: 'd', kind: 'distance', role: 'driving', value: 1e-6, refs: [ref('L', 'whole')] }));
+    expect(result.ok).toBe(true);
+    const out = byId(result.entities!).get('L') as LineEntity;
+    expect(Math.hypot(out.b.x - out.a.x, out.b.y - out.a.y)).toBeCloseTo(1e-6, 12);
+  });
+
+  it('geometry already below the band at entry is not a collapse when it relocates at the same size', () => {
+    // The tiny line is adopted onto two fixed points 1e-13 apart: it
+    // moves across the drawing but its (sub-band) length never changes,
+    // so nothing that was valid at entry collapsed — the solve succeeds.
+    const L = line('L', 0, 0, 1e-13, 0);
+    const P = point('P', 100, 100);
+    const Q = point('Q', 100 + 1e-13, 100);
+    const result = solveConstraints(
+      [L, P, Q],
+      set(
+        { id: 'fp', kind: 'fixed', role: 'driving', refs: [ref('P', 'position')] },
+        { id: 'fq', kind: 'fixed', role: 'driving', refs: [ref('Q', 'position')] },
+        { id: 'ka', kind: 'coincident', role: 'driving', refs: [ref('L', 'start'), ref('P', 'position')] },
+        { id: 'kb', kind: 'coincident', role: 'driving', refs: [ref('L', 'end'), ref('Q', 'position')] },
+      ),
+    );
+    expect(result.ok).toBe(true);
+    const out = byId(result.entities!).get('L') as LineEntity;
+    expect(out.a).toEqual({ x: 100, y: 100 });
+    const len = Math.hypot(out.b.x - out.a.x, out.b.y - out.a.y);
+    expect(len).toBeGreaterThan(0);
+    expect(len).toBeLessThan(1e-12);
+  });
+});
