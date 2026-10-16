@@ -9,13 +9,21 @@
  * never clamps, snaps or repairs: an invalid value is refused with a stable
  * problem code taken from the instance/definition validation vocabularies.
  *
- * Scope: top-level entities of the supplied state (the list a transact
- * projects for the active space), exactly like withInsertAttributes. Values
- * on inserts nested inside block definitions are expansion-time data and are
- * not edited through here.
+ * Scope: the supplied state's ACTIVE SPACE. The edit resolves the insert
+ * in the state's stored (model-space) entity list first; when it is not
+ * there and the state's active space is a layout's paper space, the edit
+ * runs against that layout's paper entities and the result folds back
+ * into the layout — the same projection Drawing.transact performs — so a
+ * caller holding a raw Drawing.snapshot edits paper-space inserts too
+ * (review R08 residual). A state a caller already projected (transact's
+ * callback argument, the pointer's active-space view) has the insert in
+ * its own list, so it resolves there and is never projected twice.
+ * Values on inserts nested inside block definitions are expansion-time
+ * data and are not edited through here.
  */
 import type { DrawingState } from '../document';
-import type { BlockDef, InsertEntity } from '../entities';
+import type { BlockDef, Entity, InsertEntity } from '../entities';
+import { applyPaperEntities, layoutsOf, paperEntities, paperSpaceLayout, withLayout } from '../layouts';
 import { validateDefinition, type DefinitionIssueCode, type DynamicParameter, type LookupParameter } from './definitions';
 import { evaluateDynamicBlock, type EvaluationRefusalCode } from './evaluate';
 import {
@@ -59,6 +67,23 @@ const refuse = (
   problem: SetDynamicParameterProblem,
   message: string,
 ): SetDynamicParameterResult => ({ state, problem, message });
+
+/**
+ * Find an entity by id in the state's ACTIVE SPACE: the stored
+ * (model-space) entity list first — so a state a caller already
+ * projected (Drawing.transact's callback argument, the pointer's
+ * active-space view) resolves in its own list and is never projected a
+ * second time — then, when the active space is a layout's paper space,
+ * that layout's paper entities (the list Drawing.entities exposes).
+ * Entities living only in a NON-active layout are not found: the active
+ * space is the editing scope, exactly as in the editor.
+ */
+export function entityInActiveSpace(state: DrawingState, entityId: string): Entity | undefined {
+  const direct = state.entities.find((e) => e.id === entityId);
+  if (direct) return direct;
+  const lay = paperSpaceLayout(state);
+  return lay ? paperEntities(lay).find((e) => e.id === entityId) : undefined;
+}
 
 /**
  * The instance state a fresh insert of a dynamic block starts with, or
@@ -139,6 +164,17 @@ function storedValuesEqual(
  * is stored (the edit then materializes the cleared state). Editing an
  * uncovered parameter leaves the choice untouched.
  *
+ * Space resolution (review R08 residual): the insert is resolved against
+ * the state's ACTIVE SPACE (see the header). An insert stored in the
+ * state's own entity list is edited there — the pre-existing behaviour,
+ * byte for byte. An insert that lives only in the active layout's paper
+ * entities is edited against that projected list and the result is folded
+ * back into the layout (withLayout + applyPaperEntities, the fold
+ * Drawing.transact performs): the returned state is a raw state whose
+ * LAYOUT carries the edit and whose stored entity list is the input's,
+ * untouched. A refusal in that branch returns the caller's own state
+ * object (identity), never the internal projection.
+ *
  * On success the returned state has a NEW entities array containing a NEW
  * insert object (same id) whose `dynamic.values` carries the value sparsely;
  * the block definition object and every other entity are shared by identity,
@@ -147,6 +183,36 @@ function storedValuesEqual(
  * made, and undo must restore the previous state, sparse or not).
  */
 export function setDynamicParameter(
+  state: DrawingState,
+  insertId: string,
+  parameterId: string,
+  value: DynamicParameterEditValue,
+): SetDynamicParameterResult {
+  if (state.entities.some((e) => e.id === insertId)) {
+    return setDynamicParameterInList(state, insertId, parameterId, value);
+  }
+  const lay = paperSpaceLayout(state);
+  if (lay) {
+    const projected = paperEntities(lay);
+    if (projected.some((e) => e.id === insertId)) {
+      const view: DrawingState = { ...state, entities: projected };
+      const result = setDynamicParameterInList(view, insertId, parameterId, value);
+      if (result.state === view) {
+        // Refusal / no-change: identity with the state the CALLER handed
+        // over, not with the internal projection.
+        return { state, problem: result.problem, message: result.message };
+      }
+      const base: DrawingState = { ...result.state, entities: state.entities };
+      const target = layoutsOf(base).find((l) => l.name === lay.name) ?? lay;
+      return { state: withLayout(base, applyPaperEntities(target, result.state.entities)) };
+    }
+  }
+  return refuse(state, 'insert-not-found', `No entity with id '${insertId}'.`);
+}
+
+/** The edit against ONE entity list (the state's own, or a paper-space
+ *  projection of it): every check and refusal of the public contract. */
+function setDynamicParameterInList(
   state: DrawingState,
   insertId: string,
   parameterId: string,
