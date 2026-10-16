@@ -17,6 +17,12 @@
  * dependent; every binding crossed in either direction is a hoisted function
  * declaration and neither module invokes the other's bindings while its own
  * module body evaluates, which keeps the cycle safe.
+ *
+ * 30.2b: the pipeline follows design-visibility-lookup-array.md §1.4 — the
+ * lookup override pass (step 3) derives `finalEffective` from the validated
+ * `effective` values before any geometry, and everything downstream (grip
+ * positions, action deltas, the visibility filter) reads `finalEffective`
+ * only.
  */
 import { EPS, add, dot, normalize, rotate, scale as scalePoint, sub, type Point } from '../geometry';
 import {
@@ -35,13 +41,20 @@ import {
   type FlipAction,
   type FlipParameter,
   type LinearDistanceParameter,
+  type LookupParameter,
   type MoveAction,
   type RotateAction,
   type ScaleAction,
   type StretchAction,
   type VisibilityParameter,
 } from './definitions';
-import { validateInstanceValues, type DynamicParameterValue, type DynamicInstanceState, type InstanceIssue } from './instance';
+import {
+  parameterValuesEqual,
+  validateInstanceValues,
+  type DynamicParameterValue,
+  type DynamicInstanceState,
+  type InstanceIssue,
+} from './instance';
 
 /** Absolute tolerance (drawing units) for frame inclusion, increment/list
  *  membership and zero-delta detection. Fixed for the model version; making it a
@@ -122,7 +135,7 @@ export type EvaluationRefusalCode =
 
 export interface EvaluationDiagnostic {
   readonly severity: 'info' | 'warning';
-  readonly code: 'value-defaulted' | 'frame-missed-selection' | 'zero-delta' | 'action-no-op';
+  readonly code: 'value-defaulted' | 'frame-missed-selection' | 'zero-delta' | 'action-no-op' | 'lookup-applied';
   readonly message: string;
   readonly parameterId?: string;
   readonly actionId?: string;
@@ -280,11 +293,52 @@ export function evaluationKey(
           return `${id}=f:${String(value.value)}`;
         case 'visibility':
           return `${id}=v:${value.value}`;
+        case 'lookup':
+          // JSON encoding keeps null (no row) distinct from a row named "null".
+          return `${id}=l:${JSON.stringify(value.value)}`;
         case 'opaque':
           return `${id}=o:${value.payload}`;
       }
     });
   return `dyn${definition.version}|${parts.join(';')}`;
+}
+
+/**
+ * The row the given effective values exactly describe, or undefined
+ * ("Custom"). A row matches iff every input's effective value equals the
+ * row's key value AND every assignment target's effective value equals the
+ * row's assignment (numeric values within EVALUATION_TOLERANCE;
+ * flip/visibility values exact — see parameterValuesEqual). First match in
+ * authoring order wins. Used by the properties UI only; evaluation never
+ * calls this (design §2.7 — key-matching was rejected as an evaluation
+ * rule in §2.2, model 1).
+ */
+export function matchingLookupRow(
+  param: LookupParameter,
+  effective: Readonly<Record<string, DynamicParameterValue>>,
+): string | undefined {
+  for (const row of param.rows) {
+    let matches = true;
+    for (const inputId of param.inputs) {
+      const actual = effective[inputId];
+      const expected = row.key[inputId];
+      if (!actual || !expected || !parameterValuesEqual(actual, expected)) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) {
+      for (const [targetId, expected] of Object.entries(row.assignments)) {
+        const actual = effective[targetId];
+        if (!actual || !parameterValuesEqual(actual, expected)) {
+          matches = false;
+          break;
+        }
+      }
+    }
+    if (matches) return row.name;
+  }
+  return undefined;
 }
 
 export function evaluateDynamicBlock(
@@ -318,7 +372,43 @@ export function evaluateDynamicBlock(
   }
   const effective = validation.effective;
 
-  // 3. Opaque members: retained, never interpreted; evaluation refuses whole.
+  // 3. Lookup override pass (design §2.6): a single pass over values, before
+  //    any geometry. When the definition has a lookup parameter whose
+  //    effective choice names a row, finalEffective = {...effective,
+  //    ...row.key, ...row.assignments} — the row wins; direct values under an
+  //    active row are shadowed, not deleted (remove the choice and they rule
+  //    again, unchanged). Key and assignments are disjoint by definition
+  //    validation, and every value they inject was validated against its
+  //    target parameter at definition time, so the override is total and
+  //    cannot produce an invalid effective value. Everything downstream —
+  //    grip positions in dependency derivation, action deltas, the
+  //    visibility filter — reads finalEffective only; the raw effective map
+  //    is used for exactly one thing: the 'value-defaulted' diagnostic is
+  //    suppressed for parameters the active row sets (their value did not
+  //    come from a default, and reporting "default used" would be false).
+  const diagnostics: EvaluationDiagnostic[] = [];
+  const lookup = definition.parameters.find((p): p is LookupParameter => p.kind === 'lookup');
+  let finalEffective = effective;
+  const rowSetParameters = new Set<string>();
+  if (lookup) {
+    const choice = effective[lookup.id];
+    const rowName = choice && choice.kind === 'lookup' ? choice.value : null;
+    if (rowName !== null) {
+      // Instance validation (step 2) guarantees the named row exists.
+      const row = lookup.rows.find((r) => r.name === rowName)!;
+      finalEffective = { ...effective, ...row.key, ...row.assignments };
+      for (const id of Object.keys(row.key)) rowSetParameters.add(id);
+      for (const id of Object.keys(row.assignments)) rowSetParameters.add(id);
+      diagnostics.push({
+        severity: 'info',
+        code: 'lookup-applied',
+        message: `Lookup parameter '${lookup.id}' applied row '${rowName}', setting: ${[...rowSetParameters].sort().join(', ')}.`,
+        parameterId: lookup.id,
+      });
+    }
+  }
+
+  // 4. Opaque members: retained, never interpreted; evaluation refuses whole.
   for (const param of definition.parameters) {
     if (param.kind === 'opaque-parameter') {
       return refuse({
@@ -352,11 +442,13 @@ export function evaluateDynamicBlock(
   }
 
   // Action-drivable parameters only: a visibility parameter drives no action
-  // (an action naming one is refused by definition validation), and opaque
-  // parameters were refused above.
+  // and neither does a lookup parameter (an action naming either is refused
+  // by definition validation), and opaque parameters were refused above.
   const parametersById = new Map<string, ModeledParameter>();
   for (const param of definition.parameters) {
-    if (param.kind !== 'opaque-parameter' && param.kind !== 'visibility') parametersById.set(param.id, param);
+    if (param.kind !== 'opaque-parameter' && param.kind !== 'visibility' && param.kind !== 'lookup') {
+      parametersById.set(param.id, param);
+    }
   }
   // Opaque actions were refused above, so every remaining action is modeled.
   const actions = definition.actions as readonly ModeledAction[];
@@ -379,7 +471,7 @@ export function evaluateDynamicBlock(
   const workRefusal = (): EvaluationResult =>
     refuse({ code: 'work-limit-exceeded', message: `Evaluation work exceeded the limit of ${limits.maxWork}.` });
 
-  // 4. Dependency graph + topological order (design §3.2).
+  // 6. Dependency graph + topological order (design §3.2).
   //    An action B depends on action A (A runs first) iff A moves a point B's
   //    behaviour is derived from:
   //    - B's parameter's 'value' grip (at its effective position), when the grip
@@ -403,7 +495,7 @@ export function evaluateDynamicBlock(
   const gripPointOf = (param: LinearDistanceParameter): Point | undefined => {
     const grip = param.grips.find((gr) => gr.role === 'value' && gr.movesWithValue);
     if (!grip) return undefined;
-    const value = effective[param.id];
+    const value = finalEffective[param.id];
     const distance = value && value.kind === 'distance' ? value.value : param.defaultValue;
     const len = Math.hypot(param.direction.x, param.direction.y);
     const unit = { x: param.direction.x / len, y: param.direction.y / len };
@@ -484,17 +576,16 @@ export function evaluateDynamicBlock(
     });
   }
 
-  // 5. Apply actions in topological order to working copies.
+  // 7. Apply actions in topological order to working copies.
   const outEntities: Entity[] = [...baseEntities];
   const outAttributes: AttributeDef[] = [...baseAttributes];
-  const diagnostics: EvaluationDiagnostic[] = [];
   const appliedActions: string[] = [];
   const defaultedReported = new Set<string>();
 
   /** Apply one stretch action to the working copies. Returns a refusal, or
    *  undefined on success (including a zero-delta no-op). */
   const applyStretchAction = (action: StretchAction, param: LinearDistanceParameter): EvaluationResult | undefined => {
-    const valueEntry = effective[param.id]!;
+    const valueEntry = finalEffective[param.id]!;
     const effectiveValue = valueEntry.kind === 'distance' ? valueEntry.value : param.defaultValue;
     const rawDelta = effectiveValue - param.defaultValue;
     const directionLen = Math.hypot(param.direction.x, param.direction.y);
@@ -600,7 +691,7 @@ export function evaluateDynamicBlock(
     switch (action.kind) {
       case 'move': {
         const p = param as LinearDistanceParameter;
-        const entry = effective[p.id]!;
+        const entry = finalEffective[p.id]!;
         const value = entry.kind === 'distance' ? entry.value : p.defaultValue;
         const directionLen = Math.hypot(p.direction.x, p.direction.y);
         const unit = { x: p.direction.x / directionLen, y: p.direction.y / directionLen };
@@ -616,7 +707,7 @@ export function evaluateDynamicBlock(
       }
       case 'rotate': {
         const p = param as AngleParameter;
-        const entry = effective[p.id]!;
+        const entry = finalEffective[p.id]!;
         const value = entry.kind === 'angle' ? entry.value : p.defaultValue;
         const deltaAngle = value - p.defaultValue;
         if (!Number.isFinite(deltaAngle)) {
@@ -631,7 +722,7 @@ export function evaluateDynamicBlock(
       }
       case 'scale': {
         const p = param as LinearDistanceParameter;
-        const entry = effective[p.id]!;
+        const entry = finalEffective[p.id]!;
         const value = entry.kind === 'distance' ? entry.value : p.defaultValue;
         // The default's positivity is a definition-validation rule; the
         // effective value is instance data, so a degenerate factor (zero or
@@ -649,7 +740,7 @@ export function evaluateDynamicBlock(
       }
       case 'flip': {
         const p = param as FlipParameter;
-        const entry = effective[p.id]!;
+        const entry = finalEffective[p.id]!;
         const value = entry.kind === 'flip' ? entry.value : p.defaultValue;
         if (value !== p.defaultValue) {
           const { axisA, axisB } = action;
@@ -691,7 +782,10 @@ export function evaluateDynamicBlock(
   for (const actionIndex of order) {
     const action = actions[actionIndex]!;
     const param = parametersById.get(action.parameterId)!;
-    if (instance?.values[param.id] === undefined && !defaultedReported.has(param.id)) {
+    // 'value-defaulted' is suppressed for parameters the active lookup row
+    // sets (design §2.6 step 3): their value came from the row, not from a
+    // default, and 'lookup-applied' already reports them.
+    if (instance?.values[param.id] === undefined && !rowSetParameters.has(param.id) && !defaultedReported.has(param.id)) {
       defaultedReported.add(param.id);
       diagnostics.push({
         severity: 'info',
@@ -711,23 +805,24 @@ export function evaluateDynamicBlock(
     appliedActions.push(action.id);
   }
 
-  // 6. Visibility post-pass filter (design §1.4 step 8; the design's step-3
-  //    lookup override does not exist until 30.2b). Actions have been applied
-  //    to the FULL authored set above, hidden entities included — so a state
-  //    switch reveals geometry already consistent with the parameter values.
-  //    The filter is the last step: it drops every working entity whose id
-  //    and every working attribute whose tag is not in the effective state's
-  //    visible set, and changes nothing else — appliedActions, diagnostics
-  //    and work accounting are exactly as produced by step 5, and budgets
-  //    stay pre-filter (the filter only shrinks what expansion receives).
-  //    What it keeps, it keeps by identity.
+  // 8. Visibility post-pass filter (design §1.4 step 8). Actions have been
+  //    applied to the FULL authored set above, hidden entities included — so
+  //    a state switch reveals geometry already consistent with the parameter
+  //    values. The filter is the last step: it drops every working entity
+  //    whose id and every working attribute whose tag is not in the effective
+  //    state's visible set, and changes nothing else — appliedActions,
+  //    diagnostics and work accounting are exactly as produced by step 7,
+  //    and budgets stay pre-filter (the filter only shrinks what expansion
+  //    receives). What it keeps, it keeps by identity. The state is read
+  //    from finalEffective, so a lookup row that assigns the visibility
+  //    parameter applies in the same evaluation (design §2.8).
   const visibility = definition.parameters.find(
     (p): p is VisibilityParameter => p.kind === 'visibility',
   );
   if (!visibility) {
     return { ok: true, entities: outEntities, attributes: outAttributes, appliedActions, diagnostics };
   }
-  const stateEntry = effective[visibility.id];
+  const stateEntry = finalEffective[visibility.id];
   const stateName = stateEntry && stateEntry.kind === 'visibility' ? stateEntry.value : visibility.defaultState;
   // Instance validation (step 2) guarantees the name is one of the states.
   const state = visibility.states.find((s) => s.name === stateName)!;
