@@ -94,7 +94,7 @@ Rules enforced locally by `parseAiPlan` / the compiler (`src/ai/draft-plan.ts`,
   The model cannot reference created objects.
 - A no-op operation (zero move vector, rotation a multiple of 360°) rejects the
   plan; an empty or all-no-op proposal can never create an undo step.
-- Limits (`src/ai/draft-limits.ts`): plan JSON ≤ 32 KiB; ≤ 64 operations;
+- Limits (the `AI_DRAFT_*` constants in `src/ai/limits.ts`): plan JSON ≤ 32 KiB; ≤ 64 operations;
   ≤ 200 targets per operation; ≤ 400 affected and ≤ 200 created entities per
   plan; ≤ 512 vertices per compiled polyline (rectangles always produce 4).
 - Unknown operations, unknown or misplaced fields, wrong types, non-finite
