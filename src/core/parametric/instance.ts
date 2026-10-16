@@ -66,6 +66,11 @@ export type InstanceValidation =
       /** Every parameter id in the definition, defaults filled in. A fresh object
        *  per call; the input state is not modified or completed in place. */
       readonly effective: Readonly<Record<string, DynamicParameterValue>>;
+      /** Declared (always undefined) so union access typechecks under
+       *  tsconfig.scripts.json, which compiles with strictNullChecks off and
+       *  therefore does not narrow this union by the `ok` discriminant
+       *  (review finding R01). */
+      readonly issues?: undefined;
     }
   | { readonly ok: false; readonly issues: readonly InstanceIssue[] };
 

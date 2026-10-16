@@ -114,6 +114,11 @@ export type EvaluationResult =
       /** Action ids in the order they were applied (topological). */
       readonly appliedActions: readonly string[];
       readonly diagnostics: readonly EvaluationDiagnostic[];
+      /** Declared (always undefined) so union access typechecks under
+       *  tsconfig.scripts.json, which compiles with strictNullChecks off and
+       *  therefore does not narrow this union by the `ok` discriminant
+       *  (review finding R01). */
+      readonly refusal?: undefined;
     }
   | { readonly ok: false; readonly refusal: EvaluationRefusal };
 

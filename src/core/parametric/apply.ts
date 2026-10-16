@@ -87,7 +87,10 @@ function taggedEditValue(param: DynamicParameter, value: DynamicParameterEditVal
     case 'visibility':
       return typeof value === 'string' ? { kind: 'visibility', value } : undefined;
     case 'lookup':
-      return typeof value === 'string' || value === null ? { kind: 'lookup', value } : undefined;
+      // Branch explicitly: the `|| value === null` narrowing does not hold
+      // under tsconfig.scripts.json (strictNullChecks off) — review R01.
+      if (typeof value === 'string') return { kind: 'lookup', value };
+      return value === null ? { kind: 'lookup', value: null } : undefined;
     case 'opaque-parameter':
       return undefined;
   }
