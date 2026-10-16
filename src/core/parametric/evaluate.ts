@@ -500,8 +500,11 @@ export function evaluateDynamicBlock(
   //    shared selection targets instead. Whole-entity actions (30.2) have
   //    position-independent transforms and no frame, so no edge is derived
   //    for or from them: they compose in authoring order, which is the
-  //    topological tie-break. Deriving dependency edges from whole-action
-  //    grip movement is later 30.2 chaining work (spec §3.2, final bullet).
+  //    topological tie-break. This is the settled semantics (30.2d design
+  //    §5): whole actions source no edges because their transforms are
+  //    computed from values and definition constants — no positional datum
+  //    exists to derive an order from, and any invented rule would make
+  //    ordering value-dependent. Pinned by tests/parametric-chaining.test.ts.
   //    The array action (30.2c) is whole-entity-class for dependency
   //    purposes (design §3.2): it sources no edges, and the selection-point
   //    rule does not apply to it as a sink either — an array takes its
