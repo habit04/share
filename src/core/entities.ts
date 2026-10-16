@@ -14,6 +14,7 @@ import { mtextBackgroundPolygons, hasMTextFill, hasMTextFrame, entityMTextBackgr
 import { polylineWidthGeometry, polylineWidthFrame, transformWidthFrame, polylineFramePoint, polylineFrameSource, polylineWidthProblem, moveWidthFrameGrip } from './polyline-widths';
 import { appearanceProperties, inheritedTransparency, resolveAlpha, type TransparencySpec } from './appearance';
 import { insertArrayCount, insertArrayInstances, MAX_INSERT_ARRAY_INSTANCES } from './insert-array';
+import { evaluateDynamicBlock } from './parametric/evaluate';
 import { hasHatchGradient, hatchGradientDataProblem, hatchGradientFrame, hatchGradientFrameProblem, transformHatchGradientFrame, type HatchGradient, type HatchGradientFrame } from './hatch-gradient';
 
 export type { DimensionEntity, DimStyle, DimKind } from './dimension';
@@ -1325,6 +1326,42 @@ interface InsertCache {
 /** Only accepted immutable inserts and definitions qualify for identity caching. */
 const insertCache = new WeakMap<InsertEntity, InsertCache>();
 
+/**
+ * Priority 30.1: the block definition ONE expansion of `ins` must use. When the
+ * insert carries dynamic values AND its block carries a dynamic definition, the
+ * definition is evaluated FIRST, in definition space, and the evaluated entities
+ * plus evaluated attribute placements form a derived BlockDef used for this
+ * expansion only. The derived definition is never stored back into document
+ * state; attribute VALUES always come from the insert, unchanged. The stored
+ * block object is returned by identity whenever there is nothing to evaluate,
+ * so static inserts (no dynamic fields on either side) take the exact
+ * pre-30.1 path.
+ *
+ * Evaluation refusal (unsupported member, dependency cycle, limits, invalid
+ * stored values, a block-mismatched instance state, or a retained/unreadable
+ * payload on either side) falls back to the authored base geometry.
+ * Diagnostic gap: the expansion path has no per-expansion diagnostic channel
+ * (ExpansionBudget carries only the truncated/cyclic flags, and
+ * expansionReport is a separate static analysis), so a refusal here cannot be
+ * surfaced in-band; the same states are refused explicitly, with codes, by
+ * evaluateDynamicBlock and by core/parametric/apply.ts on the edit path.
+ */
+function expansionBlock(block: BlockDef, ins: InsertEntity): BlockDef {
+  const definition = block.dynamic;
+  const instance = ins.dynamic;
+  if (!definition || !instance) return block;
+  if (block.dynamicRetained !== undefined || ins.dynamicRetained !== undefined) return block;
+  if (instance.block !== block.name) return block;
+  const result = evaluateDynamicBlock(definition, block.entities, block.attributes, instance);
+  if (!result.ok) return block;
+  const unchanged =
+    result.entities.length === block.entities.length &&
+    result.entities.every((e, i) => e === block.entities[i]) &&
+    result.attributes.length === block.attributes.length &&
+    result.attributes.every((a, i) => a === block.attributes[i]);
+  return unchanged ? block : { ...block, entities: result.entities, attributes: result.attributes };
+}
+
 function cachedInsert(ins: InsertEntity, lookup: BlockLookup): InsertCache | null {
   const block = lookup(ins.block);
   if (!block) return null;
@@ -1438,7 +1475,11 @@ function explodeSingleInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup
   }
   budget.chain.push(ins.block);
   const similar = isSimilarInsert(ins);
-  for (const e of block.entities) {
+  // Priority 30.1: evaluate dynamic values in definition space before the
+  // insert transform composes them (see expansionBlock). For static inserts
+  // this is `block` itself, by identity.
+  const expanded = expansionBlock(block, ins);
+  for (const e of expanded.entities) {
     if (budget.left <= 0) {
       budget.truncated = true;
       break;
@@ -1446,8 +1487,9 @@ function explodeSingleInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup
     spendExpansion(budget, entityGeometryWork(e));
     transformInto(out, e, tf, ins, similar, lookup, depth + 1, budget);
   }
-  // Attribute text
-  for (const a of block.attributes) {
+  // Attribute text (placements come from the possibly evaluated definition;
+  // values always come from the insert, unchanged)
+  for (const a of expanded.attributes) {
     spendExpansion(budget, 1 + a.default.length);
     if (a.invisible || ins.hiddenAttributes?.includes(a.tag)) continue;
     const value = ins.attributes[a.tag] ?? a.default;
@@ -1457,7 +1499,7 @@ function explodeSingleInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup
       break;
     }
     budget.left -= 1;
-    const text = attributeText(ins, block, a, value);
+    const text = attributeText(ins, expanded, a, value);
     const inheritedWeight = text.lineWeight === -2 ? budget.resolveLineweight?.(ins) : undefined;
     if (inheritedWeight !== undefined && (!Number.isFinite(inheritedWeight) || inheritedWeight < 0)) throw new Error('Plot lineweight resolver must return finite nonnegative millimetres.');
     out.push(inheritedWeight === undefined ? text : { ...text, lineWeight: inheritedWeight });
