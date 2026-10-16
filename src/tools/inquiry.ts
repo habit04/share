@@ -340,6 +340,16 @@ function dynamicValueText(v: DynamicParameterValue, f: (v: number) => string): s
  * probe: 'evaluated', or the refusal code + message — with the fallback made
  * explicit, because expansion silently presents authored geometry in that
  * case and LIST is where a user can see that it happened.
+ *
+ * Review round 2 (C07): a reference with NO stored instance state is
+ * unseeded — expansion takes the authored path (expansionBlock returns the
+ * authored block untouched), so the definition defaults are NOT applied to
+ * what the user sees, not even the default visibility state. LIST must not
+ * present those defaults as the reference's evaluated state: parameter rows
+ * are suffixed '(definition default)', the visibility line names a default
+ * state, no lookup row is reported as applied, and the Evaluation line says
+ * 'unseeded' and that the authored geometry is displayed. Seeded references
+ * (including a seeded-but-empty value map) keep the evaluated presentation.
  */
 export function dynamicListLines(e: InsertEntity, doc: Drawing): string[] {
   const block = doc.lookupBlock(e.block);
@@ -351,18 +361,25 @@ export function dynamicListLines(e: InsertEntity, doc: Drawing): string[] {
     lines.push(`             Evaluation: block "${e.block}" is not defined; this reference's dynamic values are retained but cannot be evaluated.`);
     return lines;
   }
+  const unseeded = definition !== undefined && e.dynamic === undefined
+    && block.dynamicRetained === undefined && e.dynamicRetained === undefined;
   if (definition) {
     const res = resolvedEffectiveValues(definition, e.dynamic, e.block);
     if (res.ok) {
       for (const p of definition.parameters) {
-        const fromRow = res.appliedRow !== undefined && res.rowSetParameters.has(p.id) ? `  (from lookup row "${res.appliedRow}")` : '';
-        lines.push(`              Parameter  ${p.id} (${p.name}) [${p.kind}] = ${dynamicValueText(res.resolved[p.id]!, f)}${fromRow}`);
+        const fromRow = !unseeded && res.appliedRow !== undefined && res.rowSetParameters.has(p.id) ? `  (from lookup row "${res.appliedRow}")` : '';
+        const dflt = unseeded ? '  (definition default)' : '';
+        lines.push(`              Parameter  ${p.id} (${p.name}) [${p.kind}] = ${dynamicValueText(res.resolved[p.id]!, f)}${fromRow}${dflt}`);
       }
-      if (res.appliedRow !== undefined) lines.push(`              Lookup row: "${res.appliedRow}"`);
+      if (!unseeded && res.appliedRow !== undefined) lines.push(`              Lookup row: "${res.appliedRow}"`);
       const vis = definition.parameters.find((p) => p.kind === 'visibility');
       if (vis) {
         const v = res.resolved[vis.id];
-        if (v?.kind === 'visibility') lines.push(`             Visibility: state "${v.value}" (parameter ${vis.id})`);
+        if (v?.kind === 'visibility') {
+          lines.push(unseeded
+            ? `             Visibility: default state "${v.value}" (parameter ${vis.id}) — not applied to this reference`
+            : `             Visibility: state "${v.value}" (parameter ${vis.id})`);
+        }
       }
     } else {
       lines.push(`              Parameter values could not be resolved: ${res.issues.map((i) => i.message).join(' ')}`);
@@ -372,6 +389,8 @@ export function dynamicListLines(e: InsertEntity, doc: Drawing): string[] {
   if (refusal) {
     lines.push(`             Evaluation: REFUSED (${refusal.code}): ${refusal.message}`);
     lines.push(`                            Displayed geometry is the authored geometry of block "${e.block}".`);
+  } else if (unseeded) {
+    lines.push(`             Evaluation: unseeded — this reference stores no parameter values; the authored geometry of block "${e.block}" is displayed and the definition defaults above are not applied.`);
   } else if (definition) {
     lines.push(`             Evaluation: evaluated`);
   }
