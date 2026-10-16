@@ -41,7 +41,7 @@ const ins = (props: Partial<InsertEntity>): InsertEntity => ({
   position: { x: 5, y: -3 }, rotation: 0, scale: 1, attributes: {}, ...props,
 });
 const stateOf = (entities: Entity[], blocks: Record<string, BlockDef> = {}): DrawingState =>
-  new Drawing({ layers: [{ name: '0', color: 7, visible: true, locked: false }], entities, blocks }).snapshot;
+  new Drawing({ layers: [{ name: '0', color: 7, visible: true, locked: false, lineWeight: 0.25 }], entities, blocks }).snapshot;
 
 /** A framed polyline expanded out of a non-uniformly scaled insert (display points (5,-3), (25,-3), (25,15)). */
 const framedOf = (props: Partial<InsertEntity> = { scale: 2, scaleY: 3 }): PolylineEntity => {
