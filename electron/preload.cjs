@@ -81,6 +81,7 @@ contextBridge.exposeInMainWorld('jcad', {
   // no host response ever contains key material.
   ai: {
     getState: () => ipcRenderer.invoke('ai-get-state'),
+    setProvider: (provider) => ipcRenderer.invoke('ai-set-provider', String(provider ?? '')),
     setModel: (model) => ipcRenderer.invoke('ai-set-model', String(model ?? '')),
     setKey: (key, persistence) => ipcRenderer.invoke('ai-set-key', String(key ?? ''), persistence === 'encrypted' ? 'encrypted' : 'session'),
     forgetKey: () => ipcRenderer.invoke('ai-forget-key'),

@@ -27,6 +27,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { AiHostError, createAiConfigStore, createAiKeyStore, createAiService } = require('../ai-host.cjs');
 const { createOpenAiTransport } = require('../ai-openai-transport.cjs');
+const { createAnthropicTransport } = require('../ai-anthropic-transport.cjs');
 const { atomicWriteFile } = require('../atomic-write.cjs');
 const { stateDir } = require('./app-data.cjs');
 
@@ -63,11 +64,12 @@ function createAiRuntime(overrides = {}) {
     fileExists: (target) => fs.existsSync(target),
   };
   const safeStorage = /** @type {any} */ (overrides.safeStorage ?? require('electron').safeStorage);
-  const keyStore = createAiKeyStore({
-    safeStorage,
-    filePath: path.join(dir, 'openai-key.bin'),
-    ...seams,
-  });
+  // One key store per provider, at its own fixed path: a provider's key
+  // is stored, loaded and sent only for that provider.
+  const keyStores = {
+    openai: createAiKeyStore({ safeStorage, filePath: path.join(dir, 'openai-key.bin'), ...seams }),
+    anthropic: createAiKeyStore({ safeStorage, filePath: path.join(dir, 'anthropic-key.bin'), ...seams }),
+  };
   const configStore = createAiConfigStore({
     filePath: path.join(dir, 'config.json'),
     ...seams,
@@ -75,12 +77,12 @@ function createAiRuntime(overrides = {}) {
   const fetchImpl = overrides.fetchImpl ?? ((url, init) => /** @type {any} */ (globalThis.fetch)(url, init));
   const service = createAiService({
     configStore,
-    keyStore,
-    transportFactory: ({ model, apiKey }) => createOpenAiTransport({
-      apiKey, model, fetchImpl: /** @type {any} */ (fetchImpl),
-    }),
+    keyStores,
+    transportFactory: ({ provider, model, apiKey }) => (provider === 'anthropic'
+      ? createAnthropicTransport({ apiKey, model, fetchImpl: /** @type {any} */ (fetchImpl) })
+      : createOpenAiTransport({ apiKey, model, fetchImpl: /** @type {any} */ (fetchImpl) })),
   });
-  return { service, keyStore, configStore, dir };
+  return { service, keyStores, configStore, dir };
 }
 
 /** Map any failure to the bounded IPC error payload. */
@@ -122,6 +124,10 @@ function registerAiIpc(ctx, overrides = {}) {
   const state = async () => ({ state: await service.getState() });
 
   ipcMain.handle('ai-get-state', respond(state));
+  ipcMain.handle('ai-set-provider', respond(async (_ev, provider) => {
+    await service.setProvider(provider);
+    return state();
+  }));
   ipcMain.handle('ai-set-model', respond(async (_ev, model) => {
     await service.setModel(model);
     return state();

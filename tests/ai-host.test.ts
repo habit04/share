@@ -651,7 +651,7 @@ describe('ai wiring boundary (milestone 2)', () => {
     // never touches Electron's raw ipcMain (the guard would be bypassed).
     expect(main).not.toContain("handle('ai-");
     expect(ipcAi).not.toContain('rawIpcMain');
-    for (const channel of ['ai-get-state', 'ai-set-model', 'ai-set-key', 'ai-forget-key',
+    for (const channel of ['ai-get-state', 'ai-set-provider', 'ai-set-model', 'ai-set-key', 'ai-forget-key',
       'ai-set-enabled', 'ai-test-connection', 'ai-ask', 'ai-cancel', 'ai-usage']) {
       expect(ipcAi).toContain(`'${channel}'`);
     }

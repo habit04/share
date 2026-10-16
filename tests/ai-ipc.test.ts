@@ -42,6 +42,24 @@ function probeResponse(): Response {
   return new Response(JSON.stringify({ status: 'completed', output: [], usage: { input_tokens: 3, output_tokens: 1 } }), { status: 200 });
 }
 
+function anthropicResponse(text: string): Response {
+  const body = {
+    type: 'message', stop_reason: 'end_turn', model: 'claude-sonnet-5-5',
+    content: [{ type: 'text', text: JSON.stringify({ text, references: ['e-line'] }) }],
+    usage: { input_tokens: 11, output_tokens: 4 },
+  };
+  return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+}
+
+function anthropicProbeResponse(): Response {
+  const body = {
+    type: 'message', stop_reason: 'end_turn', model: 'claude-sonnet-5-5',
+    content: [{ type: 'text', text: 'ready' }],
+    usage: { input_tokens: 3, output_tokens: 1 },
+  };
+  return new Response(JSON.stringify(body), { status: 200 });
+}
+
 interface Harness {
   handlers: Map<string, (ev: unknown, ...args: unknown[]) => Promise<Record<string, unknown>>>;
   appHandlers: Map<string, Array<(...args: unknown[]) => void>>;
@@ -65,6 +83,7 @@ function makeHarness(fetchImpl?: (url: string, init: Record<string, unknown>) =>
     fetchCalls.push({ url, init });
     if (fetchImpl) return fetchImpl(url, init);
     const body = typeof init.body === 'string' ? init.body : '';
+    if (url.includes('anthropic')) return body.includes('single word') ? anthropicProbeResponse() : anthropicResponse('Claude answer.');
     return body.includes('single word') ? probeResponse() : completedResponse('One line.');
   };
   const ctx = {
@@ -93,11 +112,41 @@ afterEach(() => { if (harness) rmSync(harness.dir, { recursive: true, force: tru
 describe('ai IPC registration (guarded context)', () => {
   beforeEach(() => { harness = makeHarness(); });
 
-  it('registers exactly the nine ai channels through the context ipcMain', () => {
+  it('registers exactly the ten ai channels through the context ipcMain', () => {
     expect([...harness.handlers.keys()].sort()).toEqual([
       'ai-ask', 'ai-cancel', 'ai-forget-key', 'ai-get-state', 'ai-set-enabled',
-      'ai-set-key', 'ai-set-model', 'ai-test-connection', 'ai-usage',
+      'ai-set-key', 'ai-set-model', 'ai-set-provider', 'ai-test-connection', 'ai-usage',
     ]);
+  });
+
+  it('routes to Anthropic with its own key after an explicit provider switch', async () => {
+    const ANTHROPIC_KEY = 'sk-ant-test-secret-abcdefghij';
+    // Configure OpenAI first, then switch: keys and models stay separate.
+    await harness.invoke('ai-set-key', KEY, 'session');
+    const switched = await harness.invoke('ai-set-provider', 'anthropic');
+    expect(switched).toMatchObject({ ok: true, state: { provider: 'anthropic', model: 'claude-sonnet-5-5', keyPresent: false } });
+    const askedEarly = await harness.invoke('ai-ask', envelope('ai-test-anth-early'));
+    expect(askedEarly).toMatchObject({ ok: false, error: { kind: 'live-disabled' } });
+    await harness.invoke('ai-set-key', ANTHROPIC_KEY, 'session');
+    await harness.invoke('ai-set-enabled', true);
+    const asked = await harness.invoke('ai-ask', envelope('ai-test-anth-1'));
+    expect(asked).toMatchObject({ ok: true, answer: { text: 'Claude answer.', providerUsage: { inputTokens: 11, outputTokens: 4 } } });
+    expect(harness.fetchCalls).toHaveLength(1);
+    const call = harness.fetchCalls[0]!;
+    expect(call.url).toBe('https://api.anthropic.com/v1/messages');
+    const headers = (call.init.headers ?? {}) as Record<string, string>;
+    expect(headers['x-api-key']).toBe(ANTHROPIC_KEY);
+    // The OpenAI key never reaches Anthropic, and vice versa.
+    expect(JSON.stringify(call.init)).not.toContain(KEY);
+    const back = await harness.invoke('ai-set-provider', 'openai');
+    expect(back).toMatchObject({ ok: true, state: { provider: 'openai', model: 'gpt-5', keyPresent: true } });
+  });
+
+  it('stores per-provider key files separately when persistence is encrypted', async () => {
+    await harness.invoke('ai-set-provider', 'anthropic');
+    await harness.invoke('ai-set-key', 'sk-ant-file-secret-123456', 'encrypted');
+    expect(readdirSync(harness.dir).sort()).toEqual(['anthropic-key.bin', 'config.json']);
+    expect(readFileSync(join(harness.dir, 'anthropic-key.bin'), 'utf8')).not.toContain('sk-ant-file-secret');
   });
 
   it('defaults to disabled with no key and refuses asks before enablement — no fetch happens', async () => {
