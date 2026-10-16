@@ -1799,6 +1799,65 @@ function magMap(comp: Comp, r: Float64Array): Map<string, number> {
   return mag;
 }
 
+// ---------------------------------------------------------------------------
+// Translation-invariant satisfaction of length-dimensional constraints
+// (review R02). Length residuals are normalized by the component scale S
+// (design §5.4), so the normalized acceptance bound RESIDUAL_TOL·S grows
+// with the drawing's coordinates: at |coordinates| ≳ 1e9 it exceeds one
+// whole drawing unit, and the delivered engine reported a driving
+// distance of 11 "satisfied" while the points were still 10 apart.
+// Satisfaction of a length-dimensional DRIVING constraint (distance /
+// radius / diameter) is therefore also verified unnormalized, against
+// the constraint's own scale — its target and measured quantity, both
+// translation-invariant: |actual − target| ≤ TOL · max(1, |target|,
+// |actual|). RESIDUAL_TOL / CONFLICT_TOL themselves are unchanged; at
+// S ≤ the constraint's own scale the two criteria coincide, so behaviour
+// at ordinary coordinates is identical. Angle is scale-free (radians)
+// and geometric residuals keep the §5.4 normalized reading.
+// ---------------------------------------------------------------------------
+
+/** The target of a length-dimensional constraint in the units its
+ *  residual measures (diameter residuals measure the radius). */
+function lengthTarget(c: Constraint): number {
+  return c.kind === 'diameter' ? c.value! / 2 : c.value!;
+}
+
+function isLengthDimensional(c: Constraint): boolean {
+  return c.kind === 'distance' || c.kind === 'radius' || c.kind === 'diameter';
+}
+
+/** Is a driving constraint satisfied at the given normalized residual
+ *  magnitude? `S` is the scale the residual was normalized by, so
+ *  `normalizedMag · S` is the raw (unnormalized) error. */
+function drivingSatisfied(c: Constraint, normalizedMag: number, S: number): boolean {
+  if (normalizedMag > RESIDUAL_TOL) return false;
+  if (!isLengthDimensional(c)) return true;
+  const rawErr = normalizedMag * S;
+  // |actual| ≤ |target| + rawErr, so this local scale never understates
+  // max(1, |target|, |actual|).
+  const local = Math.max(1, Math.abs(lengthTarget(c)) + rawErr);
+  return rawErr <= RESIDUAL_TOL * local;
+}
+
+/** Conflict evidence (§5.6) for a length-dimensional constraint, on the
+ *  same translation-invariant scale: the raw error exceeds
+ *  CONFLICT_TOL · max(1, |target|, |actual|). */
+function drivingViolated(c: Constraint, normalizedMag: number, S: number): boolean {
+  if (!isLengthDimensional(c)) return false;
+  const rawErr = normalizedMag * S;
+  const local = Math.max(1, Math.abs(lengthTarget(c)) + rawErr);
+  return rawErr > CONFLICT_TOL * local;
+}
+
+/** Every residual set of the component satisfied (normalized criterion,
+ *  plus the R02 unnormalized criterion for length-dimensional kinds). */
+function allSatisfied(comp: Comp, mag: ReadonlyMap<string, number>): boolean {
+  for (const rs of comp.residuals) {
+    if (!drivingSatisfied(rs.constraint, mag.get(rs.constraint.id) ?? Infinity, comp.S)) return false;
+  }
+  return true;
+}
+
 function maxAbs(a: Float64Array): number {
   let m = 0;
   for (const v of a) if (Math.abs(v) > m) m = Math.abs(v);
@@ -1896,12 +1955,15 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
   const { vals, det } = s2;
 
   // Which constraints did stage 2 discharge? Satisfied at the determined
-  // values with every variable they read determined.
+  // values with every variable they read determined. Satisfaction is the
+  // R02-aware predicate: a length-dimensional constraint whose raw error
+  // is hidden by the component scale is NOT discharged — stage 3 must
+  // still move its geometry.
   const r0 = evalAll(comp, vals, work);
   const mag0 = magMap(comp, r0);
   const discharged = new Set<string>();
   for (const rs of comp.residuals) {
-    if (rs.vars.every((v) => det[v]) && (mag0.get(rs.constraint.id) ?? Infinity) <= RESIDUAL_TOL) discharged.add(rs.constraint.id);
+    if (rs.vars.every((v) => det[v]) && drivingSatisfied(rs.constraint, mag0.get(rs.constraint.id) ?? Infinity, comp.S)) discharged.add(rs.constraint.id);
   }
   const freeSet = new Set<number>();
   for (const rs of comp.residuals) {
@@ -1946,7 +2008,7 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
   let x = new Float64Array(vals);
   let r = r0;
   let mag = mag0;
-  if (maxAbs(r) <= RESIDUAL_TOL) return { ok: true, vars: x, mag };
+  if (allSatisfied(comp, mag)) return { ok: true, vars: x, mag };
 
   let lambda = 1e-3;
   let lastStep = Infinity;
@@ -2049,7 +2111,16 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
       stationary = true;
       break;
     }
-    if (maxAbs(r) <= RESIDUAL_TOL && lastStep <= STEP_TOL * comp.S) {
+    // Convergence requires genuine satisfaction — the R02 predicate, so
+    // a normalized pass cannot end the solve while a driving distance is
+    // still a whole unit off at large coordinates. Note the stationary
+    // test below deliberately keeps its delivered form (small step with
+    // the NORMALIZED residual still open): a dimensionally-unmet but
+    // still-progressing iteration has a step that is only "small"
+    // relative to the huge component S, and its steps keep being
+    // accepted — it is converging, not stationary, and must be allowed
+    // to reach the unnormalized bound (or the iteration limit).
+    if (allSatisfied(comp, mag) && lastStep <= STEP_TOL * comp.S) {
       converged = true;
       break;
     }
@@ -2061,8 +2132,14 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
   if (converged) return { ok: true, vars: x, mag };
   if (stationary || iterations > MAX_ITERATIONS) {
     const finalMag = maxAbs(r);
-    if (stationary && finalMag > CONFLICT_TOL) {
-      const ids = comp.active.filter((a) => (mag.get(a.c.id) ?? 0) > CONFLICT_TOL).map((a) => a.c.id);
+    // Conflict evidence (§5.6): a normalized residual above CONFLICT_TOL,
+    // or — for length-dimensional constraints, whose normalized residual
+    // shrinks with the drawing's translation (R02) — a raw error above
+    // CONFLICT_TOL on the constraint's own scale.
+    const conflictEvidence = (a: ActiveC): boolean =>
+      (mag.get(a.c.id) ?? 0) > CONFLICT_TOL || drivingViolated(a.c, mag.get(a.c.id) ?? 0, comp.S);
+    if (stationary && (finalMag > CONFLICT_TOL || comp.active.some(conflictEvidence))) {
+      const ids = comp.active.filter(conflictEvidence).map((a) => a.c.id);
       return {
         ok: false,
         vars: x,
@@ -2075,7 +2152,11 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
         ok: false,
         vars: x,
         mag,
-        failure: { code: 'numeric-failure', constraintIds: comp.active.filter((a) => (mag.get(a.c.id) ?? 0) > RESIDUAL_TOL).map((a) => a.c.id), message: 'The relaxation became stationary above the residual tolerance but below the conflict tolerance.' },
+        failure: {
+          code: 'numeric-failure',
+          constraintIds: comp.active.filter((a) => !drivingSatisfied(a.c, mag.get(a.c.id) ?? Infinity, comp.S)).map((a) => a.c.id),
+          message: 'The relaxation became stationary above the residual tolerance but below the conflict tolerance.',
+        },
       };
     }
     return {
@@ -2085,7 +2166,15 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
       failure: { code: 'iteration-limit', constraintIds: comp.active.filter((a) => (mag.get(a.c.id) ?? 0) > RESIDUAL_TOL).map((a) => a.c.id), message: `Iteration limit (${MAX_ITERATIONS}) reached while still progressing.` },
     };
   }
-  return { ok: true, vars: x, mag };
+  // Defensive: the loop always exits through a flag above; never claim
+  // success the satisfaction predicate cannot back.
+  if (allSatisfied(comp, mag)) return { ok: true, vars: x, mag };
+  return {
+    ok: false,
+    vars: x,
+    mag,
+    failure: { code: 'iteration-limit', constraintIds: comp.active.filter((a) => !drivingSatisfied(a.c, mag.get(a.c.id) ?? Infinity, comp.S)).map((a) => a.c.id), message: `Iteration limit (${MAX_ITERATIONS}) reached while still progressing.` },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -2152,6 +2241,30 @@ interface DiagContext {
   readonly branchById?: ReadonlyMap<string, 'external' | 'internal'>;
 }
 
+/** Diagnostic-level satisfaction / violation of a driving constraint,
+ *  R02-aware: for length-dimensional kinds the measured value (computed
+ *  from the reported geometry, in the constraint's own units) must agree
+ *  with the target on the translation-invariant scale — a normalized
+ *  residual pass at |coordinates| ≳ 1e9 must not print "satisfied" over
+ *  a whole-unit error. */
+function diagSatisfied(c: Constraint, mag: number | undefined, measured: number | undefined): boolean {
+  if (mag === undefined || mag > RESIDUAL_TOL) return false;
+  if (isLengthDimensional(c) && c.value !== undefined && measured !== undefined) {
+    const local = Math.max(1, Math.abs(c.value), Math.abs(measured));
+    if (Math.abs(measured - c.value) > RESIDUAL_TOL * local) return false;
+  }
+  return true;
+}
+
+function diagViolated(c: Constraint, mag: number | undefined, measured: number | undefined): boolean {
+  if (mag !== undefined && mag > CONFLICT_TOL) return true;
+  if (isLengthDimensional(c) && c.value !== undefined && measured !== undefined) {
+    const local = Math.max(1, Math.abs(c.value), Math.abs(measured));
+    if (Math.abs(measured - c.value) > CONFLICT_TOL * local) return true;
+  }
+  return false;
+}
+
 function buildDiagnostics(set: ConstraintSet, ctx: DiagContext): ConstraintDiagnostic[] {
   const byId = new Map<string, Entity>(ctx.geometry.map((e) => [e.id, e]));
   return set.constraints.map((c) => {
@@ -2163,20 +2276,21 @@ function buildDiagnostics(set: ConstraintSet, ctx: DiagContext): ConstraintDiagn
       return { constraintId: c.id, state: 'reference' as const, residual: 0, measured: measuredValue(c, shape, byId) };
     }
     const mag = ctx.magById.get(c.id);
+    const measured = measuredValue(c, shape, byId);
     let state: ConstraintDiagnostic['state'];
     if (ctx.mode === 'solved') {
-      state = ctx.redundant.has(c.id) ? 'redundant' : 'satisfied';
+      state = ctx.redundant.has(c.id) ? 'redundant' : diagSatisfied(c, mag, measured) ? 'satisfied' : 'unresolved';
     } else if (ctx.mode === 'conflict') {
-      state = mag !== undefined && mag > CONFLICT_TOL ? 'violated' : mag !== undefined && mag <= RESIDUAL_TOL ? 'satisfied' : 'unresolved';
+      state = diagViolated(c, mag, measured) ? 'violated' : diagSatisfied(c, mag, measured) ? 'satisfied' : 'unresolved';
     } else {
-      state = mag !== undefined && mag <= RESIDUAL_TOL ? 'satisfied' : 'unresolved';
+      state = diagSatisfied(c, mag, measured) ? 'satisfied' : 'unresolved';
     }
     const branch = ctx.branchById?.get(c.id);
     return {
       constraintId: c.id,
       state,
       residual: mag ?? 0,
-      measured: measuredValue(c, shape, byId),
+      measured,
       ...(branch ? { branch } : {}),
     };
   });
@@ -2314,8 +2428,15 @@ export function solveConstraints(entities: readonly Entity[], set: ConstraintSet
   if (failures.length > 0) {
     const conflict = failures.find((f) => f.failure!.code === 'conflicting-constraints');
     const chosen = conflict ?? failures[0]!;
+    // R02: the violated set of a conflicting result uses the same
+    // translation-invariant evidence as the diagnostics — a driving
+    // distance a whole unit off at 1e9 coordinates is violated even
+    // though its normalized residual is below CONFLICT_TOL.
+    const geomById = new Map<string, Entity>(entities.map((e) => [e.id, e]));
     const violatedIds = conflict
-      ? set.constraints.filter((c) => (magById.get(c.id) ?? 0) > CONFLICT_TOL && !c.suppressed && c.role === 'driving').map((c) => c.id)
+      ? set.constraints
+          .filter((c) => !c.suppressed && c.role === 'driving' && diagViolated(c, magById.get(c.id), measuredValue(c, shapes.get(c.id) ?? null, geomById)))
+          .map((c) => c.id)
       : chosen.failure!.constraintIds;
     return {
       ok: false,
@@ -2546,9 +2667,17 @@ export function analyzeConstraints(entities: readonly Entity[], set: ConstraintS
     for (const e of prep.participating) perEntityRemaining.set(e.id, entityDof(e));
   }
   const remaining = total - effectiveConsumed;
+  const geomById = new Map<string, Entity>(entities.map((e) => [e.id, e]));
   const allSatisfied = prep.active.every(({ c }) => {
     const m = magById.get(c.id);
-    return m !== undefined && m <= RESIDUAL_TOL;
+    if (m === undefined || m > RESIDUAL_TOL) return false;
+    // R02: the normalized reading is not sufficient evidence for a
+    // length-dimensional constraint at large coordinates.
+    if (isLengthDimensional(c) && c.value !== undefined) {
+      const mv = measuredValue(c, shapes.get(c.id) ?? null, geomById);
+      if (mv !== undefined && Math.abs(mv - c.value) > RESIDUAL_TOL * Math.max(1, Math.abs(c.value), Math.abs(mv))) return false;
+    }
+    return true;
   });
   const status: SolveStatus =
     prep.unsupported.length > 0 || !allSatisfied ? 'unsolved' : remaining === 0 ? 'fully-constrained' : 'underconstrained';
