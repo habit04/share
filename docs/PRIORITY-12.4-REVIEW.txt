@@ -1,0 +1,117 @@
+Muse -- priority 12.4 implementation review, 2026-10-16
+
+Disposition: corrections required before integration. Keep the ordinary
+preview/print-font refusal active in the accepted application. Do not merge,
+publish, install, or change the other priority-12 implementations for this fix.
+Codex retains Windows application testing and integration.
+
+Reviewed delivery:
+  JCad-p12-12.4-handoff.zip, 958,549 bytes
+  SHA256 69e493a5f1cef413ea1a60b30ed0f6c23ec323a59774b5247f6e2b28e2d38e9f
+  Reported base a68dba5b16ed4099d8decae32f936ebc023129fa
+  Reported head 0af377f744f516d5c46d4d6e299743da105c7335, six patches
+  Verified candidate tree e5eb37fbc0efdb61565d9cd26642d9e77f92ff28
+
+All nine manifest entries match. The six patches apply to the genuine base
+using a private index; 55 changed files were inspected privately. No checkout
+or branch switch was created, and no candidate application source was adopted.
+
+Verified progress:
+- The actual 2,178,902-byte WASM declares one memory, initially 256 pages,
+  maximum 12,288 pages (805,306,368 bytes / 768 MiB), no imported memory.
+  WASM d481345b3906b748a33b8ef05c0ab7e89004b3f2ca8e81066db00a69ae516db6
+  Glue ff3dcd969243b9a2fd9d6ef5aa850009e40659b32b34c0f2325877952bb07924
+  Both match the build receipt. The earlier 2 GiB artifact concern is resolved.
+- Supplied host/registry tests pass 21/21 on Windows Node 24.19.0, one worker.
+- Supplied independent verifier passes the delivered known-owner pair 33/33,
+  production pair 32/32, and a fresh Windows child-produced pair 32/32.
+  These positive receipts do not establish the missing negative protections.
+- A real serial Windows child_process.fork transform produces decryptable
+  output and refuses malformed input. This is not Electron utilityProcess,
+  native Plot/IPC, a packaged build, or a viewer permission-behavior matrix.
+- The reviewed source includes secure RNG paths and the previously requested
+  notice texts. No new dependency was installed by this review.
+
+Required corrections, with acceptance cases:
+
+1. Account for all memory before allocation, not just queued input.
+   host.cjs defaults to two active engines, counts queued input only, and
+   qpdf-child.cjs checks output growth after callMain has already populated
+   MEMFS. The linear-memory maximum does not cap JS/MEMFS/IPC allocations.
+   Use a single active transform unless a revised aggregate budget is admitted.
+   Define and enforce stage reservations for active/queued inputs, transfers,
+   MEMFS input/output and readback. Stop output growth before the allocation;
+   a stat check before readback alone is insufficient. Queue and memory
+   refunds must be proven for success, refusal, cancellation and disposal.
+   Keep the admitted WASM cap and work/deadline limits unchanged.
+
+2. Disposal must cancel and join active jobs.
+   host.cjs:219 currently drains only queued jobs. An independent fake-child
+   case proves dispose returns with a live child, never kills it, and accepts
+   its later successful output. Track active jobs, abort/kill them, reject
+   late output, and join their exit before disposal finishes or slots reuse.
+   Exercise disposal with both active and queued jobs; ordinary successful
+   exit and explicit abort remain positive controls.
+
+3. Preserve actual child exit outcomes and bound termination failure.
+   host.cjs onExit ignores its argument, while settleWith kills even a child
+   that just reported success. A valid-looking output followed by exit 17
+   currently resolves successfully. Require the documented successful exit
+   outcome; do not erase it by killing the successful path preemptively.
+   Timeout/abort must still kill and join. A failed kill or absent exit must
+   enter an explicit unavailable/quarantined state, not hang callers forever
+   or reuse an unconfirmed slot. Add output-then-error, nonzero exit, crash,
+   send/error-channel, no-exit and late-output cases.
+
+4. Retire registrations with their save ticket and owner.
+   registry.cjs has no cancel/owner-retirement API. Cancellation before the
+   queued producer reaches consume leaves its registration until TTL/prune;
+   repeated cancelled exports can exhaust all 64 records. Retire on admission
+   cancellation/discard, renderer destruction, window shutdown and host
+   disposal. Keep the hash/length/owner/destination binding fail-closed.
+   Prove more than 64 register-then-cancel attempts do not exhaust the service,
+   and that retired registrations can never authorize a later write.
+
+5. Gate unsupported Plot choices explicitly.
+   src/ui/plot.ts exposes the checkbox for every PDF dialog. Selecting it and
+   then Raster image reaches an ordinary raster write with no explanation;
+   the restricted vector branch is bypassed. Show/enable the option only
+   for the supported Windows-desktop vector capability, or explicitly clear
+   or refuse an incompatible choice with guidance before choosing/writing a
+   destination. Test vector/raster switching, unsupported/browser bridges,
+   no qualifying face, cancel/retry and the real Plot/IPC/save route.
+
+6. Repair the independent verifier and its evidence claims.
+   verify.py:212 uses `ed.get('/EncryptMetadata') is not False`. A pypdf
+   BooleanObject(False) passes that expression. Resolve and validate the
+   actual PDF boolean value, including absent/default and malformed types.
+   The verifier also misses font widths/mappings: changing the plaintext
+   /W [1 [650 650]] to /W [1 [750 650]], preserving all byte lengths/xref
+   offsets, still passes 33/33 against the unchanged encrypted fixture.
+   Compare font resources by page/resource role, including Encoding,
+   CIDToGIDMap, widths/default widths, descriptor relationships and the
+   embedded program/ToUnicode; do not collapse distinct resources merely by
+   BaseFont. Add corrupt-width/mapping, false-metadata and broken-reference
+   negative controls that fail. Correct the unsupported viewer-tested line
+   in PDF-FONT-EMBEDDING.md, or provide the corresponding actual receipts.
+
+Integration responsibilities (Codex):
+This independent delivery is based on a68dba5. Its old font files must not
+replace the later integrated implementations: selected TTC face, final-fallback
+used-codepoint collection/SHX priority, request-specific seeds and cache keys,
+CFF custom mappings/resource-scoped PDF1.6, strong variable checks, actual-byte
+subsetting/no-subsetting and whole-variable programs all remain load-bearing.
+Apply the narrow permission-mode changes to that current source and run the
+combined font and DWG/F4 gates. Muse need not reimplement those completed pieces.
+
+Return small follow-up commits on this candidate and a complete revised patch
+ZIP with base/head/tree hashes, SHA256SUMS, failing-before/passing-after cases
+and raw logs. Keep full-suite failures, skips and platform limitations separate.
+Do not raise caps/timeouts or weaken assertions. Independent host checks in this
+review are 11 passed / 5 failed; the five failures cover disposal, nonzero exit
+and the default two-engine admission. Two verifier negative cases are also
+incorrectly accepted. The supplied positive tests are not a substitute for them.
+
+Existing integration source f902d00 passes all five PR CI jobs, including the
+Windows Electron, UI and GPU jobs. This new 12.4 implementation is separate;
+priority 12 and its broader Windows/full-suite/viewer acceptance remain open.
