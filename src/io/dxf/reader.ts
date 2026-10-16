@@ -20,6 +20,7 @@ import { LayoutReader } from '../dxf-layouts';
 import { readTableStyle, type TableStyleData } from './read-annotations';
 import { readHeaderSection, readObjectsSection, readTablesSection, readBlocksSection, readEntitiesSection, drawingHeader } from './read-sections';
 import { decodeConstraints, CONSTRAINTS_REPORT, CONSTRAINTS_RETAINED_REPORT } from './constraints-data';
+import { decodeDynamicInstance } from './dynamic-data';
 import type { ConstraintSet } from '../../core/constraints/model';
 import { DEFAULT_LAYERS } from '../../core/document';
 import { readEntities } from './read-pass';
@@ -188,6 +189,34 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
       }
       i = j + 1;
     } else i += 1;
+  }
+
+  // Priority 30 review R09: an INSERT's JCAD_DYNAMIC payload is decoded while
+  // the insert is read, against the definitions known at that point. An
+  // insert nested in a block definition whose referenced block's record
+  // appears LATER in the file (a forward reference — including JCad's own
+  // output whenever the outer block precedes the inner one) therefore lands
+  // in dynamicRetained even though the payload is valid. Now that every
+  // section has been read and the definition map is complete, re-attempt
+  // those decodes, independently of block-definition order: a payload that
+  // validates against the now-known definition is modeled; anything else
+  // (no modeled definition, genuinely invalid values) stays retained,
+  // exactly as an in-order read would have left it. Layout entities are
+  // built after this point with the complete map and need no pass.
+  const resolveForwardInstance = (e: Entity): Entity => {
+    if (e.type !== 'insert' || e.dynamic !== undefined || e.dynamicRetained === undefined) return e;
+    const definition = blocks[e.block]?.dynamic;
+    if (!definition) return e;
+    const decoded = decodeDynamicInstance(e.dynamicRetained, definition, e.block);
+    if (!decoded.ok) return e;
+    const { dynamicRetained: _retained, ...rest } = e;
+    return { ...rest, dynamic: decoded.state };
+  };
+  entities = entities.map(resolveForwardInstance);
+  for (const [name, block] of Object.entries(blocks)) {
+    if (block.entities.some((e) => e.type === 'insert' && e.dynamic === undefined && e.dynamicRetained !== undefined)) {
+      blocks[name] = { ...block, entities: block.entities.map(resolveForwardInstance) };
+    }
   }
 
   // Anonymous blocks that drew a table now read as a native table are no longer needed.
