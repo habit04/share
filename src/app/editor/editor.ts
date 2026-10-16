@@ -82,6 +82,7 @@ export class Editor {
   private overlay: ViewportOverlay = {
     preview: [],
     ghost: [],
+    aiPreview: null,
     selection: this.selection,
     hover: null,
     selectionBox: null,
@@ -308,6 +309,32 @@ export class Editor {
   /** True while a tool waits on "Select objects:". */
   get selectionPending(): boolean {
     return this.internals.selReq !== null;
+  }
+
+  /**
+   * True while the user is mid-interaction: a command tool is active, a
+   * "Select objects:" request is pending, a grip drag or selection gesture
+   * is in progress, or the view is being panned. `tool === null` alone does
+   * not cover these — picking and grips are the null-tool pointer behaviour.
+   * Read-only query used by the AI Draft boundary (docs/AI-ASSISTANT-M3.md)
+   * to refuse generation/application without disturbing the interaction.
+   */
+  get interactionBusy(): boolean {
+    return this.tool !== null
+      || this.internals.selReq !== null
+      || this.internals.gripDrag !== null
+      || this.internals.dragStart !== null
+      || this.internals.panning;
+  }
+
+  /**
+   * Set (or clear, with null) the AI Draft preview channel on the viewport
+   * overlay. This is renderer state only: it never touches the document,
+   * history, selection or the tool preview/ghost channels.
+   */
+  setAiPreview(preview: ViewportOverlay['aiPreview']): void {
+    this.overlay.aiPreview = preview;
+    this.render();
   }
 
   /**
