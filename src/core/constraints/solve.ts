@@ -1078,52 +1078,99 @@ function denseRank(J: Float64Array, m: number, n: number, cols?: readonly number
   return rank;
 }
 
-/** Solve A x = b (dense n×n) with partial pivoting. Returns null when
- *  singular at the §5.4 pivot threshold (1e-12 relative). */
-function solveDense(A0: Float64Array, b0: Float64Array, n: number): Float64Array | null {
-  if (n === 0) return new Float64Array(0);
-  const a = new Float64Array(A0);
-  const b = new Float64Array(b0);
-  let maxAbs = 0;
-  for (const v of a) if (Math.abs(v) > maxAbs) maxAbs = Math.abs(v);
-  if (maxAbs === 0) return null;
-  const tol = 1e-12 * maxAbs;
-  for (let col = 0; col < n; col += 1) {
+/** One damped least-squares step for the stage-3 relaxation
+ *  (F-3034 avenue 1): the δ minimizing ‖[Jf; μI]δ + [r; 0]‖₂, computed
+ *  by Householder QR with column pivoting on the augmented system —
+ *  never through the normal equations, whose κ(J)² conditioning
+ *  destroyed the fold directions the tangent systems live on.
+ *  Pivoting is deterministic: at each step the remaining column with
+ *  the largest trailing norm is taken, ties to the lowest position.
+ *  With μ > 0 the augmented matrix has full column rank, so a step
+ *  always exists; null is returned only for a degenerate (zero or
+ *  non-finite) pivot, mirroring the singularity refusal of the dense
+ *  solver this replaced — the caller escalates λ and retries. */
+function qrLeastSquaresStep(Jf: Float64Array, m: number, f: number, r: Float64Array, mu: number): Float64Array | null {
+  if (f === 0) return new Float64Array(0);
+  const rows = m + f;
+  const A = new Float64Array(rows * f);
+  const b = new Float64Array(rows);
+  for (let i = 0; i < m; i += 1) {
+    for (let j = 0; j < f; j += 1) A[i * f + j] = Jf[i * f + j]!;
+    b[i] = -r[i]!;
+  }
+  for (let j = 0; j < f; j += 1) A[(m + j) * f + j] = mu;
+  const perm = Array.from({ length: f }, (_, i) => i);
+  for (let k = 0; k < f; k += 1) {
+    // Pivot: largest trailing column norm among columns k..f−1.
     let piv = -1;
-    let best = tol;
-    for (let r = col; r < n; r += 1) {
-      const v = Math.abs(a[r * n + col]!);
-      if (v > best) {
-        best = v;
-        piv = r;
+    let best = -1;
+    for (let j = k; j < f; j += 1) {
+      let s = 0;
+      for (let i = k; i < rows; i += 1) {
+        const v = A[i * f + j]!;
+        s += v * v;
+      }
+      if (s > best) {
+        best = s;
+        piv = j;
       }
     }
-    if (piv < 0) return null;
-    if (piv !== col) {
-      for (let c = 0; c < n; c += 1) {
-        const t = a[col * n + c]!;
-        a[col * n + c] = a[piv * n + c]!;
-        a[piv * n + c] = t;
+    if (piv < 0 || best === 0) return null;
+    if (piv !== k) {
+      for (let i = 0; i < rows; i += 1) {
+        const t = A[i * f + k]!;
+        A[i * f + k] = A[i * f + piv]!;
+        A[i * f + piv] = t;
       }
-      const tb = b[col]!;
-      b[col] = b[piv]!;
-      b[piv] = tb;
+      const tp = perm[k]!;
+      perm[k] = perm[piv]!;
+      perm[piv] = tp;
     }
-    const pv = a[col * n + col]!;
-    for (let r = col + 1; r < n; r += 1) {
-      const f = a[r * n + col]! / pv;
-      if (f === 0) continue;
-      for (let c = col; c < n; c += 1) a[r * n + c] = a[r * n + c]! - f * a[col * n + c]!;
-      b[r] = b[r]! - f * b[col]!;
+    // Householder reflection zeroing column k below the diagonal.
+    let normx = 0;
+    for (let i = k; i < rows; i += 1) {
+      const v = A[i * f + k]!;
+      normx += v * v;
     }
+    normx = Math.sqrt(normx);
+    if (normx === 0 || !Number.isFinite(normx)) return null;
+    const a0 = A[k * f + k]!;
+    const alpha = a0 >= 0 ? -normx : normx;
+    const v = new Float64Array(rows - k);
+    for (let i = k; i < rows; i += 1) v[i - k] = A[i * f + k]!;
+    v[0] = v[0]! - alpha;
+    let vv = 0;
+    for (const t of v) vv += t * t;
+    if (vv === 0 || !Number.isFinite(vv)) return null;
+    const tau = 2 / vv;
+    for (let j = k; j < f; j += 1) {
+      let s = 0;
+      for (let i = k; i < rows; i += 1) s += v[i - k]! * A[i * f + j]!;
+      s *= tau;
+      if (s === 0) continue;
+      for (let i = k; i < rows; i += 1) A[i * f + j] = A[i * f + j]! - s * v[i - k]!;
+    }
+    let sb = 0;
+    for (let i = k; i < rows; i += 1) sb += v[i - k]! * b[i]!;
+    sb *= tau;
+    if (sb !== 0) {
+      for (let i = k; i < rows; i += 1) b[i] = b[i]! - sb * v[i - k]!;
+    }
+    A[k * f + k] = alpha;
+    for (let i = k + 1; i < rows; i += 1) A[i * f + k] = 0;
   }
-  const x = new Float64Array(n);
-  for (let r = n - 1; r >= 0; r -= 1) {
-    let s = b[r]!;
-    for (let c = r + 1; c < n; c += 1) s -= a[r * n + c]! * x[c]!;
-    x[r] = s / a[r * n + r]!;
+  // Back-substitution on the pivoted upper triangle.
+  const y = new Float64Array(f);
+  for (let k = f - 1; k >= 0; k -= 1) {
+    let s = b[k]!;
+    for (let j = k + 1; j < f; j += 1) s -= A[k * f + j]! * y[j]!;
+    const d = A[k * f + k]!;
+    if (d === 0 || !Number.isFinite(d)) return null;
+    y[k] = s / d;
   }
-  return x;
+  const delta = new Float64Array(f);
+  for (let k = 0; k < f; k += 1) delta[perm[k]!] = y[k]!;
+  return delta;
 }
 
 // ---------------------------------------------------------------------------
@@ -2117,38 +2164,51 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
       return { ok: false, vars: x, mag, failure: { code: 'work-limit-exceeded', constraintIds: comp.active.map((a) => a.c.id), message: `Work limit of ${work.limit} exceeded during relaxation.` } };
     }
     const J = jacAll(comp, x, work);
-    // Normal equations over free variables: A = JfᵀJf, g = Jfᵀr.
+    // Levenberg step over the free variables, computed by QR of the
+    // Jacobian itself (F-3034 avenue 1). The delivered engine formed
+    // the normal equations A = JfᵀJf; at the tangent fold the Jacobian
+    // is singular AT the solution, and squaring it (condition number
+    // κ(J)²) destroyed the small singular directions entirely: the
+    // elimination returned steps carrying a large component along the
+    // near-null arc-centre direction, which changes no residual but
+    // counted in full in `lastStep`, so the iteration crept along the
+    // fold until MAX_ITERATIONS with the residual already at 1e-13.
+    // Solving the damped least-squares problem on Jf directly —
+    // min ‖[Jf; μI]δ + [r; 0]‖ by Householder QR with deterministic
+    // column pivoting — keeps the conditioning at κ(J), and the μI
+    // block suppresses exactly the sub-μ singular directions instead
+    // of amplifying their numerical noise.
     const f = free.length;
-    const A = new Float64Array(f * f);
-    const g = new Float64Array(f);
+    const Jf = new Float64Array(comp.totalRows * f);
     for (let row = 0; row < comp.totalRows; row += 1) {
-      for (let i = 0; i < f; i += 1) {
-        const jiv = J[row * nVars + free[i]!]!;
-        if (jiv === 0) continue;
-        g[i] = g[i]! + jiv * r[row]!;
-        for (let j = 0; j < f; j += 1) A[i * f + j] = A[i * f + j]! + jiv * J[row * nVars + free[j]!]!;
-      }
+      for (let i = 0; i < f; i += 1) Jf[row * f + i] = J[row * nVars + free[i]!]!;
     }
     let accepted = false;
     let step = new Float64Array(nVars);
-    // Damping scale for this iteration: the largest normal-equation
-    // diagonal. Damping is λ·κ·I (a scalar multiple of the identity at
-    // the system's own scale). Per-diagonal Marquardt scaling is NOT
-    // used: it breaks the eigen-decomposition of the rank-1 blocks that
-    // direction/distance rows produce, coupling a radial right-hand
-    // side into large tangential steps (a point driven to a target
-    // distance slid sideways along its circle instead of moving
-    // radially). A scalar κ keeps the damping scale-free across
-    // coordinate magnitudes (case 8a, S ≈ 1e8) without that coupling.
+    // Damping scale for this iteration: κ = the largest squared column
+    // norm of Jf (the largest normal-equation diagonal), and the
+    // augmentation is μI with μ = √(λ·κ). The damping stays a scalar
+    // multiple of the identity at the system's own scale: per-diagonal
+    // Marquardt scaling is NOT used — it breaks the eigen-decomposition
+    // of the rank-1 blocks that direction/distance rows produce,
+    // coupling a radial right-hand side into large tangential steps (a
+    // point driven to a target distance slid sideways along its circle
+    // instead of moving radially). A scalar κ keeps the damping
+    // scale-free across coordinate magnitudes (case 8a, S ≈ 1e8)
+    // without that coupling. Work accounting: each QR factorization is
+    // charged (totalRows + f)·f units — the same order as the jacAll
+    // charge (totalRows·nVars) it accompanies, so workUsed stays
+    // deterministic and comparable in magnitude to the delivered engine.
     let kappa = 0;
-    for (let i = 0; i < f; i += 1) kappa = Math.max(kappa, Math.abs(A[i * f + i]!));
+    for (let i = 0; i < f; i += 1) {
+      let s = 0;
+      for (let row = 0; row < comp.totalRows; row += 1) s += Jf[row * f + i]! * Jf[row * f + i]!;
+      if (s > kappa) kappa = s;
+    }
     if (kappa === 0) kappa = 1;
     for (let attempt = 0; attempt < 80; attempt += 1) {
-      const Ad = new Float64Array(A);
-      for (let i = 0; i < f; i += 1) Ad[i * f + i] = Ad[i * f + i]! + lambda * kappa;
-      const neg = new Float64Array(f);
-      for (let i = 0; i < f; i += 1) neg[i] = -g[i]!;
-      const delta = solveDense(Ad, neg, f);
+      work.used += (comp.totalRows + f) * f;
+      const delta = qrLeastSquaresStep(Jf, comp.totalRows, f, r, Math.sqrt(lambda * kappa));
       if (delta === null) {
         lambda *= 10;
         if (lambda > 1e6) break;
