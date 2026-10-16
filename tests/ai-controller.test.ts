@@ -125,7 +125,7 @@ describe('AiAskController', () => {
     });
     const asking = controller.ask('count');
     expect(timers).toHaveLength(1);
-    timers[0]();
+    timers[0]!();
     const status = await asking;
     expect(status.state).toBe('error');
     if (status.state === 'error') expect(status.error.kind).toBe('timeout');
@@ -135,13 +135,13 @@ describe('AiAskController', () => {
     const { source } = makeSource();
     const gates = [deferred<AiAnswer>(), deferred<AiAnswer>()];
     let call = 0;
-    const provider: AiProvider = { id: 'multi', ask: () => gates[call++].promise };
+    const provider: AiProvider = { id: 'multi', ask: () => gates[call++]!.promise };
     const controller = new AiAskController(source, provider);
     const first = controller.ask('first');
     const second = controller.ask('second');
-    gates[1].resolve({ text: 'newer', references: [] });
+    gates[1]!.resolve({ text: 'newer', references: [] });
     expect((await second).state).toBe('answered');
-    gates[0].resolve({ text: 'older', references: [] });
+    gates[0]!.resolve({ text: 'older', references: [] });
     await first;
     expect(controller.status.state).toBe('answered');
     if (controller.status.state === 'answered') expect(controller.status.answer.text).toBe('newer');

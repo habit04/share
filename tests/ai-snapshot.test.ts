@@ -66,7 +66,7 @@ describe('AI selection snapshot', () => {
 
   it('includes insert attributes sorted by tag and flags hidden ones', () => {
     const snap = buildSelectionSnapshot(fakeSource([insert], ['e-insert']));
-    const obj = snap.objects[0];
+    const obj = snap.objects[0]!;
     expect(obj.attributes).toEqual([
       { tag: 'DESC1', value: 'Start pushbutton', hidden: true },
       { tag: 'TAG1', value: 'PB101' },
@@ -94,8 +94,8 @@ describe('AI selection snapshot', () => {
   it('truncates over-long text with an explicit note', () => {
     const long: Entity = { ...text, id: 'e-long', text: 'x'.repeat(AI_MAX_TEXT_CHARS + 50) };
     const snap = buildSelectionSnapshot(fakeSource([long], ['e-long']));
-    expect(snap.objects[0].text).toHaveLength(AI_MAX_TEXT_CHARS);
-    expect(snap.objects[0].notes?.join(' ')).toContain('truncated');
+    expect(snap.objects[0]!.text).toHaveLength(AI_MAX_TEXT_CHARS);
+    expect(snap.objects[0]!.notes?.join(' ')).toContain('truncated');
   });
 
   it('caps the object count and reports the rest as object-limit', () => {

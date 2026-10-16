@@ -59,7 +59,7 @@ describe('ai-host request validator', () => {
     expect(() => aiRequest(null)).toThrow(/Invalid AI request/);
     expect(() => aiRequest(envelope({ requestId: -1 }))).toThrow(/request id/);
     expect(() => aiRequest(envelope({ question: '' }))).toThrow(/question/);
-    expect(() => aiRequest(envelope({ question: 'x'.repeat(AI_LIMITS.maxQuestionChars + 1) }))).toThrow(/question/);
+    expect(() => aiRequest(envelope({ question: 'x'.repeat(AI_LIMITS.maxQuestionChars! + 1) }))).toThrow(/question/);
     expect(() => aiRequest(envelope({ snapshot: { kind: 'nope' } }))).toThrow(/snapshot/);
   });
 
@@ -103,7 +103,7 @@ describe('ai-host service', () => {
   });
 
   it('rejects oversized transport output', async () => {
-    const host = createAiHost({ transport: async () => ({ text: 'z'.repeat(AI_LIMITS.maxAnswerChars + 1), references: [] }) });
+    const host = createAiHost({ transport: async () => ({ text: 'z'.repeat(AI_LIMITS.maxAnswerChars! + 1), references: [] }) });
     await expect(host.ask(envelope())).rejects.toMatchObject({ kind: 'output-too-large' });
     await host.dispose();
   });
@@ -175,7 +175,7 @@ describe('ai-host key store', () => {
     const { safeStorage, fsImpl } = fakeStorage();
     const store = createAiKeyStore({ safeStorage, filePath: '/tmp/jcad-ai-key.bin', fsImpl });
     expect(() => store.saveKey('')).toThrow(/Invalid API key/);
-    expect(() => store.saveKey('x'.repeat(AI_LIMITS.maxKeyChars + 1))).toThrow(/Invalid API key/);
+    expect(() => store.saveKey('x'.repeat(AI_LIMITS.maxKeyChars! + 1))).toThrow(/Invalid API key/);
   });
 });
 

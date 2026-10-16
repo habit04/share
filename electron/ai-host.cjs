@@ -140,6 +140,8 @@ function aiAnswer(value) {
  * an async function (validatedRequest, signal) => answer, supplied when a
  * provider is agreed. Without one, every ask refuses with
  * 'provider-not-configured' and nothing leaves the machine.
+ * @param {{ transport?: (request: object, signal: AbortSignal) => Promise<object>,
+ *           timeoutMs?: number, maxConcurrent?: number, maxPending?: number }} [options]
  */
 function createAiHost({ transport, timeoutMs = 30000, maxConcurrent = 2, maxPending = 8 } = {}) {
   let active = 0;
@@ -176,6 +178,7 @@ function createAiHost({ transport, timeoutMs = 30000, maxConcurrent = 2, maxPend
       }, { once: true });
     });
     try {
+      if (typeof transport !== 'function') throw new AiHostError('provider-not-configured', 'No live AI provider has been selected; the AI host is inactive.');
       const raw = await Promise.race([transport(job.request, controller.signal), aborted]);
       const answer = aiAnswer(raw);
       usage.outputChars += answer.text.length;
@@ -233,8 +236,12 @@ function createAiHost({ transport, timeoutMs = 30000, maxConcurrent = 2, maxPend
  * The key is host-internal: readKey() exists for the transport factory and
  * must never be exposed over IPC. If OS encryption is unavailable the
  * store refuses to persist anything.
+ * @param {{ safeStorage: { isEncryptionAvailable: () => boolean,
+ *                          encryptString: (plain: string) => Buffer,
+ *                          decryptString: (cipher: Buffer) => string },
+ *           filePath: string, fsImpl?: typeof fs }} options
  */
-function createAiKeyStore({ safeStorage, filePath, fsImpl = fs } = {}) {
+function createAiKeyStore({ safeStorage, filePath, fsImpl = fs }) {
   if (!safeStorage || typeof safeStorage.encryptString !== 'function' || typeof safeStorage.decryptString !== 'function') {
     throw new AiHostError('host-unavailable', 'safeStorage is required for the AI key store.');
   }

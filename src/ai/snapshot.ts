@@ -75,8 +75,8 @@ function samplePoints(points: readonly Point[], notes: string[]): readonly AiPoi
 
 function polylineLength(points: readonly Point[], closed: boolean): number {
   let total = 0;
-  for (let i = 1; i < points.length; i++) total += dist(points[i - 1], points[i]);
-  if (closed && points.length > 2) total += dist(points[points.length - 1], points[0]);
+  for (let i = 1; i < points.length; i++) total += dist(points[i - 1]!, points[i]!);
+  if (closed && points.length > 2) total += dist(points[points.length - 1]!, points[0]!);
   return total;
 }
 
@@ -145,7 +145,7 @@ function summarize(entity: Entity, source: AiSnapshotSource): AiObjectSnapshot {
         notes.push(`attributes truncated to ${AI_MAX_ATTRIBUTES} of ${tags.length}`);
       }
       attributes = listed.map((tag) => {
-        const bounded = boundText(entity.attributes[tag]);
+        const bounded = boundText(entity.attributes[tag]!);
         if (bounded.note) notes.push(`attribute ${tag}: ${bounded.note}`);
         return hidden.has(tag)
           ? { tag, value: bounded.text, hidden: true }
@@ -314,7 +314,7 @@ export function buildSelectionSnapshot(source: AiSnapshotSource): AiSnapshot {
   let included = objects;
   let bytes = byteLength(serialize(assemble(included)));
   while (bytes > AI_MAX_SNAPSHOT_BYTES && included.length > 0) {
-    const removed = included[included.length - 1];
+    const removed = included[included.length - 1]!;
     included = included.slice(0, -1);
     noteOmitted(removed.id, 'byte-limit');
     bytes = byteLength(serialize(assemble(included)));
