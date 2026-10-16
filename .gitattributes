@@ -8,3 +8,6 @@ tests/fixtures/acadrust-0.6.4-dwg-writer.rs -text
 
 # Keep audited native CRLF and significant TEXT spaces; byte pins check this fixture.
 tests/fixtures/interchange/r2018-shx-text.dxf -text -whitespace
+
+# The restricted-PDF host verifies the audited engine glue byte for byte.
+electron/restricted-pdf/assets/qpdf.js -text

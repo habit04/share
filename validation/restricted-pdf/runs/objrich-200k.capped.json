@@ -1,0 +1,1 @@
+{"ok":true,"inPath":"fixtures-adversarial/objrich-200k.pdf","inputBytes":27578062,"outputBytes":42378806,"wallMs":17024,"wasmLinearBytes":260243456,"rssBytes":486498304,"peakRssBytes":516657152}
