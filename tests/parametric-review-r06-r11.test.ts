@@ -192,10 +192,21 @@ describe('R08: dynamic editing works in paper space', () => {
     const edited = drag!.state.entities.find((e) => e.id === 'P') as InsertEntity;
     expect(edited.dynamic?.values.width).toEqual({ kind: 'distance', value: 15 });
     expect(edited.position).toEqual({ x: 50, y: 50 }); // the INSERT did not move
-    // And against the raw snapshot (model space) the same drag cannot
-    // resolve — the precondition of the old fall-through is now a refusal,
-    // not a silent undefined (see the next test).
-    expect(dynamicGripEdit(doc.snapshot, 'P', 1, { x: 65, y: 50 })).toBeUndefined();
+    // Against the raw snapshot the same drag ALSO resolves (R08
+    // residual): the core edit path resolves the active space itself,
+    // returning a raw state whose layout carries the edit and whose
+    // stored list is the snapshot's own. This pin originally asserted
+    // undefined for the raw snapshot — the helper-level gap Codex's
+    // review-p30-dynamic case ('resolves an appended grip for an INSERT
+    // visible in active paper space') then caught; the full contract is
+    // pinned in tests/parametric-review-r08-space.test.ts.
+    const raw = dynamicGripEdit(doc.snapshot, 'P', 1, { x: 65, y: 50 });
+    expect(raw).toBeDefined();
+    expect(raw!.problem).toBeUndefined();
+    expect(raw!.state.entities).toBe(doc.snapshot.entities);
+    const rawEdited = raw!.state.layouts?.[0]?.entities.find((e) => e.id === 'P') as InsertEntity;
+    expect(rawEdited.dynamic?.values.width).toEqual({ kind: 'distance', value: 15 });
+    expect(rawEdited.position).toEqual({ x: 50, y: 50 });
   });
 
   it('an unresolvable dynamic grip index refuses — it never becomes a whole-insert move', () => {
