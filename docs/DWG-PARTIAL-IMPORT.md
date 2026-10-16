@@ -13,12 +13,40 @@ priority. Painting, bounds, fitting and wrapping use the same selected run. Sour
 strings, STYLE references and placement fields remain unchanged; a substitute
 typeface can still differ from the drawing's original SHX font.
 
-The Windows font-program reader keeps its existing identity, permission and work
-limits. On the tested machine, SimSun exceeds that reader's glyph-work limit even
-though Windows can render it. Vector PDF export therefore refuses unreadable
-Unicode substitution and directs the user to Raster image output when a matching
-font cannot be embedded. Font parser optimization belongs to the separate PDF
-font workstream; no limit is raised here.
+Captured PDF font reads now validate the plotted glyphs, their composite components
+and capital A under the unchanged 2,000,000-point budget. This removes the
+whole-face point-work obstacle for eligible fonts. Screen metrics still use eager
+whole-face validation and Canvas fallback. See [PDF font embedding](PDF-FONT-EMBEDDING.md).
+
+Installed SimSun remains refused on the reviewed Windows machine: the used-glyph
+read clears the point-work obstacle but reaches the capital-A/origin gate because
+embedded bitmap strikes cover that glyph and existing policy marks it unknown.
+The recorded error is "the native capital A glyph must have a known origin and
+positive yMax". Microsoft YaHei instead refuses with conflicting PostScript
+nameID6 records. Identity, permission, bitmap/origin and work limits are preserved.
+
+The combined vector path refuses Han text when its matching font program or run
+cannot be used, and directs the user to Raster image output. This explicit
+refusal replaces unreadable stroke substitution; it does not establish Chinese
+vector embedding or extraction compatibility.
+
+## F3 integration evidence and remaining gate
+
+The DWG owner's `c2cb121` results are historical, separate from this combined
+priority-12 review. Eleven authored font-composition regressions pass: missing-SHX
+text is collected under its final fallback face, available native SHX keeps
+priority, selected TTC-face identity and used-glyph limits are retained, and
+unknown bounds/origins and embedding permissions still refuse. A positive authored
+fixture uses a visible rectangle mapped to a Han codepoint; it is not a faithful
+Chinese typeface or installed-font acceptance test.
+
+Combined Windows production Open/edit/undo/redo/DXF-copy/reopen and Plot validation
+is pending. Acceptance requires unchanged source/font/input-copy hashes, correct
+edit/undo/redo history and unchanged document state across plotting; retained
+partial-import and DWG preservation refusals; explicit unembeddable-Han vector
+refusal with no PDF committed; and a real raster PDF with visible Canvas Unicode
+output. Actual Windows workflows, independent PDF inspection and visual review
+must verify those outcomes before this combined gate is marked complete.
 
 ## Standalone attribute definitions
 
@@ -32,11 +60,13 @@ invisible definitions are never made visible by text substitution.
 
 Save As still applies each output format's preservation checks. A different DWG
 destination can be refused if the independent metadata projection is incomplete;
-partial opening does not bypass this check. The tested private drawing reproduces
-an existing projection omission of 16 blocks on both the baseline importer and the
-candidate, while AutoCAD sees the records in the intermediate DWG. Its DXF copy
-saves, reopens and passes the independent native text/signature comparison. This
-does not certify a portable DWG round-trip or eliminate the drawing's audit issues.
+partial opening does not bypass this check. The DWG owner's private drawing
+reproduced an existing projection omission of 16 blocks on both the baseline
+importer and the candidate, while AutoCAD saw the records in the intermediate DWG.
+That owner's DXF copy saved, reopened and passed the independent native
+text/signature comparison. The original AutoCAD AUDIT reported 748 errors and the
+DXF copy one error, with zero repairs in either run. These historical results do
+not certify a portable DWG round-trip or an audit-clean drawing.
 
 For retained DXF data and checked Windows DWG metadata, exclusion uses the same
 CAD graph erase rules as an editor operation. Owned attributes, sequence ends,
