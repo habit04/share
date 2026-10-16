@@ -2,6 +2,7 @@ import {
   AiError,
   type AiAnswer,
   type AiAskRequest,
+  type AiDraftRefineRequest,
   type AiDraftRequest,
   type AiErrorKind,
   type AiUsage,
@@ -64,6 +65,7 @@ export interface AiPreloadBridge {
   testConnection(): Promise<AiResult<{ probe: AiProbeResult }>>;
   ask(request: AiAskRequest): Promise<AiResult<{ answer: unknown }>>;
   draft(request: AiDraftRequest): Promise<AiResult<{ draft: unknown }>>;
+  draftRefine(request: AiDraftRefineRequest): Promise<AiResult<{ draft: unknown }>>;
   cancel(requestId: string): Promise<AiResult<{ cancelled: boolean }>>;
   usage(): Promise<AiResult<{ usage: Record<string, number> }>>;
 }
@@ -194,6 +196,24 @@ export class WindowAiConnection {
         signal.addEventListener('abort', onAbort, { once: true });
         try {
           const { draft } = unwrap(await Promise.race([this.raw.draft(request), aborted]));
+          return draftWireResult(draft);
+        } finally {
+          signal.removeEventListener('abort', onAbort);
+        }
+      },
+      draftRefine: async (request: AiDraftRefineRequest, signal: AbortSignal): Promise<AiDraftWireResult> => {
+        if (signal.aborted) throw new AiError('cancelled', 'The request was cancelled.');
+        let rejectAborted: (cause: AiError) => void = () => {};
+        const aborted = new Promise<never>((_resolve, reject) => { rejectAborted = reject; });
+        const onAbort = () => {
+          rejectAborted(new AiError('cancelled', 'The request was cancelled.'));
+          try { void this.raw.cancel(request.requestId).catch(() => {}); } catch { /* IPC may already be gone. */ }
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        try {
+          // The refine channel resolves the same { draft } result shape as
+          // the draft channel (the validated replacement plan value).
+          const { draft } = unwrap(await Promise.race([this.raw.draftRefine(request), aborted]));
           return draftWireResult(draft);
         } finally {
           signal.removeEventListener('abort', onAbort);

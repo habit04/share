@@ -105,6 +105,51 @@ async function liveDraftEnvelope(requestId: string, provider = 'openai', model =
   return value;
 }
 
+const refineMoveOp = {
+  op: 'move', a: null, b: null, center: null, radius: null, origin: null,
+  width: null, height: null, rotationDeg: null, layer: null,
+  targetIds: ['e-line'], dx: 10, dy: 0, pivot: null, angleDeg: null,
+};
+
+function refineEnvelopeJson(): string {
+  return JSON.stringify({
+    kind: 'jcad.ai.draft-refine-context',
+    version: 1,
+    originalPrompt: 'draw a line',
+    followUp: 'make it longer',
+    originalContext: JSON.parse(draftTestContextJson(['e-line'])),
+    currentPlan: { message: null, operations: [refineMoveOp] },
+    proposalLabels: [{ label: 'Move 1', summary: 'Move 1 object(s) by (10.0000, 0.0000)' }],
+  });
+}
+
+function refineEnvelope(requestId: string, provider = 'openai', model = provider === 'anthropic' ? 'claude-sonnet-5-5' : 'gpt-5'): Record<string, unknown> {
+  return {
+    requestId,
+    destination: { provider, model },
+    followUp: 'make it longer',
+    envelopeJson: refineEnvelopeJson(),
+    binding: {
+      ask: {
+        sessionId: 1, docId: 'doc-1', contentGeneration: 1, docRevision: 7, docLoadCount: 1,
+        space: { layout: null, viewport: null }, selectionIds: ['e-line'],
+      },
+      unitsKey: '1|2|4',
+      defaultsKey: '{"layer":"0","color":"ByLayer"}',
+      eligibilityKey: 'e-line=1',
+      configKey: `${provider}|${model}|0`,
+    },
+  };
+}
+
+async function liveRefineEnvelope(requestId: string, provider = 'openai', model = provider === 'anthropic' ? 'claude-sonnet-5-5' : 'gpt-5'): Promise<Record<string, unknown>> {
+  const result = await harness.invoke('ai-get-state');
+  const state = result.state as { configGeneration: string };
+  const value = refineEnvelope(requestId, provider, model);
+  (value.destination as Record<string, unknown>).configGeneration = state.configGeneration;
+  return value;
+}
+
 function openAiDraftResponse(): Response {
   const body = {
     status: 'completed',
@@ -178,9 +223,9 @@ afterEach(() => { if (harness) rmSync(harness.dir, { recursive: true, force: tru
 describe('ai IPC registration (guarded context)', () => {
   beforeEach(() => { harness = makeHarness(); });
 
-  it('registers exactly the eleven ai channels through the context ipcMain', () => {
+  it('registers exactly the twelve ai channels through the context ipcMain', () => {
     expect([...harness.handlers.keys()].sort()).toEqual([
-      'ai-ask', 'ai-cancel', 'ai-draft', 'ai-forget-key', 'ai-get-state', 'ai-set-enabled',
+      'ai-ask', 'ai-cancel', 'ai-draft', 'ai-draft-refine', 'ai-forget-key', 'ai-get-state', 'ai-set-enabled',
       'ai-set-key', 'ai-set-model', 'ai-set-provider', 'ai-test-connection', 'ai-usage',
     ]);
   });
@@ -367,6 +412,62 @@ describe('ai IPC registration (guarded context)', () => {
     expect(await harness.invoke('ai-cancel', 'ai-draft-early-cancel')).toMatchObject({ ok: true, cancelled: true });
     expect(await pending).toMatchObject({ ok: false, error: { kind: 'cancelled' } });
     expect(harness.fetchCalls).toHaveLength(0);
+  });
+
+  it('routes ai-draft-refine to OpenAI and returns the validated replacement plan value', async () => {
+    harness = makeHarness(async () => openAiDraftResponse());
+    await harness.invoke('ai-set-key', KEY, 'session');
+    await harness.invoke('ai-set-enabled', true);
+    const refined = await harness.invoke('ai-draft-refine', await liveRefineEnvelope('ai-refine-1'));
+    expect(refined).toMatchObject({
+      ok: true,
+      draft: { value: draftPlanValue(), providerUsage: { inputTokens: 30, outputTokens: 12 } },
+    });
+    expect(harness.fetchCalls).toHaveLength(1);
+    const call = harness.fetchCalls[0]!;
+    expect(call.url).toBe('https://api.openai.com/v1/responses');
+    const body = String(call.init.body);
+    expect(body).toContain('Follow-up instruction: make it longer');
+    expect(body).toContain('jcad.ai.draft-refine-context');
+    expect(body).toContain('COMPLETE REPLACEMENT PLAN');
+    // The key appears in no IPC response.
+    expect(JSON.stringify(refined)).not.toContain(KEY);
+  });
+
+  it('refuses ai-draft-refine before enablement — no fetch happens', async () => {
+    const refined = await harness.invoke('ai-draft-refine', refineEnvelope('ai-refine-early'));
+    expect(refined).toMatchObject({ ok: false, error: { kind: 'live-disabled' } });
+    expect(harness.fetchCalls).toHaveLength(0);
+  });
+
+  it('translates ai-cancel into host cancellation of a running refinement', async () => {
+    harness = makeHarness((_url, init) => new Promise<Response>((_resolve, reject) => {
+      const signal = init.signal as AbortSignal;
+      signal.addEventListener('abort', () => reject(new Error('aborted by host')));
+    }));
+    await harness.invoke('ai-set-key', KEY, 'session');
+    await harness.invoke('ai-set-enabled', true);
+    const pending = harness.invoke('ai-draft-refine', await liveRefineEnvelope('ai-refine-cancel'));
+    await vi.waitFor(() => { expect(harness.fetchCalls).toHaveLength(1); });
+    const cancelled = await harness.invoke('ai-cancel', 'ai-refine-cancel');
+    expect(cancelled).toMatchObject({ ok: true, cancelled: true });
+    const settled = await pending;
+    expect(settled).toMatchObject({ ok: false, error: { kind: 'cancelled' } });
+  });
+
+  it('rejects a duplicate refinement request id while the first is outstanding', async () => {
+    harness = makeHarness((_url, init) => new Promise<Response>((_resolve, reject) => {
+      const signal = init.signal as AbortSignal;
+      signal.addEventListener('abort', () => reject(new Error('aborted by host')));
+    }));
+    await harness.invoke('ai-set-key', KEY, 'session');
+    await harness.invoke('ai-set-enabled', true);
+    const pending = harness.invoke('ai-draft-refine', await liveRefineEnvelope('ai-refine-dupe'));
+    await vi.waitFor(() => { expect(harness.fetchCalls).toHaveLength(1); });
+    const duplicate = await harness.invoke('ai-draft-refine', await liveRefineEnvelope('ai-refine-dupe'));
+    expect(duplicate).toMatchObject({ ok: false, error: { kind: 'invalid-request' } });
+    await harness.invoke('ai-cancel', 'ai-refine-dupe');
+    expect(await pending).toMatchObject({ ok: false, error: { kind: 'cancelled' } });
   });
 
   it('owns cancellation before an ask has finished service admission', async () => {

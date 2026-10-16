@@ -5,6 +5,7 @@ import {
   type AiAnswer,
   type AiAskRequest,
   type AiDraftProvider,
+  type AiDraftRefineRequest,
   type AiDraftRequest,
   type AiProvider,
   type AiUsage,
@@ -35,6 +36,11 @@ export interface AiHostBridge {
    * refuse cleanly ('host-unavailable'), never fall back to ask.
    */
   draft?(request: AiDraftRequest, signal: AbortSignal): Promise<AiDraftWireResult>;
+  /**
+   * Milestone 4: optional because a host without refinement support must
+   * refuse cleanly ('host-unavailable'), never fall back to draft or ask.
+   */
+  draftRefine?(request: AiDraftRefineRequest, signal: AbortSignal): Promise<AiDraftWireResult>;
 }
 
 /**
@@ -178,6 +184,69 @@ export class LiveDraftProvider implements AiDraftProvider {
         destination: { provider: this.config.providerId, model: this.config.model, configGeneration: this.config.configGeneration },
       };
       const result = await Promise.race([this.bridge.draft(pinned, signal), aborted]);
+      if (result?.configGeneration !== this.config.configGeneration) {
+        throw new AiError('stale', 'The AI connection settings changed — generate again.');
+      }
+      const parsed = parseAiDraftResponse(result?.response);
+      if (!parsed.ok) throw new AiError('invalid-plan', parsed.error);
+      return parsed.response;
+    } finally {
+      signal.removeEventListener('abort', onAbort);
+    }
+  }
+
+  /**
+   * Milestone 4: one refinement of the staged preview. Mirrors draft():
+   * the bridge must carry a draftRefine method (an older host refuses
+   * with 'host-unavailable', never a fallback to draft/ask), the
+   * destination — including the verified configuration generation — is
+   * pinned from this instance's config, the returned configuration
+   * generation must match, and the returned value passes the same plan
+   * contract before the draft controller may stage the replacement.
+   * Refinement availability is checked here, at call time: `configured`
+   * keeps its draft meaning for panel routing.
+   */
+  async refine(request: AiDraftRefineRequest, signal: AbortSignal): Promise<AiDraftResponse> {
+    if (!this.bridge || typeof this.bridge.draftRefine !== 'function') {
+      throw new AiError(
+        'host-unavailable',
+        'The AI host does not support preview refinement. Update the application and try again.',
+      );
+    }
+    if (!this.config || this.config.providerId.length === 0 || this.config.model.length === 0) {
+      throw new AiError(
+        'provider-not-configured',
+        'No live AI provider has been selected. The live adapter is inactive until a provider, endpoint, credentials and data handling are agreed.',
+      );
+    }
+    if (!this.config.configGeneration) {
+      throw new AiError('host-unavailable', 'The AI host cannot verify its current connection settings. Reopen the panel or update JCad before refining.');
+    }
+    if (signal.aborted) throw new AiError('cancelled', 'The request was cancelled.');
+    // Defence in depth: the host re-validates everything, but an
+    // out-of-bound follow-up or envelope is refused here, not handed over.
+    if (request.followUp.length > AI_MAX_QUESTION_CHARS) {
+      throw new AiError('invalid-question', 'The follow-up instruction exceeds the permitted length.');
+    }
+    if (new TextEncoder().encode(request.envelopeJson).length > AI_DRAFT_MAX_CONTEXT_BYTES) {
+      throw new AiError('invalid-context', 'The refinement context exceeds the permitted size.');
+    }
+    let onAbort: () => void = () => {};
+    const aborted = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(new AiError('cancelled', 'The request was cancelled.'));
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+      if (signal.aborted) throw new AiError('cancelled', 'The request was cancelled.');
+      // Only the wire fields cross, exactly as for drafts.
+      const pinned: AiDraftRefineRequest = {
+        requestId: request.requestId,
+        followUp: request.followUp,
+        envelopeJson: request.envelopeJson,
+        binding: request.binding,
+        destination: { provider: this.config.providerId, model: this.config.model, configGeneration: this.config.configGeneration },
+      };
+      const result = await Promise.race([this.bridge.draftRefine(pinned, signal), aborted]);
       if (result?.configGeneration !== this.config.configGeneration) {
         throw new AiError('stale', 'The AI connection settings changed — generate again.');
       }

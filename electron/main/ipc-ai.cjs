@@ -206,6 +206,20 @@ function registerAiIpc(ctx, overrides = {}) {
     requests.set(requestId, record); // Own cancellation before service initialization can await.
     try { return { draft: await service.draft(request, record.abort.signal) }; } finally { requests.delete(requestId); }
   }));
+  ipcMain.handle('ai-draft-refine', respond(async (ev, request) => {
+    const requestId = request?.requestId;
+    if ((typeof requestId !== 'string' && !Number.isSafeInteger(requestId)) || requests.has(requestId)) {
+      throw new AiHostError('invalid-request', 'Invalid or duplicate AI request id.');
+    }
+    if (requests.size >= 16) throw new AiHostError('provider-failure', 'Too many pending AI requests.');
+    const record = { owner: owner(ev), abort: new AbortController() };
+    observe(record.owner.sender);
+    // Refinements share the ask/draft request map: ids are unique across
+    // all three kinds, and ai-cancel / lifecycle revocation cover
+    // refinements with no extra path.
+    requests.set(requestId, record); // Own cancellation before service initialization can await.
+    try { return { draft: await service.refine(request, record.abort.signal) }; } finally { requests.delete(requestId); }
+  }));
   ipcMain.handle('ai-cancel', respond(async (ev, requestId) => {
     const record = requests.get(requestId);
     if (!record || !sameOwner(record.owner, owner(ev))) return { cancelled: false };

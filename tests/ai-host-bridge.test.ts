@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { WindowAiConnection, aiErrorFromPayload, type AiPreloadBridge } from '../src/ai/host-bridge';
-import { AiError, type AiAskRequest, type AiDraftRequest } from '../src/ai/types';
+import { AiError, type AiAskRequest, type AiDraftRefineRequest, type AiDraftRequest } from '../src/ai/types';
 
 const state = {
   provider: 'openai', model: 'gpt-5', enabled: true, keyPersistence: 'session' as const,
@@ -23,6 +23,10 @@ const draftRequest = {
   requestId: 'ai-salt-draft-1', prompt: 'draw a line', contextJson: '{}', binding: {},
 } as unknown as AiDraftRequest;
 
+const refineRequest = {
+  requestId: 'ai-salt-refine-1', followUp: 'make it longer', envelopeJson: '{}', binding: {},
+} as unknown as AiDraftRefineRequest;
+
 function fakeRaw(over: Partial<AiPreloadBridge> = {}): AiPreloadBridge {
   return {
     getState: async () => ({ ok: true, state }),
@@ -40,6 +44,15 @@ function fakeRaw(over: Partial<AiPreloadBridge> = {}): AiPreloadBridge {
         value: planValue,
         usage: { inputBytes: 44, outputChars: 321, durationMs: 12 },
         providerUsage: { inputTokens: 30, outputTokens: 12 },
+      },
+    }),
+    draftRefine: async () => ({
+      ok: true,
+      draft: {
+        configGeneration: 'host-1',
+        value: planValue,
+        usage: { inputBytes: 900, outputChars: 321, durationMs: 9 },
+        providerUsage: { inputTokens: 31, outputTokens: 11 },
       },
     }),
     cancel: async () => ({ ok: true, cancelled: true }),
@@ -225,5 +238,61 @@ describe('WindowAiConnection draft bridge (milestone 3)', () => {
     abort.abort();
     await expect(conn.bridge.draft!(draftRequest, abort.signal)).rejects.toMatchObject({ kind: 'cancelled' });
     expect(draft).not.toHaveBeenCalled();
+  });
+});
+
+describe('WindowAiConnection draftRefine bridge (milestone 4)', () => {
+  it('returns the host-validated replacement plan value with whitelisted usage', async () => {
+    const conn = new WindowAiConnection(fakeRaw());
+    const result = await conn.bridge.draftRefine!(refineRequest, new AbortController().signal);
+    expect(result.response).toEqual(planValue);
+    expect(result.configGeneration).toBe('host-1');
+    expect(result.usage).toEqual({ inputBytes: 900, outputChars: 321, durationMs: 9, inputTokens: 31, outputTokens: 11 });
+  });
+
+  it('forwards the exact refinement request to the raw bridge', async () => {
+    const draftRefine = vi.fn(async () => ({ ok: true as const, draft: { value: planValue, configGeneration: 'host-1' } }));
+    const conn = new WindowAiConnection(fakeRaw({ draftRefine }));
+    await conn.bridge.draftRefine!(refineRequest, new AbortController().signal);
+    expect(draftRefine).toHaveBeenCalledWith(refineRequest);
+  });
+
+  it('rejects a malformed host refine envelope as invalid-plan', async () => {
+    for (const draft of [null, { usage: {} }, { value: 'not-an-object' }, { value: planValue }]) {
+      const conn = new WindowAiConnection(fakeRaw({ draftRefine: async () => ({ ok: true, draft }) }));
+      await expect(conn.bridge.draftRefine!(refineRequest, new AbortController().signal))
+        .rejects.toMatchObject({ kind: 'invalid-plan' });
+    }
+  });
+
+  it('reconstructs host refine errors as typed AiErrors', async () => {
+    const conn = new WindowAiConnection(fakeRaw({
+      draftRefine: async () => ({ ok: false, error: { kind: 'invalid-plan', message: 'The replacement plan was invalid.' } }),
+    }));
+    await expect(conn.bridge.draftRefine!(refineRequest, new AbortController().signal))
+      .rejects.toMatchObject({ kind: 'invalid-plan', message: 'The replacement plan was invalid.' });
+  });
+
+  it('translates abort into the cancel channel with the refine request id', async () => {
+    const cancel = vi.fn(async () => ({ ok: true as const, cancelled: true }));
+    const conn = new WindowAiConnection(fakeRaw({
+      cancel,
+      draftRefine: async () => new Promise(() => {}),
+    }));
+    const abort = new AbortController();
+    const pending = conn.bridge.draftRefine!(refineRequest, abort.signal);
+    const cancelled = expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
+    abort.abort();
+    expect(cancel).toHaveBeenCalledWith('ai-salt-refine-1');
+    await cancelled;
+  });
+
+  it('refuses before invoking when the signal is already aborted', async () => {
+    const draftRefine = vi.fn(async () => ({ ok: true as const, draft: { value: planValue, configGeneration: 'host-1' } }));
+    const conn = new WindowAiConnection(fakeRaw({ draftRefine }));
+    const abort = new AbortController();
+    abort.abort();
+    await expect(conn.bridge.draftRefine!(refineRequest, abort.signal)).rejects.toMatchObject({ kind: 'cancelled' });
+    expect(draftRefine).not.toHaveBeenCalled();
   });
 });

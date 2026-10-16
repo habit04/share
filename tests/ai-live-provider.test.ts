@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { LiveDraftProvider, LiveProvider, type AiDraftWireResult, type AiHostBridge } from '../src/ai/live-provider';
-import { AiError, type AiAnswer, type AiAskRequest, type AiDraftBinding, type AiDraftRequest } from '../src/ai/types';
+import { AiError, type AiAnswer, type AiAskRequest, type AiDraftBinding, type AiDraftRefineRequest, type AiDraftRequest } from '../src/ai/types';
 
 const request: AiAskRequest = {
   requestId: 'ai-test-1',
@@ -238,5 +238,128 @@ describe('LiveDraftProvider (milestone 3)', () => {
     expect(hanging.draft).toHaveBeenCalledWith(expect.objectContaining({
       destination: { provider: 'openai', model: 'gpt-5', configGeneration: 'host-1' },
     }), abort.signal);
+  });
+});
+
+const refineRequest: AiDraftRefineRequest = {
+  requestId: 'ai-refine-1',
+  followUp: 'Change that movement to 15 units right in total.',
+  envelopeJson: '{"kind":"jcad.ai.draft-refine-context","version":1}',
+  binding: draftBinding,
+};
+
+function refineBridge(
+  result: AiDraftWireResult | ((request: AiDraftRefineRequest, signal: AbortSignal) => Promise<AiDraftWireResult>),
+): AiHostBridge {
+  return {
+    ask: vi.fn(async () => ({ text: 'x', references: [] })),
+    draft: vi.fn(async () => ({ response: planValue, configGeneration: 'host-1' })),
+    draftRefine: vi.fn(async (request: AiDraftRefineRequest, signal: AbortSignal) => ({
+      configGeneration: 'host-1',
+      ...(typeof result === 'function' ? await result(request, signal) : result),
+    })),
+  };
+}
+
+describe('LiveDraftProvider refine (milestone 4)', () => {
+  it('pins its own destination, sends only the wire fields, and returns the validated replacement plan', async () => {
+    const replacement = {
+      outcome: 'proposal', message: null,
+      operations: [{
+        op: 'move', a: null, b: null, center: null, radius: null, origin: null, width: null,
+        height: null, rotationDeg: null, layer: null, targetIds: ['e-line'], dx: 15, dy: 0,
+        pivot: null, angleDeg: null,
+      }],
+    };
+    const bridge = refineBridge({ response: replacement });
+    const provider = new LiveDraftProvider(bridge, { providerId: 'openai', model: 'gpt-5', configGeneration: 'host-1' });
+    const result = await provider.refine(
+      { ...refineRequest, destination: { provider: 'anthropic', model: 'other-model' } },
+      new AbortController().signal,
+    );
+    expect(result).toEqual({
+      kind: 'plan',
+      plan: { message: null, operations: [{ op: 'move', targetIds: ['e-line'], dx: 15, dy: 0 }] },
+    });
+    expect(bridge.draftRefine).toHaveBeenCalledTimes(1);
+    expect(bridge.draftRefine).toHaveBeenCalledWith({
+      requestId: 'ai-refine-1',
+      followUp: 'Change that movement to 15 units right in total.',
+      envelopeJson: '{"kind":"jcad.ai.draft-refine-context","version":1}',
+      binding: draftBinding,
+      destination: { provider: 'openai', model: 'gpt-5', configGeneration: 'host-1' },
+    }, expect.any(AbortSignal));
+    expect(bridge.draft).not.toHaveBeenCalled();
+  });
+
+  it('refuses with host-unavailable when the bridge has no draftRefine method', async () => {
+    const bridge: AiHostBridge = {
+      ask: vi.fn(async () => ({ text: 'x', references: [] })),
+      draft: vi.fn(async () => ({ response: planValue, configGeneration: 'host-1' })),
+    };
+    const provider = new LiveDraftProvider(bridge, { providerId: 'openai', model: 'gpt-5', configGeneration: 'host-1' });
+    await expect(provider.refine(refineRequest, new AbortController().signal))
+      .rejects.toMatchObject({ name: 'AiError', kind: 'host-unavailable' });
+  });
+
+  it('refuses with host-unavailable when the config carries no verified generation', async () => {
+    const bridge = refineBridge({ response: planValue });
+    const provider = new LiveDraftProvider(bridge, { providerId: 'openai', model: 'gpt-5' });
+    // `configured` keeps its draft meaning; refinement refuses at call time.
+    await expect(provider.refine(refineRequest, new AbortController().signal))
+      .rejects.toMatchObject({ kind: 'host-unavailable' });
+    expect(bridge.draftRefine).not.toHaveBeenCalled();
+  });
+
+  it('rejects a response from another configuration generation as stale', async () => {
+    const bridge = refineBridge({ response: planValue, configGeneration: 'host-2' });
+    const provider = new LiveDraftProvider(bridge, { providerId: 'openai', model: 'gpt-5', configGeneration: 'host-1' });
+    await expect(provider.refine(refineRequest, new AbortController().signal))
+      .rejects.toMatchObject({ kind: 'stale' });
+  });
+
+  it('maps an invalid replacement plan from the bridge to invalid-plan', async () => {
+    const bridge = refineBridge({ response: { outcome: 'proposal', message: null, operations: [{ op: 'explode' }] } });
+    const provider = new LiveDraftProvider(bridge, { providerId: 'openai', model: 'gpt-5', configGeneration: 'host-1' });
+    await expect(provider.refine(refineRequest, new AbortController().signal))
+      .rejects.toMatchObject({ name: 'AiError', kind: 'invalid-plan' });
+  });
+
+  it('passes a clarification response through untouched in shape', async () => {
+    const bridge = refineBridge({ response: { outcome: 'clarification', message: 'How much bigger?', operations: null } });
+    const provider = new LiveDraftProvider(bridge, { providerId: 'anthropic', model: 'claude-sonnet-5-5', configGeneration: 'host-1' });
+    await expect(provider.refine(refineRequest, new AbortController().signal))
+      .resolves.toEqual({ kind: 'clarification', message: 'How much bigger?' });
+  });
+
+  it('refuses an over-long follow-up and an oversized envelope before delegating', async () => {
+    const bridge = refineBridge({ response: planValue });
+    const provider = new LiveDraftProvider(bridge, { providerId: 'openai', model: 'gpt-5', configGeneration: 'host-1' });
+    await expect(provider.refine({ ...refineRequest, followUp: 'f'.repeat(2001) }, new AbortController().signal))
+      .rejects.toMatchObject({ kind: 'invalid-question' });
+    await expect(provider.refine({ ...refineRequest, envelopeJson: 'x'.repeat(96 * 1024 + 1) }, new AbortController().signal))
+      .rejects.toMatchObject({ kind: 'invalid-context' });
+    expect(bridge.draftRefine).not.toHaveBeenCalled();
+  });
+
+  it('honours an already-aborted signal before delegating', async () => {
+    const bridge = refineBridge({ response: planValue });
+    const provider = new LiveDraftProvider(bridge, { providerId: 'openai', model: 'gpt-5', configGeneration: 'host-1' });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(provider.refine(refineRequest, controller.signal)).rejects.toMatchObject({ kind: 'cancelled' });
+    expect(bridge.draftRefine).not.toHaveBeenCalled();
+  });
+
+  it('forwards cancellation and refuses a bridge that resolves on abort', async () => {
+    const hanging = refineBridge((_req: AiDraftRefineRequest, signal: AbortSignal) => new Promise<AiDraftWireResult>((resolve) => {
+      signal.addEventListener('abort', () => resolve({ response: planValue }));
+    }));
+    const provider = new LiveDraftProvider(hanging, { providerId: 'openai', model: 'gpt-5', configGeneration: 'host-1' });
+    const abort = new AbortController();
+    const pending = provider.refine(refineRequest, abort.signal);
+    const cancelled = expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
+    abort.abort();
+    await cancelled;
   });
 });

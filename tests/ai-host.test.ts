@@ -11,7 +11,7 @@ import type { AiBinding, AiSnapshotSource } from '../src/ai/types';
 
 const require = createRequire(import.meta.url);
 const {
-  AI_LIMITS, aiRequest, aiAnswer, aiDraftRequest, aiDraftResult, createAiHost, createAiKeyStore,
+  AI_LIMITS, aiRequest, aiAnswer, aiDraftRequest, aiRefineRequest, aiDraftResult, createAiHost, createAiKeyStore,
   AI_PROVIDERS, AI_DEFAULT_MODEL, AI_PROVIDER_DEFAULT_MODELS, validateAiModel, createAiConfigStore, createAiService,
 } = require('../electron/ai-host.cjs') as {
   AI_LIMITS: Record<string, number>;
@@ -25,6 +25,14 @@ const {
       unitsKey: string; defaultsKey: string; eligibilityKey: string; configKey: string;
     };
   };
+  aiRefineRequest: (value: unknown) => {
+    requestId: number | string; followUp: string; envelopeJson: string; envelopeBytes: number;
+    destination?: { provider: string; model: string; configGeneration?: string };
+    binding: {
+      ask: { sessionId: number; docId: string; contentGeneration: number; docRevision: number; selectionCount: number };
+      unitsKey: string; defaultsKey: string; eligibilityKey: string; configKey: string;
+    };
+  };
   aiDraftResult: (value: unknown) => {
     response: { kind: string; plan?: { message: string | null; operations: Record<string, unknown>[] }; message?: string };
     contentBytes: number;
@@ -33,6 +41,7 @@ const {
   createAiHost: (options?: {
     transport?: (request: unknown, signal: AbortSignal) => Promise<unknown>;
     draftTransport?: (request: unknown, signal: AbortSignal) => Promise<unknown>;
+    refineTransport?: (request: unknown, signal: AbortSignal) => Promise<unknown>;
     timeoutMs?: number;
     draftTimeoutMs?: number;
     maxConcurrent?: number;
@@ -40,6 +49,7 @@ const {
   }) => {
     ask: (value: unknown, signal?: AbortSignal) => Promise<{ text: string; references: string[]; usage: unknown; providerUsage?: { inputTokens?: number; outputTokens?: number } }>;
     draft: (value: unknown, signal?: AbortSignal) => Promise<{ value: unknown; usage: { inputBytes: number; outputChars: number; durationMs: number }; providerUsage?: { inputTokens?: number; outputTokens?: number } }>;
+    refine: (value: unknown, signal?: AbortSignal) => Promise<{ value: unknown; usage: { inputBytes: number; outputChars: number; durationMs: number }; providerUsage?: { inputTokens?: number; outputTokens?: number } }>;
     cancel: (requestId: number | string) => boolean;
     cancelAll: () => number;
     usage: () => Record<string, number>;
@@ -989,6 +999,234 @@ describe('ai-host draft jobs (milestone 3)', () => {
     await expect(host.draft(draftEnvelope({ requestId: 3 }))).rejects.toMatchObject({ kind: 'invalid-request' });
     host.cancelAll();
     await askSettled;
+    await host.dispose();
+  });
+});
+
+const refineMoveOp = {
+  op: 'move', a: null, b: null, center: null, radius: null, origin: null,
+  width: null, height: null, rotationDeg: null, layer: null,
+  targetIds: ['e-line'], dx: 10, dy: 0, pivot: null, angleDeg: null,
+};
+
+function refineEnvelopeObject(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    kind: 'jcad.ai.draft-refine-context',
+    version: 1,
+    originalPrompt: 'draw a line',
+    followUp: 'make it longer',
+    originalContext: JSON.parse(draftTestContextJson(['e-line', 'e-circle'])),
+    currentPlan: { message: null, operations: [refineMoveOp] },
+    proposalLabels: [{ label: 'Move 1', summary: 'Move 1 object(s) by (10.0000, 0.0000)' }],
+    ...over,
+  };
+}
+
+function refineEnvelope(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    requestId: 'ai-salt-refine-1',
+    destination: { provider: 'openai', model: 'gpt-5', configGeneration: '00000000-0000-4000-8000-000000000000:0' },
+    followUp: 'make it longer',
+    envelopeJson: JSON.stringify(refineEnvelopeObject()),
+    binding: {
+      ask: {
+        sessionId: 1, docId: 'doc-1', contentGeneration: 1, docRevision: 7, docLoadCount: 1,
+        space: { layout: null, viewport: null }, selectionIds: ['e-line', 'e-circle'],
+      },
+      unitsKey: '1|2|4',
+      defaultsKey: '{"layer":"0","color":"ByLayer"}',
+      eligibilityKey: 'e-line=1;e-circle=1',
+      configKey: 'openai|gpt-5|0',
+    },
+    ...over,
+  };
+}
+
+describe('ai-host refinement request validator (milestone 4)', () => {
+  it('accepts a well-formed envelope and returns only whitelisted fields', () => {
+    const value = refineEnvelope({ apiKey: 'never-carried', stray: { deep: true } });
+    const result = aiRefineRequest(value);
+    expect(result.requestId).toBe('ai-salt-refine-1');
+    expect(result.followUp).toBe('make it longer');
+    expect(result.envelopeJson).toBe(value.envelopeJson);
+    expect(result.envelopeBytes).toBe(Buffer.byteLength(value.envelopeJson as string, 'utf8'));
+    expect(result.destination).toEqual({ provider: 'openai', model: 'gpt-5', configGeneration: '00000000-0000-4000-8000-000000000000:0' });
+    expect(result.binding).toEqual({
+      ask: { sessionId: 1, docId: 'doc-1', contentGeneration: 1, docRevision: 7, selectionCount: 2 },
+      unitsKey: '1|2|4',
+      defaultsKey: '{"layer":"0","color":"ByLayer"}',
+      eligibilityKey: 'e-line=1;e-circle=1',
+      configKey: 'openai|gpt-5|0',
+    });
+    expect(result).not.toHaveProperty('apiKey');
+    expect(result).not.toHaveProperty('stray');
+    expect(result).not.toHaveProperty('currentPlan');
+  });
+
+  it('rejects an extra top-level envelope key and out-of-order keys', () => {
+    const extra = refineEnvelopeObject({ sessionNotes: 'hidden' });
+    expect(() => aiRefineRequest(refineEnvelope({ envelopeJson: JSON.stringify(extra) })))
+      .toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+    const reordered: Record<string, unknown> = {
+      version: 1,
+      kind: 'jcad.ai.draft-refine-context',
+      originalPrompt: 'draw a line',
+      followUp: 'make it longer',
+      originalContext: JSON.parse(draftTestContextJson(['e-line', 'e-circle'])),
+      currentPlan: { message: null, operations: [refineMoveOp] },
+      proposalLabels: [],
+    };
+    expect(() => aiRefineRequest(refineEnvelope({ envelopeJson: JSON.stringify(reordered) })))
+      .toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+  });
+
+  it('rejects noncanonical envelope JSON', () => {
+    const pretty = JSON.stringify(refineEnvelopeObject(), null, 2);
+    expect(() => aiRefineRequest(refineEnvelope({ envelopeJson: pretty })))
+      .toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+    expect(() => aiRefineRequest(refineEnvelope({ envelopeJson: '{"kind":' })))
+      .toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+  });
+
+  it('rejects a follow-up that does not match the envelope', () => {
+    expect(() => aiRefineRequest(refineEnvelope({ followUp: 'something else' })))
+      .toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+    expect(() => aiRefineRequest(refineEnvelope({ followUp: 'f'.repeat(2001) })))
+      .toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+    expect(() => aiRefineRequest(refineEnvelope({ followUp: '' })))
+      .toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+  });
+
+  it('rejects an oversize envelope and an oversize outer request', () => {
+    expect(() => aiRefineRequest(refineEnvelope({ envelopeJson: 'x'.repeat(96 * 1024 + 1) })))
+      .toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+    expect(() => aiRefineRequest(refineEnvelope({ junk: 'y'.repeat(130 * 1024) })))
+      .toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+  });
+
+  it('rejects a malformed current plan as invalid-request, never invalid-plan', () => {
+    const badPlans: Record<string, unknown>[] = [
+      { message: null, operations: [{ op: 'explode' }] },
+      { message: null, operations: [] },
+      { message: null, operations: [refineMoveOp], note: 'extra' },
+      { operations: [refineMoveOp] },
+      { message: 42, operations: [refineMoveOp] },
+      { message: null, operations: Array.from({ length: 65 }, () => refineMoveOp) },
+    ];
+    for (const currentPlan of badPlans) {
+      expect(() => aiRefineRequest(refineEnvelope({
+        envelopeJson: JSON.stringify(refineEnvelopeObject({ currentPlan })),
+      }))).toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+    }
+  });
+
+  it('rejects bad proposal labels', () => {
+    const badLabels: unknown[] = [
+      'not-an-array',
+      Array.from({ length: 65 }, () => ({ label: 'Line 1', summary: 'x' })),
+      [{ label: 'L'.repeat(65), summary: 'x' }],
+      [{ label: '', summary: 'x' }],
+      [{ label: 'Line 1' }],
+      [{ label: 'Line 1', summary: 'x', extra: true }],
+      [{ label: 'Line 1', summary: 's'.repeat(1001) }],
+    ];
+    for (const proposalLabels of badLabels) {
+      expect(() => aiRefineRequest(refineEnvelope({
+        envelopeJson: JSON.stringify(refineEnvelopeObject({ proposalLabels })),
+      }))).toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+    }
+  });
+
+  it('rejects hidden fields inside the nested original context', () => {
+    const context = JSON.parse(draftTestContextJson(['e-line', 'e-circle'])) as Record<string, unknown>;
+    context.filePath = 'private.dwg';
+    expect(() => aiRefineRequest(refineEnvelope({
+      envelopeJson: JSON.stringify(refineEnvelopeObject({ originalContext: context })),
+    }))).toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+  });
+
+  it('rejects an original prompt that disagrees with the nested context prompt', () => {
+    expect(() => aiRefineRequest(refineEnvelope({
+      envelopeJson: JSON.stringify(refineEnvelopeObject({ originalPrompt: 'a different prompt' })),
+    }))).toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+  });
+
+  it('rejects a binding inconsistent with the envelope context targets', () => {
+    const value = refineEnvelope();
+    ((value.binding as Record<string, unknown>).ask as Record<string, unknown>).selectionIds = ['e-line'];
+    expect(() => aiRefineRequest(value)).toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+    const missing = refineEnvelope();
+    delete (missing.binding as Record<string, unknown>).eligibilityKey;
+    expect(() => aiRefineRequest(missing)).toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+  });
+
+  it('rejects a bad destination generation like drafts do', () => {
+    expect(() => aiRefineRequest(refineEnvelope({
+      destination: { provider: 'openai', model: 'gpt-5', configGeneration: 'not-a-generation' },
+    }))).toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+  });
+});
+
+describe('ai-host refinement jobs (milestone 4)', () => {
+  it('runs a refinement through the job machinery and resolves the raw value with usage', async () => {
+    const seen: unknown[] = [];
+    const host = createAiHost({
+      refineTransport: async (request) => {
+        seen.push(request);
+        return { value: draftPlanValue, contentBytes: 321, usage: { inputTokens: 30, outputTokens: 12 } };
+      },
+    });
+    const value = refineEnvelope();
+    const result = await host.refine(value);
+    expect(result.value).toEqual(draftPlanValue);
+    expect(result.usage.inputBytes).toBe(Buffer.byteLength(value.envelopeJson as string, 'utf8'));
+    expect(result.usage.outputChars).toBe(321);
+    expect(result.providerUsage).toEqual({ inputTokens: 30, outputTokens: 12 });
+    expect((seen[0] as { followUp: string }).followUp).toBe('make it longer');
+    expect((seen[0] as { envelopeJson: string }).envelopeJson).toBe(value.envelopeJson);
+    expect(host.usage()).toMatchObject({ requests: 1, inputBytes: result.usage.inputBytes, outputChars: 321 });
+    await host.dispose();
+  });
+
+  it('refuses refinements when no refine transport is configured', async () => {
+    const host = createAiHost({ draftTransport: async () => ({ value: draftPlanValue, contentBytes: 10 }) });
+    await expect(host.refine(refineEnvelope())).rejects.toMatchObject({ kind: 'provider-not-configured' });
+    await host.dispose();
+  });
+
+  it('surfaces an invalid replacement plan from the transport as invalid-plan', async () => {
+    const host = createAiHost({
+      refineTransport: async () => ({ value: { outcome: 'proposal', message: null, operations: [] }, contentBytes: 40 }),
+    });
+    await expect(host.refine(refineEnvelope())).rejects.toMatchObject({ kind: 'invalid-plan' });
+    await host.dispose();
+  });
+
+  it('shares the request-id space with drafts', async () => {
+    const host = createAiHost({
+      draftTransport: (_request, signal) => new Promise((resolve) => {
+        signal.addEventListener('abort', () => resolve({ value: draftPlanValue, contentBytes: 10 }));
+      }),
+      refineTransport: async () => ({ value: draftPlanValue, contentBytes: 10 }),
+    });
+    const drafting = host.draft(draftEnvelope({ requestId: 'ai-salt-refine-1' }));
+    const draftSettled = expect(drafting).rejects.toMatchObject({ kind: 'cancelled' });
+    await expect(host.refine(refineEnvelope())).rejects.toMatchObject({ kind: 'invalid-request' });
+    host.cancelAll();
+    await draftSettled;
+    await host.dispose();
+  });
+
+  it('cancels a hanging refinement by request id', async () => {
+    const host = createAiHost({
+      refineTransport: (_request, signal) => new Promise((resolve) => {
+        signal.addEventListener('abort', () => resolve({ value: draftPlanValue, contentBytes: 10 }));
+      }),
+    });
+    const pending = host.refine(refineEnvelope());
+    const settled = expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
+    expect(host.cancel('ai-salt-refine-1')).toBe(true);
+    await settled;
     await host.dispose();
   });
 });

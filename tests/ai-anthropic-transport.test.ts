@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
-import { DRAFT_INSTRUCTIONS, draftPlanJsonSchema } from '../src/ai/draft-schema';
+import { DRAFT_INSTRUCTIONS, REFINE_INSTRUCTIONS, draftPlanJsonSchema } from '../src/ai/draft-schema';
 
 const require = createRequire(import.meta.url);
 
@@ -36,9 +36,16 @@ type ValidatedDraftRequest = {
   contextBytes: number;
 };
 type DraftResult = { value: unknown; contentBytes: number; usage?: { inputTokens?: number; outputTokens?: number } };
+type ValidatedRefineRequest = {
+  requestId: number | string;
+  followUp: string;
+  envelopeJson: string;
+  envelopeBytes: number;
+};
 type TransportFn = ((request: ValidatedRequest, signal?: AbortSignal) => Promise<Answer>) & {
   probe: (signal?: AbortSignal) => Promise<{ model: string; inputTokens?: number; outputTokens?: number; outputLimited?: boolean }>;
   draft: (request: ValidatedDraftRequest, signal?: AbortSignal) => Promise<DraftResult>;
+  refineDraft: (request: ValidatedRefineRequest, signal?: AbortSignal) => Promise<DraftResult>;
 };
 type FetchImpl = (url: string, init: FakeInit) => Promise<FakeResponse>;
 
@@ -688,6 +695,81 @@ describe('ai-anthropic-transport draft', () => {
     });
     const { fetchImpl: fetch2 } = recordingFetch(async () => jsonResponse(200, twoTexts));
     await expectKind(makeTransport(fetch2).draft(draftRequest()), 'invalid-answer');
+  });
+});
+
+function refineRequest(over: Partial<ValidatedRefineRequest> = {}): ValidatedRefineRequest {
+  const envelopeJson = '{"kind":"jcad.ai.draft-refine-context","version":1}';
+  return {
+    requestId: 'ai-salt-refine-1',
+    followUp: 'Make that circle bigger.',
+    envelopeJson,
+    envelopeBytes: Buffer.byteLength(envelopeJson, 'utf8'),
+    ...over,
+  };
+}
+
+describe('ai-anthropic-transport refine (milestone 4)', () => {
+  it('posts one refinement request with the refine instructions, no maxItems anywhere, and the 4096-token budget', async () => {
+    const { calls, fetchImpl } = recordingFetch(async () => jsonResponse(200, draftMessage(JSON.stringify(draftPlanValue))));
+    const transport = makeTransport(fetchImpl);
+    const request = refineRequest();
+    await transport.refineDraft(request);
+    expect(calls).toHaveLength(1);
+    const { url, init } = calls[0]!;
+    expect(url).toBe('https://api.anthropic.com/v1/messages');
+    expect(init.method).toBe('POST');
+    expect(init.redirect).toBe('manual');
+    expect(init.headers?.['x-api-key']).toBe(API_KEY);
+    expect(init.headers?.['anthropic-version']).toBe('2023-06-01');
+    const raw = init.body!;
+    const body = JSON.parse(raw) as {
+      model: string; max_tokens: number; system: string;
+      messages: { role: string; content: string }[];
+      output_config: { format: { type: string; schema: unknown } };
+    };
+    expect(body.model).toBe(MODEL);
+    expect(body.max_tokens).toBe(4096);
+    expect(body.system).toBe(REFINE_INSTRUCTIONS);
+    expect(body.system).toContain('COMPLETE REPLACEMENT PLAN');
+    expect(body.system).not.toBe(DRAFT_INSTRUCTIONS);
+    expect(body.output_config.format.type).toBe('json_schema');
+    expect(body.output_config.format.schema).toEqual(draftPlanJsonSchema('anthropic'));
+    // Anthropic rejects maxItems in structured-output schemas: it must
+    // appear nowhere in the serialized request body.
+    expect(raw).not.toContain('maxItems');
+    // The user content is exactly the follow-up plus the exact envelope JSON.
+    expect(body.messages[0]!.content).toBe(
+      `Follow-up instruction: ${request.followUp}\n\nRefinement context (exact JSON):\n${request.envelopeJson}`,
+    );
+    // Host bookkeeping never reaches the provider.
+    expect(raw).not.toContain('binding');
+    expect(raw).not.toContain('envelopeBytes');
+    expect(raw).not.toContain(String(request.requestId));
+  });
+
+  it('returns the parsed replacement value unvalidated and tolerates thinking blocks', async () => {
+    const text = JSON.stringify(draftPlanValue);
+    const payload = draftMessage(text, {
+      content: [
+        { type: 'thinking', thinking: 'reasoning first' },
+        { type: 'text', text },
+      ],
+    });
+    const { fetchImpl } = recordingFetch(async () => jsonResponse(200, payload));
+    const transport = makeTransport(fetchImpl);
+    const result = await transport.refineDraft(refineRequest());
+    expect(result.value).toEqual(draftPlanValue);
+    expect(result.contentBytes).toBe(Buffer.byteLength(text, 'utf8'));
+    expect(result.usage).toEqual({ inputTokens: 13, outputTokens: 8 });
+  });
+
+  it('maps stop reasons and malformed output like drafts', async () => {
+    const text = JSON.stringify(draftPlanValue);
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, draftMessage(text, { stop_reason: 'max_tokens' }))).fetchImpl).refineDraft(refineRequest()), 'output-too-large');
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, draftMessage(text, { stop_reason: 'refusal' }))).fetchImpl).refineDraft(refineRequest()), 'refused');
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, draftMessage(text, { stop_reason: 'tool_use' }))).fetchImpl).refineDraft(refineRequest()), 'invalid-answer');
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, draftMessage('{"outcome":'))).fetchImpl).refineDraft(refineRequest()), 'invalid-answer');
   });
 });
 

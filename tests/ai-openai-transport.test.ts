@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
-import { DRAFT_INSTRUCTIONS, draftPlanJsonSchema } from '../src/ai/draft-schema';
+import { DRAFT_INSTRUCTIONS, REFINE_INSTRUCTIONS, draftPlanJsonSchema } from '../src/ai/draft-schema';
 
 const require = createRequire(import.meta.url);
 
@@ -36,9 +36,16 @@ type ValidatedDraftRequest = {
   contextBytes: number;
 };
 type DraftResult = { value: unknown; contentBytes: number; usage?: { inputTokens?: number; outputTokens?: number } };
+type ValidatedRefineRequest = {
+  requestId: number | string;
+  followUp: string;
+  envelopeJson: string;
+  envelopeBytes: number;
+};
 type TransportFn = ((request: ValidatedRequest, signal?: AbortSignal) => Promise<Answer>) & {
   probe: (signal?: AbortSignal) => Promise<{ model: string; inputTokens?: number; outputTokens?: number; outputLimited?: boolean }>;
   draft: (request: ValidatedDraftRequest, signal?: AbortSignal) => Promise<DraftResult>;
+  refineDraft: (request: ValidatedRefineRequest, signal?: AbortSignal) => Promise<DraftResult>;
 };
 type FetchImpl = (url: string, init: FakeInit) => Promise<FakeResponse>;
 
@@ -656,6 +663,81 @@ describe('ai-openai-transport draft', () => {
     };
     const { fetchImpl: fetch2 } = recordingFetch(async () => jsonResponse(200, split));
     await expectKind(makeTransport(fetch2).draft(draftRequest()), 'invalid-answer');
+  });
+});
+
+function refineRequest(over: Partial<ValidatedRefineRequest> = {}): ValidatedRefineRequest {
+  const envelopeJson = '{"kind":"jcad.ai.draft-refine-context","version":1}';
+  return {
+    requestId: 'ai-salt-refine-1',
+    followUp: 'Change that movement to 15 units right in total.',
+    envelopeJson,
+    envelopeBytes: Buffer.byteLength(envelopeJson, 'utf8'),
+    ...over,
+  };
+}
+
+describe('ai-openai-transport refine (milestone 4)', () => {
+  it('posts one refinement request with the refine instructions, plan schema and 4096-token budget', async () => {
+    const { calls, fetchImpl } = recordingFetch(async () => jsonResponse(200, draftPayload(JSON.stringify(draftPlanValue))));
+    const transport = makeTransport(fetchImpl);
+    const request = refineRequest();
+    await transport.refineDraft(request);
+    expect(calls).toHaveLength(1);
+    const { url, init } = calls[0]!;
+    expect(url).toBe('https://api.openai.com/v1/responses');
+    expect(init.method).toBe('POST');
+    expect(init.redirect).toBe('manual');
+    expect(init.headers?.Authorization).toBe(`Bearer ${API_KEY}`);
+    const raw = init.body!;
+    const body = JSON.parse(raw) as {
+      model: string; store: boolean; max_output_tokens: number; instructions: string;
+      input: { role: string; content: { type: string; text: string }[] }[];
+      text: { format: { type: string; name: string; strict: boolean; schema: unknown } };
+    };
+    expect(body.model).toBe(MODEL);
+    expect(body.store).toBe(false);
+    expect(body.max_output_tokens).toBe(4096);
+    expect(body.instructions).toBe(REFINE_INSTRUCTIONS);
+    expect(body.instructions).toContain('COMPLETE REPLACEMENT PLAN');
+    expect(body.instructions).not.toBe(DRAFT_INSTRUCTIONS);
+    expect(body.text.format.type).toBe('json_schema');
+    expect(body.text.format.name).toBe('jcad_draft_plan');
+    expect(body.text.format.strict).toBe(true);
+    expect(body.text.format.schema).toEqual(draftPlanJsonSchema('openai'));
+    // The user content is exactly the follow-up plus the exact envelope JSON.
+    expect(body.input[0]!.content[0]!.text).toBe(
+      `Follow-up instruction: ${request.followUp}\n\nRefinement context (exact JSON):\n${request.envelopeJson}`,
+    );
+    // Host bookkeeping never reaches the provider.
+    expect(raw).not.toContain('binding');
+    expect(raw).not.toContain('envelopeBytes');
+    expect(raw).not.toContain(String(request.requestId));
+  });
+
+  it('returns the parsed replacement value unvalidated, with raw content bytes and usage', async () => {
+    const text = JSON.stringify(draftPlanValue);
+    const { fetchImpl } = recordingFetch(async () => jsonResponse(200, draftPayload(text, { input_tokens: 55, output_tokens: 17 })));
+    const transport = makeTransport(fetchImpl);
+    const result = await transport.refineDraft(refineRequest());
+    expect(result.value).toEqual(draftPlanValue);
+    expect(result.contentBytes).toBe(Buffer.byteLength(text, 'utf8'));
+    expect(result.usage).toEqual({ inputTokens: 55, outputTokens: 17 });
+  });
+
+  it('maps refusal, incomplete and malformed refinement responses like drafts', async () => {
+    const refusal = {
+      id: 'resp-refine', status: 'completed', model: MODEL,
+      output: [{ type: 'message', role: 'assistant', content: [{ type: 'refusal', refusal: 'no' }] }],
+    };
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, refusal)).fetchImpl).refineDraft(refineRequest()), 'refused');
+    const incomplete = (reason: string) => ({
+      id: 'resp-refine', status: 'incomplete', model: MODEL, incomplete_details: { reason }, output: [],
+    });
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, incomplete('max_output_tokens'))).fetchImpl).refineDraft(refineRequest()), 'output-too-large');
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, incomplete('content_filter'))).fetchImpl).refineDraft(refineRequest()), 'refused');
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, draftPayload('{"outcome":'))).fetchImpl).refineDraft(refineRequest()), 'invalid-answer');
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, { id: 'resp-refine', status: 'failed', model: MODEL, output: [] })).fetchImpl).refineDraft(refineRequest()), 'provider-failure');
   });
 });
 

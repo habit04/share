@@ -89,6 +89,7 @@ contextBridge.exposeInMainWorld('jcad', {
     testConnection: () => ipcRenderer.invoke('ai-test-connection'),
     ask: (request) => ipcRenderer.invoke('ai-ask', request),
     draft: (request) => ipcRenderer.invoke('ai-draft', request),
+    draftRefine: (request) => ipcRenderer.invoke('ai-draft-refine', request),
     cancel: (requestId) => ipcRenderer.invoke('ai-cancel', String(requestId ?? '')),
     usage: () => ipcRenderer.invoke('ai-usage'),
   },

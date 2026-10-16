@@ -40,6 +40,10 @@ interface ServiceShape {
     value: unknown; configGeneration: string; usage: { inputBytes: number; outputChars: number; durationMs: number };
     providerUsage?: { inputTokens?: number; outputTokens?: number };
   }>;
+  refine: (value: unknown, signal?: AbortSignal) => Promise<{
+    value: unknown; configGeneration: string; usage: { inputBytes: number; outputChars: number; durationMs: number };
+    providerUsage?: { inputTokens?: number; outputTokens?: number };
+  }>;
   cancel: (requestId: number | string) => boolean;
   cancelAll: () => number;
   usage: () => Record<string, number>;
@@ -60,6 +64,7 @@ const CONFIG_PATH = '/data/ai-config.json';
 type TransportImpl = (request: unknown, signal: AbortSignal) => Promise<unknown>;
 type ProbeImpl = (signal: AbortSignal) => Promise<unknown>;
 type DraftImpl = (provider: string, request: unknown, signal: AbortSignal) => Promise<unknown>;
+type RefineImpl = (provider: string, request: unknown, signal: AbortSignal) => Promise<unknown>;
 
 const draftPlanValue = {
   outcome: 'proposal', message: null,
@@ -114,6 +119,49 @@ function envelope(over: Record<string, unknown> = {}): Record<string, unknown> {
 async function liveDraftEnvelope(service: ServiceShape, over: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
   const state = await service.getState();
   return draftEnvelope({ destination: { provider: state.provider, model: state.model, configGeneration: state.configGeneration }, ...over });
+}
+
+const refineMoveOp = {
+  op: 'move', a: null, b: null, center: null, radius: null, origin: null,
+  width: null, height: null, rotationDeg: null, layer: null,
+  targetIds: ['e-line'], dx: 10, dy: 0, pivot: null, angleDeg: null,
+};
+
+function refineEnvelopeJson(): string {
+  return JSON.stringify({
+    kind: 'jcad.ai.draft-refine-context',
+    version: 1,
+    originalPrompt: 'draw a line',
+    followUp: 'make it longer',
+    originalContext: JSON.parse(draftTestContextJson(['e-line'])),
+    currentPlan: { message: null, operations: [refineMoveOp] },
+    proposalLabels: [{ label: 'Move 1', summary: 'Move 1 object(s) by (10.0000, 0.0000)' }],
+  });
+}
+
+function refineEnvelope(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    requestId: 'ai-salt-refine-1',
+    destination: { provider: 'openai', model: 'gpt-5' },
+    followUp: 'make it longer',
+    envelopeJson: refineEnvelopeJson(),
+    binding: {
+      ask: {
+        sessionId: 1, docId: 'doc-1', contentGeneration: 1, docRevision: 7, docLoadCount: 1,
+        space: { layout: null, viewport: null }, selectionIds: ['e-line'],
+      },
+      unitsKey: '1|2|4',
+      defaultsKey: '{"layer":"0","color":"ByLayer"}',
+      eligibilityKey: 'e-line=1',
+      configKey: 'openai|gpt-5|0',
+    },
+    ...over,
+  };
+}
+
+async function liveRefineEnvelope(service: ServiceShape, over: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  const state = await service.getState();
+  return refineEnvelope({ destination: { provider: state.provider, model: state.model, configGeneration: state.configGeneration }, ...over });
 }
 
 function deferred<T = void>() {
@@ -175,7 +223,11 @@ function makeWorld() {
   let draftImpl: DraftImpl | null = async () => ({
     value: draftPlanValue, contentBytes: 321, usage: { inputTokens: 30, outputTokens: 12 },
   });
+  let refineImpl: RefineImpl | null = async () => ({
+    value: draftPlanValue, contentBytes: 321, usage: { inputTokens: 30, outputTokens: 12 },
+  });
   const draftCalls: { provider: string; request: unknown }[] = [];
+  const refineCalls: { provider: string; request: unknown }[] = [];
   const transportFactory = vi.fn((options: { provider: string; model: string; apiKey: string }) => {
     factoryCalls.push({ ...options });
     const transport = (request: unknown, signal: AbortSignal) => transportImpl(request, signal);
@@ -189,15 +241,23 @@ function makeWorld() {
         return impl(options.provider, request, signal);
       };
     }
+    if (refineImpl) {
+      const impl = refineImpl;
+      (transport as { refineDraft?: (request: unknown, signal: AbortSignal) => Promise<unknown> }).refineDraft = (request, signal) => {
+        refineCalls.push({ provider: options.provider, request });
+        return impl(options.provider, request, signal);
+      };
+    }
     return transport;
   });
   const newService = () => createAiService({ configStore, keyStores, transportFactory });
   return {
-    files, fail, writeBlocks, keyStores, configStore, factoryCalls, transportFactory, newService, draftCalls,
+    files, fail, writeBlocks, keyStores, configStore, factoryCalls, transportFactory, newService, draftCalls, refineCalls,
     service: newService(),
     setTransport: (impl: TransportImpl) => { transportImpl = impl; },
     setProbe: (impl: ProbeImpl | null) => { probeImpl = impl; },
     setDraft: (impl: DraftImpl | null) => { draftImpl = impl; },
+    setRefine: (impl: RefineImpl | null) => { refineImpl = impl; },
     seedConfig: (config: Record<string, unknown>) => {
       files.set(CONFIG_PATH, Buffer.from(JSON.stringify(config), 'utf8'));
     },
@@ -950,6 +1010,91 @@ describe('ai-service draft path (milestone 3)', () => {
     const result = await world.service.draft(await liveDraftEnvelope(world.service));
     expect(result.value).toEqual(draftPlanValue);
     expect(world.draftCalls.map((call) => call.provider)).toEqual(['anthropic']);
+    await world.service.dispose();
+  });
+});
+
+describe('ai-service refine path (milestone 4)', () => {
+  it('routes a refinement to the selected provider only, pinned to the live configuration generation', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-live', 'session');
+    await world.service.setEnabled(true);
+    const request = await liveRefineEnvelope(world.service);
+    const result = await world.service.refine(request);
+    expect(result.configGeneration).toBe((request.destination as { configGeneration: string }).configGeneration);
+    expect(result.value).toEqual(draftPlanValue);
+    expect(result.providerUsage).toEqual({ inputTokens: 30, outputTokens: 12 });
+    expect(world.factoryCalls).toEqual([{ provider: 'openai', model: 'gpt-5', apiKey: 'sk-live' }]);
+    expect(world.refineCalls.map((call) => call.provider)).toEqual(['openai']);
+    expect(world.draftCalls).toEqual([]);
+    // The transport receives the validated request: follow-up + exact envelope.
+    const sent = world.refineCalls[0]!.request as { followUp: string; envelopeJson: string };
+    expect(sent.followUp).toBe('make it longer');
+    expect(sent.envelopeJson).toBe(refineEnvelopeJson());
+    await world.service.dispose();
+  });
+
+  it('rejects destination and generation mismatches without constructing a transport', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-live', 'session');
+    await world.service.setEnabled(true);
+    const live = await liveRefineEnvelope(world.service);
+    const staleGeneration = {
+      ...(live.destination as Record<string, unknown>),
+      configGeneration: '00000000-0000-4000-8000-000000000000:99',
+    };
+    for (const destination of [undefined, { provider: 'anthropic', model: 'gpt-5' }, staleGeneration]) {
+      await expect(world.service.refine(refineEnvelope({ destination }))).rejects.toMatchObject({ kind: 'cancelled' });
+    }
+    expect(world.transportFactory).not.toHaveBeenCalled();
+    expect(world.refineCalls).toEqual([]);
+    await world.service.dispose();
+  });
+
+  it('refuses refinements while Live AI is disabled', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-session', 'session');
+    await expect(world.service.refine(refineEnvelope())).rejects.toMatchObject({ kind: 'live-disabled' });
+    expect(world.transportFactory).not.toHaveBeenCalled();
+    await world.service.dispose();
+  });
+
+  it('refuses when the selected provider transport cannot refine', async () => {
+    const world = makeWorld();
+    world.setRefine(null);
+    await world.service.setKey('sk-live', 'session');
+    await world.service.setEnabled(true);
+    await expect(world.service.refine(await liveRefineEnvelope(world.service))).rejects.toMatchObject({ kind: 'provider-not-configured' });
+    await world.service.dispose();
+  });
+
+  it('surfaces an invalid replacement plan from the provider as invalid-plan', async () => {
+    const world = makeWorld();
+    world.setRefine(async () => ({
+      value: { outcome: 'proposal', message: null, operations: [{ op: 'explode' }] },
+      contentBytes: 60,
+    }));
+    await world.service.setKey('sk-live', 'session');
+    await world.service.setEnabled(true);
+    await expect(world.service.refine(await liveRefineEnvelope(world.service))).rejects.toMatchObject({ kind: 'invalid-plan' });
+    await world.service.dispose();
+  });
+
+  it('a settings mutation during a refinement suppresses delivery of the replacement plan', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-live', 'session');
+    await world.service.setEnabled(true);
+    const gate = deferred();
+    world.setRefine(async (_provider, _request, signal) => {
+      await gate.promise;
+      if (signal.aborted) return { value: draftPlanValue, contentBytes: 10 };
+      return { value: draftPlanValue, contentBytes: 10 };
+    });
+    const pending = world.service.refine(await liveRefineEnvelope(world.service));
+    const settled = expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
+    await world.service.setModel('gpt-5-mini');
+    gate.resolve();
+    await settled;
     await world.service.dispose();
   });
 });
