@@ -161,7 +161,9 @@ describe.runIf(process.platform === 'win32')('Windows generic export owner/order
     release.resolve(); await Promise.all([first, second]); expect(f.host.stats()).toMatchObject({ queuedBytes: 0, ordinaryQueuedBytes: 0, pdfQueuedBytes: 0 });
   });
   it('requires explicit PDF eligibility for an extended file beyond 128 MiB, keeps 256 KiB hash scratch, and preserves ordinary refusal', ({ signal, onTestFailed, onTestFinished }) => {
-    const directory = dir, file = path.join(directory, 'large-existing.pdf'); let created = false, heldDescriptors = 0;
+    // Admission depends on the explicit export kind, bytes and size, regardless
+    // of extension. This is a neutral boundary fixture, not a malformed PDF.
+    const directory = dir, file = path.join(directory, 'large-existing.bin'); let created = false, heldDescriptors = 0;
     let owned: ReturnType<typeof manager> | undefined;
     const started = performance.now(), stages: Array<{ stage: string; elapsedMs: number }> = [];
     const mark = (stage: string) => { stages.push({ stage, elapsedMs: Math.round(performance.now() - started) }); };
@@ -176,7 +178,7 @@ describe.runIf(process.platform === 'win32')('Windows generic export owner/order
     try {
     enter('create-128MiB');
     const handle = await fs.open(file, 'wx'); created = true;
-    try { await handle.write('%PDF-1.4\n'); await handle.truncate(MAX_CONTENT_BYTES + 1); } finally { await handle.close(); }
+    try { await handle.write('bounded export fixture\n'); await handle.truncate(MAX_CONTENT_BYTES + 1); } finally { await handle.close(); }
     const reads: number[] = [];
     const wrapped = { ...native, open: async (...args: any[]) => {
       const fd = await (native.open as any)(...args); heldDescriptors++; let closed = false;
