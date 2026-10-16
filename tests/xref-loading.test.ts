@@ -49,7 +49,7 @@ function projectFiles(): Map<string, string> {
     ['/proj/cycle-a.dxf', fixture('cycle-a.dxf')],
     ['/proj/cycle-b.dxf', fixture('cycle-b.dxf')],
     ['/proj/self-cycle.dxf', fixture('self-cycle.dxf')],
-    ['/proj/drawings/bad.dxf', fixture('bad.dxf')],
+    ['/proj/drawings/bad.dxf', fixture('broken/bad.dxf')],
   ]);
 }
 

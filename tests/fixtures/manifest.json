@@ -87,6 +87,6 @@
     "tests/fixtures/xref/cycle-a.dxf",
     "tests/fixtures/xref/cycle-b.dxf",
     "tests/fixtures/xref/self-cycle.dxf",
-    "tests/fixtures/xref/bad.dxf"
+    "tests/fixtures/xref/broken/bad.dxf"
   ]
 }
