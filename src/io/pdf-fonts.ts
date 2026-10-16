@@ -227,14 +227,19 @@ export class PdfFontRegistry {
   resources(): readonly Readonly<UsedFace>[] { return [...this.used.values()]; }
 }
 
-/** Add full standalone TTF resources to the existing classic-xref PDF assembler. */
+/** Add standalone TTF resources to the existing classic-xref PDF assembler. */
 export function writePdfFontResources(registry: PdfFontRegistry, writer: PdfFontObjectWriter): ReadonlyMap<string, number> {
   const resources = new Map<string, number>();
   const stream = (id: number, bytes: Uint8Array, extra = '') => writer.set(id, [enc.encode(`<< /Length ${bytes.byteLength}${extra} >>\nstream\n`), bytes, enc.encode('\nendstream')]);
   for (const used of registry.resources()) {
     const face = used.face, em = 1000 / face.metrics.unitsPerEm;
     const parent = writer.reserve(), descendant = writer.reserve(), descriptor = writer.reserve(), fontFile = writer.reserve(), cidMap = writer.reserve(), unicode = writer.reserve();
-    const base = face.postscriptName.replace(/#/g, '#23');
+    const program = embeddableFontProgram(face.bytes, new Set([...used.codes.values()].map(({ glyph }) => glyph)));
+    // PDF 9.6.4: actual subsets need six uppercase letters plus '+', unique in
+    // this document. A whole-program fallback keeps the original font name.
+    let subsetTag = '', serial = resources.size;
+    for (let i = 0; i < 6; i++) { subsetTag = String.fromCharCode(65 + serial % 26) + subsetTag; serial = Math.floor(serial / 26); }
+    const base = (program === face.bytes ? '' : `${subsetTag}+`) + face.postscriptName.replace(/#/g, '#23');
     const flags = 4 | (face.isFixedPitch ? 1 : 0) | (face.metrics.italic ? 64 : 0);
     const widths = [...used.codes.values()].map(({ glyph }) => num(face.metrics.advances[glyph]! * em)).join(' ');
     writer.set(parent, `<< /Type /Font /Subtype /Type0 /BaseFont /${base} /Encoding /Identity-H /DescendantFonts [${descendant} 0 R] /ToUnicode ${unicode} 0 R >>`);
@@ -243,7 +248,6 @@ export function writePdfFontResources(registry: PdfFontRegistry, writer: PdfFont
     // Priority 12.3: embed a GID-preserving subset of the used glyphs, unless the
     // program's own OS/2 fsType forbids subsetting or subsetting cannot shrink it
     // safely — both cases embed the whole program exactly as before.
-    const program = embeddableFontProgram(face.bytes, new Set([...used.codes.values()].map(({ glyph }) => glyph)));
     stream(fontFile, program, ` /Length1 ${program.byteLength}`);
     const mapping = new Uint8Array((used.codes.size + 1) * 2);
     const entries: string[] = [];

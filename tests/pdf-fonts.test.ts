@@ -86,7 +86,7 @@ describe('per-plot PDF TrueType font resources', () => {
     const out = objects(), names = writePdfFontResources(registry, out.writer);
     expect(names).toEqual(new Map([['JCF1', 1]]));
     expect(out.entries.size).toBe(6);
-    expect(out.text(1)).toContain('/Subtype /Type0 /BaseFont /JCadFixture /Encoding /Identity-H /DescendantFonts [2 0 R] /ToUnicode 6 0 R');
+    expect(out.text(1)).toContain('/Subtype /Type0 /BaseFont /AAAAAA+JCadFixture /Encoding /Identity-H /DescendantFonts [2 0 R] /ToUnicode 6 0 R');
     expect(out.text(2)).toContain('/FontDescriptor 3 0 R /CIDToGIDMap 5 0 R /DW 500 /W [1 [650 650 300]]');
     expect(out.text(3)).toContain('/FontBBox [-50 -200 900 1000] /ItalicAngle 0 /Ascent 1000 /Descent -200 /CapHeight 730');
     expect(out.text(3)).toContain('/FontFile2 4 0 R');
@@ -136,7 +136,7 @@ describe('per-plot PDF TrueType font resources', () => {
       expect(registry.encode('bold', 'AB')!.hex).toBe('00020001');
       const out = objects(), refs = writePdfFontResources(registry, out.writer);
       expect(refs).toEqual(new Map([['JCF1', 1], ['JCF2', 7]]));
-      expect(out.text(1)).toContain('/JCadFixture-Bold'); expect(out.text(7)).toContain('/JCadFixture ');
+      expect(out.text(1)).toContain('/AAAAAA+JCadFixture-Bold'); expect(out.text(7)).toContain('/AAAAAB+JCadFixture ');
       expect(registry.usedFaces).toBe(2);
       return [...out.entries];
     };
@@ -168,13 +168,13 @@ describe('per-plot PDF TrueType font resources', () => {
     expect(out.entries.size).toBe(0);
   });
 
-  it('escapes PDF-name hash syntax without applying a subset prefix', () => {
+  it('escapes PDF-name hash syntax after applying the subset prefix', () => {
     const registry = new PdfFontRegistry([face({ postscriptName: 'JCad#Fixture' })]);
     registry.encode('fixture', 'A');
     const out = objects(); writePdfFontResources(registry, out.writer);
-    expect(out.text(1)).toContain('/BaseFont /JCad#23Fixture');
-    expect(out.text(3)).toContain('/FontName /JCad#23Fixture');
-    expect(out.text(1)).not.toMatch(/[A-Z]{6}\+/);
+    expect(out.text(1)).toContain('/BaseFont /AAAAAA+JCad#23Fixture');
+    expect(out.text(3)).toContain('/FontName /AAAAAA+JCad#23Fixture');
+    expect(out.text(1)).toMatch(/\/AAAAAA\+JCad#23Fixture/);
   });
 
   it('bounds CIDs atomically and writes ToUnicode mappings in blocks of at most 100', () => {

@@ -73,6 +73,29 @@ function embedded(registry: PdfFontRegistry) {
 }
 
 describe('PDF writer glyf subsetting (priority 12.3)', () => {
+  it('names actual subsets consistently and distinguishes subsets of the same PostScript face', () => {
+    const first = { ...face(), key: 'first' }, second = { ...face(), key: 'second' };
+    const registry = new PdfFontRegistry([first, second]);
+    registry.encode(first.key, 'A'); registry.encode(second.key, 'B');
+    const out = objects(); writePdfFontResources(registry, out.writer);
+    const names = [out.text(1), out.text(7)].map(text => text.match(/\/BaseFont \/([A-Z]{6}\+JCadFixture) /)?.[1]);
+    expect(names[0]).toMatch(/^[A-Z]{6}\+JCadFixture$/);
+    expect(names[1]).toMatch(/^[A-Z]{6}\+JCadFixture$/);
+    expect(names[0]).not.toBe(names[1]);
+    for (const [index, name] of names.entries()) {
+      expect(out.text(2 + index * 6)).toContain(`/BaseFont /${name} `);
+      expect(out.text(3 + index * 6)).toContain(`/FontName /${name} `);
+    }
+  });
+
+  it('keeps whole-font names when no-subsetting permission requires the original program', () => {
+    const font = face({ fsType: 0x0108 }), registry = new PdfFontRegistry([font]);
+    registry.encode(font.key, 'A'); const { out, program } = embedded(registry);
+    expect(program).toEqual(new Uint8Array(font.bytes));
+    expect(out.text(1)).toContain('/BaseFont /JCadFixture ');
+    expect(out.text(3)).toContain('/FontName /JCadFixture ');
+  });
+
   it('embeds only the used glyphs plus .notdef, preserving GIDs, maps and widths', () => {
     const box = [0, 0, 500, 700] as const;
     const font = face({ extraGlyphs: [simpleGlyph(box), simpleGlyph(box), simpleGlyph(box)] });

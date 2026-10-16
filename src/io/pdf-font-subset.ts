@@ -113,12 +113,19 @@ export function subsetGlyfProgram(bytes: Uint8Array, usedGlyphs: ReadonlySet<num
     const contours = data.getInt16(start);
     if (contours >= 0) {
       if (!contours) {
+        // OpenType permits a zero-contour glyph to contain only its header.
+        // Optional instructions can still operate on the phantom points.
+        if (length === 10) return { components: [], points: 0, contours: 0, depth: 0, instructions: 0 };
         if (length < 12) fail('truncated glyph instruction count');
-        return { components: [], points: 0, contours: 0, depth: 0, instructions: data.getUint16(start + 10) };
+        const instructions = data.getUint16(start + 10);
+        if (12 + instructions > length) fail('truncated glyph instructions');
+        return { components: [], points: 0, contours: 0, depth: 0, instructions };
       }
       if (length < 10 + contours * 2 + 2) fail('truncated glyph contour endpoints');
       const points = data.getUint16(start + 10 + (contours - 1) * 2) + 1;
-      return { components: [], points, contours, depth: 0, instructions: data.getUint16(start + 10 + contours * 2) };
+      const instructions = data.getUint16(start + 10 + contours * 2);
+      if (12 + contours * 2 + instructions > length) fail('truncated glyph instructions');
+      return { components: [], points, contours, depth: 0, instructions };
     }
     if (contours !== -1) fail('invalid glyph contour count');
     const components: number[] = [];
@@ -165,6 +172,7 @@ export function subsetGlyfProgram(bytes: Uint8Array, usedGlyphs: ReadonlySet<num
           for (const component of info.components) {
             const childInfo = infoOf(component);
             points += childInfo.points; contours += childInfo.contours;
+            if (!Number.isSafeInteger(points) || !Number.isSafeInteger(contours) || points > 0xffff || contours > 0xffff) fail('maxp composite counts exceed the representable uint16 range');
             depth = Math.max(depth, childInfo.depth + 1);
           }
         }
@@ -226,9 +234,12 @@ export function subsetGlyfProgram(bytes: Uint8Array, usedGlyphs: ReadonlySet<num
 
   const newMaxp = new Uint8Array(bytes.subarray(maxp.start, maxp.start + maxp.length));
   const maxpView = new DataView(newMaxp.buffer, newMaxp.byteOffset, newMaxp.byteLength);
-  maxpView.setUint16(6, maxPoints); maxpView.setUint16(8, maxContours);
-  maxpView.setUint16(10, maxCompositePoints); maxpView.setUint16(12, maxCompositeContours);
-  maxpView.setUint16(26, maxSizeOfInstructions); maxpView.setUint16(28, maxComponentElements); maxpView.setUint16(30, maxComponentDepth);
+  const maxpFields: readonly (readonly [number, number])[] = [[6, maxPoints], [8, maxContours], [10, maxCompositePoints], [12, maxCompositeContours],
+    [26, maxSizeOfInstructions], [28, maxComponentElements], [30, maxComponentDepth]];
+  for (const [offset, value] of maxpFields) {
+    if (!Number.isSafeInteger(value) || !integer(value, 0, 0xffff)) fail('maxp count exceeds the representable uint16 range');
+    maxpView.setUint16(offset, value);
+  }
   const newHead = new Uint8Array(bytes.subarray(head.start, head.start + head.length));
   new DataView(newHead.buffer, newHead.byteOffset, newHead.byteLength).setUint32(8, 0);
 
@@ -270,6 +281,7 @@ export function subsetGlyfProgram(bytes: Uint8Array, usedGlyphs: ReadonlySet<num
   const checkHead = table(checkTables, 'head', 54), checkMaxp = table(checkTables, 'maxp', 32);
   const checkGlyf = table(checkTables, 'glyf', 0), checkLoca = table(checkTables, 'loca', 4);
   if (checkData.getUint16(checkMaxp.start + 4) !== glyphCount || checkData.getInt16(checkHead.start + 50) !== locaFormat) fail('subset self-check failed (header)');
+  for (const [offset, value] of maxpFields) if (checkData.getUint16(checkMaxp.start + offset) !== value) fail('subset self-check failed (maxp)');
   if (checksum(checkData, 0, result.byteLength) !== CHECKSUM_MAGIC) fail('subset self-check failed (checksum)');
   for (let glyph = 0; glyph < glyphCount; glyph++) {
     const start = locaFormat === 0 ? checkData.getUint16(checkLoca.start + glyph * 2) * 2 : checkData.getUint32(checkLoca.start + glyph * 4);

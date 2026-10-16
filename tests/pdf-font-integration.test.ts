@@ -74,7 +74,7 @@ describe('captured vector PDF font integration', () => {
     expect(await plotLayoutsOrVector(stub.editor, { action: 'pdf', options })).toBe(true);
     expect(requests).toEqual(['Arial']); expect(stub.saved).toHaveLength(1);
     const pdf = parsePdfBasics(stub.saved[0]!.bytes);
-    expect(pageFonts(pdf, pdf.pages[0]!.num)).toEqual({ JCF1: 'JCadArialRegular' });
+    expect(pageFonts(pdf, pdf.pages[0]!.num)).toEqual({ JCF1: 'AAAAAA+JCadArialRegular' });
     expect(embeddedPrograms(pdf)).toHaveLength(1); expect(stub.logs.join(' ')).not.toContain('substitute');
     expect(doc.dirty).toBe(false); expect(doc.history()).toEqual({ undo: [], redo: [] });
   });
@@ -87,7 +87,7 @@ describe('captured vector PDF font integration', () => {
     const requests: string[] = [], { result, context } = await prepared(doc, async (request) => { requests.push(request.family!); return reader(request); }, printed.groups);
     const pdf = parsePdfBasics(vectorPdf([printed], context, plotStyle));
     expect(requests).toEqual(['Arial']); expect(result.issues).toEqual([]);
-    expect(pageFonts(pdf, pdf.pages[0]!.num)).toEqual({ JCF1: 'JCadArialRegular' });
+    expect(pageFonts(pdf, pdf.pages[0]!.num)).toEqual({ JCF1: 'AAAAAA+JCadArialRegular' });
     expect(embeddedPrograms(pdf)).toHaveLength(1); expect(context.fontFallbacks!.size).toBe(0);
   });
 
@@ -128,8 +128,8 @@ describe('captured vector PDF font integration', () => {
     const { context } = await prepared(doc, async (request) => ({ font: request.family === 'Arial' ? first : second }));
     const pdf = parsePdfBasics(vectorPdf([page([doc.entities[0]!]), page([doc.entities[1]!])], context, plotStyle));
     expect(pdf.errors).toEqual([]); expect(embeddedPrograms(pdf)).toHaveLength(2);
-    expect(pageFonts(pdf, pdf.pages[0]!.num)).toEqual({ JCF1: 'JCadArialRegular' });
-    expect(pageFonts(pdf, pdf.pages[1]!.num)).toEqual({ JCF2: 'JCadTimesNewRomanRegular' });
+    expect(pageFonts(pdf, pdf.pages[0]!.num)).toEqual({ JCF1: 'AAAAAA+JCadArialRegular' });
+    expect(pageFonts(pdf, pdf.pages[1]!.num)).toEqual({ JCF2: 'AAAAAB+JCadTimesNewRomanRegular' });
     expect(unicodeText(pdf)).toContain('<0001> <0041>\n<0002> <0042>');
     const maps = [...pdf.objects.values()].filter((object) => object.stream?.length === 6);
     expect(maps.map((object) => object.stream)).toContainEqual(new Uint8Array([0, 0, 0, 2, 0, 2]));
@@ -160,7 +160,7 @@ describe('captured vector PDF font integration', () => {
     const doc = drawing([text('native', { text: 'A' }), text('missing', { text: 'C' })]), stub = editorStub(doc, reader);
     await plotLayoutsOrVector(stub.editor, { action: 'pdf', options });
     const pdf = parsePdfBasics(stub.saved[0]!.bytes), fonts = pageFonts(pdf, pdf.pages[0]!.num);
-    expect(fonts).toEqual({ JCF1: 'JCadArialRegular', F1: 'Helvetica' }); expect(embeddedPrograms(pdf)).toHaveLength(1);
+    expect(fonts).toEqual({ JCF1: 'AAAAAA+JCadArialRegular', F1: 'Helvetica' }); expect(embeddedPrograms(pdf)).toHaveLength(1);
     expect(stub.logs.join(' ')).toContain('substitute fonts'); expect(unicodeText(pdf)).toContain('<0041>'); expect(unicodeText(pdf)).not.toContain('<0043>');
   });
 

@@ -278,7 +278,9 @@ describe('captured-PDF used-codepoint plumbing', () => {
     expect(pdf.errors).toEqual([]);
     const programs = embeddedPrograms(pdf);
     expect(programs).toHaveLength(1);
-    expect(programs[0]).toEqual(new Uint8Array(bytes)); // whole program; this fix does not subset
+    // This authored glyph has 65,536 points: a rebuilt maxp uint16 cannot
+    // represent it, so subsetting safely retains the complete original program.
+    expect(programs[0]).toEqual(new Uint8Array(bytes));
     expect(pageFonts(pdf, pdf.pages[0]!.num)).toEqual({ JCF1: 'Simsunlike-Regular' });
     expect(unicodeText(pdf)).toContain('<0001> <0041>\n<0002> <4E2D>');
     const contents = pageContents(pdf, (data) => new Uint8Array(inflateSync(data)));
