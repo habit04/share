@@ -9,6 +9,9 @@
  * over the other parameters; the instance stores a row choice and evaluation
  * applies the row over the direct values — see evaluate.ts and
  * design-visibility-lookup-array.md §2).
+ * 30.2c (additive, same model version): the array action (repeat a selection
+ * along the driving linear parameter's direction, count derived from the
+ * parameter's effective value — design-visibility-lookup-array.md §3).
  *
  * Pure data + structural validation. No I/O, no editor imports, and nothing here
  * mutates a definition: a definition that fails validation is refused, never repaired.
@@ -252,7 +255,7 @@ export interface OpaqueParameter {
   readonly payload: string;
 }
 
-export type DynamicAction = StretchAction | MoveAction | RotateAction | ScaleAction | FlipAction | OpaqueAction;
+export type DynamicAction = StretchAction | MoveAction | RotateAction | ScaleAction | FlipAction | ArrayAction | OpaqueAction;
 
 /** Common action fields. */
 export interface DynamicActionBase {
@@ -372,6 +375,30 @@ export interface FlipAction extends DynamicActionBase {
 }
 
 /**
+ * Array (30.2c): repeat the selection as a unit along the driving linear
+ * parameter's direction, at a fixed spacing, with the copy count derived
+ * from the parameter's effective value (count rule in evaluate.ts — JCad's
+ * own rule, design §3.3; the native count rule is undocumented at field
+ * level). Driven by a linear-distance parameter. The array is a
+ * whole-entity-class action for dependency purposes (design §5): it sources
+ * no dependency edges. Deliberately no distanceMultiplier / angleOffset:
+ * the parameter's direction and this spacing fully determine the copies.
+ */
+export interface ArrayAction extends DynamicActionBase {
+  readonly kind: 'array';
+  /** The entities arrayed together. Every copy contains every selected
+   *  entity, offset as a unit. Attribute definitions may NOT be arrayed —
+   *  an evaluation refusal ('unsupported-selection'), not a validation
+   *  issue, because ids and tags share one identity space at validation
+   *  time (design §3.4). */
+  readonly selection: readonly WholeSelection[];
+  /** Distance between successive copies along the parameter direction,
+   *  drawing units. Finite and > 0 (validation). Copy k sits at offset
+   *  k * spacing from the source's current working position. */
+  readonly spacing: number;
+}
+
+/**
  * An action this build does not model. Retained verbatim, never interpreted;
  * evaluation of the whole definition refuses while one is present.
  */
@@ -407,6 +434,7 @@ export type DefinitionIssueCode =
   | 'duplicate-lookup-row' // two rows of one lookup parameter share a name
   | 'duplicate-lookup-key' // two rows have identical key tuples (indistinguishable to matchingLookupRow)
   | 'invalid-lookup-row' // key does not cover exactly the inputs; an assignment names an input / the lookup / an opaque or unknown parameter; or a key/assignment value is the wrong kind for, or violates, its target parameter
+  | 'reserved-entity-id' // a base entity id or attribute tag contains '#' while the definition has an array action ('#' is reserved for array copy ids, design §3.6)
   | 'parameter-kind-mismatch'; // e.g. a rotate action driven by a linear-distance parameter
 
 export interface DefinitionIssue {
@@ -473,6 +501,7 @@ const ACTION_PARAMETER_KIND: Readonly<Record<string, DynamicParameter['kind']>> 
   rotate: 'angle',
   scale: 'linear-distance',
   flip: 'flip',
+  array: 'linear-distance',
 };
 
 /**
@@ -850,6 +879,28 @@ export function validateDefinition(
         }
         checkWholeSelection(action, action.selection);
         break;
+      case 'array':
+        if (!Number.isFinite(action.spacing) || action.spacing <= 0) {
+          issues.push({ code: 'invalid-action-geometry', message: `Array action '${action.id}' spacing must be finite and positive.`, actionId: action.id });
+        }
+        checkWholeSelection(action, action.selection);
+        break;
+    }
+  }
+
+  // '#' is reserved for array copy ids (`${source}#${action}#${k}`, design
+  // §3.4): in a definition that has an array action, no base entity id or
+  // attribute tag may contain one, so a derived copy id can never collide
+  // with a base id. Without an array action the character is unrestricted.
+  const arrayAction = definition.actions.find((a) => a.kind === 'array');
+  if (arrayAction) {
+    const offenders = [...baseEntityIds].filter((id) => id.includes('#')).sort();
+    for (const id of offenders) {
+      issues.push({
+        code: 'reserved-entity-id',
+        message: `Id '${id}' contains '#', which is reserved for array copy ids while the definition has an array action.`,
+        actionId: arrayAction.id,
+      });
     }
   }
   return issues;
