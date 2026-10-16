@@ -1,23 +1,45 @@
 # Priority 12 Windows validation checkpoint
 
-2026-10-16 follow-up; branch `review/p12-dwg-f4`, test commit `6dab4cb` over
-CI commit `800d761`. Application bytes are unchanged from the inspected
+2026-10-16 Chrome-comparison follow-up; branch `review/p12-dwg-f4`, over tested
+head `a94f104`. Application bytes are unchanged from the inspected
 `435f57e` tree. Draft PR #23 remains unmerged; no publication, installer,
 installation, release signing or security-setting change. The long roadmap
 remains paused.
 
 | Check | Result and limit |
 |---|---|
-| PR CI | All five prior jobs pass on `435f57e`. New `800d761` Windows source/origin checks pass in both runs; broad packaged acceptance has one passing push job and one failing PR job under review. Do not substitute the sibling pass for the failed PR check. |
+| PR CI | Both ordinary runs at `a94f104` pass all five jobs each, including Windows packaged and GPU. Actual PR merge parents and branch head are verified. The new validation-only comparison follow-up requires its own full/CI gate; see the draft PR for the final head/receipts. |
 | Native prerequisites | Four unchanged Windows files pass 145/145 outside the restricted sandbox, with private process-only temp paths. |
 | Full suite without optional customer inputs | 6,954 passed, zero failed, 40 skipped; 395 files, 194.64 s. The two private DWG cases were skipped; this does not clear their combined gate. |
-| Full suite with both hash-pinned private DWG inputs | **6,967 passed, zero failed, 38 skipped**; 396 files, 210.13 s. Both DWG cases and all 34 export-admission cases pass, without preload/observer. Tracked inputs and private drawings remain unchanged. |
+| Full suite with both hash-pinned private DWG inputs | At `a94f104`: **6,974 passed, zero failed, 38 skipped**; 397 files, 188.35 s. Both DWG cases and all 34 export-admission cases pass, without preload/observer. Tracked inputs and private drawings remain unchanged. The new comparison adds 48 targeted tests; its combined gate is recorded separately. |
 | Historical two-file promise diagnostic | Export-admission and private-DWG files pass 36/36; original unlink promise fulfills in about 0.5 ms. Instrumented, nonreproducing evidence only; it did not clear the earlier full-suite failure. |
 | Private full-DWG test ASAR | Build succeeds with existing Electron 44.7.2/helper. Source, dependency, runtime and resource inputs remain unchanged; 65 packed application/renderer files and copied DWG resources match. Test metadata, all test fuses and PE/ASAR header digest are independently verified. No installer or signing operation. |
 | Packaged font/Plot/DWG workflow | 63/63 F4 assertions and nine independent Han raster checks pass. Actual packaged workers/IPC receive 19 metric and 26 PDF-font calls. TTC faces, Bahnschrift whole default, optical-size/Han refusals, edit/undo/redo/DXF reopen and source protection pass. No page errors; source/fonts unchanged; owned processes exit. |
 | Packaged independent PDF inspection | **2,883/2,883** on unchanged artifacts with the private configured Poppler runtime; the original 2,882/2,883 report is retained. Six Canvas/PDF crops satisfy the original 3px bounds; contract/fallback images visually inspected. |
 | Authored CFF PDF inspection | **1,903/1,903** with the narrow checked-CMap adapter after **221/221 controls**. Configured Poppler with stock pypdf remains **1,875/1,903**, with the same 28 extraction failures. All 52 PDFium page extractions and raw glyph/CID/width checks pass. Original 1,873/1,903 report retained; installed-CFF/wider-viewer acceptance stays open. |
-| Broad packaged E2E | Both Windows CI runs pass desktop **257/257**, with all 15,692 input records unchanged and 65 packed sources, full DWG resources, metadata and test fuses verified. Push run `38918885254` passes all three origin launches; PR run `38918892151` fails the original 60s first-window check before any preference result. Driver/step budgets did not expire. Cause remains unresolved; merge remains held. Local unsigned launch remains blocked by Smart App Control. |
+| Broad packaged E2E | At `a94f104`, PR `38923301969` and push `38923294678` both pass desktop **257/257** and all three origin launches. Each GitHub-digest-matched artifact has 15,695 equal before/after input records, 65 packed sources, full DWG resources/test fuses and final EXE/ASAR/fuses identical to initial proof. Earlier `800d761` PR origin failure remains preserved and undiagnosed. Local unsigned launch remains blocked by Smart App Control. |
+| Native Chrome PDF text | Fresh run `native-record-runs/run-t9wwa4ek` passes **31/31** on three unchanged Windows Plot PDFs. All 19 independently pre-pinned DXF text fragments, internal spaces/NBSP/Unicode and edit markers match exactly in order; screenshots inspected. The comparison permits bounded layout separators only between entity records. All **48 regression tests** pass. |
+
+## Chrome spacing comparison repair
+
+The earlier 28/30 Chrome probe incorrectly concatenated distinct source TEXT
+records after removing line breaks. Two records at `(20,40)` and `(100,40)` have
+an ordinary viewer-added separator between them. The corrected, tracked
+`scripts/pdf-viewer-text.mjs` compares each complete source fragment literally,
+in order, with zero unmatched prefix/suffix. Only ASCII space/CR/LF may separate
+records, up to 16 code units; input/source text is bounded to 10,000 UTF-16 code
+units and 64 nonempty own-indexed fragments. Ambiguous leading/trailing source
+layout is refused rather than trimmed. No global whitespace or Unicode
+normalization is used. Regression controls reject changed internal spaces/NBSP,
+inserted CR/LF, missing/reordered glyphs, extra non-layout characters, sparse or
+inherited fragments, normalization changes and limit overruns.
+
+One fresh Chrome 155 run uses that same helper, pinned before launch. All 31
+checks pass, including exact source text, original/copied PDF/font/source hashes,
+the comparator hash and owned-process cleanup. Original failed reports and
+scripts remain unchanged; the new run is separate evidence. This repairs the
+validation oracle, not JCad PDF generation. Exact inter-entity formatting in all
+viewers, installed CFF fonts and release/installer acceptance are not claimed.
 
 The size-boundary fixture now contains neutral bytes with a `.bin` suffix. This
 test selects PDF eligibility by explicit export kind and hashes opaque bytes;
@@ -35,8 +57,8 @@ timeout increase or proven antivirus/native-kernel cause is claimed. This is a
 test-fixture/teardown correction, not a product save-engine change or proof of
 valid 512MiB PDF rendering.
 
-The packaged desktop result is 257/257 in both actual CI artifacts; the failed
-origin check is not cleared by the sibling pass. PR CI checks merge SHA
+Historically, the `800d761` packaged desktop result is 257/257 in both artifacts;
+its failed origin check is not cleared by the sibling pass. That PR checks merge SHA
 `0ede4e5ef8a0db31d54a650e35db792268aa8302`; push CI checks `800d761`.
 Cross-run application, renderer, scripts, build and other dependency bytes match;
 four generated DWG entries and the existing Vitest cache differ, each run's
@@ -48,8 +70,9 @@ and error-log tail under the uploaded output. Original assertions/60s deadline
 remain unchanged, and diagnostic/close errors cannot replace the original failure.
 The CI runner also verifies EXE/ASAR/fuses after a failed driver. Seven mocked
 diagnostic controls pass within a 112-test focused gate; renderer/scripts types
-and lint pass. These controls do not clear the real origin failure: the new
-ordinary CI run must complete and its actual receipt must be reviewed.
+and lint pass. These controls do not establish a startup root cause. The later
+`a94f104` ordinary CI runs complete successfully and their actual receipts pass
+independent review. The new comparator follow-up requires fresh CI.
 
 The exact Poppler DLL getter identifies `poppler/share/fonts`, distinct from the
 earlier failed `Library/share/fonts` control. A private byte-identical runtime
@@ -91,8 +114,9 @@ of the new test artifact or every published asset. The existing release workflow
 requires publisher signing for publication and verifies the app, installer and
 DWG helper against that publisher; it was inspected, not dispatched.
 
-Broad packaged acceptance uses the separate CI test artifact and still needs a
-clean PR result/receipt without changing machine security. Test-ASAR success is not installer, installed-release,
+Broad packaged acceptance uses the separate CI test artifact; the `a94f104`
+PR/push receipts pass without changing machine security. The comparator follow-up
+must retain those gates. Test-ASAR success is not installer, installed-release,
 shipping-fuse or AutoCAD acceptance. Installed-CFF and wider-viewer gates remain
 open; historical CFF strict inspector failures remain recorded separately.
 
@@ -110,12 +134,18 @@ The related adoption bypass is static glue evidence, not a separately executed
 probe. Host channels are mocks; memory cases evaluate isolated pinned JS, not
 WASM/native GUI. Corrected verifier controls pass 10/10, including known-owner
 and fresh Windows pairs, old corrupt-width rejection and PDF boolean resolution.
-Those improvements do not fix the remaining defects or establish native-mode
-acceptance. Justin has forwarded the round-two bundle to Muse.
+Those improvements do not fix that candidate's remaining defects or establish native-mode
+acceptance. Justin forwarded the round-two bundle to Muse. A new fourteen-patch
+delivery, ZIP SHA256 `c61cfaca24b96b867972f953c3b82553e813b489378443a012194f6fc85dcd2d`,
+declares head `be3ca1f312f4160b16b362cd801019313589fa7b`. Its first eleven diff
+payloads are identical; three added commits address quarantine settlement,
+MEMFS write/accounting and memory-envelope documentation. Seventeen manifest
+entries verify. This establishes a different intact delivery, not correctness;
+none is adopted and the new fixes still require independent/native validation.
 
 Ordinary preview/print-font refusal stays active. Later narrow composition must
 retain selected-face/fallback/SHX, CFF mapping, subsetting, whole-variable and
-DWG/F4 safeguards. The failed packaged PR check and outstanding
+DWG/F4 safeguards. The new comparator follow-up's full/CI gates and outstanding
 12.4 utilityProcess/Plot/save checks still prevent merge clearance. The narrow
 PDF checks above pass under their stated validator conditions; installed-CFF
 and wider-viewer acceptance remain open.
@@ -145,6 +175,11 @@ Raw logs and receipts remain under the own worktree's ignored `.codex-local/`:
 - `p12-packaged-completion/ci-observation-800d761-1503.json`
 - `p12-packaged-completion/artifacts-800d761/` and `PACKAGED-800-ARTIFACT-REVIEW.md`
 - `p12-packaged-completion/local-gates-3btu46/`
+- `p12-packaged-completion/artifacts-a94f104/FINAL-ALL-JOBS-REVIEW.md`
+- `p12-browser-viewer/NATIVE-RESULT.md` (original 28/30 retained)
+- `p12-browser-viewer/NATIVE-RECORD-BOUNDARIES-RESULT.md` (fresh 31/31)
+- `p12-chrome-spacing/` (48-test regression/type/lint/build logs)
+- `p12-incoming-oct16-round3/TRIAGE.md` (new 12.4 delivery, not adopted)
 
 Failed helper checks are retained: the archive API separator error was corrected
 in a separate inspector without repackaging; the initial whole-font inspector
