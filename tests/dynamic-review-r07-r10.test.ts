@@ -16,7 +16,6 @@ import {
   insertEvaluationRefusal,
   type AttributeDef,
   type BlockDef,
-  type Entity,
   type InsertEntity,
   type LineEntity,
   type TextEntity,
