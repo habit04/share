@@ -19,7 +19,7 @@
 //
 // Checks: window + no page errors, window.jcad bridge, LINE with typed coordinates, ZOOM E (command
 // and native menu), OPEN of a DXF and a DWG through `open-drawing`, the Import Report dialog (text,
-// Copy Report) and the Save warning over a source file with import losses (No = Save As), IMAGE bitmaps through
+// Copy Report), hard refusal to replace a source with import losses and a separate Save As copy, IMAGE bitmaps through
 // `read-image` (relative to the drawing folder), RECENT (open by remembered
 // path), PLOT to a tabloid landscape vector PDF through `save-pdf` (parsed: 1224 x 792 pt, content
 // stream paths) and as a raster image through `plot-pdf`, a layout tab plotted as a page, the updater's
@@ -500,7 +500,7 @@ try {
   }
   if (!existsSync(fixtures.dwg)) ok('DWG fixture missing: skipped');
 
-  // ------------------------------------------------------------------ Import Report dialog + Save warning
+  // ------------------------------------------------------------------ Import Report dialog + partial-source protection
   step = 'import report';
   // The DWG above holds content the import cannot keep (wipeouts, a tolerance, a multiline...): the
   // Import Report dialog opened after it. Check its text, Copy Report and Close.
@@ -525,7 +525,7 @@ try {
       () => bad('no Import Report dialog after opening a DWG with unsupported content'),
     );
   }
-  // A DXF with content JCad cannot keep: the report opens, and SAVE over the file asks (No = Save As).
+  // A DXF with content JCad cannot keep: SAVE refuses its source; SAVEAS writes a separate copy.
   const lossDir = mkdtempSync(join(tmpdir(), 'jcad-e2e-loss-'));
   const lossDxf = join(lossDir, 'unsupported-content.dxf');
   writeFileSync(lossDxf, readFileSync(join(repo, 'tests', 'fixtures', 'unsupported-content.dxf')));
@@ -543,25 +543,55 @@ try {
     () => bad('no Import Report dialog after opening a DXF with unsupported content'),
   );
   await messages();
-  h = await historyLen();
-  await win.evaluate(() => void window.editor.runCommand('SAVE'));
-  const warn = win.locator('.modal', { hasText: 'Save over the original file?' });
-  await warn.waitFor({ timeout: 5000 }).then(
-    async () => {
-      check(/object\(s\) JCad cannot keep .* Save As to keep the original/.test(await warn.innerText()), 'Save warning names the loss and Save As');
-      await warn.locator('button', { hasText: 'No' }).click();
-      await waitLog(/^Save As keeps the original file unchanged/, h).then(
-        () => ok('No switches to Save As'),
-        () => bad('No did not switch to Save As'),
-      );
-      await win.waitForFunction(() => !document.querySelector('.modal'), null, { timeout: 5000 }).catch(() => {});
-      await win.waitForTimeout(300);
-      const msgs = await messages();
-      check(msgs.some((m) => m.startsWith('save:')), `the Save As dialog was requested by the main process (${msgs.join(' | ')})`);
-      check(readFileSync(lossDxf, 'latin1') === readFileSync(join(repo, 'tests', 'fixtures', 'unsupported-content.dxf'), 'latin1'), 'the original file was not written');
-    },
-    () => bad('SAVE over a source file with import losses did not ask'),
-  );
+  if (current) {
+    await win.evaluate(() => {
+      const ed = window.editor;
+      ed.doc.addEntities([{ id: 'import-loss-save-marker', type: 'line', layer: '0', color: 'ByLayer', a: { x: -53, y: -54 }, b: { x: -52, y: -51 } }]);
+      /** @type {any} */ (window).__importLossBefore = ed.doc.snapshot;
+    });
+    h = await historyLen();
+    await win.evaluate(() => void window.editor.runCommand('SAVE'));
+    await waitLog(/^Not saved: .*partial import.*cannot be saved over its source.*Use Save As/, h).then(
+      () => ok('SAVE refuses the partial-import source and explains Save As'),
+      () => bad('SAVE did not report the partial-import source refusal'),
+    );
+    check(await win.evaluate(() => window.editor.doc.snapshot === /** @type {any} */ (window).__importLossBefore && window.editor.doc.dirty), 'Refused partial-source SAVE preserves the edited snapshot and dirty state');
+    check(await win.locator('.modal').count() === 0, 'Partial-source refusal does not offer destructive overwrite consent');
+    check(!(await messages()).some((m) => m.startsWith('save:')), 'Refused source SAVE does not open a destination picker');
+    const lossCopy = join(lossDir, 'unsupported-content-copy.dxf');
+    await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), lossCopy);
+    h = await historyLen();
+    await win.evaluate(() => void window.editor.runCommand('SAVEAS'));
+    await waitLog(/^Saved /, h).then(
+      () => ok('SAVEAS writes the partial import to a separate file'),
+      () => bad('Separate partial-import SAVEAS did not finish'),
+    );
+    check(await win.evaluate(p => window.editor.doc.filePath === p && !window.editor.doc.dirty, lossCopy), 'Separate SAVEAS becomes the clean working drawing');
+    check(readFileSync(lossDxf, 'latin1') === readFileSync(join(repo, 'tests', 'fixtures', 'unsupported-content.dxf'), 'latin1') && !existsSync(lossDxf + '.bak'), 'Refusal and separate SAVEAS preserve the exact original without a source backup');
+    check(existsSync(lossCopy) && /\bSECTION\b/.test(readFileSync(lossCopy, 'utf8')), 'The separate DXF copy exists on disk');
+    await win.evaluate(() => { delete /** @type {any} */ (window).__importLossBefore; });
+  } else {
+    // Older packaged releases retain the original consent/No-to-Save-As smoke check.
+    h = await historyLen();
+    await win.evaluate(() => void window.editor.runCommand('SAVE'));
+    const warn = win.locator('.modal', { hasText: 'Save over the original file?' });
+    await warn.waitFor({ timeout: 5000 }).then(
+      async () => {
+        check(/object\(s\) JCad cannot keep .* Save As to keep the original/.test(await warn.innerText()), 'Save warning names the loss and Save As');
+        await warn.locator('button', { hasText: 'No' }).click();
+        await waitLog(/^Save As keeps the original file unchanged/, h).then(
+          () => ok('No switches to Save As'),
+          () => bad('No did not switch to Save As'),
+        );
+        await win.waitForFunction(() => !document.querySelector('.modal'), null, { timeout: 5000 }).catch(() => {});
+        await win.waitForTimeout(300);
+        const msgs = await messages();
+        check(msgs.some((m) => m.startsWith('save:')), `the Save As dialog was requested by the main process (${msgs.join(' | ')})`);
+        check(readFileSync(lossDxf, 'latin1') === readFileSync(join(repo, 'tests', 'fixtures', 'unsupported-content.dxf'), 'latin1'), 'the original file was not written');
+      },
+      () => bad('SAVE over a source file with import losses did not ask'),
+    );
+  }
   rmSync(lossDir, { recursive: true, force: true });
 
   // ------------------------------------------------------------------ IMAGE bitmaps through read-image
@@ -623,9 +653,10 @@ try {
     if (i >= 0) s.close(i);
   }, fixtures.dxf);
   h = await historyLen();
-  const recent = await win.evaluate(() => window.editor.settings.recentFiles.slice(0, 3));
+  const recent = await win.evaluate(() => window.editor.settings.recentFiles);
   check(recent.includes(fixtures.dxf), `recent files list the DXF (${recent.join(', ')})`);
   const idx = recent.indexOf(fixtures.dxf) + 1;
+  if (idx < 1) throw new Error('The RECENT fixture is missing from the actual recent-file list.');
   await win.evaluate((i) => void window.editor.runCommand(`RECENT ${i}`), idx);
   await waitLog(/^(Opened|Failed to open)/, h, 15_000).catch(() => bad('RECENT did not open anything'));
   log = await logSince(h);
