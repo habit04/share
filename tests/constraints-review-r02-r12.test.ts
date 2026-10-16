@@ -374,3 +374,80 @@ describe('R04 — fixing a derived anchor does not freeze its underlying variabl
     expect(Math.hypot(solvedP.position.x - mid.x, solvedP.position.y - mid.y)).toBeCloseTo(4, 6);
   });
 });
+
+// ---------------------------------------------------------------------------
+// R12 — unknown rank/DOF must be reported honestly when rank work is
+// skipped. When the §3.3 rank probe exceeds the work budget, the
+// delivered engine set per-entity remaining to the stated unknown (-1)
+// but still fabricated the OVERALL figures: skipped components
+// contributed 0 to effectiveConsumed, so `remaining` came out as a
+// positive invented number and the status read 'underconstrained' —
+// for a chain that is in truth fully constrained. Now: when any
+// component's rank probe is skipped, effectiveConsumed and remaining
+// are the stated unknown (-1) and the status is 'rank-unknown' — the
+// solved geometry is still reported, but no DOF verdict is invented.
+// ---------------------------------------------------------------------------
+
+describe('R12 — skipped rank work reports unknown DOF, not an invented verdict', () => {
+  /** 30 points chained coincident onto a fixed first point: truly
+   *  fully constrained (60 variables, rank 60). The solve itself is
+   *  cheap (stage-2 adoption); the rank probes are what cost. */
+  function chain() {
+    const entities: Entity[] = [point('P0', 0, 0)];
+    const constraints: Constraint[] = [{ id: 'fix', kind: 'fixed', role: 'driving', refs: [ref('P0', 'position')] }];
+    for (let i = 1; i < 30; i += 1) {
+      entities.push(point(`P${i}`, i * 1.7, (i % 5) * 2.3));
+      constraints.push({ id: `c${i}`, kind: 'coincident', role: 'driving', refs: [ref(`P${i - 1}`, 'position'), ref(`P${i}`, 'position')] });
+    }
+    return { entities, constraints: set(...constraints) };
+  }
+
+  it('control: with the full budget the chain is fully-constrained with real figures', () => {
+    const { entities, constraints } = chain();
+    const result = solveConstraints(entities, constraints);
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe('fully-constrained');
+    expect(result.dof.effectiveConsumed).toBe(60);
+    expect(result.dof.remaining).toBe(0);
+  });
+
+  it('with a budget that skips the rank probe: geometry solves, DOF is the stated unknown, status is rank-unknown', () => {
+    const { entities, constraints } = chain();
+    const result = solveConstraints(entities, constraints, { workLimit: 2500 });
+    expect(result.ok).toBe(true);
+    // The geometry itself solved — every point adopted onto P0.
+    for (const e of result.entities!) expect((e as PointEntity).position).toEqual({ x: 0, y: 0 });
+    // But no DOF verdict may be invented.
+    expect(result.status).toBe('rank-unknown');
+    expect(result.status).not.toBe('underconstrained');
+    expect(result.dof.effectiveConsumed).toBe(-1);
+    expect(result.dof.remaining).toBe(-1);
+    expect(result.dof.perEntity.every((p) => p.remaining === -1)).toBe(true);
+    // Total and nominal figures are exact counts, not rank claims.
+    expect(result.dof.total).toBe(60);
+    expect(result.dof.nominalConsumed).toBe(60);
+  });
+
+  it('a system with one probed and one skipped component still reports the overall DOF as unknown', () => {
+    // Component A (first in input order): two points, fixed + coincident
+    // — its probes are cheap and run. Component B: a 40-point chain
+    // whose Jacobian probe (79 rows × 80 vars) blows the budget.
+    const entities: Entity[] = [point('A0', 0, 0), point('A1', 3, 4), point('B0', 100, 100)];
+    const constraints: Constraint[] = [
+      { id: 'fa', kind: 'fixed', role: 'driving', refs: [ref('A0', 'position')] },
+      { id: 'ca', kind: 'coincident', role: 'driving', refs: [ref('A0', 'position'), ref('A1', 'position')] },
+      { id: 'fb', kind: 'fixed', role: 'driving', refs: [ref('B0', 'position')] },
+    ];
+    for (let i = 1; i < 40; i += 1) {
+      entities.push(point(`B${i}`, 100 + i * 1.3, 100 + (i % 4) * 1.9));
+      constraints.push({ id: `cb${i}`, kind: 'coincident', role: 'driving', refs: [ref(`B${i - 1}`, 'position'), ref(`B${i}`, 'position')] });
+    }
+    const result = solveConstraints(entities, set(...constraints), { workLimit: 3000 });
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe('rank-unknown');
+    expect(result.dof.effectiveConsumed).toBe(-1);
+    expect(result.dof.remaining).toBe(-1);
+    // The skipped component's entities report the per-entity unknown.
+    expect(result.dof.perEntity.filter((p) => p.entityId.startsWith('B')).every((p) => p.remaining === -1)).toBe(true);
+  });
+});

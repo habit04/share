@@ -60,7 +60,18 @@ export const CHANGE_EPS_FACTOR = 1e-12;
 // Public result shapes (design §5.1, §3.3)
 // ---------------------------------------------------------------------------
 
-export type SolveStatus = 'fully-constrained' | 'underconstrained' | 'conflicting' | 'unsolved';
+export type SolveStatus =
+  | 'fully-constrained'
+  | 'underconstrained'
+  | 'conflicting'
+  | 'unsolved'
+  /** The solve succeeded and its geometry is reported, but the §3.3
+   *  rank probe was budget-skipped for at least one component, so no
+   *  DOF verdict exists: `dof.effectiveConsumed` and `dof.remaining`
+   *  are the stated unknown (-1), never an invented figure (review
+   *  R12). Analysis never produces this status — it always computes
+   *  its rank. */
+  | 'rank-unknown';
 
 export type SolveFailureCode =
   | 'conflicting-constraints'
@@ -2585,11 +2596,17 @@ export function solveConstraints(entities: readonly Entity[], set: ConstraintSet
   const redundant = new Set<string>();
   const perEntityRemaining = new Map<string, number>();
   let probeBudgetOut = false;
+  // R12: if ANY component's main rank probe is budget-skipped, the
+  // overall rank is unknown — skipped components must not silently
+  // contribute 0 to effectiveConsumed (which fabricated a positive
+  // `remaining` and an 'underconstrained' verdict).
+  let rankUnknown = false;
   comps.forEach((comp, ci) => {
     const outcome = outcomes[ci]!;
     if (comp.totalRows > 0) {
       if (work.used + comp.totalRows * comp.vars0.length > work.limit) {
         probeBudgetOut = true;
+        rankUnknown = true;
         return;
       }
       const J = jacAll(comp, outcome.vars, work);
@@ -2657,8 +2674,11 @@ export function solveConstraints(entities: readonly Entity[], set: ConstraintSet
   const dof: DofReport = {
     total,
     nominalConsumed: prep.nominalConsumed,
-    effectiveConsumed,
-    remaining: total - effectiveConsumed,
+    // R12: the stated unknown (-1 — the same marker the per-entity
+    // report uses) when any component's rank probe was budget-skipped;
+    // never a sum that treats skipped components as consuming 0.
+    effectiveConsumed: rankUnknown ? -1 : effectiveConsumed,
+    remaining: rankUnknown ? -1 : total - effectiveConsumed,
     perEntity: prep.participating.map((e) => ({
       entityId: e.id,
       dof: entityDof(e),
@@ -2672,7 +2692,7 @@ export function solveConstraints(entities: readonly Entity[], set: ConstraintSet
 
   return {
     ok: true,
-    status: dof.remaining === 0 ? 'fully-constrained' : 'underconstrained',
+    status: rankUnknown ? 'rank-unknown' : dof.remaining === 0 ? 'fully-constrained' : 'underconstrained',
     entities: resultEntities,
     dof,
     diagnostics: buildDiagnostics(set, { magById, redundant, mode: 'solved', geometry: resultEntities, shapes, branchById }),
