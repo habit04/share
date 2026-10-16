@@ -144,7 +144,7 @@ export type EvaluationRefusalCode =
   | 'action-cycle' // chained actions depend on each other cyclically
   | 'chain-depth-exceeded' // dependency path longer than limits.maxChainDepth
   | 'work-limit-exceeded' // limits.maxWork / maxActions / maxOutputEntities hit
-  | 'degenerate-transform' // a computed whole-entity transform is degenerate (scale factor <= 0 / non-finite)
+  | 'degenerate-transform' // a computed transform is degenerate (scale factor <= 0 / non-finite), or derived output geometry overflowed to non-finite values
   | 'unsupported-selection' // an array action selects an attribute definition, which cannot be arrayed (design §3.4)
   | 'unstretchable-entity'; // selection names an entity type with no movable points
 
@@ -250,6 +250,18 @@ const inFrame = (p: Point, frame: StretchAction['frame']): boolean =>
   p.x <= frame.max.x + EVALUATION_TOLERANCE &&
   p.y >= frame.min.y - EVALUATION_TOLERANCE &&
   p.y <= frame.max.y + EVALUATION_TOLERANCE;
+
+/** True when every number reachable in a JSON-shaped value is finite.
+ *  Entities and attribute definitions are plain data all the way down, so
+ *  a structural walk reaches every coordinate, radius, angle and size the
+ *  transforms compute — including the ones a per-type field list would
+ *  eventually forget (review C06). */
+function allNumbersFinite(value: unknown): boolean {
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(allNumbersFinite);
+  if (value !== null && typeof value === 'object') return Object.values(value).every(allNumbersFinite);
+  return true;
+}
 
 /** Reflect a point across the line a-b. The point-level half of
  *  mirrorEntityAcross (core/entities), used for attribute placements, whose
@@ -660,6 +672,13 @@ export function evaluateDynamicBlock(
   // 7. Apply actions in topological order to working copies.
   const outEntities: Entity[] = [...baseEntities];
   const outAttributes: AttributeDef[] = [...baseAttributes];
+  // Identity sets for the derived-output finiteness check (step 7.5):
+  // working entries still identical to a base object were never touched
+  // by an action and carry authored values, which are not this
+  // evaluation's derivation to refuse; every other entry — a transformed
+  // entity/attribute or an array copy — is output this evaluation derived.
+  const baseEntityObjects = new Set<Entity>(baseEntities);
+  const baseAttributeObjects = new Set<AttributeDef>(baseAttributes);
   const appliedActions: string[] = [];
   const defaultedReported = new Set<string>();
 
@@ -1041,6 +1060,43 @@ export function evaluateDynamicBlock(
           : applyWholeAction(action);
     if (refusal) return refusal;
     appliedActions.push(action.id);
+  }
+
+  // 7.5 Derived-output finiteness (review C06). Finite inputs can still
+  //    overflow in derivation: a finite distance times a finite stretch
+  //    multiplier, or a finite scale factor applied to a large authored
+  //    coordinate, produces Infinity/NaN geometry — and the per-action
+  //    factor/delta checks cannot see it, because the FACTOR is finite;
+  //    only the produced coordinates are not. Returning such a result as
+  //    ok:true also poisons the R06 edit dry run, which trusts ok and
+  //    would commit the parameter state. So before success is returned,
+  //    every DERIVED working entry (transformed, point-moved or
+  //    array-copied — see the identity sets in step 7) is walked once
+  //    and every number in it must be finite: one bounded post-pass over
+  //    the produced output (itself capped by maxOutputEntities), charged
+  //    against no new budget and adding no unbounded pass. The first
+  //    offender in working order refuses the whole evaluation with
+  //    'degenerate-transform'; nothing is clamped or repaired, and the
+  //    refusal is atomic by purity, exactly like every other refusal.
+  //    Huge-but-finite results (1e308 exactly, products that stay
+  //    finite) pass: the test is Number.isFinite, not a magnitude cap.
+  for (const entity of outEntities) {
+    if (baseEntityObjects.has(entity)) continue;
+    if (!allNumbersFinite(entity)) {
+      return refuse({
+        code: 'degenerate-transform',
+        message: `Evaluation derived non-finite geometry for entity '${entity.id}' (${entity.type}); finite parameter values overflowed the derived coordinates, so the result is refused rather than returned with Infinity/NaN values.`,
+      });
+    }
+  }
+  for (const attribute of outAttributes) {
+    if (baseAttributeObjects.has(attribute)) continue;
+    if (!allNumbersFinite(attribute)) {
+      return refuse({
+        code: 'degenerate-transform',
+        message: `Evaluation derived a non-finite placement for attribute definition '${attribute.tag}'; finite parameter values overflowed the derived coordinates, so the result is refused rather than returned with Infinity/NaN values.`,
+      });
+    }
   }
 
   // 8. Visibility post-pass filter (design §1.4 step 8). Actions have been
