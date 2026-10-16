@@ -220,7 +220,14 @@ describe.runIf(process.platform === 'win32')('Windows generic export owner/order
         const reset = await fs.open(file, 'r+'); try { await reset.truncate(0); } finally { await reset.close(); }
         expect((await fs.stat(file)).size).toBe(0);
         expect(path.dirname(directory)).toBe(privateRoot); expect(path.basename(directory)).toMatch(/^case-/);
-        mark('unlink'); await fs.unlink(file); await expect(fs.lstat(file)).rejects.toMatchObject({ code: 'ENOENT' });
+        mark('unlink-start'); await fs.unlink(file); mark('unlink-returned');
+        mark('lstat-start');
+        const absence = fs.lstat(file).then(
+          (value) => { mark('lstat-resolved-unexpectedly'); return value; },
+          (error: NodeJS.ErrnoException) => { mark(`lstat-rejected:${error.code ?? 'unknown'}`); throw error; },
+        );
+        await expect(absence).rejects.toMatchObject({ code: 'ENOENT' });
+        mark('absence-assertion-complete');
         mark('remove-directory');
         expect(await fs.readdir(directory)).toEqual([]); await fs.rmdir(directory);
         await expect(fs.lstat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
