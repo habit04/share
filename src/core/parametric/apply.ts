@@ -17,6 +17,7 @@
 import type { DrawingState } from '../document';
 import type { BlockDef, InsertEntity } from '../entities';
 import { validateDefinition, type DefinitionIssueCode, type DynamicParameter, type LookupParameter } from './definitions';
+import { evaluateDynamicBlock, type EvaluationRefusalCode } from './evaluate';
 import {
   validateInstanceValues,
   type DynamicInstanceState,
@@ -26,7 +27,11 @@ import {
 
 /** Stable refusal/no-change codes for setDynamicParameter. The validation
  *  codes are reused verbatim from instance.ts / definitions.ts so the edit
- *  path, the reader and the evaluator can never disagree about vocabulary. */
+ *  path, the reader and the evaluator can never disagree about vocabulary.
+ *  EvaluationRefusalCode joined the union with the R06 dry run (below):
+ *  an edit whose candidate values make evaluation refuse is refused with
+ *  the evaluator's own code ('work-limit-exceeded',
+ *  'degenerate-transform', 'unsupported-action', ...). */
 export type SetDynamicParameterProblem =
   | 'insert-not-found' // no entity with that id in the state
   | 'entity-not-insert' // the id names a non-insert entity
@@ -36,7 +41,8 @@ export type SetDynamicParameterProblem =
   | 'instance-retained' // this insert's instance payload is opaque/retained; edits refused while present
   | 'no-change' // the parameter already holds exactly this value
   | InstanceIssueCode
-  | DefinitionIssueCode;
+  | DefinitionIssueCode
+  | EvaluationRefusalCode;
 
 export interface SetDynamicParameterResult {
   /** The new state on success; the INPUT state object (identity) on any
@@ -236,6 +242,26 @@ export function setDynamicParameter(
   if (!validation.ok) {
     const first = validation.issues[0]!;
     return refuse(state, first.code, first.message);
+  }
+
+  // Dry-run the evaluation with the PROPOSED values before committing
+  // them (review R06). Per-value validation cannot see that a value trips
+  // the evaluator's work/output limits (a huge array count), computes a
+  // degenerate transform (a scale factor of zero), or that the
+  // definition's evaluation is unsupported — yet committing such an edit
+  // left the document displaying silent authored-geometry fallback with
+  // the bad values stored. A refused dry run refuses the edit with the
+  // evaluator's own code and the input state untouched, so geometry,
+  // parameters, revision, dirty state and undo history all stay as they
+  // were. The dry run re-validates the definition and instance itself,
+  // so its refusal vocabulary is exactly the display path's.
+  const evaluation = evaluateDynamicBlock(definition, block.entities, block.attributes, candidate);
+  if (!evaluation.ok) {
+    return refuse(
+      state,
+      evaluation.refusal.code,
+      `Evaluating block '${ins.block}' with the proposed value fails (${evaluation.refusal.code}): ${evaluation.refusal.message}`,
+    );
   }
 
   const nextInsert: InsertEntity = { ...ins, dynamic: candidate };
