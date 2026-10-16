@@ -73,31 +73,40 @@ export interface AiProposalDiff {
 }
 
 /**
- * Compare two compiled proposals operation-by-operation (change entries are
- * index-aligned with plan operations). Purely presentational: it describes
- * what the user is looking at; it grants no authority.
+ * Compare two compiled proposals. Operations are matched in two passes so
+ * the description stays truthful when the plan changes length: first exact
+ * content matches pair off as unchanged; then leftover operations of the
+ * same kind pair in order as "changed"; anything still unpaired was added
+ * or removed (labelled from the version it belongs to). Purely
+ * presentational: it describes what the user is looking at and grants no
+ * authority.
  */
 export function diffProposalChanges(previous: CompiledProposal, next: CompiledProposal): AiProposalDiff {
   const updated: AiProposalDiff['updated'][number][] = [];
   const added: AiProposalDiff['added'][number][] = [];
   const removed: AiProposalDiff['removed'][number][] = [];
-  const shared = Math.min(previous.changes.length, next.changes.length);
-  for (let i = 0; i < shared; i++) {
-    const beforeOp = JSON.stringify(previous.plan.operations[i]);
-    const afterOp = JSON.stringify(next.plan.operations[i]);
-    if (beforeOp !== afterOp) {
-      updated.push({
-        label: next.changes[i]!.label,
-        before: previous.changes[i]!.summary,
-        after: next.changes[i]!.summary,
-      });
-    }
+  const beforeOps = previous.plan.operations.map((op) => JSON.stringify(op));
+  const afterOps = next.plan.operations.map((op) => JSON.stringify(op));
+  const beforeTaken = new Array<boolean>(beforeOps.length).fill(false);
+  const afterTaken = new Array<boolean>(afterOps.length).fill(false);
+  for (let a = 0; a < afterOps.length; a++) {
+    const b = beforeOps.findIndex((op, i) => !beforeTaken[i] && op === afterOps[a]);
+    if (b >= 0) { beforeTaken[b] = true; afterTaken[a] = true; }
   }
-  for (let i = shared; i < next.changes.length; i++) {
-    added.push({ label: next.changes[i]!.label, summary: next.changes[i]!.summary });
+  const leftoverBefore = beforeOps.map((_, i) => i).filter((i) => !beforeTaken[i]);
+  const leftoverAfter = afterOps.map((_, i) => i).filter((i) => !afterTaken[i]);
+  for (const a of [...leftoverAfter]) {
+    const b = leftoverBefore.find((i) => previous.plan.operations[i]!.op === next.plan.operations[a]!.op);
+    if (b === undefined) continue;
+    leftoverBefore.splice(leftoverBefore.indexOf(b), 1);
+    leftoverAfter.splice(leftoverAfter.indexOf(a), 1);
+    updated.push({
+      label: next.changes[a]!.label,
+      before: previous.changes[b]!.summary,
+      after: next.changes[a]!.summary,
+    });
   }
-  for (let i = shared; i < previous.changes.length; i++) {
-    removed.push({ label: previous.changes[i]!.label, summary: previous.changes[i]!.summary });
-  }
+  for (const a of leftoverAfter) added.push({ label: next.changes[a]!.label, summary: next.changes[a]!.summary });
+  for (const b of leftoverBefore) removed.push({ label: previous.changes[b]!.label, summary: previous.changes[b]!.summary });
   return { updated, added, removed };
 }

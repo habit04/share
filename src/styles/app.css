@@ -1271,6 +1271,15 @@ canvas#drawing {
   white-space: pre-wrap;
   word-break: break-word;
 }
+.ai-followup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+.ai-followup.hidden {
+  display: none;
+}
 .ai-legend {
   display: flex;
   gap: 6px;
