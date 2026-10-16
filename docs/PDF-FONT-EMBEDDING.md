@@ -266,5 +266,16 @@ font tests pass with native Windows junction support; three typecheck projects,
 full lint and fixture checks pass. Variable-font admission remains refused.
 These are boundary tests, not variable-font rendering or viewer acceptance.
 
+The subsequent test-lifecycle correction passes the original two-worker full
+gate: **6,709 passed, 38 skipped**, 376 files passed and one skipped, 191 seconds.
+It passes the test-context cancellation signal into standalone content checks,
+tracks the entire fixture body including cleanup, and starts host shutdown
+before joining producers and removing fixtures. The 128/512-MiB real fixtures,
+256-KiB hash scratch, all evidence assertions, 60-second body and 10-second hook
+deadlines are unchanged. Failure-only stage diagnostics remain for future runs.
+The targeted export/content-identity control passes all 47 tests. This clears
+this local concurrent gate; it does not establish the initial stall's cause,
+remote CI, DWG/Han composition or native CFF/variable-font acceptance.
+
 See [priority-12 review status](PRIORITY-12-REVIEW-STATUS.md) for delivery,
 ownership and the remaining integration gates.

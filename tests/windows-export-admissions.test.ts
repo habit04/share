@@ -27,7 +27,10 @@ afterEach(async () => {
   const directory = dir;
   vi.restoreAllMocks(); for (const release of releases.splice(0)) release();
   for (const win of windows.splice(0)) win.emit('closed');
-  await Promise.allSettled(tasks.splice(0)); await Promise.all(hosts.splice(0).map(host => host.dispose()));
+  // Abort host-owned I/O before joining producers, so a timed-out body cannot
+  // keep reading while this hook starts removing the same native fixture.
+  const shutdown = Promise.all(hosts.map(host => host.dispose())); void shutdown.catch(() => {});
+  await Promise.allSettled(tasks.splice(0)); await shutdown; hosts.splice(0);
   if (path.dirname(directory) !== privateRoot || !path.basename(directory).startsWith('case-')) throw new Error('Unsafe private export test cleanup');
   // A large fixture is removed and its absence asserted within its body deadline.
   // Never repeat native removal in the hook or use a later test's global directory.
@@ -157,10 +160,21 @@ describe.runIf(process.platform === 'win32')('Windows generic export owner/order
     await Promise.all([pdfStarted.promise, textStarted.promise]); expect(f.host.stats()).toMatchObject({ queuedBytes: 17, ordinaryQueuedBytes: 8, pdfQueuedBytes: 9 });
     release.resolve(); await Promise.all([first, second]); expect(f.host.stats()).toMatchObject({ queuedBytes: 0, ordinaryQueuedBytes: 0, pdfQueuedBytes: 0 });
   });
-  it('requires explicit PDF eligibility for an extended file beyond 128 MiB, keeps 256 KiB hash scratch, and preserves ordinary refusal', async () => {
+  it('requires explicit PDF eligibility for an extended file beyond 128 MiB, keeps 256 KiB hash scratch, and preserves ordinary refusal', ({ signal, onTestFailed, onTestFinished }) => {
     const directory = dir, file = path.join(directory, 'large-existing.pdf'); let created = false, heldDescriptors = 0;
     let owned: ReturnType<typeof manager> | undefined;
+    const started = performance.now(), stages: Array<{ stage: string; elapsedMs: number }> = [];
+    const mark = (stage: string) => { stages.push({ stage, elapsedMs: Math.round(performance.now() - started) }); };
+    const enter = (stage: string) => { signal.throwIfAborted(); mark(stage); };
+    const abort = () => { void owned?.host.dispose().catch(() => {}); };
+    signal.addEventListener('abort', abort, { once: true });
+    onTestFinished(() => { signal.removeEventListener('abort', abort); });
+    onTestFailed(() => { console.error('Native large-PDF fixture stages', JSON.stringify({ stages, heldDescriptors, aborted: signal.aborted })); });
+    // Track the entire body, including descriptor close and fixture teardown.
+    // Vitest timeout alone does not cancel an arbitrary asynchronous function.
+    return track((async () => {
     try {
+    enter('create-128MiB');
     const handle = await fs.open(file, 'wx'); created = true;
     try { await handle.write('%PDF-1.4\n'); await handle.truncate(MAX_CONTENT_BYTES + 1); } finally { await handle.close(); }
     const reads: number[] = [];
@@ -172,19 +186,23 @@ describe.runIf(process.platform === 'win32')('Windows generic export owner/order
         const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value;
       } });
     } };
-    await expect(coherentFileDigest(file, { fs: wrapped, maxBytes: MAX_PDF_CONTENT_BYTES })).rejects.toMatchObject({ code: 'ERR_WINDOWS_CONTENT_LIMIT' }); expect(reads).toEqual([]);
+    enter('ordinary-limit-checks');
+    await expect(coherentFileDigest(file, { fs: wrapped, maxBytes: MAX_PDF_CONTENT_BYTES, signal })).rejects.toMatchObject({ code: 'ERR_WINDOWS_CONTENT_LIMIT' }); expect(reads).toEqual([]);
     const identity = createWindowsPathIdentity({ fs: wrapped }), f = manager({ identity }); owned = f;
     for (const kind of ['drawing', 'project', 'text-export'] as const) {
       const ticket = f.host.issue(f.owner, kind); await expect(f.host.bind(ticket, f.owner, kind, file)).rejects.toMatchObject({ code: 'ERR_WINDOWS_CONTENT_LIMIT' });
     }
-    expect(reads).toEqual([]); const ticket = await f.bind(file, 'pdf-export');
+    expect(reads).toEqual([]); enter('pdf-bind'); const ticket = await f.bind(file, 'pdf-export');
     const pinned = f.host.assertBound(ticket, f.owner, 'pdf-export', file); expect(pinned.contentLimit).toBe(MAX_PDF_CONTENT_BYTES);
-    const checked = await identity.revalidate(pinned, { preserveVersion: true }); expect(checked.contentLimit).toBe(MAX_PDF_CONTENT_BYTES);
+    enter('standalone-content-revalidation');
+    const checked = await identity.revalidate(pinned, { preserveVersion: true, signal }); expect(checked.contentLimit).toBe(MAX_PDF_CONTENT_BYTES);
     expect(Math.max(...reads)).toBe(HASH_CHUNK_BYTES); expect((await fs.stat(file)).size).toBe(MAX_CONTENT_BYTES + 1);
-    await f.host.cancelJoined(ticket, f.owner, 'pdf-export');
+    enter('cancel-joined'); await f.host.cancelJoined(ticket, f.owner, 'pdf-export');
+    enter('grow-512MiB');
     expect(heldDescriptors).toBe(0); const completedReads = reads.length, enlarge = await fs.open(file, 'r+');
     try { await enlarge.truncate(MAX_PDF_CONTENT_BYTES + 1); } finally { await enlarge.close(); }
     expect((await fs.stat(file)).size).toBe(MAX_PDF_CONTENT_BYTES + 1);
+    enter('oversized-pdf-refusal');
     const oversized = f.host.issue(f.owner, 'pdf-export'); await expect(f.host.bind(oversized, f.owner, 'pdf-export', file)).rejects.toMatchObject({ code: 'ERR_WINDOWS_CONTENT_LIMIT' });
     expect(reads).toHaveLength(completedReads); expect(heldDescriptors).toBe(0);
     expect(f.host.stats()).toMatchObject({ pending: 0, queuedBytes: 0, ordinaryQueuedBytes: 0, pdfQueuedBytes: 0 });
@@ -192,21 +210,25 @@ describe.runIf(process.platform === 'win32')('Windows generic export owner/order
       // Join all owned readers before altering the fixture. The truncated file
       // remained after a full-suite hook timeout; complete its entire
       // teardown within the existing 60s body, retaining the shared 10s hook.
-      await owned?.host.dispose(); expect(heldDescriptors).toBe(0);
+      mark('dispose-and-join'); await owned?.host.dispose(); expect(heldDescriptors).toBe(0);
       if (owned) {
         expect(owned.host.stats()).toMatchObject({ pending: 0, queuedBytes: 0, ordinaryQueuedBytes: 0, pdfQueuedBytes: 0, queues: 0, metadataActive: 0, metadataQueued: 0 });
         const index = hosts.indexOf(owned.host); expect(index).toBeGreaterThanOrEqual(0); hosts.splice(index, 1);
       }
       if (created) {
+        mark('truncate-to-zero');
         const reset = await fs.open(file, 'r+'); try { await reset.truncate(0); } finally { await reset.close(); }
         expect((await fs.stat(file)).size).toBe(0);
         expect(path.dirname(directory)).toBe(privateRoot); expect(path.basename(directory)).toMatch(/^case-/);
-        await fs.unlink(file); await expect(fs.lstat(file)).rejects.toMatchObject({ code: 'ENOENT' });
+        mark('unlink'); await fs.unlink(file); await expect(fs.lstat(file)).rejects.toMatchObject({ code: 'ENOENT' });
+        mark('remove-directory');
         expect(await fs.readdir(directory)).toEqual([]); await fs.rmdir(directory);
         await expect(fs.lstat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
         completedFixtureCleanup.add(directory);
       }
+      mark('cleanup-complete');
     }
+    })());
   }, 60000);
 });
 

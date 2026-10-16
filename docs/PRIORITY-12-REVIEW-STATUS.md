@@ -9,17 +9,18 @@ or released. Earlier released TTC support remains the v0.5.2 baseline.
 | Used-glyph validation (SimSun scope) | Algorithm reviewed; real SimSun still refuses at bitmap/origin validation, YaHei at conflicting PostScript names. Synthetic admission is not native Han acceptance. | Lead and separate DWG owner: F1-F4 composition, actual missing-SHX/Han fallback, doc reconciliation. |
 | 12.3 glyf subsetting | Reviewed and corrected; real Windows subset/whole-control Unicode and pixels match. Added actual-byte whole-program guard for variation tables: eight failing-before/passing-after regressions. | Lead: combined suite and native gates. Variation-aware subsetting remains deferred. |
 | 12.6a variable defaults | ZIP integrity verified; production admission held. Executed probes reproduce malformed-record admission and missing coordinate policy; delivered gvar fixture is invalid. | Muse: record validation, genuine variation fixtures, default-coordinate identity policy. Lead: Windows Canvas/Plot and viewer matrix. Keep current refusal until proved. |
-| 12.2 standalone CFF1 | Delivered ZIP integrity under review; parser/format review in progress. | Lead: correct Type2 geometry and feature-scoped PDF version, reconcile readers/writer, tests and native proof. No CFF acceptance yet. |
-| 12.4 preview/print permissions | P2 product direction retained; shipping qpdf dependency not admitted from design reports. Reported completed spike artifacts have not been delivered here. | Muse: existing spike package, exact provenance/notices, hard memory/isolation evidence. Lead: dependency decision and eventual Windows acceptance. Refusal remains active. |
+| 12.2 standalone CFF1 | All ZIP hashes verified. Integration held: nine independent Type2 goldens fail; same-glyph Unicode aliases extract incorrectly; supplied OpenType PDF declares 1.4. Basic supplied artifacts pass 60/61 independent checks, failing the version gate. | Muse: parser/alias/validation corrections and feature-scoped PDF1.6. Lead: reader/writer composition and Windows proof. No CFF acceptance yet. |
+| 12.4 preview/print permissions | P2 product direction retained. Actual qpdf spike ZIP is now received and under review; the supplied WASM declares a 2-GiB maximum, while 768 MiB is only proposed for a later build. | Lead: dependency decision after provenance/isolation/independent evidence review. Muse: capped rebuild and strict crypto/roundtrip validation. Refusal remains active. |
 | 12.5 shaping | Contract v2 reviewed; current contract and stock HarfBuzz binary not admitted unchanged. | Muse: contract v3, interface tests, hard-capped build/provenance spike. Lead: review before runtime adoption. |
 
-The combined pre-guard source passed 6,701 tests with 38 skips serially. Two
-two-worker runs each retain one large-file test/hook timeout; passing isolated
-runs do not prove its cause or make the concurrent gate green. A private timed
-run takes 548 ms and exposes a test-lifecycle cancellation/join gap; investigation
-continues without changing deadlines or hash bounds. The known Poppler fallback
-warning remains a preserved external-control failure. F4, packaged acceptance
-and remote CI remain open; no merge/release gate is declared clear.
+The fresh two-worker Windows gate passes **6,709 tests with 38 skips** in 191
+seconds after the variation guard and test-lifecycle cancellation/join repair.
+The targeted export/content-identity control passes all 47 tests. No deadline,
+evidence assertion, real fixture size or hash bound changed. The two earlier
+timeout failures remain recorded; this pass does not prove the initial stall's
+cause. The known Poppler fallback warning remains a preserved external-control
+failure. F4, packaged acceptance and remote CI remain open; no merge/release
+gate is declared clear.
 
 The long 2D roadmap stays paused. DWG and GPU ownership remains separate. CFF2,
 CID-keyed CFF, CFF collections/subsetting, true variable instancing and faithful
