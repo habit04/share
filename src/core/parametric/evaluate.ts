@@ -32,6 +32,7 @@
  * (provenance tracked internally, never parsed back out of derived ids).
  */
 import { EPS, add, dot, normalize, rotate, scale as scalePoint, sub, type Point } from '../geometry';
+import { transformedTextAnchors } from '../text-placement';
 import {
   mirrorEntityAcross,
   rotateEntity,
@@ -243,6 +244,35 @@ function withMovedPoints(entity: Entity, moves: ReadonlyMap<number, Point>): Ent
     default:
       return entity;
   }
+}
+
+/**
+ * Transform an attribute definition's FULL text placement under a point
+ * transform — the same treatment the core gives a text entity
+ * (similarityTransform / mirrorEntityAcross move EVERY anchor — position,
+ * alignmentPoint, firstAlignmentPoint — and scale also scales the height;
+ * rotation also advances the text rotation). Evaluation historically
+ * moved only AttributeDef.position, leaving the other anchors at their
+ * authored values, so the evaluated definition was internally
+ * incoherent: for right/center/fit justifications the text anchor IS
+ * the alignment point, and expansion, the DXF writer, and the reader's
+ * placement rebase then told different stories about where the text
+ * sits (review round 2, C05). Transforming every anchor by the same
+ * function of state makes the evaluated placement a coherent placement
+ * that all consumers read identically.
+ */
+function transformAttributePlacement(
+  attribute: AttributeDef,
+  tf: (p: Point) => Point,
+  rotationDelta = 0,
+  heightScale = 1,
+): AttributeDef {
+  const moved = transformedTextAnchors(attribute, tf);
+  return {
+    ...moved,
+    ...(heightScale !== 1 ? { height: attribute.height * heightScale } : {}),
+    ...(rotationDelta !== 0 ? { rotation: (attribute.rotation ?? 0) + rotationDelta } : {}),
+  };
 }
 
 const inFrame = (p: Point, frame: StretchAction['frame']): boolean =>
@@ -774,7 +804,14 @@ export function evaluateDynamicBlock(
       if (target.kind === 'entity') {
         outEntities[baseSlot[target.index]!] = withMovedPoints(target.entity, moves);
       } else {
-        outAttributes[target.index] = { ...target.attribute, position: moves.get(0) ?? target.attribute.position };
+        // A stretch that moves the attribute's position point moves the
+        // whole placement rigidly by the same delta (C05): every text
+        // anchor rides, so a justified attribute's anchor moves exactly
+        // as far as its position does.
+        const movedTo = moves.get(0);
+        outAttributes[target.index] = movedTo
+          ? transformAttributePlacement(target.attribute, (p) => add(p, sub(movedTo, target.attribute.position)))
+          : target.attribute;
       }
     }
     if (!zeroDelta && !anyMoved) {
@@ -806,6 +843,10 @@ export function evaluateDynamicBlock(
       refuse({ code: 'degenerate-transform', message, actionId: action.id, parameterId: param.id });
     let transformEntity: ((entity: Entity) => Entity) | undefined;
     let transformPoint: ((point: Point) => Point) | undefined;
+    // Attributes take the FULL placement transform (C05), mirroring what
+    // the entity transform does to a text entity — not just a moved
+    // position point.
+    let transformAttr: ((attribute: AttributeDef) => AttributeDef) | undefined;
     switch (action.kind) {
       case 'move': {
         const p = param as LinearDistanceParameter;
@@ -820,6 +861,7 @@ export function evaluateDynamicBlock(
         if (Math.hypot(delta.x, delta.y) > EVALUATION_TOLERANCE) {
           transformEntity = (entity) => translateEntity(entity, delta);
           transformPoint = (point) => add(point, delta);
+          transformAttr = (attribute) => transformAttributePlacement(attribute, (p) => add(p, delta));
         }
         break;
       }
@@ -835,6 +877,7 @@ export function evaluateDynamicBlock(
           const { center } = action;
           transformEntity = (entity) => rotateEntity(entity, center, deltaAngle);
           transformPoint = (point) => rotate(point, deltaAngle, center);
+          transformAttr = (attribute) => transformAttributePlacement(attribute, (p) => rotate(p, deltaAngle, center), deltaAngle);
         }
         break;
       }
@@ -853,6 +896,7 @@ export function evaluateDynamicBlock(
           const { basePoint } = action;
           transformEntity = (entity) => scaleEntityBy(entity, basePoint, factor);
           transformPoint = (point) => add(basePoint, scalePoint(sub(point, basePoint), factor));
+          transformAttr = (attribute) => transformAttributePlacement(attribute, (p) => add(basePoint, scalePoint(sub(p, basePoint), factor)), 0, factor);
         }
         break;
       }
@@ -864,6 +908,7 @@ export function evaluateDynamicBlock(
           const { axisA, axisB } = action;
           transformEntity = (entity) => mirrorEntityAcross(entity, axisA, axisB);
           transformPoint = (point) => reflectPoint(point, axisA, axisB);
+          transformAttr = (attribute) => transformAttributePlacement(attribute, (p) => reflectPoint(p, axisA, axisB));
         }
         break;
       }
@@ -892,7 +937,7 @@ export function evaluateDynamicBlock(
       if (target.kind === 'entity') {
         outEntities[baseSlot[target.index]!] = transformEntity(target.entity);
       } else {
-        outAttributes[target.index] = { ...target.attribute, position: transformPoint(target.attribute.position) };
+        outAttributes[target.index] = transformAttr ? transformAttr(target.attribute) : target.attribute;
       }
     }
     return undefined;
