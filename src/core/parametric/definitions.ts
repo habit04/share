@@ -12,6 +12,9 @@
  * 30.2c (additive, same model version): the array action (repeat a selection
  * along the driving linear parameter's direction, count derived from the
  * parameter's effective value — design-visibility-lookup-array.md §3).
+ * 30.2e (additive, same model version): the optional `alignment` field on the
+ * definition (insert-time placement data, never evaluated —
+ * design-visibility-lookup-array.md §4).
  *
  * Pure data + structural validation. No I/O, no editor imports, and nothing here
  * mutates a definition: a definition that fails validation is refused, never repaired.
@@ -36,6 +39,38 @@ export interface DynamicBlockDefinition {
   /** Actions in authoring order. Evaluation order is derived (topological), with
    *  authoring order as the deterministic tie-break. */
   readonly actions: readonly DynamicAction[];
+  /**
+   * Insert-time alignment behavior. Consumed by the insert tool (30.4),
+   * NEVER by the evaluator, and it has no instance value: the rotation it
+   * produces at placement is stored as the insert's ordinary `rotation`.
+   * Modeled as a definition field rather than a parameter because it
+   * passes the inert-member test (design §4.1): old builds may ignore it
+   * without evaluating anything incorrectly (serialization consequences
+   * in design §6.2). Singular by construction — a definition carries at
+   * most one alignment spec, with no id and no duplicate check.
+   */
+  readonly alignment?: AlignmentSpec;
+}
+
+/**
+ * Alignment spec (30.2e, design §4.2): how an insert of this block
+ * auto-rotates at placement time so its alignment axis meets a picked
+ * target entity. Placement-time data only — the evaluator does not read
+ * it, and no instance value exists for it (a payload trying to give it
+ * one names an 'unknown-parameter', as it is not in `parameters`).
+ */
+export interface AlignmentSpec {
+  /** The alignment grip point, definition space: placement rotation is
+   *  understood to pivot the block so this point sits on the target. */
+  readonly basePoint: Point;
+  /** Alignment axis at authored rotation, definition space — the
+   *  direction that must end up perpendicular/tangent to the picked
+   *  target entity. Finite and non-zero. */
+  readonly direction: Point;
+  /** How the axis meets the target, mirroring the native alignment
+   *  types: 'perpendicular' = axis normal to the target at the picked
+   *  point; 'tangent' = axis along the target at the picked point. */
+  readonly mode: 'perpendicular' | 'tangent';
 }
 
 export type DynamicParameter = LinearDistanceParameter | AngleParameter | FlipParameter | VisibilityParameter | LookupParameter | OpaqueParameter;
@@ -421,7 +456,7 @@ export type DefinitionIssueCode =
   | 'invalid-multiplier' // non-finite or <= 0 distance multiplier
   | 'invalid-angle-offset' // non-finite angle offset
   | 'invalid-selection-index' // selection point index negative or non-integer
-  | 'invalid-base-point' // non-finite base point on an angle/flip parameter
+  | 'invalid-base-point' // non-finite base point on an angle/flip/visibility/lookup parameter, or on the alignment spec
   | 'invalid-action-geometry' // non-finite rotate centre / scale base point, degenerate flip axis
   | 'invalid-scale-base' // scale action whose driving parameter default is <= 0 (factor = value / default)
   | 'duplicate-visibility-parameter' // more than one visibility parameter in the definition
@@ -767,6 +802,19 @@ export function validateDefinition(
           parameterId: param.id,
         });
       }
+    }
+  }
+
+  // The alignment spec (design §4.2): inert placement data, validated for
+  // geometry only. There is no instance value for it and the evaluator
+  // never reads it; existing codes, existing meanings.
+  if (definition.alignment !== undefined) {
+    if (!isFinitePoint(definition.alignment.basePoint)) {
+      issues.push({ code: 'invalid-base-point', message: 'Alignment base point is not finite.' });
+    }
+    const dir = definition.alignment.direction;
+    if (!isFinitePoint(dir) || Math.hypot(dir.x, dir.y) <= EPS) {
+      issues.push({ code: 'invalid-direction', message: 'Alignment direction is zero or non-finite.' });
     }
   }
 

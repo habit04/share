@@ -13,14 +13,25 @@
  * Model version stays 1 for the 30.2 kinds (angle/flip parameters; move/rotate/scale/flip
  * actions), the 30.2a visibility parameter + value, the 30.2b lookup parameter +
  * value (row key/assignment values reuse the tagged instance-value encoding; the
- * instance choice is {"kind":"lookup","value":<row name or null>}), and the 30.2c
+ * instance choice is {"kind":"lookup","value":<row name or null>}), the 30.2c
  * array action ({"kind":"array", selection refs in the existing #<ordinal>/tag
- * encoding, plus "spacing"}): they are additive
+ * encoding, plus "spacing"}), and the 30.2e alignment spec (a TOP-LEVEL
+ * "alignment" key on the definition object, NOT a parameters[] member —
+ * design §6.2): they are additive
  * union members, as the design planned (§1.3, visibility design §6.2). A v1 payload written before
  * those slices contains only the earlier members and decodes identically; a payload
  * using the new kinds, read by an older build, fails that build's structural decode
  * and is retained verbatim — the designed fallback — instead of being half-modeled.
  * The version only moves when a member's shape changes.
+ *
+ * The alignment key is the one deliberate exception to "unknown member ⇒ retained":
+ * it is a TOP-LEVEL key, and unknown top-level keys are ignored by the decoder
+ * (design §6.1). An older build therefore decodes a definition carrying
+ * "alignment" fully and evaluates it correctly (alignment passes the
+ * inert-member test, design §4.1) — but DROPS the key if it re-saves, because
+ * the encoder writes only modeled fields. That silent drop is accepted
+ * deliberately (design §6.2): what is lost is placement convenience for a
+ * future tool, never geometry, values, or evaluation correctness.
  *
  * Escaping decision (explicit, following the JCAD_TABLE variant in write-annotations.ts,
  * NOT the unescaped MTEXT-columns variant): the JSON text is escaped to 7-bit ASCII —
@@ -54,6 +65,7 @@ import type { Pair } from './groups';
 import {
   DYNAMIC_MODEL_VERSION,
   validateDefinition,
+  type AlignmentSpec,
   type AngleConstraint,
   type DistanceConstraint,
   type DynamicAction,
@@ -264,6 +276,17 @@ export function encodeDynamicDefinition(definition: DynamicBlockDefinition, enti
     kind: 'definition',
     parameters: definition.parameters.map((p) => encodeParameter(p, entityIdsInOrder)),
     actions: definition.actions.map((a) => encodeAction(a, entityIdsInOrder)),
+    // Top-level key, NOT a parameters[] member (design §6.2): an older build
+    // ignores it on decode and drops it on re-save — the documented downgrade.
+    ...(definition.alignment !== undefined
+      ? {
+          alignment: {
+            basePoint: { x: definition.alignment.basePoint.x, y: definition.alignment.basePoint.y },
+            direction: { x: definition.alignment.direction.x, y: definition.alignment.direction.y },
+            mode: definition.alignment.mode,
+          },
+        }
+      : {}),
   }));
 }
 
@@ -558,6 +581,19 @@ function decodeAction(raw: unknown, entityIdsInOrder?: readonly string[]): Dynam
   };
 }
 
+/** The top-level "alignment" key (design §4.2/§6.2). Structural decode only:
+ *  point finiteness is checked here (isPoint); the non-zero-direction rule is
+ *  validateDefinition's, applied by the caller exactly as for parameters. */
+function decodeAlignment(raw: unknown): AlignmentSpec | undefined {
+  if (!isRecord(raw) || !isPoint(raw.basePoint) || !isPoint(raw.direction)) return undefined;
+  if (raw.mode !== 'perpendicular' && raw.mode !== 'tangent') return undefined;
+  return {
+    basePoint: { x: raw.basePoint.x, y: raw.basePoint.y },
+    direction: { x: raw.direction.x, y: raw.direction.y },
+    mode: raw.mode,
+  };
+}
+
 function parsePayload(raw: string, kind: 'definition' | 'instance'): Record<string, unknown> | undefined {
   let parsed: unknown;
   try {
@@ -600,7 +636,19 @@ export function decodeDynamicDefinition(raw: string, base?: DynamicDefinitionBas
     if (!decoded) return retained;
     actions.push(decoded);
   }
-  const definition: DynamicBlockDefinition = { version: DYNAMIC_MODEL_VERSION, parameters, actions };
+  // The alignment key is optional and top-level (design §6.2). Present but
+  // malformed retains the whole payload, like any other modeled member.
+  let alignment: AlignmentSpec | undefined;
+  if (parsed.alignment !== undefined) {
+    alignment = decodeAlignment(parsed.alignment);
+    if (!alignment) return retained;
+  }
+  const definition: DynamicBlockDefinition = {
+    version: DYNAMIC_MODEL_VERSION,
+    parameters,
+    actions,
+    ...(alignment !== undefined ? { alignment } : {}),
+  };
   if (base) {
     const baseIds = new Set<string>([...base.entityIdsInOrder, ...(base.attributeTags ?? [])]);
     if (validateDefinition(definition, baseIds).length > 0) return retained;
