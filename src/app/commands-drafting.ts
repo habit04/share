@@ -22,6 +22,7 @@ import { filletTool, chamferTool, arrayTool, arrayRectTool, arrayPolarTool, stre
 import { hatchTool, hatchEditTool, leaderTool, mleaderTool, tableTool, tableEditTool, fieldTool, updateFieldTool, updateFields, fieldContextFor } from '../tools/drafting-annot';
 import { blockTool, insertTool, referencedBlocks, unusedLayers, unusedLinetypes } from '../tools/blocks';
 import { dynSetTool } from '../tools/parametric';
+import { conAddTool, conEditTool, conDeleteTool, conSolveTool, conStatusTool } from '../tools/constraints';
 import { distTool, idTool, areaTool, listTool } from '../tools/inquiry';
 import { selectTool, qselectTool, selectionKeyword, selectionHistory } from '../tools/select';
 import { layoutController } from '../tools/layouts';
@@ -850,6 +851,11 @@ export function registerDraftingCommands(editor: Editor): void {
   reg('BLOCK', ['B', '-BLOCK', 'BMAKE'], 'Define a block from selected objects', (ed) => ed.startTool(blockTool()));
   reg('INSERT', ['I', '-INSERT', 'DDINSERT', 'CLASSICINSERT'], 'Insert a block [name, scale, rotation, attributes]', (ed, arg) => ed.startTool(insertTool(arg)));
   reg('DYNSET', ['-DYNSET'], 'Set a dynamic-block parameter value on a selected block reference', (ed) => ed.startTool(dynSetTool()));
+  reg('CONADD', ['-CONADD'], 'Add a 2D constraint (geometric or dimensional, driving or reference) to model-space objects', (ed) => ed.startTool(conAddTool()));
+  reg('CONEDIT', ['-CONEDIT'], 'Edit the driving value of a dimensional constraint', (ed) => ed.startTool(conEditTool()));
+  reg('CONDELETE', ['CONDEL', '-CONDELETE'], 'Delete a constraint from the drawing', (ed) => ed.startTool(conDeleteTool()));
+  reg('CONSOLVE', ['-CONSOLVE'], 'Solve the drawing constraint set now (one undo step; failure changes nothing)', (ed) => ed.startTool(conSolveTool()));
+  reg('CONSTATUS', ['-CONSTATUS'], 'Report per-constraint state, reference measurements and DOF status', (ed) => ed.startTool(conStatusTool()));
   reg('PURGE', ['PU', '-PURGE'], 'Purge unused blocks, layers, linetypes [Blocks/LAyers/LTypes/All]', (ed, arg) => ed.startTool(purgeTool(ed, arg)));
 
   // Inquiry
