@@ -1,6 +1,6 @@
 import { newId } from '../core/entities';
 import { captureDraftContext, draftBindingNow, type AiDraftCapture, type AiDraftSource } from './draft-context';
-import { compileAiPlan, type CompiledProposal } from './draft-compiler';
+import { compileAiPlan, revokeCompiledProposal, setCompiledProposalApplicable, type CompiledProposal } from './draft-compiler';
 import { applyCompiledProposal } from './draft-apply';
 import type { Drawing } from '../core/document';
 import {
@@ -10,7 +10,7 @@ import {
   type AiDraftProvider,
   type AiDraftRequest,
 } from './types';
-import { AI_DEFAULT_TIMEOUT_MS } from './limits';
+import { AI_DEFAULT_TIMEOUT_MS, AI_DRAFT_MAX_MESSAGE_CHARS, AI_MAX_QUESTION_CHARS } from './limits';
 import { validateAiDraftResponse } from './draft-plan';
 import { buildRefineEnvelope } from './draft-refine';
 import type { AiDraftRefineRequest } from './types';
@@ -74,7 +74,7 @@ export class AiDraftController {
   private readonly clearTimeoutFn: (handle: unknown) => void;
   private readonly applyFn: (capture: AiDraftCapture, proposal: CompiledProposal) => void;
   private readonly listeners = new Set<(status: AiDraftStatus) => void>();
-  private currentStatus: AiDraftStatus = { state: 'idle' };
+  private currentStatus: AiDraftStatus = Object.freeze({ state: 'idle' });
   private epoch = 0;
   private pending: {
     requestId: string; abort: AbortController; timer: unknown; settled: boolean;
@@ -103,12 +103,23 @@ export class AiDraftController {
 
   get status(): AiDraftStatus { return this.currentStatus; }
 
+  private editingBusy(): boolean {
+    return this.source.editingInteractionBusy?.() ?? this.source.interactionBusy();
+  }
+
   subscribe(listener: (status: AiDraftStatus) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
 
   private emit(status: AiDraftStatus): void {
+    const previous = this.currentStatus;
+    if (previous.state === 'staged' && (status.state !== 'staged' || status.proposal !== previous.proposal || status.capture !== previous.capture)) {
+      revokeCompiledProposal(previous.proposal);
+    }
+    if (status.state === 'staged' && status.followUp) setCompiledProposalApplicable(status.capture, status.proposal, false);
+    if (status.state === 'staged' && status.followUp) Object.freeze(status.followUp);
+    Object.freeze(status);
     this.currentStatus = status;
     for (const listener of [...this.listeners]) {
       if (this.disposed || this.currentStatus !== status) break;
@@ -118,12 +129,14 @@ export class AiDraftController {
 
   /** Drop any staged proposal and cancel in-flight generation. */
   invalidate(message: string = STALE_MESSAGE): void {
-    this.epoch += 1;
+    const myEpoch = ++this.epoch;
+    const previous = this.currentStatus;
     if (this.pending) {
       const pending = this.pending;
       pending.finish({ state: 'idle' }, false);
       pending.abort.abort();
     }
+    if (this.epoch !== myEpoch || this.currentStatus !== previous) return;
     if (this.currentStatus.state === 'staged' || this.currentStatus.state === 'generating') {
       this.emit({ state: 'invalidated', message });
     } else if (this.currentStatus.state !== 'idle') {
@@ -158,6 +171,7 @@ export class AiDraftController {
       if (this.configKeyNow && this.configKeyNow() !== configKey) throw new AiError('stale', STALE_MESSAGE);
       capture = captureDraftContext(this.source, prompt, configKey);
     } catch (cause) {
+      if (this.disposed || this.epoch !== myEpoch) return { state: 'idle' };
       const error = cause instanceof AiError ? cause : new AiError('invalid-context', 'The draft context could not be captured.');
       this.emit({ state: 'error', requestId: '', error });
       return this.currentStatus;
@@ -182,8 +196,8 @@ export class AiDraftController {
         },
       };
       this.pending = pending;
-      const contextCurrent = (): boolean => this.source.modelState() === capture.state
-        && !this.source.interactionBusy()
+      const contextCurrent = (admission = false): boolean => this.source.modelState() === capture.state
+        && !(admission ? this.source.interactionBusy() : this.editingBusy())
         && aiDraftBindingsEqual(draftBindingNow(this.source, this.configKeyNow?.() ?? configKey), capture.binding);
       const contextFailure = (cause: unknown): void => pending.finish({ state: 'error', requestId,
         error: cause instanceof AiError ? cause : new AiError('invalid-context', 'The draft context could not be checked.') });
@@ -198,7 +212,7 @@ export class AiDraftController {
         }
         this.emit({ state: 'generating', requestId });
         if (pending.settled || this.disposed || this.epoch !== myEpoch) return;
-        if (!contextCurrent()) {
+        if (!contextCurrent(true)) {
           pending.finish({ state: 'invalidated', message: STALE_MESSAGE });
           return;
         }
@@ -260,11 +274,15 @@ export class AiDraftController {
     // An unresolved follow-up blocks Apply: the user is looking at a
     // preview that does not include what they just asked for.
     if (staged.followUp) return this.currentStatus;
+    const myEpoch = this.epoch;
+    let consumed = false;
     this.applying = true;
     try {
       if (this.source.interactionBusy()) return this.currentStatus;
       const now = draftBindingNow(this.source, this.configKeyNow?.() ?? staged.capture.binding.configKey);
-      if (this.source.modelState() !== staged.capture.state || !aiDraftBindingsEqual(now, staged.capture.binding)) {
+      const sameState = this.source.modelState() === staged.capture.state;
+      if (this.disposed || this.epoch !== myEpoch || this.currentStatus !== staged) return this.currentStatus;
+      if (!sameState || !aiDraftBindingsEqual(now, staged.capture.binding)) {
         this.epoch += 1;
         this.emit({ state: 'invalidated', message: STALE_MESSAGE });
         return this.currentStatus;
@@ -272,13 +290,18 @@ export class AiDraftController {
       // Consume before entering document listeners. They may invalidate or
       // re-enter the controller while the synchronous transaction emits.
       this.epoch += 1;
-      this.currentStatus = { state: 'idle' };
+      consumed = true;
+      this.currentStatus = Object.freeze({ state: 'idle' });
       this.applyFn(staged.capture, staged.proposal);
     } catch (cause) {
+      if (this.disposed || this.epoch !== myEpoch + (consumed ? 1 : 0) || (!consumed && this.currentStatus !== staged)) return this.currentStatus;
       const error = cause instanceof AiError ? cause : new AiError('invalid-plan', 'The proposal could not be applied.');
       this.emit({ state: 'error', requestId: staged.requestId, error });
       return this.currentStatus;
     } finally {
+      // The artifact was consumed before entering the transaction. Even a
+      // failed commit cannot make an externally retained preview applicable.
+      if (this.currentStatus !== staged) revokeCompiledProposal(staged.proposal);
       this.applying = false;
     }
     // Consume the proposal: it can never be applied twice.
@@ -295,26 +318,29 @@ export class AiDraftController {
    * the new text are kept.
    */
   followUpEdited(text: string): void {
+    if (this.disposed || this.applying) return;
     let staged = this.currentStatus;
     if (staged.state !== 'staged') return;
     if (staged.followUp?.phase === 'refining') {
+      const epoch = this.epoch;
       this.cancelRefine();
+      if (this.epoch !== epoch || this.pending) return;
       staged = this.currentStatus;
       if (staged.state !== 'staged') return;
     }
     const trimmed = typeof text === 'string' ? text.trim() : '';
     const previous = staged.followUp;
-    if (!trimmed && (!previous || previous.phase === 'entered')) {
-      if (previous) this.emit({ ...staged, followUp: null });
-      return;
-    }
-    const keepPhase = previous && previous.phase !== 'entered' ? previous.phase : 'entered';
+    if (!trimmed && !previous) return;
+    this.epoch += 1;
     this.emit({
       ...staged,
       followUp: {
-        text: trimmed || previous?.text || '',
-        phase: keepPhase,
-        ...(keepPhase !== 'entered' && previous?.message ? { message: previous.message } : {}),
+        // Keep one overflow character so this value can never become an
+        // apparently valid, silently truncated instruction on retry.
+        text: trimmed.slice(0, AI_MAX_QUESTION_CHARS + 1),
+        phase: trimmed.length > AI_MAX_QUESTION_CHARS ? 'failed' : trimmed ? 'entered' : previous?.phase ?? 'entered',
+        ...(trimmed.length > AI_MAX_QUESTION_CHARS ? { message: 'The follow-up instruction is too long.' }
+          : !trimmed && previous?.message ? { message: previous.message } : {}),
       },
     });
   }
@@ -331,23 +357,26 @@ export class AiDraftController {
    * is invalidated instead of silently restored.
    */
   discardFollowUp(): AiDraftStatus {
+    if (this.disposed || this.applying) return this.currentStatus;
     const staged = this.currentStatus;
     if (staged.state !== 'staged' || !staged.followUp) return this.currentStatus;
+    const myEpoch = ++this.epoch;
     if (this.pending?.refineSettle) this.pending.refineSettle({ type: 'dropped' });
     let stillValid = false;
     try {
       const now = draftBindingNow(this.source, this.configKeyNow?.() ?? staged.capture.binding.configKey);
       stillValid = this.source.modelState() === staged.capture.state
-        && !this.source.interactionBusy()
+        && !this.editingBusy()
         && aiDraftBindingsEqual(now, staged.capture.binding);
     } catch { stillValid = false; }
+    if (this.disposed || this.epoch !== myEpoch || this.currentStatus !== staged) return this.currentStatus;
     if (!stillValid) {
       this.epoch += 1;
       this.emit({ state: 'invalidated', message: STALE_MESSAGE });
       return this.currentStatus;
     }
-    const current = this.currentStatus;
-    if (current.state === 'staged') this.emit({ ...current, followUp: null });
+    setCompiledProposalApplicable(staged.capture, staged.proposal, true);
+    this.emit({ ...staged, followUp: null });
     return this.currentStatus;
   }
 
@@ -364,37 +393,49 @@ export class AiDraftController {
     if (this.applying) return this.currentStatus;
     const staged = this.currentStatus;
     if (staged.state !== 'staged') return this.currentStatus;
+    const myEpoch = ++this.epoch;
     if (this.pending?.refineSettle) {
       // A newer refinement supersedes the pending one.
-      const superseded = this.pending;
-      superseded.refineSettle?.({ type: 'dropped' });
-      superseded.abort.abort();
+      this.pending.refineSettle({ type: 'dropped' });
     }
-    if (this.source.interactionBusy()) return this.currentStatus;
-    if (!provider.refine) {
-      this.emit({ ...staged, followUp: { text: typeof followUpText === 'string' ? followUpText.trim() : '', phase: 'failed', message: 'The selected provider cannot refine previews.' } });
-      return this.currentStatus;
+    if (this.disposed || this.epoch !== myEpoch || this.currentStatus !== staged) return { state: 'idle' };
+    const capture = staged.capture;
+    const contextCurrent = (): boolean => this.source.modelState() === capture.state
+      && !this.editingBusy()
+      && aiDraftBindingsEqual(draftBindingNow(this.source, this.configKeyNow?.() ?? configKey), capture.binding);
+    let validAtAdmission = false;
+    let busyAtAdmission = false;
+    try {
+      busyAtAdmission = this.source.interactionBusy();
+      validAtAdmission = !(this.configKeyNow && this.configKeyNow() !== configKey) && contextCurrent();
     }
-    if (this.configKeyNow && this.configKeyNow() !== configKey) {
+    catch { /* A failed source read invalidates only this still-current session. */ }
+    if (this.disposed || this.epoch !== myEpoch || this.currentStatus !== staged) return { state: 'idle' };
+    if (!validAtAdmission) {
       this.invalidate(STALE_MESSAGE);
       return this.currentStatus;
     }
+    if (busyAtAdmission) return this.currentStatus;
     let envelopeJson: string;
     let followUp: string;
     try {
       const built = buildRefineEnvelope(staged.capture, staged.proposal, followUpText);
       envelopeJson = built.envelopeJson;
       followUp = built.followUp;
+      if (typeof provider.refine !== 'function') throw new AiError('host-unavailable', 'The selected provider cannot refine previews.');
     } catch (cause) {
       const error = cause instanceof AiError ? cause : new AiError('invalid-context', 'The refinement context could not be built.');
-      this.emit({ ...staged, followUp: { text: typeof followUpText === 'string' ? followUpText.trim() : '', phase: 'failed', message: error.message } });
+      if (this.epoch === myEpoch && this.currentStatus === staged && !this.disposed) {
+        let valid = false;
+        try { valid = contextCurrent(); } catch { /* A failed source read invalidates the session. */ }
+        if (this.epoch !== myEpoch || this.currentStatus !== staged || this.disposed) return { state: 'idle' };
+        if (!valid) { this.invalidate(STALE_MESSAGE); return this.currentStatus; }
+        this.emit({ ...staged, followUp: { text: typeof followUpText === 'string' ? followUpText.trim().slice(0, AI_MAX_QUESTION_CHARS + 1) : '', phase: 'failed', message: error.message } });
+      }
       return this.currentStatus;
     }
-    const capture = staged.capture;
-    const myEpoch = this.epoch + 1;
-    this.epoch = myEpoch;
+    if (this.disposed || this.epoch !== myEpoch || this.currentStatus !== staged) return { state: 'idle' };
     const requestId = mintAiRequestId();
-    this.emit({ ...staged, followUp: { text: followUp, phase: 'refining' } });
     return new Promise<AiDraftStatus>((resolve) => {
       const abort = new AbortController();
       const pending: NonNullable<AiDraftController['pending']> = {
@@ -408,31 +449,45 @@ export class AiDraftController {
           try { this.clearTimeoutFn(pending.timer); } catch { /* Cleanup must not strand settlement. */ }
           pending.timer = null;
         }
-        if (this.pending === pending) this.pending = null;
-        if (outcome.type === 'dropped') { resolve(this.currentStatus); return; }
-        if (outcome.type === 'stale' || this.disposed) {
-          if (!this.disposed) this.emit({ state: 'invalidated', message: STALE_MESSAGE });
-          resolve(this.currentStatus);
+        const owned = this.pending === pending;
+        if (owned) this.pending = null;
+        const current = this.currentStatus;
+        if (outcome.type === 'dropped' || !owned || this.disposed || this.epoch !== myEpoch
+          || current.state !== 'staged' || current.capture !== capture || current.proposal !== staged.proposal || current.version !== staged.version) {
+          resolve({ state: 'idle' });
+          abort.abort();
           return;
         }
-        const current = this.currentStatus;
-        if (current.state !== 'staged' || current.capture !== capture) { resolve(this.currentStatus); return; }
-        if (outcome.type === 'success') {
-          this.emit({ state: 'staged', requestId: outcome.requestId, capture, proposal: outcome.proposal, version: current.version + 1, followUp: null });
-        } else if (outcome.type === 'message') {
-          this.emit({ ...current, followUp: { text: followUp, phase: outcome.kind, message: outcome.message } });
-        } else if (outcome.type === 'failure') {
-          this.emit({ ...current, followUp: { text: followUp, phase: 'failed', message: outcome.message } });
-        } else {
-          this.emit({ ...current, followUp: { text: followUp, phase: 'entered', message: 'Refinement cancelled.' } });
+        let valid = false;
+        try { valid = contextCurrent(); } catch { /* A failed source check invalidates the whole session. */ }
+        if (this.disposed || this.epoch !== myEpoch || this.currentStatus !== current) {
+          resolve({ state: 'idle' });
+          abort.abort();
+          return;
         }
-        resolve(this.currentStatus);
+        if (outcome.type === 'stale' || !valid) {
+          const status: AiDraftStatus = { state: 'invalidated', message: STALE_MESSAGE };
+          resolve(status);
+          this.emit(status);
+          abort.abort();
+          return;
+        }
+        let status: AiDraftStatus;
+        if (outcome.type === 'success') {
+          status = { state: 'staged', requestId: outcome.requestId, capture, proposal: outcome.proposal, version: current.version + 1, followUp: null };
+        } else if (outcome.type === 'message') {
+          status = { ...current, followUp: { text: followUp, phase: outcome.kind, message: outcome.message } };
+        } else if (outcome.type === 'failure') {
+          status = { ...current, followUp: { text: followUp, phase: 'failed', message: outcome.message.length <= AI_DRAFT_MAX_MESSAGE_CHARS ? outcome.message : 'The draft provider failed.' } };
+        } else {
+          status = { ...current, followUp: { text: followUp, phase: 'entered', message: 'Refinement cancelled.' } };
+        }
+        resolve(status);
+        this.emit(status);
+        if (outcome.type === 'failure' || outcome.type === 'cancelled') abort.abort();
       };
       pending.refineSettle = settleRefine;
       this.pending = pending;
-      const contextCurrent = (): boolean => this.source.modelState() === capture.state
-        && !this.source.interactionBusy()
-        && aiDraftBindingsEqual(draftBindingNow(this.source, this.configKeyNow?.() ?? configKey), capture.binding);
       try {
         pending.timer = this.setTimeoutFn(() => {
           settleRefine({ type: 'failure', message: 'The draft provider did not answer in time.' });
@@ -442,14 +497,26 @@ export class AiDraftController {
           try { this.clearTimeoutFn(pending.timer); } catch { /* Synchronously fired test timer. */ }
           return;
         }
+        // Install the job before publishing: subscribers may synchronously
+        // cancel, edit, discard, dispose or supersede this request.
+        this.emit({ ...staged, followUp: { text: followUp, phase: 'refining' } });
+        if (pending.settled) return;
         if (this.epoch !== myEpoch || this.disposed) { settleRefine({ type: 'dropped' }); return; }
         if (!contextCurrent()) { settleRefine({ type: 'stale' }); return; }
+        if (pending.settled || this.epoch !== myEpoch || this.disposed) { settleRefine({ type: 'dropped' }); return; }
+        const dispatchBusy = this.source.interactionBusy();
+        if (pending.settled || this.epoch !== myEpoch || this.disposed) { settleRefine({ type: 'dropped' }); return; }
+        if (dispatchBusy) {
+          settleRefine({ type: 'failure', message: 'Finish the current command or navigation, then refine again.' });
+          return;
+        }
         const request: AiDraftRefineRequest = { requestId, followUp, envelopeJson, binding: capture.binding };
         const refineFn = provider.refine;
         if (!refineFn) { settleRefine({ type: 'failure', message: 'The selected provider cannot refine previews.' }); return; }
         let work: ReturnType<NonNullable<AiDraftProvider['refine']>>;
-        try { work = refineFn(request, abort.signal); } catch (cause) {
-          settleRefine({ type: 'failure', message: cause instanceof AiError ? cause.message : 'The draft provider failed.' });
+        try { work = refineFn.call(provider, request, abort.signal); } catch (cause) {
+          if (cause instanceof AiError && cause.kind === 'stale') settleRefine({ type: 'stale' });
+          else settleRefine({ type: 'failure', message: cause instanceof AiError ? cause.message : 'The draft provider failed.' });
           return;
         }
         Promise.resolve(work).then((value: unknown) => {
@@ -471,7 +538,8 @@ export class AiDraftController {
           catch { settleRefine({ type: 'stale' }); return; }
           settleRefine({ type: 'success', requestId, proposal: compiled.proposal });
         }, (cause: unknown) => {
-          if (cause instanceof AiError && cause.kind === 'cancelled') settleRefine({ type: 'cancelled' });
+          if (cause instanceof AiError && cause.kind === 'stale') settleRefine({ type: 'stale' });
+          else if (cause instanceof AiError && cause.kind === 'cancelled') settleRefine({ type: 'cancelled' });
           else settleRefine({ type: 'failure', message: cause instanceof AiError ? cause.message : 'The draft provider failed.' });
         });
       } catch {

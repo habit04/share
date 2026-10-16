@@ -5,7 +5,9 @@ opt-in OpenAI and Claude connections; see [milestone 2](AI-ASSISTANT-M2.md) and
 [its review evidence](AI-ASSISTANT-M2-REVIEW.md). It also adds previewed drawing
 creation and editing; see [milestone 3](AI-ASSISTANT-M3.md) and
 [its review evidence](AI-ASSISTANT-M3-REVIEW.md). The statements below about an
-unregistered host and future drafting apply to M1 only.
+unregistered host and future drafting apply to M1 only. Follow-up refinement of
+staged previews is described in [milestone 4](AI-ASSISTANT-M4.md) and
+[its review evidence](AI-ASSISTANT-M4-REVIEW.md).
 
 Status: **reviewed, corrected and integrated locally on `review/ai-m1`**
 (base `a68dba5b16ed4099d8decae32f936ebc023129fa`). Windows source validation

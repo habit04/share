@@ -1,17 +1,17 @@
 import { Drawing } from '../src/core/document';
 import { DEFAULT_UNITS } from '../src/core/units';
 import type { Entity } from '../src/core/entities';
-import { captureDraftContext, type AiDraftSource, type FrozenCreationDefaults } from '../src/ai/draft-context';
+import { captureDraftContext, type AiDraftCapture, type AiDraftSource, type FrozenCreationDefaults } from '../src/ai/draft-context';
 
 /** Real renderer capture, with synthetic in-memory geometry only. */
-export function draftTestContextJson(
+export function draftTestCapture(
   ids: readonly string[], prompt = 'draw a line',
   defaults: FrozenCreationDefaults = { layer: '0', color: 'ByLayer' },
-): string {
-  const drawing = new Drawing();
+): AiDraftCapture {
   const entities: Entity[] = ids.map((id) => ({
     id, type: 'line', layer: '0', color: 'ByLayer', a: { x: 0, y: 0 }, b: { x: 10, y: 0 },
   }));
+  const drawing = new Drawing({ entities });
   const source: AiDraftSource = {
     binding: () => ({ sessionId: 1, docId: 'doc-1', contentGeneration: 1, docRevision: 7, docLoadCount: 1,
       space: { layout: null, viewport: null }, selectionIds: [...ids] }),
@@ -24,5 +24,12 @@ export function draftTestContextJson(
     frozenDefaults: () => defaults,
     interactionBusy: () => false,
   };
-  return captureDraftContext(source, prompt, 'synthetic-config').contextJson;
+  return captureDraftContext(source, prompt, 'synthetic-config');
+}
+
+export function draftTestContextJson(
+  ids: readonly string[], prompt = 'draw a line',
+  defaults: FrozenCreationDefaults = { layer: '0', color: 'ByLayer' },
+): string {
+  return draftTestCapture(ids, prompt, defaults).contextJson;
 }

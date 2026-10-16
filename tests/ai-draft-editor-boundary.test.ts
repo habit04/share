@@ -76,4 +76,19 @@ describe('AI preview editor ownership and real interaction boundary', () => {
     expect(() => captureDraftContext(source, 'create a circle', 'fixture')).toThrow(/2D Model view/);
     expect(ed.doc.snapshot).toBe(before);
   });
+
+  it('view-only panning is busy for Apply but does not change the capture or count as an edit', () => {
+    const ed = editor(), source = createEditorAiDraftSource(ed);
+    const capture = captureDraftContext(source, 'create a circle', 'fixture');
+    const view = vi.fn(); ed.on('view', view);
+    const event = { button: 1, clientX: 400, clientY: 300, preventDefault() {} } as MouseEvent;
+    ed.onMouseDown(event);
+    expect(ed.interactionBusy).toBe(true);
+    expect(source.editingInteractionBusy?.()).toBe(false);
+    expect(aiDraftBindingsEqual(capture.binding, draftBindingNow(source, 'fixture'))).toBe(true);
+    ed.onMouseUp(event);
+    expect(ed.interactionBusy).toBe(false);
+    expect(view).toHaveBeenCalledTimes(2);
+    expect(ed.doc.snapshot).toBe(capture.state);
+  });
 });

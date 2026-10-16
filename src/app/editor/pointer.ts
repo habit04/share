@@ -107,6 +107,7 @@ export function onMouseDown(ed: Editor, st: EditorInternals, ev: MouseEvent): un
   if (ev.button === 1 || (ev.button === 0 && ed.tool instanceof PanTool && !st.selReq)) {
     ev.preventDefault();
     st.panning = true;
+    ed.notify('view');
     return;
   }
   if (ev.button !== 0) return;
@@ -150,6 +151,7 @@ export function onMouseDown(ed: Editor, st: EditorInternals, ev: MouseEvent): un
 export function onMouseUp(ed: Editor, st: EditorInternals, ev: MouseEvent): void {
   if (ev.button === 1 || (ev.button === 0 && st.panning)) {
     st.panning = false;
+    ed.notify('view');
     return;
   }
   if (ev.button !== 0) return;

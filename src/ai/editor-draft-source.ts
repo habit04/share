@@ -44,6 +44,7 @@ export function createEditorAiDraftSource(editor: Editor): AiDraftSource {
       };
     },
     interactionBusy: (): boolean => editor.interactionBusy,
+    editingInteractionBusy: (): boolean => editor.editingInteractionBusy,
     interactionGeneration: (): number => editor.interactionGeneration,
   };
 }

@@ -155,6 +155,16 @@ describe('WindowAiConnection', () => {
 });
 
 describe('WindowAiConnection draft bridge (milestone 3)', () => {
+  it('reports an older preload without draft support as host-unavailable', async () => {
+    const raw = fakeRaw();
+    delete (raw as Partial<AiPreloadBridge>).draft;
+    const ask = vi.spyOn(raw, 'ask');
+    const conn = new WindowAiConnection(raw);
+    await expect(conn.bridge.draft!(draftRequest, new AbortController().signal))
+      .rejects.toMatchObject({ kind: 'host-unavailable' });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
   it('returns the host-validated raw plan value with whitelisted usage', async () => {
     const conn = new WindowAiConnection(fakeRaw());
     const result = await conn.bridge.draft!(draftRequest, new AbortController().signal);
@@ -242,6 +252,18 @@ describe('WindowAiConnection draft bridge (milestone 3)', () => {
 });
 
 describe('WindowAiConnection draftRefine bridge (milestone 4)', () => {
+  it('reports an older preload without refinement support without falling back', async () => {
+    const raw = fakeRaw();
+    delete (raw as Partial<AiPreloadBridge>).draftRefine;
+    const ask = vi.spyOn(raw, 'ask');
+    const draft = vi.spyOn(raw, 'draft');
+    const conn = new WindowAiConnection(raw);
+    await expect(conn.bridge.draftRefine!(refineRequest, new AbortController().signal))
+      .rejects.toMatchObject({ kind: 'host-unavailable' });
+    expect(ask).not.toHaveBeenCalled();
+    expect(draft).not.toHaveBeenCalled();
+  });
+
   it('returns the host-validated replacement plan value with whitelisted usage', async () => {
     const conn = new WindowAiConnection(fakeRaw());
     const result = await conn.bridge.draftRefine!(refineRequest, new AbortController().signal);

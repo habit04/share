@@ -1034,6 +1034,35 @@ describe('ai-service refine path (milestone 4)', () => {
     await world.service.dispose();
   });
 
+  it('refines with the selected Anthropic credential without reusing the OpenAI key', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-openai-only', 'session');
+    await world.service.setProvider('anthropic');
+    await world.service.setKey('sk-anthropic-only', 'session');
+    await world.service.setEnabled(true);
+    await world.service.refine(await liveRefineEnvelope(world.service));
+    expect(world.factoryCalls).toEqual([
+      { provider: 'anthropic', model: 'claude-sonnet-5-5', apiKey: 'sk-anthropic-only' },
+    ]);
+    expect(world.refineCalls.map((call) => call.provider)).toEqual(['anthropic']);
+    await world.service.dispose();
+  });
+
+  it('rejects an old refinement epoch after an away-and-back model change and key replacement', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-first', 'session');
+    await world.service.setEnabled(true);
+    const old = await liveRefineEnvelope(world.service);
+    await world.service.setModel('gpt-5-mini');
+    await world.service.setModel('gpt-5');
+    await world.service.replaceKey('sk-replaced');
+    await expect(world.service.refine(old)).rejects.toMatchObject({ kind: 'cancelled' });
+    expect(world.transportFactory).not.toHaveBeenCalled();
+    await world.service.refine(await liveRefineEnvelope(world.service));
+    expect(world.factoryCalls).toEqual([{ provider: 'openai', model: 'gpt-5', apiKey: 'sk-replaced' }]);
+    await world.service.dispose();
+  });
+
   it('rejects destination and generation mismatches without constructing a transport', async () => {
     const world = makeWorld();
     await world.service.setKey('sk-live', 'session');

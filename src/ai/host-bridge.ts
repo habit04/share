@@ -187,6 +187,9 @@ export class WindowAiConnection {
       },
       draft: async (request: AiDraftRequest, signal: AbortSignal): Promise<AiDraftWireResult> => {
         if (signal.aborted) throw new AiError('cancelled', 'The request was cancelled.');
+        if (typeof this.raw.draft !== 'function') {
+          throw new AiError('host-unavailable', 'The AI host does not support drawing previews. Update JCad before generating a preview.');
+        }
         let rejectAborted: (cause: AiError) => void = () => {};
         const aborted = new Promise<never>((_resolve, reject) => { rejectAborted = reject; });
         const onAbort = () => {
@@ -203,6 +206,9 @@ export class WindowAiConnection {
       },
       draftRefine: async (request: AiDraftRefineRequest, signal: AbortSignal): Promise<AiDraftWireResult> => {
         if (signal.aborted) throw new AiError('cancelled', 'The request was cancelled.');
+        if (typeof this.raw.draftRefine !== 'function') {
+          throw new AiError('host-unavailable', 'The AI host does not support preview refinement. Update JCad before refining a preview.');
+        }
         let rejectAborted: (cause: AiError) => void = () => {};
         const aborted = new Promise<never>((_resolve, reject) => { rejectAborted = reject; });
         const onAbort = () => {

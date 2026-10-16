@@ -479,6 +479,12 @@ function draftBinding(value, targets) {
 const REFINE_ENVELOPE_KEYS = Object.freeze([
   'kind', 'version', 'originalPrompt', 'followUp', 'originalContext', 'currentPlan', 'proposalLabels',
 ]);
+// Mirrors planOperationLabels() in src/ai/draft-plan.ts. These references
+// describe the current plan only; they never authorize a drawing target.
+const REFINE_LABEL_NAMES = new Map([
+  ['createLine', 'Line'], ['createCircle', 'Circle'], ['createRectangle', 'Rectangle'],
+  ['move', 'Move'], ['copy', 'Copy'], ['rotate', 'Rotate'], ['delete', 'Delete'],
+]);
 
 /**
  * Validate a refinement envelope from the renderer (milestone 4,
@@ -555,20 +561,48 @@ function aiRefineRequest(value) {
   if (planBytes > AI_LIMITS.maxDraftPlanBytes) {
     throw new AiHostError('invalid-request', 'The current plan exceeds the size limit.');
   }
+  let parsed;
   try {
-    parseDraftResponse(planValue);
+    parsed = parseDraftResponse(planValue);
   } catch {
     throw new AiHostError('invalid-request', 'The current plan is not a valid draft plan.');
   }
-  list(envelope.proposalLabels, AI_LIMITS.maxDraftOperations, (item) => {
+  if (parsed.kind !== 'plan' || !parsed.plan) throw new AiHostError('invalid-request', 'Invalid current plan.');
+  const eligible = new Set(originalContext.targets.filter((target) => target.eligible).map((target) => target.id));
+  const disclosed = new Set(originalContext.selectionSnapshot.objects.map((object) => object.id));
+  const layers = new Set(originalContext.permittedLayers);
+  for (const operation of parsed.plan.operations) {
+    if ('targetIds' in operation) {
+      if (!operation.targetIds || operation.targetIds.some((id) => !eligible.has(id) || !disclosed.has(id))) {
+        throw new AiHostError('invalid-request', 'The current plan targets an object outside the original eligible selection.');
+      }
+    } else if (!layers.has(operation.layer ?? originalContext.creationDefaults.layer)) {
+      throw new AiHostError('invalid-request', 'The current plan uses an undisclosed creation layer.');
+    }
+  }
+  const labels = list(envelope.proposalLabels, AI_LIMITS.maxDraftOperations, (item) => {
     if (!isPlainObject(item) || Object.keys(item).length !== 2
       || !Object.hasOwn(item, 'label') || !Object.hasOwn(item, 'summary')) {
       throw new AiHostError('invalid-request', 'Invalid proposal label.');
     }
     snapshotString(item.label, 64, 'proposal label', false);
-    snapshotString(item.summary, AI_LIMITS.maxDraftMessageChars, 'proposal label summary');
+    // A valid edit summary names up to 200 targets and can exceed the
+    // provider message limit. The exact envelope's 96 KiB byte cap bounds
+    // this local display text without silently truncating it.
+    snapshotString(item.summary, AI_LIMITS.maxDraftContextBytes, 'proposal label summary');
     return item;
   });
+  if (labels.length !== parsed.plan.operations.length) {
+    throw new AiHostError('invalid-request', 'Proposal labels do not match the current plan.');
+  }
+  const labelCounts = new Map();
+  for (const [index, operation] of parsed.plan.operations.entries()) {
+    const next = (labelCounts.get(operation.op) ?? 0) + 1;
+    labelCounts.set(operation.op, next);
+    if (labels[index].label !== `${REFINE_LABEL_NAMES.get(operation.op)} ${next}`) {
+      throw new AiHostError('invalid-request', 'Proposal labels do not match the current plan.');
+    }
+  }
   let destination;
   if (value.destination !== undefined) {
     if (!isPlainObject(value.destination) || !AI_PROVIDERS.includes(value.destination.provider)

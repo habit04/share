@@ -50,10 +50,26 @@ export interface CompiledProposal {
 
 // Only this compiler can authorize a proposal. The public readonly view is not
 // authority to forge a replacement entity array or apply it to another capture.
-const preparedProposals = new WeakMap<CompiledProposal, { capture: AiDraftCapture; state: DrawingState }>();
+const preparedProposals = new WeakMap<CompiledProposal, { capture: AiDraftCapture; state: DrawingState; applicable: boolean }>();
 export function compiledProposalState(capture: AiDraftCapture, proposal: CompiledProposal): DrawingState | null {
   const prepared = preparedProposals.get(proposal);
-  return prepared?.capture === capture ? prepared.state : null;
+  return prepared?.capture === capture && prepared.applicable ? prepared.state : null;
+}
+
+/** A retained preview can still be refined while its Apply authority is suspended. */
+export function isCompiledProposal(capture: AiDraftCapture, proposal: CompiledProposal): boolean {
+  return preparedProposals.get(proposal)?.capture === capture;
+}
+
+/** Only the controller's fresh-checked follow-up discard restores applicability. */
+export function setCompiledProposalApplicable(capture: AiDraftCapture, proposal: CompiledProposal, applicable: boolean): void {
+  const prepared = preparedProposals.get(proposal);
+  if (prepared?.capture === capture) prepared.applicable = applicable;
+}
+
+/** A discarded, superseded or consumed preview must never regain Apply authority. */
+export function revokeCompiledProposal(proposal: CompiledProposal): void {
+  preparedProposals.delete(proposal);
 }
 
 /** Preview sets derived from the compiled artifact (never from the document). */
@@ -285,7 +301,7 @@ function compileValidatedPlan(
       bounds,
       counts: { created: created.length, copied: copies.length, modified: modified.length, deleted: deleted.length },
   });
-  preparedProposals.set(proposal, { capture, state: prepared });
+  preparedProposals.set(proposal, { capture, state: prepared, applicable: true });
   return { ok: true, proposal };
 }
 

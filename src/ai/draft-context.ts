@@ -34,6 +34,8 @@ export interface AiDraftSource extends AiSnapshotSource {
   frozenDefaults(): FrozenCreationDefaults;
   /** True while a tool / selection request / grip drag / gesture / pan is active. */
   interactionBusy(): boolean;
+  /** Editing interactions only; navigation may pause admission/Apply without making a preview stale. */
+  editingInteractionBusy?(): boolean;
   /** Monotonic start counter for commands, selection gestures and grip edits (not view navigation). */
   interactionGeneration?(): number;
 }

@@ -266,18 +266,18 @@ export function planToWire(plan: AiPlan): { outcome: 'proposal'; message: string
     const wire = base();
     wire.op = op.op;
     switch (op.op) {
-      case 'createLine': wire.a = op.a; wire.b = op.b; wire.layer = op.layer; break;
-      case 'createCircle': wire.center = op.center; wire.radius = op.radius; wire.layer = op.layer; break;
+      case 'createLine': wire.a = { ...op.a }; wire.b = { ...op.b }; wire.layer = op.layer; break;
+      case 'createCircle': wire.center = { ...op.center }; wire.radius = op.radius; wire.layer = op.layer; break;
       case 'createRectangle':
-        wire.origin = op.origin; wire.width = op.width; wire.height = op.height;
+        wire.origin = { ...op.origin }; wire.width = op.width; wire.height = op.height;
         wire.rotationDeg = op.rotationDeg; wire.layer = op.layer; break;
       case 'move': case 'copy': wire.targetIds = [...op.targetIds]; wire.dx = op.dx; wire.dy = op.dy; break;
-      case 'rotate': wire.targetIds = [...op.targetIds]; wire.pivot = op.pivot; wire.angleDeg = op.angleDeg; break;
+      case 'rotate': wire.targetIds = [...op.targetIds]; wire.pivot = { ...op.pivot }; wire.angleDeg = op.angleDeg; break;
       case 'delete': wire.targetIds = [...op.targetIds]; break;
     }
     return wire;
   });
-  return { outcome: 'proposal', message: plan.message, operations };
+  return sealImmutableData({ outcome: 'proposal', message: plan.message, operations });
 }
 
 /**

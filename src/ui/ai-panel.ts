@@ -113,6 +113,10 @@ export class AiAssistantPanel {
   private shownProposal: CompiledProposal | null = null;
   private lastDiff: AiProposalDiff | null = null;
   private refinePreviewBlocked = false;
+  private refineIntentEpoch = 0;
+  private preparingRefine = false;
+  private restoringFollowUp = false;
+  private refineConnectionCheck: Promise<boolean> | null = null;
   private readonly summaryEl: HTMLElement;
   private readonly sentEl: HTMLElement;
   private readonly sentLabelEl: HTMLElement;
@@ -278,6 +282,9 @@ export class AiAssistantPanel {
         if (this.mode === 'draft') this.refreshDraftPreview();
       }));
     }
+    // Navigation preserves a staged preview. Refresh controls on pan end
+    // without rebuilding its context or invalidating the proposal.
+    this.unsubscribes.push(editor.on('view', () => this.updateDraftAvailability()));
     this.renderStatus(this.controller.status);
     this.updateSettingsAvailability();
   }
@@ -358,9 +365,7 @@ export class AiAssistantPanel {
     cancelBtn.textContent = 'Cancel';
     cancelBtn.disabled = true;
     cancelBtn.addEventListener('click', () => {
-      const status = this.draftController.status;
-      if (status.state === 'staged' && status.followUp?.phase === 'refining') this.draftController.cancelRefine();
-      else this.draftController.cancel();
+      this.cancelDraftWork();
     });
     buttons.append(generateBtn, cancelBtn);
 
@@ -419,6 +424,10 @@ export class AiAssistantPanel {
     // Typing never sends anything: it only records the follow-up (which
     // pauses Apply) and refreshes the exact refinement context preview.
     followUpEl.addEventListener('input', () => {
+      this.refineIntentEpoch += 1;
+      this.draftUiEpoch += 1;
+      this.preparingRefine = false;
+      this.restoringFollowUp = false;
       this.draftController.followUpEdited(followUpEl.value);
       if (this.draftController.status.state === 'staged') this.refreshRefinePreview();
       this.updateDraftAvailability();
@@ -433,7 +442,7 @@ export class AiAssistantPanel {
     const discardFollowUpBtn = document.createElement('button');
     discardFollowUpBtn.textContent = 'Discard Follow-up';
     discardFollowUpBtn.disabled = true;
-    discardFollowUpBtn.addEventListener('click', () => this.draftController.discardFollowUp());
+    discardFollowUpBtn.addEventListener('click', () => { void this.discardDraftFollowUp(); });
     followButtons.append(refineBtn, discardFollowUpBtn);
     const refineSentLabel = document.createElement('div');
     refineSentLabel.className = 'ai-section-label';
@@ -525,11 +534,13 @@ export class AiAssistantPanel {
 
   private async applyDraft(): Promise<void> {
     if (this.disposed || this.connectionBusy || this.applyingDraft || !this.isVisible || this.mode !== 'draft' || !this.draftEls) return;
-    if (this.draftController.status.state !== 'staged') return;
+    const stagedAtClick = this.draftController.status;
+    if (stagedAtClick.state !== 'staged' || stagedAtClick.followUp || this.draftEls.followUpEl.value.trim()) return;
     if (this.editorRef.interactionBusy) {
       this.draftEls.statusEl.textContent = 'Finish the current command or selection first, then apply.';
       return;
     }
+    const uiEpoch = this.draftUiEpoch;
     this.applyingDraft = true;
     try {
       if (this.connection) {
@@ -549,9 +560,9 @@ export class AiAssistantPanel {
           this.finishConnectionOperation(epoch);
         }
       }
-      if (this.disposed || !this.isVisible || this.mode !== 'draft' || this.editorRef.interactionBusy) return;
+      if (this.disposed || !this.isVisible || this.mode !== 'draft' || uiEpoch !== this.draftUiEpoch || this.editorRef.interactionBusy) return;
       const staged = this.draftController.status;
-      if (staged.state !== 'staged') return;
+      if (staged.state !== 'staged' || staged.capture !== stagedAtClick.capture || staged.proposal !== stagedAtClick.proposal) return;
       if (staged.capture.prompt !== this.draftEls.promptEl.value.trim()) {
         this.draftController.invalidate('The description changed — generate again.');
         return;
@@ -615,7 +626,7 @@ export class AiAssistantPanel {
     const els = this.draftEls;
     if (!els) return;
     const status = this.draftController.status;
-    const available = !this.disposed && this.isVisible && this.mode === 'draft' && !this.connectionBusy && !this.applyingDraft && !this.editorRef.interactionBusy;
+    const available = !this.disposed && this.isVisible && this.mode === 'draft' && !this.connectionBusy && !this.applyingDraft && !this.preparingRefine && !this.restoringFollowUp && !this.editorRef.interactionBusy;
     const followUp = status.state === 'staged' ? status.followUp : null;
     const refining = followUp?.phase === 'refining';
     els.generateBtn.disabled = !available || status.state === 'generating' || !els.promptEl.value.trim();
@@ -623,10 +634,10 @@ export class AiAssistantPanel {
     els.applyBtn.disabled = !available || status.state !== 'staged' || followUp !== null;
     els.discardBtn.disabled = this.disposed || status.state !== 'staged';
     els.fitBtn.disabled = !available || status.state !== 'staged';
-    els.cancelBtn.disabled = this.disposed || !(status.state === 'generating' || refining);
-    els.refineBtn.disabled = !available || status.state !== 'staged' || refining || !els.followUpEl.value.trim() || this.refinePreviewBlocked;
-    els.discardFollowUpBtn.disabled = this.disposed || status.state !== 'staged' || followUp === null;
-    els.followUpEl.disabled = status.state !== 'staged';
+    els.cancelBtn.disabled = this.disposed || !(status.state === 'generating' || refining || this.preparingRefine || this.restoringFollowUp);
+    els.refineBtn.disabled = !available || this.preparingRefine || this.restoringFollowUp || status.state !== 'staged' || refining || !els.followUpEl.value.trim() || this.refinePreviewBlocked;
+    els.discardFollowUpBtn.disabled = this.disposed || this.restoringFollowUp || (this.connectionBusy && !this.preparingRefine) || status.state !== 'staged' || followUp === null;
+    els.followUpEl.disabled = this.disposed || status.state !== 'staged';
   }
 
   /**
@@ -664,27 +675,85 @@ export class AiAssistantPanel {
   /** Refine Preview click: re-verify connection and context, then send exactly the previewed envelope. */
   private async refineDraft(): Promise<void> {
     if (this.disposed || this.connectionBusy || this.applyingDraft || !this.isVisible || this.mode !== 'draft' || !this.draftEls) return;
-    if (this.draftController.status.state !== 'staged') return;
+    if (this.preparingRefine || this.restoringFollowUp || this.refinePreviewBlocked || this.draftController.status.state !== 'staged' || !this.draftEls.followUpEl.value.trim()) return;
     if (this.editorRef.interactionBusy) {
       this.draftEls.statusEl.textContent = 'Finish the current command or selection first, then refine.';
       return;
     }
     const uiEpoch = this.draftUiEpoch;
+    const intent = ++this.refineIntentEpoch;
+    const instruction = this.draftEls.followUpEl.value;
+    const staged = this.draftController.status;
     const configAtClick = this.draftConfigKey();
-    if (this.connection) {
-      const checked = await this.refreshConnection();
-      if (this.disposed || !this.isVisible || this.mode !== 'draft' || uiEpoch !== this.draftUiEpoch) return;
-      if (!checked) {
-        this.draftEls.statusEl.textContent = 'Connection settings could not be verified. Try again before refining.';
-        return;
+    this.preparingRefine = true;
+    this.updateDraftAvailability();
+    try {
+      if (this.connection) {
+        const check = this.refreshConnection();
+        this.refineConnectionCheck = check;
+        const checked = await check;
+        if (this.refineConnectionCheck === check) this.refineConnectionCheck = null;
+        if (this.disposed || !this.isVisible || this.mode !== 'draft' || uiEpoch !== this.draftUiEpoch || intent !== this.refineIntentEpoch || instruction !== this.draftEls.followUpEl.value) return;
+        if (!checked) {
+          this.draftEls.statusEl.textContent = 'Connection settings could not be verified. Try again before refining.';
+          return;
+        }
+        if (configAtClick !== this.draftConfigKey()) {
+          this.draftEls.statusEl.textContent = 'Connection settings changed. Review the destination, then Generate Preview again.';
+          return;
+        }
+        const current = this.draftController.status;
+        if (current.state !== 'staged' || current.capture !== staged.capture || current.proposal !== staged.proposal) return;
       }
-      if (configAtClick !== this.draftConfigKey()) {
-        this.draftEls.statusEl.textContent = 'Connection settings changed. Review the destination, then Refine Preview again.';
-        return;
-      }
-      if (this.draftController.status.state !== 'staged') return;
+      this.preparingRefine = false;
+      await this.draftController.refine(instruction, this.routeDraftProvider(), this.draftConfigKey());
+    } finally {
+      if (intent === this.refineIntentEpoch) this.preparingRefine = false;
+      this.updateDraftAvailability();
     }
-    await this.draftController.refine(this.draftEls.followUpEl.value, this.routeDraftProvider(), this.draftConfigKey());
+  }
+
+  private cancelDraftWork(): void {
+    const wasPreparing = this.preparingRefine || this.restoringFollowUp;
+    this.refineIntentEpoch += 1;
+    this.preparingRefine = false;
+    this.restoringFollowUp = false;
+    const status = this.draftController.status;
+    if (status.state === 'staged') this.draftController.cancelRefine();
+    else this.draftController.cancel();
+    if (wasPreparing && this.draftEls) this.draftEls.statusEl.textContent = 'Refinement cancelled. The previous preview is still shown; retry or Discard Follow-up.';
+    this.updateDraftAvailability();
+  }
+
+  /** Restoring Apply is explicit and requires fresh host as well as document checks. */
+  private async discardDraftFollowUp(): Promise<void> {
+    if (this.disposed || !this.isVisible || this.mode !== 'draft' || !this.draftEls || this.restoringFollowUp) return;
+    const pendingCheck = this.preparingRefine ? this.refineConnectionCheck : null;
+    if (this.connectionBusy && !pendingCheck) return;
+    const staged = this.draftController.status;
+    if (staged.state !== 'staged' || !staged.followUp) return;
+    const intent = ++this.refineIntentEpoch;
+    const uiEpoch = this.draftUiEpoch;
+    this.preparingRefine = false;
+    this.restoringFollowUp = true;
+    this.draftController.cancelRefine();
+    this.updateDraftAvailability();
+    try {
+      if (this.connection) {
+        const checked = await (pendingCheck ?? this.refreshConnection());
+        if (this.disposed || !this.isVisible || this.mode !== 'draft' || uiEpoch !== this.draftUiEpoch || intent !== this.refineIntentEpoch) return;
+        if (!checked) {
+          this.draftEls.statusEl.textContent = 'Connection settings could not be verified. The follow-up remains unresolved; try Discard Follow-up again.';
+          return;
+        }
+      }
+      const current = this.draftController.status;
+      if (current.state !== 'staged' || current.capture !== staged.capture || current.proposal !== staged.proposal) return;
+      this.draftController.discardFollowUp();
+    } finally {
+      if (intent === this.refineIntentEpoch) this.restoringFollowUp = false;
+      this.updateDraftAvailability();
+    }
   }
 
   private renderDraftStatus(status: AiDraftStatus): void {
@@ -693,10 +762,16 @@ export class AiAssistantPanel {
     els.cancelBtn.disabled = status.state !== 'generating';
     els.generateBtn.disabled = status.state === 'generating' || this.connectionBusy;
     if (status.state !== 'staged') {
+      this.refineIntentEpoch += 1;
+      this.preparingRefine = false;
+      this.restoringFollowUp = false;
       els.versionEl.textContent = '';
       els.followWrap.classList.add('hidden');
       this.shownProposal = null;
       this.lastDiff = null;
+      els.followUpEl.value = '';
+      els.refineSentEl.textContent = '';
+      this.refinePreviewBlocked = false;
     }
     const staged = status.state === 'staged';
     els.applyBtn.disabled = !staged;
@@ -734,7 +809,7 @@ export class AiAssistantPanel {
           els.statusEl.textContent = followUp.phase === 'refining'
             ? `Refining… still showing preview version ${status.version}. The drawing has not changed.`
             : followUp.phase === 'entered'
-              ? 'Follow-up entered — choose Refine Preview to update this preview, or Discard Follow-up to keep it. Apply is paused while a follow-up is unresolved.'
+              ? `${followUp.message ? `${followUp.message} ` : 'Follow-up entered — '}Choose Refine Preview to update this preview, or Discard Follow-up to keep it. Apply is paused while a follow-up is unresolved.`
               : followUp.phase === 'clarification'
                 ? `More detail needed: ${followUp.message ?? ''} Edit the follow-up and refine again, or Discard Follow-up to keep this preview.`
                 : followUp.phase === 'unsupported'

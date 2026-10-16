@@ -1,6 +1,7 @@
-import { AI_DRAFT_MAX_CONTEXT_BYTES, AI_MAX_QUESTION_CHARS } from './limits';
+import { AI_DRAFT_MAX_CONTEXT_BYTES, AI_DRAFT_MAX_PLAN_BYTES, AI_MAX_QUESTION_CHARS } from './limits';
 import { planToWire } from './draft-plan';
-import type { CompiledProposal } from './draft-compiler';
+import { isCompiledProposal, type CompiledProposal } from './draft-compiler';
+import { sealImmutableData } from '../core/immutable-data';
 import type { AiDraftCapture } from './draft-context';
 import { AiError } from './types';
 
@@ -25,7 +26,7 @@ export interface AiProposalLabel {
 
 /** Labels for the staged proposal's operations, aligned with its change list. */
 export function proposalLabels(proposal: CompiledProposal): readonly AiProposalLabel[] {
-  return proposal.changes.map((change) => ({ label: change.label, summary: change.summary }));
+  return sealImmutableData(proposal.changes.map((change) => ({ label: change.label, summary: change.summary })));
 }
 
 export interface AiRefineEnvelope {
@@ -40,9 +41,16 @@ export function buildRefineEnvelope(
   proposal: CompiledProposal,
   followUp: string,
 ): AiRefineEnvelope {
+  if (!isCompiledProposal(capture, proposal)) {
+    throw new AiError('invalid-context', 'The preview does not belong to this draft session. Generate a new preview.');
+  }
   const trimmed = typeof followUp === 'string' ? followUp.trim() : '';
   if (!trimmed) throw new AiError('invalid-question', 'Enter a follow-up instruction first.');
   if (trimmed.length > AI_MAX_QUESTION_CHARS) throw new AiError('invalid-question', 'The follow-up instruction is too long.');
+  const wire = planToWire(proposal.plan);
+  if (utf8.encode(JSON.stringify(wire)).length > AI_DRAFT_MAX_PLAN_BYTES) {
+    throw new AiError('invalid-context', 'The current preview exceeds the refinement plan size limit. Generate a smaller preview instead.');
+  }
   let originalContext: unknown;
   try { originalContext = JSON.parse(capture.contextJson); }
   catch { throw new AiError('invalid-context', 'The original draft context could not be read. Generate a new preview.'); }
@@ -52,7 +60,7 @@ export function buildRefineEnvelope(
     originalPrompt: capture.prompt,
     followUp: trimmed,
     originalContext,
-    currentPlan: { message: proposal.plan.message, operations: planToWire(proposal.plan).operations },
+    currentPlan: { message: wire.message, operations: wire.operations },
     proposalLabels: proposalLabels(proposal),
   };
   const envelopeJson = JSON.stringify(envelope);
@@ -62,7 +70,7 @@ export function buildRefineEnvelope(
       'The refinement context exceeds the AI context limit. Discard this preview and generate a smaller one instead.',
     );
   }
-  return { envelopeJson, followUp: trimmed };
+  return Object.freeze({ envelopeJson, followUp: trimmed });
 }
 
 /** How the accepted replacement differs from the previous preview, per operation. */
@@ -91,7 +99,15 @@ export function diffProposalChanges(previous: CompiledProposal, next: CompiledPr
   const afterTaken = new Array<boolean>(afterOps.length).fill(false);
   for (let a = 0; a < afterOps.length; a++) {
     const b = beforeOps.findIndex((op, i) => !beforeTaken[i] && op === afterOps[a]);
-    if (b >= 0) { beforeTaken[b] = true; afterTaken[a] = true; }
+    if (b >= 0) {
+      beforeTaken[b] = true;
+      afterTaken[a] = true;
+      if (b !== a || previous.changes[b]!.label !== next.changes[a]!.label) {
+        updated.push({ label: next.changes[a]!.label,
+          before: `Reference [${previous.changes[b]!.label}], operation ${b + 1}: ${previous.changes[b]!.summary}`,
+          after: `Reference [${next.changes[a]!.label}], operation ${a + 1}: ${next.changes[a]!.summary}` });
+      }
+    }
   }
   const leftoverBefore = beforeOps.map((_, i) => i).filter((i) => !beforeTaken[i]);
   const leftoverAfter = afterOps.map((_, i) => i).filter((i) => !afterTaken[i]);
@@ -102,11 +118,11 @@ export function diffProposalChanges(previous: CompiledProposal, next: CompiledPr
     leftoverAfter.splice(leftoverAfter.indexOf(a), 1);
     updated.push({
       label: next.changes[a]!.label,
-      before: previous.changes[b]!.summary,
-      after: next.changes[a]!.summary,
+      before: `Reference [${previous.changes[b]!.label}], operation ${b + 1}: ${previous.changes[b]!.summary}`,
+      after: `Reference [${next.changes[a]!.label}], operation ${a + 1}: ${next.changes[a]!.summary}`,
     });
   }
   for (const a of leftoverAfter) added.push({ label: next.changes[a]!.label, summary: next.changes[a]!.summary });
   for (const b of leftoverBefore) removed.push({ label: previous.changes[b]!.label, summary: previous.changes[b]!.summary });
-  return { updated, added, removed };
+  return sealImmutableData({ updated, added, removed });
 }

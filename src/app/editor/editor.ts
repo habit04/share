@@ -323,11 +323,15 @@ export class Editor {
    * to refuse generation/application without disturbing the interaction.
    */
   get interactionBusy(): boolean {
+    return this.editingInteractionBusy || this.internals.panning;
+  }
+
+  /** Editing activity that conflicts with an AI capture, excluding view-only panning. */
+  get editingInteractionBusy(): boolean {
     return this.tool !== null
       || this.internals.selReq !== null
       || this.internals.gripDrag !== null
-      || this.internals.dragStart !== null
-      || this.internals.panning;
+      || this.internals.dragStart !== null;
   }
 
   /**

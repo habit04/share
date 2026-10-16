@@ -72,7 +72,7 @@ export class FixtureDraftProvider implements AiDraftProvider {
       return { kind: 'clarification', message: 'The offline demo needs one simple instruction without conditions or layer changes. Connect a live provider for more detailed requests.' };
     }
     if (/\b(?:mm|millimet(?:er|re)s?|cm|centimet(?:er|re)s?|inch(?:es)?|feet|foot|ft|met(?:er|re)s?|yards?)\b/.test(text)) {
-      return { kind: 'clarification', message: 'The offline demo uses drawing units only. Specify drawing-unit values or connect a live provider for physical-unit conversion.' };
+      return { kind: 'clarification', message: 'Use drawing-unit values. Physical-unit conversion is outside this milestone.' };
     }
     if (/(?<![\d.])[-+]?\.\d|\d[eE][-+]?\d|[-+]\s+\d/.test(text)) {
       return { kind: 'clarification', message: 'Use ordinary decimal numbers with a leading digit in the offline demo, e.g. 0.5 or -0.5.' };
@@ -173,9 +173,9 @@ export class FixtureDraftProvider implements AiDraftProvider {
       return { kind: 'clarification', message: 'The offline demonstration could not read the current preview plan.' };
     }
     const operations = JSON.parse(JSON.stringify(parsed.response.plan.operations)) as AiPlanOperation[];
-    const text = request.followUp.toLowerCase();
+    const text = request.followUp.trim().toLowerCase().replace(/[.!?]+$/, '').trim();
     if (/\b(?:mm|millimet(?:er|re)s?|cm|centimet(?:er|re)s?|inch(?:es)?|feet|foot|ft|met(?:er|re)s?|yards?)\b/.test(text)) {
-      return { kind: 'clarification', message: 'The offline demo uses drawing units only. Specify drawing-unit values or connect a live provider for physical-unit conversion.' };
+      return { kind: 'clarification', message: 'Use drawing-unit values. Physical-unit conversion is outside this milestone.' };
     }
     if (/\b(?:not|never|without|except|only|dont|don't|don’t)\b/.test(text)) {
       return { kind: 'clarification', message: 'The offline demo needs one simple follow-up without conditions. Connect a live provider for more detailed refinements.' };
@@ -189,9 +189,10 @@ export class FixtureDraftProvider implements AiDraftProvider {
 
     // "Change the rectangle to 120 by 80" / "width to 120" / "height to 80",
     // keeping corner-inset circles at their inset from the new corners.
-    const adjustCornerCircles = (rect: Extract<AiPlanOperation, { op: 'createRectangle' }>, newWidth: number, newHeight: number): void => {
-      if (circles.length !== 4) return;
+    const adjustCornerCircles = (rect: Extract<AiPlanOperation, { op: 'createRectangle' }>, newWidth: number, newHeight: number, requiredInset: number | null): boolean => {
+      if (circles.length !== 4 || (rect.rotationDeg ?? 0) % 360 !== 0) return requiredInset === null;
       const inset = circles[0]!.center.x - rect.origin.x;
+      if (requiredInset !== null && Math.abs(requiredInset - inset) > 1e-9) return false;
       const eps = 1e-9;
       const expected: readonly (readonly [number, number])[] = [
         [inset, inset], [rect.width - inset, inset], [rect.width - inset, rect.height - inset], [inset, rect.height - inset],
@@ -199,38 +200,52 @@ export class FixtureDraftProvider implements AiDraftProvider {
       const matches = circles.every((circle, i) => Math.abs(circle.center.x - rect.origin.x - expected[i]![0]) < eps
         && Math.abs(circle.center.y - rect.origin.y - expected[i]![1]) < eps
         && circle.radius === circles[0]!.radius);
-      if (!matches) return;
+      if (!matches) return requiredInset === null;
       const corners: readonly (readonly [number, number])[] = [
         [inset, inset], [newWidth - inset, inset], [newWidth - inset, newHeight - inset], [inset, newHeight - inset],
       ];
       circles.forEach((circle, i) => {
         (circle as { center: { x: number; y: number } }).center = { x: rect.origin.x + corners[i]![0], y: rect.origin.y + corners[i]![1] };
       });
+      return true;
     };
-    const both = /rectangle\s+to\s+(\d+(?:\.\d+)?)\s*(?:x|×|by)\s*(\d+(?:\.\d+)?)/.exec(text);
-    const widthOnly = number(text, /(?:rectangle\s+)?width\s+to\s+(\d+(?:\.\d+)?)/);
-    const heightOnly = number(text, /(?:rectangle\s+)?height\s+to\s+(\d+(?:\.\d+)?)/);
-    if (both || widthOnly !== null || heightOnly !== null) {
+    // Match the entire instruction: a recognized prefix must never swallow
+    // an unsupported second action, a specific reference, or another number.
+    const decimal = '(-?\\d+(?:\\.\\d+)?)';
+    const keep = `(?: and keep (?:the )?circles ${decimal} (?:drawing )?units? from (?:(?:each|the) )?corners?)?`;
+    const both = new RegExp(`^(?:change|set) (?:the )?rectangle to ${decimal} (?:x|×|by) ${decimal}${keep}$`).exec(text);
+    const single = new RegExp(`^(?:change|set) (?:the )?(?:rectangle )?(width|height) to ${decimal}${keep}$`).exec(text);
+    if (both || single) {
       if (rectangles.length !== 1) return clarify('The current preview does not contain exactly one rectangle to resize.');
       const rect = rectangles[0]!;
-      const newWidth = both ? Number(both[1]) : widthOnly ?? rect.width;
-      const newHeight = both ? Number(both[2]) : heightOnly ?? rect.height;
-      adjustCornerCircles(rect, newWidth, newHeight);
+      const newWidth = both ? Number(both[1]) : single![1] === 'width' ? Number(single![2]) : rect.width;
+      const newHeight = both ? Number(both[2]) : single![1] === 'height' ? Number(single![2]) : rect.height;
+      const insetText = both ? both[3] : single![3];
+      if (!adjustCornerCircles(rect, newWidth, newHeight, insetText === undefined ? null : Number(insetText))) {
+        return clarify('The offline demo cannot verify those circles at the requested corner inset. Use a simpler follow-up or a live provider.');
+      }
       (rect as { width: number }).width = newWidth;
       (rect as { height: number }).height = newHeight;
       return finish();
     }
 
-    const radius = number(text, /radius\s+to\s+(\d+(?:\.\d+)?)/);
-    if (radius !== null) {
+    const radiusMatch = new RegExp(`^(?:change|set) (?:the )?(?:(?:new )?circle (\\d+)(?:'s)? )?radius to ${decimal}$`).exec(text);
+    if (radiusMatch) {
       if (circles.length === 0) return clarify('The current preview contains no new circle whose radius can change.');
+      const radius = Number(radiusMatch[2]);
+      if (radiusMatch[1] !== undefined) {
+        const circle = circles[Number(radiusMatch[1]) - 1];
+        if (!circle) return clarify(`There is no Circle ${radiusMatch[1]} in the current preview.`);
+        (circle as { radius: number }).radius = radius;
+        return finish();
+      }
       const shared = circles.every((circle) => circle.radius === circles[0]!.radius);
       if (!shared && circles.length > 1) return clarify('Which circle do you mean? The preview circles have different radii; name one, e.g. "Circle 2".');
       for (const circle of circles) (circle as { radius: number }).radius = radius;
       return finish();
     }
 
-    const remove = /remove\s+(?:the\s+|that\s+|this\s+)?(?:new\s+)?(circle|rectangle|line)(?:\s+(\d+))?/.exec(text);
+    const remove = /^remove\s+(?:the\s+|that\s+|this\s+)?(?:new\s+)?(circle|rectangle|line)(?:\s+(\d+))?$/.exec(text);
     if (remove) {
       const kind = `create${remove[1]![0]!.toUpperCase()}${remove[1]!.slice(1)}`;
       const matches = operations
@@ -249,9 +264,8 @@ export class FixtureDraftProvider implements AiDraftProvider {
     }
 
     const moves = operations.filter((op) => op.op === 'move');
-    const scaleTo = number(text, /(?:change|set)\s+(?:that\s+|the\s+)?movement\s+to\s+(\d+(?:\.\d+)?)/);
-    const axisTotal = /(\d+(?:\.\d+)?)\s*(?:units?\s*)?(right|left|up(?:ward)?|down(?:ward)?)\s+in\s+total/.exec(text)
-      ?? /to\s+(\d+(?:\.\d+)?)\s*(?:units?\s*)?(right|left|up(?:ward)?|down(?:ward)?)(?:\s+in\s+total)?/.exec(text);
+    const scaleTo = number(text, /^(?:change|set)\s+(?:that\s+|the\s+)?movement\s+to\s+(-?\d+(?:\.\d+)?)(?:\s+(?:drawing\s+)?units?)?(?:\s+in\s+total)?$/);
+    const axisTotal = /^(?:change|set)\s+(?:that\s+|the\s+)?movement\s+to\s+(-?\d+(?:\.\d+)?)\s*(?:(?:drawing\s+)?units?\s*)?(right|left|up(?:ward)?|down(?:ward)?)(?:\s+in\s+total)?$/.exec(text);
     if (scaleTo !== null || axisTotal) {
       if (moves.length !== 1) return clarify('The current preview does not contain exactly one movement to change.');
       const move = moves[0]!;
@@ -269,7 +283,7 @@ export class FixtureDraftProvider implements AiDraftProvider {
       return finish();
     }
 
-    const angle = number(text, /angle\s+to\s+(-?\d+(?:\.\d+)?)/);
+    const angle = number(text, /^(?:change|set)\s+(?:the\s+)?(?:rotation\s+)?angle\s+to\s+(-?\d+(?:\.\d+)?)(?:\s*(?:degrees|deg|°))?$/);
     if (angle !== null) {
       const rotates = operations.filter((op) => op.op === 'rotate');
       if (rotates.length !== 1) return clarify('The current preview does not contain exactly one rotation to change.');

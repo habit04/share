@@ -5,6 +5,9 @@ Milestone 4 extends the reviewed milestone 3 Draft / Edit mode
 refinement of a staged preview. Everything milestone 3 guarantees still
 holds; this document describes only what M4 adds.
 
+See [the local review report](AI-ASSISTANT-M4-REVIEW.md) for review corrections,
+Windows evidence and integration limits.
+
 ## User flow
 
 1. Generate Preview exactly as in M3 (explicit click; the drawing is
@@ -29,6 +32,11 @@ holds; this document describes only what M4 adds.
    the approved result. After Apply the session is cleared, and Undo does
    not revive any proposal.
 7. **Discard** clears the entire draft session at any time.
+
+Clearing the follow-up field manually leaves the follow-up unresolved and Apply
+paused. Use **Discard Follow-up** to restore the prior version after fresh local
+host and document checks. Pending host-state checks are tied to the clicked
+instruction; an edit, Cancel or Discard cannot launch a late refinement request.
 
 ## The refinement contract
 
@@ -92,6 +100,13 @@ polyline vertices, coordinate/dimension caps, 1,000-char provider
 message). The follow-up field reuses the existing 2,000-character question
 bound. **No limit changed in M4.**
 
+The 32 KiB plan limit also applies to the current plan after expansion into full
+wire form, before dispatch. Valid long operation summaries use the total envelope
+budget, rather than the unrelated 1000-character provider-message limit. The host
+requires one correctly ordered label per operation, original eligible and
+snapshot-disclosed targets, and permitted creation layers. Accepted bytes remain
+unchanged. Envelope construction requires the proposal's compiler provenance.
+
 ## Follow-up lifecycle (controller)
 
 The staged status carries a `version` counter and a nullable `followUp`
@@ -125,6 +140,11 @@ defaults, configuration key, interaction state) and restores only if it
 still exactly matches the capture; otherwise the session is invalidated as
 stale instead of resurrecting a preview whose context has moved on.
 
+Discard Follow-up performs a read-only host-state check in addition to the
+controller's local checks. This catches unseen provider/model/key configuration
+changes, including away-and-back changes. No provider call is made to restore a
+previous preview.
+
 Session-wide invalidators are exactly M3's (document edits, selection,
 defaults/units, tool or grip/selection interaction starts, space/3D
 changes, provider configuration changes including away-and-back, disposal,
@@ -135,6 +155,20 @@ dirty state, selection, file path or manual tool state; preview geometry
 stays excluded from snapping, hit testing, extents, save/export and
 recovery; view movement happens only via Fit Preview or normal navigation.
 **Enter in either text field never applies changes.**
+
+Ordinary view navigation is separate from editing activity. A result arriving
+during a pan may replace the preview without making the capture stale, while
+Apply remains blocked until the pan ends. Pan start/end view events refresh
+control availability without rebuilding context or invalidating the session.
+
+The current proposal's direct-Apply authority is suspended during an unresolved
+follow-up and restored only by successful replacement or fresh-checked explicit
+discard. Replaced, discarded or consumed proposal artifacts are permanently
+revoked, even if external code retained an earlier status. Published follow-up
+state, wire values and version-diff data are immutable. Cancellation aborts
+physical work and settles independently; failures, cancellation and timeout
+re-check staleness as well as successful results. Provider methods retain their
+instance binding, and pending ownership is installed before notifying subscribers.
 
 ## Providers and host
 
@@ -204,10 +238,13 @@ the host, service, transport, IPC, bridge and live-provider suites.
   misunderstands a follow-up. The complete change list, the version diff,
   exact values and explicit Apply remain the user's protection.
 - The version diff matches operations by content, then by kind; a
-  refinement that reorders operations can read as changed entries even
-  when the resulting geometry is equivalent.
+  moved or renumbered exact match explicitly shows its prior/current label
+  and operation position. This describes operation changes; it does not prove
+  geometric equivalence.
 - Only the latest accepted plan is carried forward. Multi-step conversational
   context beyond the original request, the current plan and one follow-up
   is deliberately out of scope.
 - Packaged-app and real-account provider behaviour are not validated by
-  this milestone's offline evidence; live validation remains lead-owned.
+  this milestone's fake-provider evidence. Local Windows development-build
+  validation is recorded separately in the review report; no installer,
+  release or real-account validation is claimed.

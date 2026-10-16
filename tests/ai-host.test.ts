@@ -1,12 +1,14 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createRequire } from 'node:module';
-import { draftTestContextJson } from './ai-draft-fixture';
+import { draftTestCapture, draftTestContextJson } from './ai-draft-fixture';
 import { readFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Entity } from '../src/core/entities';
+import { entityBounds, type Entity } from '../src/core/entities';
 import { DEFAULT_UNITS } from '../src/core/units';
 import { buildSelectionSnapshot, serializeSnapshot } from '../src/ai/snapshot';
+import { compileAiPlan } from '../src/ai/draft-compiler';
+import { buildRefineEnvelope } from '../src/ai/draft-refine';
 import type { AiBinding, AiSnapshotSource } from '../src/ai/types';
 
 const require = createRequire(import.meta.url);
@@ -1128,11 +1130,76 @@ describe('ai-host refinement request validator (milestone 4)', () => {
       [{ label: '', summary: 'x' }],
       [{ label: 'Line 1' }],
       [{ label: 'Line 1', summary: 'x', extra: true }],
-      [{ label: 'Line 1', summary: 's'.repeat(1001) }],
+      [{ label: 'Move 1', summary: 's'.repeat(96 * 1024) }],
     ];
     for (const proposalLabels of badLabels) {
       expect(() => aiRefineRequest(refineEnvelope({
         envelopeJson: JSON.stringify(refineEnvelopeObject({ proposalLabels })),
+      }))).toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+    }
+  });
+
+  it('requires one deterministic label per current-plan operation', () => {
+    for (const proposalLabels of [
+      [],
+      [{ label: 'Circle 1', summary: 'wrong operation' }],
+      [{ label: 'Move 2', summary: 'wrong ordinal' }],
+      [{ label: 'Move 1', summary: 'one' }, { label: 'Move 1', summary: 'duplicate' }],
+    ]) {
+      expect(() => aiRefineRequest(refineEnvelope({
+        envelopeJson: JSON.stringify(refineEnvelopeObject({ proposalLabels })),
+      }))).toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+    }
+  });
+
+  it('accepts a real 200-target capture and compiled summary beyond 1000 characters exactly', () => {
+    const ids = Array.from({ length: 200 }, (_, index) => `line-${String(index).padStart(3, '0')}`);
+    const capture = draftTestCapture(ids, 'Move the selected lines right');
+    const compiled = compileAiPlan({ message: null, operations: [{ op: 'move', targetIds: ids, dx: 10, dy: 0 }] },
+      capture, () => { throw new Error('moving should not mint ids'); }, (entity) => entityBounds(entity, undefined as never));
+    if (!compiled.ok) throw new Error(compiled.error);
+    expect(compiled.proposal.changes[0]!.summary.length).toBeGreaterThan(1000);
+    const refine = buildRefineEnvelope(capture, compiled.proposal, 'Make that movement 15 units in total.');
+    const result = aiRefineRequest(refineEnvelope({
+      followUp: refine.followUp, envelopeJson: refine.envelopeJson, binding: capture.binding,
+    }));
+    expect(result.envelopeJson).toBe(refine.envelopeJson);
+    expect(result.envelopeBytes).toBe(Buffer.byteLength(refine.envelopeJson, 'utf8'));
+  });
+
+  it('rejects current-plan targets absent from the original eligible disclosed selection', () => {
+    const context = JSON.parse(draftTestContextJson(['e-line', 'e-circle'])) as {
+      targets: { id: string; eligible: boolean; reason?: string }[];
+      selectionSnapshot: { objects: { id: string }[] };
+    };
+    const badContexts = [
+      { ...context, targets: context.targets.map((target) => target.id === 'e-line'
+        ? { ...target, eligible: false, reason: 'read-only' } : target) },
+    ];
+    for (const originalContext of badContexts) {
+      expect(() => aiRefineRequest(refineEnvelope({
+        envelopeJson: JSON.stringify(refineEnvelopeObject({ originalContext })),
+      }))).toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+    }
+    for (const id of ['preview-created-id', 'unknown-id']) {
+      expect(() => aiRefineRequest(refineEnvelope({
+        envelopeJson: JSON.stringify(refineEnvelopeObject({
+          currentPlan: { message: null, operations: [{ ...refineMoveOp, targetIds: [id] }] },
+        })),
+      }))).toThrow(expect.objectContaining({ kind: 'invalid-request' }));
+    }
+  });
+
+  it('rejects a current-plan creation on an undisclosed layer', () => {
+    for (const layer of ['private-layer', null]) {
+      const originalContext = JSON.parse(draftTestContextJson(['e-line', 'e-circle'])) as { permittedLayers: string[] };
+      if (layer === null) originalContext.permittedLayers = [];
+      expect(() => aiRefineRequest(refineEnvelope({
+        envelopeJson: JSON.stringify(refineEnvelopeObject({
+          originalContext,
+          currentPlan: { message: null, operations: [{ ...draftLineOp, layer }] },
+          proposalLabels: [{ label: 'Line 1', summary: 'Create a line' }],
+        })),
       }))).toThrow(expect.objectContaining({ kind: 'invalid-request' }));
     }
   });
@@ -1228,5 +1295,41 @@ describe('ai-host refinement jobs (milestone 4)', () => {
     expect(host.cancel('ai-salt-refine-1')).toBe(true);
     await settled;
     await host.dispose();
+  });
+
+  it('removes a queued refinement before a draft releases the shared transport slot', async () => {
+    let release!: (value: { value: unknown; contentBytes: number }) => void;
+    const refineTransport = vi.fn(async () => ({ value: draftPlanValue, contentBytes: 321 }));
+    const host = createAiHost({
+      maxConcurrent: 1,
+      draftTransport: () => new Promise((resolve) => { release = resolve; }),
+      refineTransport,
+    });
+    const drafting = host.draft(draftEnvelope({ requestId: 'ai-blocking-draft' }));
+    const abort = new AbortController();
+    const pending = expect(host.refine(refineEnvelope(), abort.signal)).rejects.toMatchObject({ kind: 'cancelled' });
+    abort.abort();
+    await pending;
+    release({ value: draftPlanValue, contentBytes: 321 });
+    await drafting;
+    expect(refineTransport).not.toHaveBeenCalled();
+    await host.dispose();
+  });
+
+  it('expires active and queued refinements without multiplying transports that ignore abort', async () => {
+    vi.useFakeTimers();
+    const refineTransport = vi.fn(() => new Promise(() => {}));
+    const host = createAiHost({ refineTransport, draftTimeoutMs: 20, maxConcurrent: 1 });
+    try {
+      const first = expect(host.refine(refineEnvelope())).rejects.toMatchObject({ kind: 'timeout' });
+      const queued = expect(host.refine(refineEnvelope({ requestId: 'ai-queued-refine' }))).rejects.toMatchObject({ kind: 'timeout' });
+      await vi.advanceTimersByTimeAsync(20);
+      await Promise.all([first, queued]);
+      expect(refineTransport).toHaveBeenCalledTimes(1);
+      expect(host.usage()).toMatchObject({ timeouts: 2, outputChars: 0 });
+    } finally {
+      await host.dispose();
+      vi.useRealTimers();
+    }
   });
 });
