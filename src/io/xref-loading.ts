@@ -1,5 +1,6 @@
 /**
- * DXF external-reference (xref) loading and refresh core — milestone 20.
+ * DXF external-reference (xref) loading and refresh core — milestone 20,
+ * corrected in 20.1 following the lead review of the first candidate.
  *
  * What exists in the base application (v0.5.2) and is NOT changed here:
  * a DXF/DWG xref is a block definition carrying `xref: { path, overlay? }`
@@ -11,35 +12,48 @@
  * This module is that missing loader, kept deliberately separate from the
  * application: it has no filesystem access of its own, never mutates the
  * host drawing, never writes anything, and is not imported by any existing
- * file. A future integration supplies a permission-controlled reader (for
+ * file. A future integration supplies a permission-controlled adapter (for
  * example an Electron/IPC reader rooted at approved folders) and decides
  * what to do with a committed snapshot.
  *
- * Semantics implemented (see docs/XREF-LOADING-CORE.md for the full note):
- * - The original reference path and the attach/overlay flag are preserved
- *   verbatim on every node; resolution produces a separate `resolvedPath`.
- * - Relative paths resolve against the file that contains the reference
- *   (its immediate host), never against the root drawing — including for
- *   nested references, matching AutoCAD's documented behaviour.
- * - Attach/overlay: a reference is always loaded for its immediate host.
- *   A reference at depth >= 2 (nested) is carried into the root drawing
- *   only when its own edge is an attachment; a nested overlay is recorded
- *   with status `not-carried-overlay` and its file is not read.
- * - Loading is staged: a load/refresh builds a complete new snapshot
- *   without touching the previously committed one. In the default
- *   `strict` mode any failure (missing, denied, parse, cycle, per-file
- *   limit, ...) discards the staged snapshot and the store keeps the last
- *   successful snapshot object, identity included. `partial` mode is an
- *   explicit opt-in that commits the references that did load, with the
- *   failures recorded in the snapshot. Cancellation and the cumulative
- *   (total) limits are fatal in both modes: nothing is committed.
- * - Loaded geometry lives only inside the snapshot, keyed by resolved
- *   file, apart from the host `DrawingState`. Nothing in the snapshot is
- *   ever written back to a drawing or to a referenced file, and the
- *   injected reader interface has no write operation.
+ * Identity model (20.1): file identity, cycle detection and sharing come
+ * from the injected adapter's `identify` step — a stable canonical file
+ * identity, a stable owning location that anchors child resolution, and
+ * optional content-version evidence. Lexical path equality is used only
+ * as a documented fallback when the adapter supplies no identity, and is
+ * never treated as authorization or as proof that two spellings name the
+ * same file. Ancestry is seeded with the host identity, so a reference
+ * back to the host is cut as a cycle on its first edge.
+ *
+ * Publication model (20.1): `XrefStore` stamps every attempt with a
+ * request token and the store's generation/host epoch at its start, and
+ * publishes only if all three are still current at publication time and
+ * the attempt was not cancelled. A stale attempt — an older load that
+ * finishes after a newer one, or any attempt spanning a host
+ * replacement/closure — never overwrites the last good graph, even if
+ * its reader ignored the abort signal. Published snapshots are deep
+ * copies sealed with the existing immutable-data helper, so neither the
+ * staged diagnostics nor retained parser references can mutate them.
+ * A partial REFRESH never publishes: it returns the incomplete snapshot
+ * as an inspection candidate and keeps the last good graph.
+ *
+ * Accounting (20.1): limits are checked in a fixed order — cancellation
+ * and the declaration-edge budget run before every early return (empty
+ * paths, suppressed overlays, cycles, depth and format refusals all
+ * count as edges). Bytes are charged as DELIVERED: every byte a reader
+ * returns is charged to the cumulative budget, including input that is
+ * then rejected, and reads stop once the cumulative budget is spent.
+ * The reader is told the remaining allowance for each read and
+ * oversized/inconsistent responses are rejected. Entity accounting
+ * covers model space, block definitions, paper-space layouts and
+ * retained raw records. These limits bound the work this core accepts;
+ * they are not process-memory caps, and the synchronous parser is not
+ * preemptible once a parse has started.
  */
 import type { DrawingState } from '../core/document';
 import type { Entity, Layer } from '../core/entities';
+import { sealImmutableData } from '../core/immutable-data';
+import { isAbsolutePath, normalizePath, pathKey, resolveFromFile } from '../app/paths';
 import { readDxf } from './dxf';
 
 // ---------------------------------------------------------------------------
@@ -66,108 +80,55 @@ export function collectXrefReferences(state: Pick<DrawingState, 'blocks'>): Xref
 }
 
 // ---------------------------------------------------------------------------
-// Path handling (lexical only; no filesystem is touched here)
-//
-// DXF paths are frequently Windows paths (`..\xref\site.dxf`, `C:\...`,
-// UNC `\\server\share\...`) whatever OS the loader runs on, so resolution
-// is implemented over both separator styles instead of delegating to the
-// host OS path library. Resolved paths are canonical `/`-separated;
-// Windows APIs and Node accept `/`, and the injected reader owns any
-// mapping its platform needs.
+// Path handling — the renderer's existing lexical helpers (app/paths.ts).
+// Lexical results locate a candidate file for the adapter; they are not
+// identity and not authorization (see the module header).
 
-export type CadPathKind = 'drive' | 'unc' | 'rooted' | 'relative';
+/** Canonical lexical form of a CAD path (app/paths `normalizePath`). */
+export const normalizeCadPath = normalizePath;
 
-export interface CadPathParts {
-  readonly kind: CadPathKind;
-  /** `C:` for drive paths, `//server/share` for UNC, `/` for rooted, `` for relative. */
-  readonly prefix: string;
-  readonly segments: readonly string[];
-  /** True when the path is written in Windows style (drive, UNC or backslashes). */
-  readonly windowsStyle: boolean;
-}
+/** Lexical comparison key (app/paths `pathKey`). NOT a file identity. */
+export const cadPathKey = pathKey;
 
-export function splitCadPath(path: string): CadPathParts {
-  const windowsStyle = /^[A-Za-z]:/.test(path) || path.includes('\\');
-  const unified = path.replace(/\\/g, '/');
-  const drive = /^([A-Za-z]:)(?=\/|$)/.exec(unified);
-  if (drive) return { kind: 'drive', prefix: drive[1]!, segments: rawSegments(unified.slice(2)), windowsStyle: true };
-  if (unified.startsWith('//')) {
-    const segs = rawSegments(unified);
-    const prefix = `//${segs.slice(0, 2).join('/')}`;
-    return { kind: 'unc', prefix, segments: segs.slice(2), windowsStyle };
-  }
-  if (unified.startsWith('/')) return { kind: 'rooted', prefix: '/', segments: rawSegments(unified), windowsStyle };
-  return { kind: 'relative', prefix: '', segments: rawSegments(unified), windowsStyle };
-}
-
-function rawSegments(unified: string): string[] {
-  return unified.split('/').filter((s) => s.length > 0);
-}
-
-/** Resolve `.` / `..` segments lexically. Absolute paths clamp at the root. */
-function foldSegments(parts: CadPathParts): string[] {
-  const out: string[] = [];
-  for (const seg of parts.segments) {
-    if (seg === '.') continue;
-    if (seg === '..') {
-      if (out.length && out[out.length - 1] !== '..') out.pop();
-      else if (parts.kind === 'relative') out.push('..');
-      continue;
-    }
-    out.push(seg);
-  }
-  return out;
-}
-
-function joinParts(prefix: string, segments: readonly string[]): string {
-  if (prefix === '/') return `/${segments.join('/')}`;
-  if (prefix) return segments.length ? `${prefix}/${segments.join('/')}` : prefix;
-  return segments.join('/');
-}
-
-/** Canonical (`/`-separated, dot-folded) form of a CAD path, without resolving it against anything. */
-export function normalizeCadPath(path: string): string {
-  const parts = splitCadPath(path);
-  return joinParts(parts.prefix, foldSegments(parts));
+/** A drive-relative path (`C:leaf.dxf`): relative to a per-drive working directory this core cannot know. */
+export function isDriveRelativePath(path: string): boolean {
+  return /^[A-Za-z]:(?![\\/])/.test(path);
 }
 
 /**
  * Resolve a stored reference path against the file that contains the
- * reference (its immediate host). Absolute reference paths (drive, UNC,
- * rooted) stand alone; relative ones join the containing file's folder.
- * With no containing file, a relative path is returned normalized but
- * unanchored and the injected reader decides where (or whether) it reads.
+ * reference (its immediate host), using app/paths lexical rules.
+ * Returns null when the reference cannot be anchored unambiguously:
+ * a relative path with no containing location, or a drive-relative
+ * path in either the reference or the containing location.
  */
-export function resolveXrefPath(referencePath: string, containingFilePath: string | null): string {
-  const ref = splitCadPath(referencePath);
-  if (ref.kind !== 'relative') return normalizeCadPath(referencePath);
-  if (containingFilePath === null) return normalizeCadPath(referencePath);
-  const host = splitCadPath(containingFilePath);
-  const dirSegments = foldSegments(host).slice(0, -1);
-  const merged: CadPathParts = { kind: host.kind, prefix: host.prefix, segments: [...dirSegments, ...ref.segments], windowsStyle: host.windowsStyle || ref.windowsStyle };
-  return joinParts(merged.prefix, foldSegments(merged));
-}
-
-/** True when a path is written in Windows style (and so compares case-insensitively). */
-export function isWindowsStylePath(path: string): boolean {
-  return splitCadPath(path).windowsStyle;
-}
-
-/**
- * Comparison key for cycle / identity checks. Windows-style paths compare
- * case-insensitively (the filesystem the path addresses is), POSIX-style
- * paths keep their case.
- */
-export function cadPathKey(path: string, windowsStyle = isWindowsStylePath(path)): string {
-  const normalized = normalizeCadPath(path);
-  return windowsStyle ? normalized.toLowerCase() : normalized;
+export function resolveXrefPath(referencePath: string, containingFilePath: string | null): string | null {
+  if (isDriveRelativePath(referencePath)) return null;
+  if (isAbsolutePath(referencePath) || referencePath.startsWith('/') || referencePath.startsWith('\\')) return normalizePath(referencePath);
+  if (containingFilePath === null || isDriveRelativePath(containingFilePath)) return null;
+  return resolveFromFile(containingFilePath, referencePath);
 }
 
 // ---------------------------------------------------------------------------
 // Injected access
 
-/** What the reader is told about a read: enough to enforce and to log, nothing more. */
-export interface XrefReadContext {
+/**
+ * Adapter-supplied evidence about one file, obtained before any read.
+ * `id` is the stable canonical identity used for sharing and cycles;
+ * `owningLocation` is the stable absolute location child references
+ * resolve against (which may differ from the requested spelling, e.g.
+ * when the request came through a link or an alias); `version` is
+ * optional content evidence — the same identity reporting two versions
+ * inside one load is an inconsistent snapshot and is refused.
+ */
+export interface XrefFileIdentity {
+  readonly id: string;
+  readonly owningLocation: string;
+  readonly version?: string;
+}
+
+/** What the adapter is told about an operation: enough to enforce and to log, nothing more. */
+export interface XrefAdapterContext {
   readonly resolvedPath: string;
   /** The path exactly as stored in the referencing drawing. */
   readonly originalPath: string;
@@ -177,26 +138,53 @@ export interface XrefReadContext {
   readonly signal?: AbortSignal;
 }
 
+export interface XrefReadContext extends XrefAdapterContext {
+  /**
+   * Remaining allowance for this read, in bytes: the smaller of the
+   * per-file limit and the unspent cumulative budget. Adapters should
+   * refuse or truncate beyond it; the core verifies and charges whatever
+   * is actually delivered.
+   */
+  readonly maxBytes: number;
+}
+
+/** A read result: bare text, or text with the adapter's byte/version evidence. */
+export type XrefReadResult = string | { readonly text: string; readonly byteLength?: number; readonly version?: string };
+
 /**
  * The only file access the loader has. Implementations are responsible
  * for permission control (approved roots, user grants, IPC admission in
  * the desktop host); the loader performs no I/O itself and cannot write.
- * Implementations should reject with an error carrying `code: 'ENOENT'`
- * (as Node does) for a file that does not exist, and honour `signal`.
+ * Implementations should reject with an error carrying a Node-style
+ * `code` (`ENOENT`, `EACCES`, `EPERM`, ...) and honour `signal`.
+ *
+ * `identify` is consulted before authorization and before any read of a
+ * file. Returning null diagnoses the location as unavailable/ambiguous:
+ * the file is not read. When `identify` is absent, identity falls back
+ * to the lexical path key (see the module header for its limits).
  */
 export interface XrefFileReader {
-  readText(resolvedPath: string, context: XrefReadContext): Promise<string>;
+  identify?(resolvedPath: string, context: XrefAdapterContext): Promise<XrefFileIdentity | null>;
+  readText(resolvedPath: string, context: XrefReadContext): Promise<XrefReadResult>;
 }
 
 /**
  * Optional second gate, consulted before every read (including nested
  * reads) when supplied. Returning false denies the read: the reader is
- * not called and the node is reported as `denied`.
+ * not called and the node is reported as `denied`. (The reader itself
+ * may also refuse authoritatively — EACCES/EPERM rejections are likewise
+ * reported as `denied`.)
  */
-export type XrefAuthorize = (resolvedPath: string, context: XrefReadContext) => boolean | Promise<boolean>;
+export type XrefAuthorize = (resolvedPath: string, context: XrefAdapterContext) => boolean | Promise<boolean>;
+
+/** Bounds handed to the parser for one file, lowered from the caller's budgets. */
+export interface XrefParseBounds {
+  /** Source text length cap for the parser (the per-file byte budget: characters never exceed UTF-8 bytes). */
+  readonly maxSourceLength: number;
+}
 
 /** Parse a referenced file. Defaults to the existing DXF reader; injectable for isolated tests. */
-export type XrefParse = (text: string, resolvedPath: string) => DrawingState;
+export type XrefParse = (text: string, resolvedPath: string, bounds: XrefParseBounds) => DrawingState;
 
 export interface XrefLoaderDeps {
   readonly reader: XrefFileReader;
@@ -210,21 +198,28 @@ export interface XrefLoaderDeps {
 export interface XrefLoadLimits {
   /** Deepest reference depth loaded (root references are depth 1). Default 8. */
   readonly maxDepth?: number;
-  /** Maximum distinct reference nodes staged in one load. Default 64. */
+  /**
+   * Maximum declaration edges staged in one load: every reference node —
+   * loaded, failed, suppressed, duplicate or cyclic — counts, checked
+   * before any other per-edge outcome. Default 64. Fatal when exceeded.
+   */
   readonly maxReferences?: number;
+  /** Maximum distinct files (by adapter identity) staged in one load. Default 64. Fatal when exceeded. */
+  readonly maxFiles?: number;
   /** Maximum UTF-8 byte length of one referenced file. Default 16 MiB. */
   readonly maxFileBytes?: number;
-  /** Maximum cumulative UTF-8 bytes over distinct files in one load. Default 64 MiB. Fatal when exceeded. */
+  /** Maximum cumulative delivered UTF-8 bytes in one load, rejected input included. Default 64 MiB. Fatal when spent. */
   readonly maxTotalBytes?: number;
-  /** Maximum entities (model-space + block content) in one referenced file. Default 200,000. */
+  /** Maximum counted entities (model + blocks + layouts + retained raw records) in one file. Default 200,000. */
   readonly maxEntitiesPerFile?: number;
-  /** Maximum cumulative entities over distinct files in one load. Default 500,000. Fatal when exceeded. */
+  /** Maximum cumulative counted entities over distinct loaded files. Default 500,000. Fatal when exceeded. */
   readonly maxTotalEntities?: number;
 }
 
 export const DEFAULT_XREF_LOAD_LIMITS: Required<XrefLoadLimits> = {
   maxDepth: 8,
   maxReferences: 64,
+  maxFiles: 64,
   maxFileBytes: 16 * 1024 * 1024,
   maxTotalBytes: 64 * 1024 * 1024,
   maxEntitiesPerFile: 200_000,
@@ -250,6 +245,9 @@ export type XrefNodeStatus =
   | 'parse-error'
   | 'unsupported-format'
   | 'unresolved-path'
+  | 'unresolved-location'
+  | 'inconsistent-version'
+  | 'inconsistent-response'
   | 'cycle'
   | 'depth-limit'
   | 'file-limit'
@@ -265,11 +263,11 @@ export interface XrefFailure {
   readonly resolvedPath: string | null;
   readonly depth: number;
   readonly message: string;
-  /** For `cycle`: the resolved-path chain from the ancestor down to the repeated file. */
+  /** For `cycle`: the location chain from the ancestor (or host) down to the repeated file. */
   readonly chain?: readonly string[];
 }
 
-/** One reference occurrence in the staged tree. */
+/** One reference occurrence in the staged tree. Occurrence context lives here, never on the shared file record. */
 export interface XrefNode {
   readonly blockName: string;
   /** Verbatim stored path; never rewritten. */
@@ -279,20 +277,34 @@ export interface XrefNode {
   readonly depth: number;
   readonly status: XrefNodeStatus;
   readonly message?: string;
-  /** Key into `XrefSnapshot.files` when this occurrence's file was loaded (shared by duplicates). */
+  /** Key into `XrefSnapshot.files` (an adapter identity key) when this occurrence's file was loaded. */
   readonly fileKey?: string;
   readonly children: readonly XrefNode[];
 }
 
+/** One place a shared file was referenced from. */
+export interface XrefOccurrence {
+  readonly blockName: string;
+  readonly originalPath: string;
+  readonly resolvedPath: string;
+  readonly depth: number;
+}
+
 /** A distinct referenced file that was read and parsed, held apart from the host drawing. */
 export interface XrefLoadedFile {
+  /** Identity key: `id:<adapter identity>` or, without an adapter identity, `path:<lexical key>`. */
   readonly key: string;
-  readonly resolvedPath: string;
-  /** Every verbatim stored path that resolved to this file, in encounter order. */
-  readonly originalPaths: readonly string[];
+  /** The adapter-supplied stable owning location (the requested resolved path when no identity was supplied). */
+  readonly owningLocation: string;
+  /** Adapter content-version evidence, when supplied. */
+  readonly version?: string;
   readonly byteLength: number;
-  /** Model-space entities plus the entities of the file's own block definitions. */
+  /** Model-space + block-definition + paper-space layout entities. */
   readonly entityCount: number;
+  /** Retained unsupported raw records (`meta.dxfRawEntities`), counted toward the entity budget. */
+  readonly retainedRecords: number;
+  /** Every occurrence that referenced this file, in encounter order. */
+  readonly occurrences: readonly XrefOccurrence[];
   /**
    * The parsed drawing of the referenced file. This is external content:
    * it is not part of the host drawing's state, is never merged into it,
@@ -304,20 +316,24 @@ export interface XrefLoadedFile {
 }
 
 export interface XrefSnapshotStats {
-  /** Distinct reference nodes staged (including failed and not-carried ones). */
+  /** Declaration edges staged (every node, including failed/suppressed/duplicate ones). */
   readonly referencesSeen: number;
   readonly filesLoaded: number;
-  /** UTF-8 bytes over distinct loaded files. */
-  readonly totalBytes: number;
-  /** Entities over distinct loaded files. */
+  /** UTF-8 bytes delivered by the reader and charged, rejected input included. */
+  readonly bytesDelivered: number;
+  /** UTF-8 bytes of the distinct files that loaded. */
+  readonly loadedBytes: number;
+  /** Counted entities over distinct loaded files. */
   readonly totalEntities: number;
 }
 
-/** A complete, self-contained staging result. Immutable by convention (all fields readonly). */
+/** A complete staging result. Snapshots returned by this module are sealed (runtime-immutable). */
 export interface XrefSnapshot {
   /** Store generation that committed this snapshot (0 for a bare staged load). */
   readonly generation: number;
   readonly hostPath: string | null;
+  /** Adapter identity of the host, when known. */
+  readonly hostIdentity?: string;
   readonly nodes: readonly XrefNode[];
   readonly files: Readonly<Record<string, XrefLoadedFile>>;
   readonly failures: readonly XrefFailure[];
@@ -364,19 +380,23 @@ export interface XrefLoadInput {
   readonly references?: readonly XrefReferenceInput[];
   /** Path of the host file the references were recorded in; anchors relative resolution. */
   readonly hostPath?: string | null;
+  /** Adapter identity of the host, when the caller already holds it (skips re-identifying the host). */
+  readonly hostIdentity?: XrefFileIdentity;
 }
 
 export interface XrefLoadOptions {
   readonly limits?: XrefLoadLimits;
   readonly signal?: AbortSignal;
+  /** Caller-supplied identity of the host session this attempt belongs to (see XrefStore). */
+  readonly hostKey?: string;
 }
 
 export interface XrefLoadOutcome {
-  /** The staged snapshot, or null when staging was aborted (cancellation / a total limit). */
+  /** The staged (sealed) snapshot, or null when staging was aborted (cancellation / a fatal limit). */
   readonly snapshot: XrefSnapshot | null;
   readonly failures: readonly XrefFailure[];
   readonly cancelled: boolean;
-  /** True when staging aborted early (cancelled, or a cumulative total limit was exceeded). */
+  /** True when staging aborted early (cancelled, or a cumulative budget was spent). */
   readonly fatal: boolean;
 }
 
@@ -392,8 +412,16 @@ interface ParsedFile {
   readonly state: DrawingState;
   readonly byteLength: number;
   readonly entityCount: number;
+  readonly retainedRecords: number;
   readonly references: readonly XrefReferenceInput[];
-  readonly originalPaths: string[];
+  readonly owningLocation: string;
+  readonly version?: string;
+  readonly occurrences: XrefOccurrence[];
+}
+
+interface Ancestor {
+  readonly key: string;
+  readonly location: string;
 }
 
 interface StageContext {
@@ -404,36 +432,50 @@ interface StageContext {
   readonly files: Map<string, XrefLoadedFile>;
   readonly parsed: Map<string, ParsedFile>;
   referencesSeen: number;
-  totalBytes: number;
+  bytesDelivered: number;
+  loadedBytes: number;
   totalEntities: number;
 }
 
-function entityCountOf(state: DrawingState): number {
-  let n = state.entities.length;
-  for (const block of Object.values(state.blocks)) n += block.entities.length;
-  return n;
+function entityCountsOf(state: DrawingState): { entities: number; retainedRecords: number } {
+  let entities = state.entities.length;
+  for (const block of Object.values(state.blocks)) entities += block.entities.length;
+  for (const layout of state.layouts ?? []) entities += layout.entities.length;
+  const raw = (state.meta as Record<string, unknown> | undefined)?.['dxfRawEntities'];
+  const retainedRecords = Array.isArray(raw) ? raw.length : 0;
+  return { entities, retainedRecords };
 }
 
-function isMissing(error: unknown): boolean {
-  const e = error as { code?: unknown; message?: unknown } | null;
-  if (!e) return false;
-  if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return true;
-  return typeof e.message === 'string' && /ENOENT|not found|no such file/i.test(e.message);
+function errorCode(error: unknown): string | undefined {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' ? code : undefined;
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function isAbort(error: unknown, signal?: AbortSignal): boolean {
+  return signal?.aborted === true || (error instanceof Error && error.name === 'AbortError');
+}
+
+function cancelledFatal(ref: XrefReferenceInput, resolvedPath: string | null, depth: number): StagingFatal {
+  return new StagingFatal({ kind: 'cancelled', blockName: ref.blockName, originalPath: ref.path, resolvedPath, depth, message: 'xref load cancelled' });
+}
+
 function throwIfAborted(ctx: StageContext, ref: XrefReferenceInput, resolvedPath: string | null, depth: number): void {
-  if (ctx.signal?.aborted) {
-    throw new StagingFatal({ kind: 'cancelled', blockName: ref.blockName, originalPath: ref.path, resolvedPath, depth, message: 'xref load cancelled' });
-  }
+  if (ctx.signal?.aborted) throw cancelledFatal(ref, resolvedPath, depth);
+}
+
+/** Deep-copy a snapshot and seal the copy; caller/parser-owned objects are never frozen. */
+function sealSnapshot(snapshot: XrefSnapshot): XrefSnapshot {
+  return sealImmutableData(structuredClone(snapshot));
 }
 
 /**
  * Stage a complete snapshot for a host's references. Performs no commit
- * and touches no shared state; see `XrefStore` for atomic commit/refresh.
+ * and touches no shared state; see `XrefStore` for atomic publication.
+ * The returned snapshot is a sealed copy owned by the caller.
  */
 export async function stageXrefLoad(input: XrefLoadInput, deps: XrefLoaderDeps, options: XrefLoadOptions = {}): Promise<XrefLoadOutcome> {
   if (!deps?.reader || typeof deps.reader.readText !== 'function') throw new TypeError('stageXrefLoad requires deps.reader.readText');
@@ -447,7 +489,8 @@ export async function stageXrefLoad(input: XrefLoadInput, deps: XrefLoaderDeps, 
     files: new Map(),
     parsed: new Map(),
     referencesSeen: 0,
-    totalBytes: 0,
+    bytesDelivered: 0,
+    loadedBytes: 0,
     totalEntities: 0,
   };
   const hostPath = input.hostPath ?? null;
@@ -455,17 +498,35 @@ export async function stageXrefLoad(input: XrefLoadInput, deps: XrefLoaderDeps, 
     if (ctx.signal?.aborted) {
       throw new StagingFatal({ kind: 'cancelled', blockName: '', originalPath: '', resolvedPath: null, depth: 0, message: 'xref load cancelled before it started' });
     }
+    // Seed ancestry (and the resolution anchor) with the host whenever its
+    // identity or location is known, so host -> host is cut on the first
+    // edge and root-relative paths anchor at the host's owning location.
+    let hostIdentity = input.hostIdentity;
+    if (!hostIdentity && deps.reader.identify && hostPath !== null && isAbsolutePath(hostPath)) {
+      try {
+        hostIdentity = (await deps.reader.identify(hostPath, { resolvedPath: hostPath, originalPath: hostPath, blockName: '', depth: 0, ...(ctx.signal ? { signal: ctx.signal } : {}) })) ?? undefined;
+      } catch (error) {
+        if (isAbort(error, ctx.signal)) throw new StagingFatal({ kind: 'cancelled', blockName: '', originalPath: '', resolvedPath: hostPath, depth: 0, message: 'xref load cancelled' });
+        hostIdentity = undefined; // identity unavailable: lexical anchor, no seed (documented fallback)
+      }
+      throwIfAborted(ctx, { blockName: '', path: '' }, hostPath, 0);
+    }
+    const hostAnchor = hostIdentity?.owningLocation ?? hostPath;
+    const ancestors: Ancestor[] = hostIdentity ? [{ key: `id:${hostIdentity.id}`, location: hostIdentity.owningLocation }] : [];
     const nodes: XrefNode[] = [];
-    for (const ref of roots) nodes.push(await buildNode(ctx, ref, hostPath, 1, []));
+    for (const ref of roots) nodes.push(await buildNode(ctx, ref, hostAnchor, 1, ancestors));
+    throwIfAborted(ctx, { blockName: '', path: '' }, null, 0);
     const snapshot: XrefSnapshot = {
       generation: 0,
       hostPath,
+      ...(hostIdentity ? { hostIdentity: hostIdentity.id } : {}),
       nodes,
       files: Object.fromEntries(ctx.files),
       failures: [...ctx.failures],
-      stats: { referencesSeen: ctx.referencesSeen, filesLoaded: ctx.files.size, totalBytes: ctx.totalBytes, totalEntities: ctx.totalEntities },
+      stats: { referencesSeen: ctx.referencesSeen, filesLoaded: ctx.files.size, bytesDelivered: ctx.bytesDelivered, loadedBytes: ctx.loadedBytes, totalEntities: ctx.totalEntities },
     };
-    return { snapshot, failures: snapshot.failures, cancelled: false, fatal: false };
+    const sealed = sealSnapshot(snapshot);
+    return { snapshot: sealed, failures: sealed.failures, cancelled: false, fatal: false };
   } catch (error) {
     if (error instanceof StagingFatal) {
       return { snapshot: null, failures: [error.failure], cancelled: error.failure.kind === 'cancelled', fatal: true };
@@ -474,13 +535,15 @@ export async function stageXrefLoad(input: XrefLoadInput, deps: XrefLoaderDeps, 
   }
 }
 
-interface Ancestor {
-  readonly key: string;
-  readonly resolvedPath: string;
-}
-
-async function buildNode(ctx: StageContext, ref: XrefReferenceInput, containingPath: string | null, depth: number, ancestors: readonly Ancestor[]): Promise<XrefNode> {
+async function buildNode(ctx: StageContext, ref: XrefReferenceInput, containingLocation: string | null, depth: number, ancestors: readonly Ancestor[]): Promise<XrefNode> {
+  // (1) Edge accounting, cancellation and the edge budget run before EVERY
+  // early return: empty paths, suppressed overlays, cycles, depth and
+  // format refusals are all declaration edges and all count.
   ctx.referencesSeen += 1;
+  throwIfAborted(ctx, ref, null, depth);
+  if (ctx.referencesSeen > ctx.limits.maxReferences) {
+    throw new StagingFatal({ kind: 'total-limit', blockName: ref.blockName, originalPath: ref.path, resolvedPath: null, depth, message: `declaration-edge count exceeds the limit of ${ctx.limits.maxReferences}` });
+  }
   const base = { blockName: ref.blockName, originalPath: ref.path, overlay: ref.overlay === true, depth };
   const fail = (kind: XrefFailureKind & XrefNodeStatus, resolvedPath: string | null, message: string, extra?: Partial<XrefFailure>): XrefNode => {
     ctx.failures.push({ kind, blockName: ref.blockName, originalPath: ref.path, resolvedPath, depth, message, ...(extra ?? {}) });
@@ -488,88 +551,164 @@ async function buildNode(ctx: StageContext, ref: XrefReferenceInput, containingP
   };
 
   if (!ref.path || !ref.path.trim()) return fail('unresolved-path', null, 'the reference has an empty stored path');
-  const resolvedPath = resolveXrefPath(ref.path, containingPath);
-  const windowsStyle = isWindowsStylePath(resolvedPath) || (containingPath !== null && isWindowsStylePath(containingPath));
-  const key = cadPathKey(resolvedPath, windowsStyle);
-
+  const resolvedPath = resolveXrefPath(ref.path, containingLocation);
+  if (resolvedPath === null) {
+    return fail('unresolved-path', null, isDriveRelativePath(ref.path)
+      ? 'drive-relative reference paths are ambiguous (per-drive working directory) and cannot be anchored'
+      : 'a relative reference with no anchored containing location cannot be resolved');
+  }
   // A nested overlay is visible in its immediate host but is not carried
   // into drawings that reference that host, so for this (root) load it is
   // recorded without reading its file or traversing deeper.
   if (depth >= 2 && ref.overlay) {
     return { ...base, resolvedPath, status: 'not-carried-overlay', message: 'nested overlay: loaded for its immediate host only, not carried into the root drawing', children: [] };
   }
-  const cycleAt = ancestors.findIndex((a) => a.key === key);
-  if (cycleAt >= 0) {
-    const chain = [...ancestors.slice(cycleAt).map((a) => a.resolvedPath), resolvedPath];
-    return fail('cycle', resolvedPath, `circular reference: ${chain.join(' -> ')}`, { chain });
-  }
   if (depth > ctx.limits.maxDepth) return fail('depth-limit', resolvedPath, `reference depth ${depth} exceeds the limit of ${ctx.limits.maxDepth}`);
-  if (ctx.referencesSeen > ctx.limits.maxReferences) {
-    throw new StagingFatal({ kind: 'total-limit', blockName: ref.blockName, originalPath: ref.path, resolvedPath, depth, message: `reference count exceeds the limit of ${ctx.limits.maxReferences}` });
-  }
   if (/\.dwg$/i.test(resolvedPath)) {
     return fail('unsupported-format', resolvedPath, 'DWG references are recorded but this DXF loading core does not parse DWG files');
   }
 
-  throwIfAborted(ctx, ref, resolvedPath, depth);
+  const adapterContext: XrefAdapterContext = { resolvedPath, originalPath: ref.path, blockName: ref.blockName, depth, ...(ctx.signal ? { signal: ctx.signal } : {}) };
 
-  let parsed = ctx.parsed.get(key);
+  // (2) Adapter identity before authorization or reading. Without it the
+  // identity key is the lexical path key (documented fallback, never an
+  // authorization). An unavailable/ambiguous location is diagnosed here
+  // and the file is not read.
+  let identity: XrefFileIdentity | undefined;
+  if (ctx.deps.reader.identify) {
+    let identified: XrefFileIdentity | null;
+    try {
+      identified = await ctx.deps.reader.identify(resolvedPath, adapterContext);
+    } catch (error) {
+      if (isAbort(error, ctx.signal)) throw cancelledFatal(ref, resolvedPath, depth);
+      return fail('unresolved-location', resolvedPath, `the adapter could not identify this location: ${errorMessage(error)}`);
+    }
+    throwIfAborted(ctx, ref, resolvedPath, depth);
+    if (!identified || !identified.id || !identified.owningLocation || !isAbsolutePath(identified.owningLocation)) {
+      return fail('unresolved-location', resolvedPath, 'the adapter reported this location as unavailable or ambiguous');
+    }
+    identity = identified;
+  }
+  const fileKey = identity ? `id:${identity.id}` : `path:${pathKey(resolvedPath)}`;
+  const owningLocation = identity?.owningLocation ?? resolvedPath;
+
+  // (3) Cycles by identity (ancestry is seeded with the host identity).
+  const cycleAt = ancestors.findIndex((a) => a.key === fileKey);
+  if (cycleAt >= 0) {
+    const chain = [...ancestors.slice(cycleAt).map((a) => a.location), owningLocation];
+    return fail('cycle', resolvedPath, `circular reference: ${chain.join(' -> ')}`, { chain });
+  }
+
+  // (4) A cached file is shared by identity. Version evidence must agree
+  // within the load, or the snapshot would mix two contents of one file.
+  let parsed = ctx.parsed.get(fileKey);
+  if (parsed && identity?.version && parsed.version && identity.version !== parsed.version) {
+    return fail('inconsistent-version', resolvedPath, `identity ${identity.id} reported version ${identity.version} after ${parsed.version} in the same load`);
+  }
   if (!parsed) {
-    const readContext: XrefReadContext = { resolvedPath, originalPath: ref.path, blockName: ref.blockName, depth, ...(ctx.signal ? { signal: ctx.signal } : {}) };
+    // (5) Unique-file budget, before spending a read on a new file.
+    if (ctx.files.size >= ctx.limits.maxFiles) {
+      throw new StagingFatal({ kind: 'total-limit', blockName: ref.blockName, originalPath: ref.path, resolvedPath, depth, message: `distinct-file count exceeds the limit of ${ctx.limits.maxFiles}` });
+    }
+    // (6) Authorization gate (the reader itself may still refuse: below).
     if (ctx.deps.authorize) {
       let allowed = false;
       try {
-        allowed = await ctx.deps.authorize(resolvedPath, readContext);
+        allowed = await ctx.deps.authorize(resolvedPath, adapterContext);
       } catch (error) {
+        if (isAbort(error, ctx.signal)) throw cancelledFatal(ref, resolvedPath, depth);
         return fail('denied', resolvedPath, `permission check failed: ${errorMessage(error)}`);
       }
       throwIfAborted(ctx, ref, resolvedPath, depth);
       if (!allowed) return fail('denied', resolvedPath, 'the permission gate denied this read');
     }
-    let text: string;
+    // (7) Read, with the remaining allowance. Delivered bytes are charged
+    // whether or not the content is then accepted, and once the
+    // cumulative budget is spent no further read is scheduled.
+    const remainingTotal = ctx.limits.maxTotalBytes - ctx.bytesDelivered;
+    if (remainingTotal <= 0) {
+      throw new StagingFatal({ kind: 'total-limit', blockName: ref.blockName, originalPath: ref.path, resolvedPath, depth, message: `cumulative delivered-byte budget of ${ctx.limits.maxTotalBytes} is spent` });
+    }
+    const maxBytes = Math.min(ctx.limits.maxFileBytes, remainingTotal);
+    let result: XrefReadResult;
     try {
-      text = await ctx.deps.reader.readText(resolvedPath, readContext);
+      result = await ctx.deps.reader.readText(resolvedPath, { ...adapterContext, maxBytes });
     } catch (error) {
-      if (ctx.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
-        throw new StagingFatal({ kind: 'cancelled', blockName: ref.blockName, originalPath: ref.path, resolvedPath, depth, message: 'xref load cancelled' });
-      }
-      if (isMissing(error)) return fail('missing', resolvedPath, `referenced file not found at ${resolvedPath}`);
+      if (isAbort(error, ctx.signal)) throw cancelledFatal(ref, resolvedPath, depth);
+      const code = errorCode(error);
+      if (code === 'ENOENT' || code === 'ENOTDIR') return fail('missing', resolvedPath, `referenced file not found at ${resolvedPath}`);
+      if (code === 'EACCES' || code === 'EPERM') return fail('denied', resolvedPath, `the reader refused access to ${resolvedPath} (${code})`);
       return fail('read-error', resolvedPath, `could not read the referenced file: ${errorMessage(error)}`);
     }
     throwIfAborted(ctx, ref, resolvedPath, depth);
-    if (typeof text !== 'string') return fail('read-error', resolvedPath, 'the reader returned a non-string result');
-    const byteLength = new TextEncoder().encode(text).length;
-    if (byteLength > ctx.limits.maxFileBytes) return fail('file-limit', resolvedPath, `referenced file is ${byteLength} bytes, over the per-file limit of ${ctx.limits.maxFileBytes}`);
-    ctx.totalBytes += byteLength;
-    if (ctx.totalBytes > ctx.limits.maxTotalBytes) {
-      throw new StagingFatal({ kind: 'total-limit', blockName: ref.blockName, originalPath: ref.path, resolvedPath, depth, message: `cumulative referenced bytes exceed the limit of ${ctx.limits.maxTotalBytes}` });
+    const text = typeof result === 'string' ? result : result?.text;
+    if (typeof text !== 'string') return fail('inconsistent-response', resolvedPath, 'the reader returned a non-string result');
+    const deliveredBytes = new TextEncoder().encode(text).length;
+    ctx.bytesDelivered += deliveredBytes;
+    const declaredBytes = typeof result === 'string' ? undefined : result.byteLength;
+    if (declaredBytes !== undefined && declaredBytes !== deliveredBytes) {
+      return fail('inconsistent-response', resolvedPath, `the reader declared ${declaredBytes} bytes but delivered ${deliveredBytes}`);
     }
-    const parse = ctx.deps.parse ?? ((t: string, p: string) => readDxf(t, { filePath: p }));
+    if (deliveredBytes > ctx.limits.maxFileBytes) {
+      if (ctx.bytesDelivered > ctx.limits.maxTotalBytes) {
+        throw new StagingFatal({ kind: 'total-limit', blockName: ref.blockName, originalPath: ref.path, resolvedPath, depth, message: `cumulative delivered bytes exceed the limit of ${ctx.limits.maxTotalBytes}` });
+      }
+      return fail('file-limit', resolvedPath, `referenced file delivered ${deliveredBytes} bytes, over the per-file limit of ${ctx.limits.maxFileBytes}`);
+    }
+    if (ctx.bytesDelivered > ctx.limits.maxTotalBytes) {
+      throw new StagingFatal({ kind: 'total-limit', blockName: ref.blockName, originalPath: ref.path, resolvedPath, depth, message: `cumulative delivered bytes exceed the limit of ${ctx.limits.maxTotalBytes}` });
+    }
+    const resultVersion = typeof result === 'string' ? undefined : result.version;
+    const version = identity?.version ?? resultVersion;
+    // (8) Parse, with the parser's own allocation bounds lowered from the
+    // caller's budgets (source length) and never raised (string/pair/
+    // record defaults stay in force). Parsing is synchronous: the signal
+    // is rechecked immediately after, but a running parse is not
+    // preemptible.
+    const parse = ctx.deps.parse ?? ((t: string, p: string, bounds: XrefParseBounds) => readDxf(t, { filePath: p, maxSourceLength: bounds.maxSourceLength }));
     let state: DrawingState;
     try {
-      state = parse(text, resolvedPath);
+      state = parse(text, resolvedPath, { maxSourceLength: ctx.limits.maxFileBytes });
     } catch (error) {
+      if (isAbort(error, ctx.signal)) throw cancelledFatal(ref, resolvedPath, depth);
       return fail('parse-error', resolvedPath, `could not parse the referenced file as DXF: ${errorMessage(error)}`);
     }
-    const entityCount = entityCountOf(state);
-    if (entityCount > ctx.limits.maxEntitiesPerFile) return fail('file-limit', resolvedPath, `referenced file has ${entityCount} entities, over the per-file limit of ${ctx.limits.maxEntitiesPerFile}`);
-    ctx.totalEntities += entityCount;
-    if (ctx.totalEntities > ctx.limits.maxTotalEntities) {
-      throw new StagingFatal({ kind: 'total-limit', blockName: ref.blockName, originalPath: ref.path, resolvedPath, depth, message: `cumulative referenced entities exceed the limit of ${ctx.limits.maxTotalEntities}` });
+    throwIfAborted(ctx, ref, resolvedPath, depth);
+    if (!state || !Array.isArray(state.entities) || !state.blocks || typeof state.blocks !== 'object') {
+      return fail('parse-error', resolvedPath, 'the parser returned an invalid drawing state');
     }
-    parsed = { state, byteLength, entityCount, references: collectXrefReferences(state), originalPaths: [] };
-    ctx.parsed.set(key, parsed);
-    ctx.files.set(key, { key, resolvedPath, originalPaths: parsed.originalPaths, byteLength, entityCount, state, references: parsed.references });
+    const { entities, retainedRecords } = entityCountsOf(state);
+    const counted = entities + retainedRecords;
+    if (counted > ctx.limits.maxEntitiesPerFile) {
+      return fail('file-limit', resolvedPath, `referenced file has ${counted} counted entities (${entities} model/block/layout + ${retainedRecords} retained raw records), over the per-file limit of ${ctx.limits.maxEntitiesPerFile}`);
+    }
+    ctx.totalEntities += counted;
+    if (ctx.totalEntities > ctx.limits.maxTotalEntities) {
+      throw new StagingFatal({ kind: 'total-limit', blockName: ref.blockName, originalPath: ref.path, resolvedPath, depth, message: `cumulative counted entities exceed the limit of ${ctx.limits.maxTotalEntities}` });
+    }
+    ctx.loadedBytes += deliveredBytes;
+    parsed = { state, byteLength: deliveredBytes, entityCount: entities, retainedRecords, references: collectXrefReferences(state), owningLocation, ...(version ? { version } : {}), occurrences: [] };
+    ctx.parsed.set(fileKey, parsed);
+    ctx.files.set(fileKey, {
+      key: fileKey,
+      owningLocation,
+      ...(version ? { version } : {}),
+      byteLength: deliveredBytes,
+      entityCount: entities,
+      retainedRecords,
+      occurrences: parsed.occurrences,
+      state,
+      references: parsed.references,
+    });
   }
-  if (!parsed.originalPaths.includes(ref.path)) parsed.originalPaths.push(ref.path);
+  parsed.occurrences.push({ blockName: ref.blockName, originalPath: ref.path, resolvedPath, depth });
 
   const children: XrefNode[] = [];
-  const childAncestors = [...ancestors, { key, resolvedPath }];
+  const childAncestors = [...ancestors, { key: fileKey, location: owningLocation }];
   for (const child of parsed.references) {
-    throwIfAborted(ctx, child, null, depth + 1);
-    children.push(await buildNode(ctx, child, resolvedPath, depth + 1, childAncestors));
+    children.push(await buildNode(ctx, child, owningLocation, depth + 1, childAncestors));
   }
-  return { ...base, resolvedPath, status: 'loaded', fileKey: key, children };
+  return { ...base, resolvedPath, status: 'loaded', fileKey, children };
 }
 
 // ---------------------------------------------------------------------------
@@ -581,9 +720,15 @@ export interface XrefCommitResult {
   readonly committed: boolean;
   /** True when the previously committed snapshot was left untouched (identity preserved). */
   readonly preserved: boolean;
+  /** True when the attempt was superseded (newer attempt, generation or host change) before publication. */
+  readonly stale: boolean;
   /** The store's current snapshot after the operation (the preserved one on failure). */
   readonly current: XrefSnapshot | null;
-  /** The staged snapshot, for diagnostics; on a failed strict commit it is NOT the current snapshot. */
+  /**
+   * The staged snapshot, for diagnostics/inspection. On a failed strict
+   * commit and on EVERY partial refresh this is an uncommitted candidate:
+   * it is not, and must not be treated as, the store's current graph.
+   */
   readonly staged: XrefSnapshot | null;
   readonly failures: readonly XrefFailure[];
   readonly cancelled: boolean;
@@ -592,14 +737,33 @@ export interface XrefCommitResult {
 /**
  * Holds the last successful snapshot and refreshes it atomically.
  *
- * `load` and `refresh` are the same operation — stage a whole new
- * snapshot, then swap — differing only in what "last successful" means
- * to the caller. The swap is a single assignment after staging has fully
- * completed, so a reader of `current` never sees a half-built tree.
+ * Publication guard (20.1): every attempt captures a request token, the
+ * store generation and the host epoch when it STARTS. At publication all
+ * three must still be current, the attempt's host must still be the
+ * store's bound host, and the signal must not be aborted. Otherwise the
+ * attempt is stale: nothing is published and the last good graph is
+ * preserved, even if the attempt's reader ignored cancellation. Starting
+ * a newer attempt — successful, failed or cancelled — supersedes every
+ * older in-flight attempt.
+ *
+ * Host lifecycle: the first successful commit binds the store to that
+ * attempt's host key (`options.hostKey`, else the host identity id, else
+ * the host path). `bindHost` / `close` model host replacement/closure:
+ * they advance the host epoch, drop the old host's graph, and invalidate
+ * every in-flight attempt.
+ *
+ * Refresh semantics (20.1): `refresh` never publishes an incomplete
+ * snapshot, in any mode — an incomplete refresh returns its staged
+ * snapshot as an inspection candidate with `committed: false`. `load`
+ * (the initial load, where no last-good graph exists yet) may publish a
+ * partial snapshot only under the explicit `partial` mode.
  */
 export class XrefStore {
   #current: XrefSnapshot | null = null;
   #generation = 0;
+  #lastRequest = 0;
+  #hostEpoch = 0;
+  #boundHost: string | null = null;
 
   get current(): XrefSnapshot | null {
     return this.#current;
@@ -609,23 +773,59 @@ export class XrefStore {
     return this.#generation;
   }
 
+  get boundHost(): string | null {
+    return this.#boundHost;
+  }
+
+  /** The host was replaced or closed: drop its graph and invalidate in-flight attempts. */
+  bindHost(hostKey: string | null): void {
+    if (hostKey === this.#boundHost && this.#current !== null) return;
+    this.#boundHost = hostKey;
+    this.#hostEpoch += 1;
+    this.#current = null;
+  }
+
+  close(): void {
+    this.bindHost(null);
+    this.#hostEpoch += 1;
+    this.#current = null;
+  }
+
   async load(input: XrefLoadInput, deps: XrefLoaderDeps, options: XrefLoadOptions & { readonly mode?: XrefCommitMode } = {}): Promise<XrefCommitResult> {
-    return this.#stage(input, deps, options);
+    return this.#attempt(input, deps, options, false);
   }
 
   async refresh(input: XrefLoadInput, deps: XrefLoaderDeps, options: XrefLoadOptions & { readonly mode?: XrefCommitMode } = {}): Promise<XrefCommitResult> {
-    return this.#stage(input, deps, options);
+    return this.#attempt(input, deps, options, true);
   }
 
-  async #stage(input: XrefLoadInput, deps: XrefLoaderDeps, options: XrefLoadOptions & { readonly mode?: XrefCommitMode }): Promise<XrefCommitResult> {
+  async #attempt(input: XrefLoadInput, deps: XrefLoaderDeps, options: XrefLoadOptions & { readonly mode?: XrefCommitMode }, isRefresh: boolean): Promise<XrefCommitResult> {
+    const request = ++this.#lastRequest;
+    const generationAtStart = this.#generation;
+    const epochAtStart = this.#hostEpoch;
+    const hostAtStart = this.#boundHost;
+    const attemptHost = options.hostKey ?? input.hostIdentity?.id ?? input.hostPath ?? null;
     const outcome = await stageXrefLoad(input, deps, options);
+    const superseded = request !== this.#lastRequest || generationAtStart !== this.#generation || epochAtStart !== this.#hostEpoch;
+    const hostChanged = this.#boundHost !== hostAtStart || (hostAtStart !== null && attemptHost !== hostAtStart);
+    const cancelled = outcome.cancelled || options.signal?.aborted === true;
+    if (superseded || hostChanged) {
+      return { committed: false, preserved: true, stale: true, current: this.#current, staged: outcome.snapshot, failures: outcome.failures, cancelled };
+    }
+    if (cancelled || outcome.fatal || !outcome.snapshot) {
+      return { committed: false, preserved: true, stale: false, current: this.#current, staged: outcome.snapshot, failures: outcome.failures, cancelled };
+    }
+    const incomplete = outcome.failures.length > 0;
     const mode = options.mode ?? 'strict';
-    if (outcome.fatal || !outcome.snapshot || (mode === 'strict' && outcome.failures.length > 0)) {
-      return { committed: false, preserved: true, current: this.#current, staged: outcome.snapshot, failures: outcome.failures, cancelled: outcome.cancelled };
+    if (incomplete && (isRefresh || mode === 'strict')) {
+      // Strict loads, and ALL refreshes: an incomplete snapshot is an
+      // inspection candidate only; the last good graph stays published.
+      return { committed: false, preserved: true, stale: false, current: this.#current, staged: outcome.snapshot, failures: outcome.failures, cancelled: false };
     }
     this.#generation += 1;
-    const committed: XrefSnapshot = { ...outcome.snapshot, generation: this.#generation };
-    this.#current = committed;
-    return { committed: true, preserved: false, current: committed, staged: outcome.snapshot, failures: outcome.failures, cancelled: false };
+    const published = sealSnapshot({ ...outcome.snapshot, generation: this.#generation });
+    this.#current = published;
+    if (this.#boundHost === null) this.#boundHost = attemptHost;
+    return { committed: true, preserved: false, stale: false, current: published, staged: outcome.snapshot, failures: outcome.failures, cancelled: false };
   }
 }
