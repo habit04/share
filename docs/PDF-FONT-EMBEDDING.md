@@ -399,3 +399,112 @@ while an eight-mark item split differs from whole-word shaping. Future producer
 admission must keep a safe shaping unit or refuse an unsafe boundary; passing a
 whole context string does not expand the engine's five-codepoint context storage.
 No runtime consumer or compatibility claim follows from interface-only approval.
+
+### Corrected 12.2 and 12.6a deliveries, 2026-10-15
+
+Both updated archives are reconstructed privately from genuine `a68dba5` Git
+blobs with every patch hunk and intermediate blob prefix checked. The CFF archive
+has eight patches, claimed head `bfc094b`, and 11 declared hashes; the variable
+archive has 14 patches, claimed head `b2d2d459`, and 17 declared hashes. All
+declared hashes match. These claimed heads are not locally available commit
+objects; reconstruction establishes their supplied file contents. No checkout,
+branch, dependency or installed font is replaced. Tracked production code stays
+at the existing F4 source checkpoint.
+
+The CFF corrections resolve all eleven original independent Type2 goldens and
+the same-glyph Unicode alias defect. Distinct PDF character codes now map through
+a custom Encoding CMap to the shared CID/GID; widths remain CID-keyed and ToUnicode
+remains character-code-keyed. Actual OpenType resources raise the PDF header to
+1.6, while TrueType-only output remains 1.4. The Encoding CMap uses `begincidchar`
+and CMapType 0 as specified by [Adobe TN5014](https://adobe-type-tools.github.io/font-tech-notes/pdfs/5014.CIDFont_Spec.pdf).
+
+All **296 supplied targeted tests** pass on Windows. The first sandbox run has
+294 passes and two permission errors while creating private test junctions; the
+same tests pass when junction creation is permitted. This is recorded separately
+from product failures. Further independent probes find two small remaining
+parser defects: an omitted FontMatrix must use the effective .001 default for
+the UPEM check, and an `endchar` operand cannot introduce a second width after a
+width-taking operator. Private lead fixes improve extended probes from 31/36 to
+**36/36**, retaining all eleven original goldens. The writer's corresponding
+default-matrix guard also fails before and passes after its private fix. One new
+test's optional-parameter indexed type is corrected without changing behavior.
+The resulting **119 focused tests**, renderer/test typecheck and three-module
+Electron typecheck pass. These are candidate-scoped checks, not full branch gates.
+
+Fresh authored fixtures through the corrected candidate's actual
+`capturedPdfLookup`, `vectorPdf` and `vectorPdfCompressed` produce 24 PDFs. They
+pass **623 independent checks**, plus 30 exact source-program identity checks:
+raw Encoding/ToUnicode/font-cmap relationships,
+CID widths, exact PDFium extraction, whole CFF programs and names, resource-scoped
+headers, warning-free Windows Poppler rendering, shared-glyph pixel identity and
+compressed/uncompressed pixel equality. BMP and supplementary aliases, both
+orders, multiple pages and mixed CFF/TrueType resources are exercised. Drawing
+snapshots, dirty state and history stay unchanged. The authored glyphs are simple
+geometric shapes, not evidence of real typeface fidelity. Pypdf's raw NUL-prefixed
+extraction from a streamed Encoding CMap is recorded, not stripped and called an
+exact pass; independent PDFium extracts the expected text exactly.
+
+The initial artifact inspector incorrectly required CMapType 1. Its nine failed
+assertions and inputs are preserved; correcting that harness assumption to the
+TN5014 Type 0 definition produces 306/306 supplied-artifact checks. An incomplete
+private source snapshot's typecheck errors are also retained; restoring genuine
+base declarations and the test helper resolves those environment errors and
+exposes the actual one-line test type error described above. No test requirement
+or source resource limit is weakened.
+
+The supplied CFF full-suite summary is **not accepted as green**. Its raw final
+log reports 99 failed tests, five worker errors and exit 1, while the rerun log is
+empty. This review does not prove those failures pre-existing. Fresh combined
+lead-side checks and CI remain mandatory. A read-only inventory of 472 top-level
+Windows font programs finds 457 standalone TrueType files, 15 collections and no
+standalone OTTO/CFF font. Installed-CFF positive validation is therefore absent;
+inventory header hashes and metadata are unchanged. No AutoCAD, Acrobat or app
+Plot/IPC acceptance follows from these synthetic CFF checks.
+
+The variable delivery fixes illegal instance record sizes, introduces an explicit
+default-coordinate identity policy and replaces the earlier invalid gvar fixture.
+The exact old negative guards pass, and all **49 supplied tests** pass. Independent
+decoding confirms the authored 119-byte gvar has two axes, five glyphs, valid
+bounded offsets and live weight/width deltas. No fresh fontTools execution is
+claimed because that module is unavailable in the bundled Python runtime.
+
+Both variable validators still accept out-of-range referenced name IDs. A private
+lead correction enforces the [OpenType fvar name-ID ranges](https://learn.microsoft.com/en-us/typography/opentype/spec/fvar)
+in both validators; six illegal-ID probes become refusals and **11 independent
+range cases** pass. One supplied contradictory-name fixture used an illegal ID;
+changing it to a legal custom ID retains the intended identity assertion and
+restores 49/49 tests after the guard. The policy continues to refuse ambiguous
+weight/width, varying optical-size and conflicting named defaults.
+
+The supplied test labeled a nonzero TTC production-reader case actually extracts
+the face before reading a standalone TTF. A separate private composition atop
+the current lead source exercises the original TTC through the actual readers:
+**11/11 checks** cover selected face 1, joint family/style/used-codepoint requests,
+mapped-but-unvalidated glyph refusal, supplementary glyph admission when seeded,
+whole screen metrics, selected permissions, exact whole variable bytes, unprefixed
+names and preserved static TTF subsetting. It preserves all current collection,
+used-glyph and subset safeguards; CFF is not unioned into this variable probe.
+
+Three supplied variable/static/control PDFs independently pass **41 checks** with
+exact whole-program identity, matching pypdf/PDFium text, warning-free Windows
+Poppler rendering and visible ink. Variable-default and static-equivalent pixels
+match; the different-text control changes pixels. These are synthetic artifact
+checks, separate from the Windows Canvas/default-instance probe and eventual
+real Plot/save/reopen/viewer acceptance.
+
+A separate bounded Windows Chrome probe passes **45/45 checks** on installed
+Bahnschrift Regular 400. Direct, confined metadata and PDF readers accept the
+private copy and preserve its exact 361,564-byte whole program. Six strings at
+100 and 256 pixels compare the actual installed-family Canvas result with a
+loaded local-face control and source default advances/control bounds. Kerning is
+disabled as in production; fixed acceptance bounds are 0.05 pixel for advances
+and three pixels for control-hull versus platform-ink bounds. Arial/fallback
+controls differ. This is a narrow observed default identity, not all weights,
+named instances, optical sizes or viewer compatibility.
+
+The ordinary sandbox browser launch fails; a narrow elevated retry succeeds.
+Failed receipts and browser diagnostics remain preserved. Only owned, profile-
+verified Chrome children are closed; original font hashes, metadata and candidate
+modules remain unchanged. No JCad app IPC, Plot dialog or save/reopen is exercised
+by this probe. Neither updated delivery is merged or enabled in the tracked F4
+source, and priority 12 remains incomplete.

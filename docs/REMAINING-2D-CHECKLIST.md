@@ -13,10 +13,12 @@ remain open. See [PDF source-review evidence](PDF-FONT-EMBEDDING.md). The long
 roadmap stays paused; completed GPU/DWG work is not being reimplemented.
 
 Delivery review continues: [priority-12 status](PRIORITY-12-REVIEW-STATUS.md)
-distinguishes reviewed code from acceptance. 12.6a admission is held for confirmed
-record/instance-selection defects and invalid fixtures; the 12.3 subsetter now
-keeps variation-table programs whole. 12.2 is delivered and under review. 12.4
-shipping dependency admission and 12.5 runtime shaping remain gated.
+distinguishes reviewed code from acceptance. Updated 12.6a and 12.2 deliveries
+resolve the earlier major findings; small remaining guards have tested private
+lead corrections. Reader/writer composition and native acceptance remain held,
+and the 12.3 subsetter keeps variation-table programs whole. Neither corrected
+candidate replaces the F4 source checkpoint. 12.4 shipping dependency admission
+and 12.5 runtime shaping remain gated.
 
 Current source-only continuation: [PR #18/#19 integration checkpoint](WINDOWS-SOURCE-INTEGRATION.md)
 records the accepted heads, demonstrated seams, validation and remaining gates. It uses the same
