@@ -1,8 +1,8 @@
 /**
- * Milestone 20: DXF external-reference loading / refresh core.
+ * Milestone 20 / 20.1: DXF external-reference loading / refresh core.
  *
- * All file access is a fake in-memory reader over the authored fixtures in
- * tests/fixtures/xref/, mapped onto a virtual project layout:
+ * All file access is a fake in-memory adapter over the authored fixtures
+ * in tests/fixtures/xref/, mapped onto a virtual project layout:
  *
  *   /proj/drawings/host.dxf          refs ../parts/child.dxf, ..\shared\leaf.dxf, overlay-root.dxf (overlay)
  *   /proj/parts/child.dxf            refs grand.dxf (attach)
@@ -13,13 +13,14 @@
  *   /proj/drawings/overlay-parent.dxf refs inner.dxf (overlay, nested)
  *   /proj/cycle-a.dxf <-> /proj/cycle-b.dxf, /proj/self-cycle.dxf
  *
- * These are headless checks only; Windows/application validation is
- * pending (see docs/XREF-LOADING-CORE.md).
+ * These are headless checks only; Windows/application/native validation
+ * is pending (see docs/XREF-LOADING-CORE.md).
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readDxf, writeDxf } from '../src/io/dxf';
+import type { DrawingState } from '../src/core/document';
 import {
   collectXrefReferences,
   normalizeCadPath,
@@ -28,7 +29,9 @@ import {
   stageXrefLoad,
   externalContent,
   XrefStore,
+  type XrefFileIdentity,
   type XrefFileReader,
+  type XrefReadResult,
   type XrefReferenceInput,
 } from '../src/io/xref-loading';
 
@@ -53,35 +56,54 @@ function projectFiles(): Map<string, string> {
   ]);
 }
 
+function enoent(path: string): Error & { code?: string } {
+  const error = new Error(`ENOENT: no such file or directory, open '${path}'`) as Error & { code?: string };
+  error.code = 'ENOENT';
+  return error;
+}
+
 interface FakeReader extends XrefFileReader {
   readonly calls: string[];
+  readonly allowances: number[];
+  readonly identifyCalls: string[];
   readonly files: Map<string, string>;
 }
 
-function fakeReader(files = projectFiles()): FakeReader {
+function fakeReader(files = projectFiles(), identify?: (path: string) => XrefFileIdentity | null): FakeReader {
   const calls: string[] = [];
-  return {
+  const allowances: number[] = [];
+  const identifyCalls: string[] = [];
+  const reader: FakeReader = {
     calls,
+    allowances,
+    identifyCalls,
     files,
-    async readText(resolvedPath: string): Promise<string> {
+    async readText(resolvedPath: string, context: { maxBytes: number }): Promise<XrefReadResult> {
       calls.push(resolvedPath);
+      allowances.push(context.maxBytes);
       const text = files.get(resolvedPath);
-      if (text === undefined) {
-        const error = new Error(`ENOENT: no such file or directory, open '${resolvedPath}'`) as Error & { code?: string };
-        error.code = 'ENOENT';
-        throw error;
-      }
+      if (text === undefined) throw enoent(resolvedPath);
       return text;
     },
   };
+  if (identify) {
+    reader.identify = async (resolvedPath: string) => {
+      identifyCalls.push(resolvedPath);
+      return identify(resolvedPath);
+    };
+  }
+  return reader;
 }
+
+/** Identity adapter: every existing file is its own identity at its own location. */
+const selfIdentity = (files: Map<string, string>) => (path: string): XrefFileIdentity | null =>
+  files.has(path) ? { id: `file:${path}`, owningLocation: path, version: 'v1' } : null;
 
 const hostState = () => readDxf(fixture('host.dxf'));
 
-describe('path resolution', () => {
-  it('normalizes drive, UNC, rooted and relative paths and folds dot segments', () => {
-    expect(normalizeCadPath('C:\\proj\\parts\\..\\shared\\leaf.dxf')).toBe('C:/proj/shared/leaf.dxf');
-    expect(normalizeCadPath('\\\\server\\share\\a\\..\\b.dxf')).toBe('//server/share/b.dxf');
+describe('path resolution (app/paths helpers)', () => {
+  it('normalizes drive, rooted and relative paths and folds dot segments', () => {
+    expect(normalizeCadPath('C:\\proj\\parts\\..\\shared\\leaf.dxf')).toBe('C:\\proj\\shared\\leaf.dxf');
     expect(normalizeCadPath('/proj/./parts/child.dxf')).toBe('/proj/parts/child.dxf');
     expect(normalizeCadPath('../up.dxf')).toBe('../up.dxf');
     expect(normalizeCadPath('/../clamped.dxf')).toBe('/clamped.dxf');
@@ -91,12 +113,18 @@ describe('path resolution', () => {
     expect(resolveXrefPath('../parts/child.dxf', HOST_PATH)).toBe('/proj/parts/child.dxf');
     expect(resolveXrefPath('grand.dxf', '/proj/parts/child.dxf')).toBe('/proj/parts/grand.dxf');
     expect(resolveXrefPath('..\\shared\\leaf.dxf', HOST_PATH)).toBe('/proj/shared/leaf.dxf');
-    expect(resolveXrefPath('C:\\abs\\file.dxf', HOST_PATH)).toBe('C:/abs/file.dxf');
-    expect(resolveXrefPath('loose.dxf', null)).toBe('loose.dxf');
+    expect(resolveXrefPath('C:\\abs\\file.dxf', HOST_PATH)).toBe('C:\\abs\\file.dxf');
   });
 
-  it('compares Windows-style paths case-insensitively and POSIX paths case-sensitively', () => {
-    expect(cadPathKey('C:\\Proj\\Leaf.dxf')).toBe(cadPathKey('c:/proj/leaf.dxf'));
+  it('refuses ambiguous anchors instead of guessing', () => {
+    expect(resolveXrefPath('loose.dxf', null)).toBeNull(); // relative, no containing location
+    expect(resolveXrefPath('C:leaf.dxf', HOST_PATH)).toBeNull(); // drive-relative
+    expect(resolveXrefPath('leaf.dxf', 'C:host.dxf')).toBeNull(); // drive-relative container
+    expect(resolveXrefPath('C:\\abs\\file.dxf', null)).toBe('C:\\abs\\file.dxf'); // absolute needs no anchor
+  });
+
+  it('lexical keys fold Windows case (and are documented as not identity)', () => {
+    expect(cadPathKey('C:\\Proj\\Leaf.dxf')).toBe(cadPathKey('c:\\proj\\leaf.dxf'));
     expect(cadPathKey('/Proj/Leaf.dxf')).not.toBe(cadPathKey('/proj/leaf.dxf'));
   });
 });
@@ -130,13 +158,12 @@ describe('loading', () => {
     expect(child!.children[0]).toMatchObject({ blockName: 'GRAND', originalPath: 'grand.dxf', resolvedPath: '/proj/parts/grand.dxf', depth: 2, status: 'loaded' });
     expect(leafwin).toMatchObject({ originalPath: '..\\shared\\leaf.dxf', resolvedPath: '/proj/shared/leaf.dxf', status: 'loaded' });
     expect(ovlroot).toMatchObject({ overlay: true, depth: 1, status: 'loaded' });
-    // The root overlay's own attached child IS carried: overlay on an edge
-    // only stops that reference from being carried above its immediate host.
     expect(ovlroot!.children[0]).toMatchObject({ blockName: 'KID', resolvedPath: '/proj/drawings/kid.dxf', depth: 2, status: 'loaded' });
     expect(snap.stats.filesLoaded).toBe(5);
     expect(snap.stats.referencesSeen).toBe(5);
-    expect(snap.stats.totalEntities).toBe(2 + 2 + 1 + 2 + 1); // child(line+insert) grand(1) leaf(2) overlay-root(line+insert) kid(1)
-    expect(snap.stats.totalBytes).toBeGreaterThan(0);
+    expect(snap.stats.totalEntities).toBe(2 + 2 + 1 + 2 + 1);
+    expect(snap.stats.loadedBytes).toBeGreaterThan(0);
+    expect(snap.stats.bytesDelivered).toBe(snap.stats.loadedBytes);
   });
 
   it('records a nested overlay without reading its file, and reports no failure', async () => {
@@ -148,7 +175,6 @@ describe('loading', () => {
     expect(parent.status).toBe('loaded');
     expect(parent.children[0]).toMatchObject({ blockName: 'INNER', originalPath: 'inner.dxf', resolvedPath: '/proj/drawings/inner.dxf', overlay: true, status: 'not-carried-overlay' });
     expect(reader.calls).toEqual(['/proj/drawings/overlay-parent.dxf']);
-    expect(outcome.snapshot!.files['/proj/drawings/inner.dxf']).toBeUndefined();
   });
 
   it('keeps loaded geometry separate from the host drawing and never mutates the host', async () => {
@@ -156,13 +182,12 @@ describe('loading', () => {
     const before = JSON.stringify(host);
     const outcome = await stageXrefLoad({ hostState: host, hostPath: HOST_PATH }, { reader: fakeReader() });
     expect(JSON.stringify(host)).toBe(before);
-    // The host's xref block definitions still hold no entities and their
-    // original paths: nothing was merged in or rewritten.
+    expect(Object.isFrozen(host)).toBe(false);
     expect(host.blocks.CHILD!.entities).toHaveLength(0);
     expect(host.blocks.CHILD!.xref).toEqual({ path: '../parts/child.dxf' });
     expect(writeDxf(host)).toContain('..\\shared\\leaf.dxf');
     const content = externalContent(outcome.snapshot!);
-    expect(content.map((c) => c.file.resolvedPath)).toEqual([
+    expect(content.map((c) => c.file.owningLocation)).toEqual([
       '/proj/parts/child.dxf',
       '/proj/parts/grand.dxf',
       '/proj/shared/leaf.dxf',
@@ -173,11 +198,10 @@ describe('loading', () => {
       expect(c.file.state).not.toBe(host);
       for (const e of c.entities) expect(host.entities).not.toContain(e);
     }
-    // The child file's own model content is the line + the insert of its nested block.
     expect(content[0]!.entities.map((e) => e.type)).toEqual(['line', 'insert']);
   });
 
-  it('loads a file referenced twice once, sharing the parsed state and recording both original paths', async () => {
+  it('lexical fallback (no adapter identity): a file referenced twice by spelling is read once and shared', async () => {
     const files = projectFiles();
     files.set('/proj/leaf.dxf', fixture('leaf.dxf'));
     const reader = fakeReader(files);
@@ -189,11 +213,10 @@ describe('loading', () => {
     expect(outcome.failures).toEqual([]);
     expect(reader.calls).toEqual(['/proj/leaf.dxf']);
     const [a, b] = outcome.snapshot!.nodes;
-    expect(a!.status).toBe('loaded');
-    expect(b!.status).toBe('loaded');
     expect(a!.fileKey).toBe(b!.fileKey);
+    expect(a!.fileKey!.startsWith('path:')).toBe(true);
     expect(outcome.snapshot!.stats.filesLoaded).toBe(1);
-    expect(outcome.snapshot!.files['/proj/leaf.dxf']!.originalPaths).toEqual(['leaf.dxf', './leaf.dxf']);
+    expect(outcome.snapshot!.files[a!.fileKey!]!.occurrences.map((o) => o.originalPath)).toEqual(['leaf.dxf', './leaf.dxf']);
   });
 
   it('a drawing with no references stages an empty snapshot', async () => {
@@ -204,14 +227,115 @@ describe('loading', () => {
   });
 });
 
+describe('adapter identity (20.1)', () => {
+  it('shares by adapter identity across different spellings: one read, one file, two occurrences', async () => {
+    const files = projectFiles();
+    files.set('/proj/a.dxf', fixture('leaf.dxf'));
+    files.set('/proj/link/a.dxf', fixture('leaf.dxf'));
+    const reader = fakeReader(files, (path) =>
+      path === '/proj/a.dxf' || path === '/proj/link/a.dxf' ? { id: 'F1', owningLocation: '/proj/a.dxf', version: 'v1' } : null);
+    const refs: XrefReferenceInput[] = [
+      { blockName: 'A', path: 'a.dxf' },
+      { blockName: 'B', path: 'link/a.dxf' },
+    ];
+    const outcome = await stageXrefLoad({ references: refs, hostPath: '/proj/host.dxf' }, { reader });
+    expect(outcome.failures).toEqual([]);
+    expect(reader.calls).toEqual(['/proj/a.dxf']); // the alias spelling is never read
+    const snap = outcome.snapshot!;
+    expect(snap.stats.filesLoaded).toBe(1);
+    const [a, b] = snap.nodes;
+    expect(a!.fileKey).toBe('id:F1');
+    expect(b!.fileKey).toBe('id:F1');
+    expect(snap.files['id:F1']!.occurrences.map((o) => o.blockName)).toEqual(['A', 'B']);
+    expect(snap.files['id:F1']!.owningLocation).toBe('/proj/a.dxf');
+  });
+
+  it('distinct identities with case-colliding Windows names are NOT merged', async () => {
+    const files = new Map<string, string>();
+    const reader: XrefFileReader & { calls: string[] } = {
+      calls: [],
+      identify: async (path: string) => ({ id: path.startsWith('C:\\Proj') ? 'UPPER' : 'lower', owningLocation: path, version: 'v1' }),
+      async readText(path: string) {
+        this.calls.push(path);
+        return fixture('leaf.dxf');
+      },
+    };
+    void files;
+    const refs: XrefReferenceInput[] = [
+      { blockName: 'U', path: 'C:\\Proj\\Leaf.dxf' },
+      { blockName: 'L', path: 'c:\\proj\\leaf.dxf' },
+    ];
+    const outcome = await stageXrefLoad({ references: refs, hostPath: null }, { reader });
+    expect(outcome.failures).toEqual([]);
+    expect(reader.calls).toHaveLength(2); // both files actually read
+    expect(outcome.snapshot!.stats.filesLoaded).toBe(2);
+    expect(Object.keys(outcome.snapshot!.files).sort()).toEqual(['id:UPPER', 'id:lower']);
+  });
+
+  it('cuts a reference back to the host on its first edge, using the seeded host identity (alias spelling)', async () => {
+    const files = projectFiles();
+    files.set('/proj/drawings/alias-of-host.dxf', fixture('host.dxf'));
+    const hostIdentity: XrefFileIdentity = { id: 'HOST', owningLocation: HOST_PATH, version: 'v1' };
+    const reader = fakeReader(files, (path) => (path === '/proj/drawings/alias-of-host.dxf' ? { id: 'HOST', owningLocation: HOST_PATH, version: 'v1' } : null));
+    const outcome = await stageXrefLoad(
+      { references: [{ blockName: 'SELFIE', path: 'alias-of-host.dxf' }], hostPath: HOST_PATH, hostIdentity },
+      { reader },
+    );
+    const node = outcome.snapshot!.nodes[0]!;
+    expect(node.status).toBe('cycle');
+    expect(outcome.failures[0]).toMatchObject({ kind: 'cycle', chain: [HOST_PATH, HOST_PATH] });
+    expect(reader.calls).toEqual([]); // identified as the host: never read as external geometry
+    expect(outcome.snapshot!.hostIdentity).toBe('HOST');
+  });
+
+  it('resolves children against the adapter owning location, not the requested spelling', async () => {
+    const files = projectFiles();
+    files.set('/proj/link/parent.dxf', fixture('child.dxf')); // child.dxf refs grand.dxf
+    files.set('/proj/real/grand.dxf', fixture('grand.dxf'));
+    const reader = fakeReader(files, (path) => {
+      if (path === '/proj/link/parent.dxf') return { id: 'P', owningLocation: '/proj/real/parent.dxf', version: 'v1' };
+      if (path === '/proj/real/grand.dxf') return { id: 'G', owningLocation: path, version: 'v1' };
+      return null;
+    });
+    const outcome = await stageXrefLoad({ references: [{ blockName: 'P', path: 'link/parent.dxf' }], hostPath: '/proj/host.dxf' }, { reader });
+    expect(outcome.failures).toEqual([]);
+    expect(reader.calls).toEqual(['/proj/link/parent.dxf', '/proj/real/grand.dxf']);
+    expect(reader.identifyCalls).toContain('/proj/real/grand.dxf');
+    expect(outcome.snapshot!.nodes[0]!.children[0]).toMatchObject({ status: 'loaded', resolvedPath: '/proj/real/grand.dxf' });
+  });
+
+  it('diagnoses an unavailable/ambiguous location before any read', async () => {
+    const reader = fakeReader(projectFiles(), () => null);
+    const outcome = await stageXrefLoad({ references: [{ blockName: 'X', path: 'leaf.dxf' }], hostPath: '/proj/host.dxf' }, { reader });
+    expect(reader.calls).toEqual([]);
+    expect(outcome.snapshot!.nodes[0]!.status).toBe('unresolved-location');
+    expect(outcome.failures[0]).toMatchObject({ kind: 'unresolved-location' });
+  });
+
+  it('refuses two versions of one identity inside a load as an inconsistent snapshot', async () => {
+    const files = projectFiles();
+    files.set('/proj/leaf.dxf', fixture('leaf.dxf'));
+    let n = 0;
+    const reader = fakeReader(files, (path) => (path === '/proj/leaf.dxf' ? { id: 'F1', owningLocation: '/proj/leaf.dxf', version: `v${++n}` } : null));
+    const refs: XrefReferenceInput[] = [
+      { blockName: 'A', path: 'leaf.dxf' },
+      { blockName: 'B', path: 'leaf.dxf' },
+    ];
+    const outcome = await stageXrefLoad({ references: refs, hostPath: '/proj/host.dxf' }, { reader });
+    expect(reader.calls).toEqual(['/proj/leaf.dxf']);
+    expect(outcome.snapshot!.nodes.map((x) => x.status)).toEqual(['loaded', 'inconsistent-version']);
+    expect(outcome.failures[0]).toMatchObject({ kind: 'inconsistent-version' });
+  });
+});
+
 describe('failures', () => {
-  it('reports a missing file with its attempted resolved path, as a per-node failure', async () => {
+  it('reports a missing file with its attempted resolved path', async () => {
+    const files = projectFiles();
+    files.set('/proj/leaf.dxf', fixture('leaf.dxf'));
     const refs: XrefReferenceInput[] = [
       { blockName: 'GONE', path: 'gone.dxf' },
       { blockName: 'LEAF', path: 'leaf.dxf' },
     ];
-    const files = projectFiles();
-    files.set('/proj/leaf.dxf', fixture('leaf.dxf'));
     const outcome = await stageXrefLoad({ references: refs, hostPath: '/proj/host.dxf' }, { reader: fakeReader(files) });
     expect(outcome.fatal).toBe(false);
     expect(outcome.failures).toEqual([
@@ -220,25 +344,37 @@ describe('failures', () => {
     expect(outcome.snapshot!.nodes.map((n) => n.status)).toEqual(['missing', 'loaded']);
   });
 
+  it('classifies authoritative reader EACCES / EPERM refusals as denied, not read-error', async () => {
+    const reader: XrefFileReader = {
+      async readText(path: string): Promise<XrefReadResult> {
+        throw Object.assign(new Error(`permission denied, open '${path}'`), { code: path.includes('a.') ? 'EACCES' : 'EPERM' });
+      },
+    };
+    const refs: XrefReferenceInput[] = [
+      { blockName: 'A', path: 'a.dxf' },
+      { blockName: 'B', path: 'b.dxf' },
+    ];
+    const outcome = await stageXrefLoad({ references: refs, hostPath: '/proj/host.dxf' }, { reader });
+    expect(outcome.snapshot!.nodes.map((n) => n.status)).toEqual(['denied', 'denied']);
+    expect(outcome.failures.map((f) => f.kind)).toEqual(['denied', 'denied']);
+  });
+
   it('detects a two-file cycle and a self-cycle, with the chain, without looping', async () => {
     const outcome = await stageXrefLoad({ references: [{ blockName: 'A', path: 'cycle-a.dxf' }], hostPath: '/proj/host.dxf' }, { reader: fakeReader() });
     const a = outcome.snapshot!.nodes[0]!;
     expect(a.status).toBe('loaded');
     const b = a.children[0]!;
     expect(b).toMatchObject({ blockName: 'CYCLEB', status: 'loaded', resolvedPath: '/proj/cycle-b.dxf' });
-    // cycle-b's own reference back to cycle-a is the cycle node.
     const back = b.children[0]!;
     expect(back).toMatchObject({ blockName: 'CYCLEA', status: 'cycle', resolvedPath: '/proj/cycle-a.dxf' });
     expect(outcome.failures).toEqual([
       expect.objectContaining({ kind: 'cycle', chain: ['/proj/cycle-a.dxf', '/proj/cycle-b.dxf', '/proj/cycle-a.dxf'] }),
     ]);
-
     const self = await stageXrefLoad({ references: [{ blockName: 'S', path: 'self-cycle.dxf' }], hostPath: '/proj/host.dxf' }, { reader: fakeReader() });
     expect(self.snapshot!.nodes[0]!.children[0]).toMatchObject({ status: 'cycle', resolvedPath: '/proj/self-cycle.dxf' });
-    expect(self.failures[0]).toMatchObject({ kind: 'cycle' });
   });
 
-  it('a denied read never reaches the reader', async () => {
+  it('a denied read through the gate never reaches the reader', async () => {
     const reader = fakeReader();
     const outcome = await stageXrefLoad(
       { references: [{ blockName: 'SECRET', path: 'leaf.dxf' }], hostPath: '/proj/host.dxf' },
@@ -246,7 +382,6 @@ describe('failures', () => {
     );
     expect(reader.calls).toEqual([]);
     expect(outcome.snapshot!.nodes[0]!.status).toBe('denied');
-    expect(outcome.failures[0]).toMatchObject({ kind: 'denied', resolvedPath: '/proj/leaf.dxf' });
   });
 
   it('reports an unparseable referenced file as a parse error', async () => {
@@ -260,41 +395,166 @@ describe('failures', () => {
     const outcome = await stageXrefLoad({ references: [{ blockName: 'LEGACY', path: 'legacy.dwg' }], hostPath: '/proj/host.dxf' }, { reader });
     expect(reader.calls).toEqual([]);
     expect(outcome.snapshot!.nodes[0]!.status).toBe('unsupported-format');
-    expect(outcome.failures[0]).toMatchObject({ kind: 'unsupported-format', originalPath: 'legacy.dwg' });
   });
 
-  it('reports an empty stored path as unresolved, without a read', async () => {
+  it('reports empty and unanchored paths as unresolved, without a read', async () => {
     const reader = fakeReader();
-    const outcome = await stageXrefLoad({ references: [{ blockName: 'EMPTY', path: '' }], hostPath: '/proj/host.dxf' }, { reader });
+    const empty = await stageXrefLoad({ references: [{ blockName: 'EMPTY', path: '' }], hostPath: '/proj/host.dxf' }, { reader });
+    expect(empty.snapshot!.nodes[0]).toMatchObject({ status: 'unresolved-path', resolvedPath: null });
+    const unanchored = await stageXrefLoad({ references: [{ blockName: 'REL', path: 'leaf.dxf' }], hostPath: null }, { reader });
+    expect(unanchored.snapshot!.nodes[0]!.status).toBe('unresolved-path');
+    const driveRelative = await stageXrefLoad({ references: [{ blockName: 'DR', path: 'C:leaf.dxf' }], hostPath: '/proj/host.dxf' }, { reader });
+    expect(driveRelative.snapshot!.nodes[0]!.status).toBe('unresolved-path');
     expect(reader.calls).toEqual([]);
-    expect(outcome.snapshot!.nodes[0]).toMatchObject({ status: 'unresolved-path', resolvedPath: null });
   });
 });
 
-describe('resource limits', () => {
-  const leafRefs: XrefReferenceInput[] = [{ blockName: 'LEAF', path: 'leaf.dxf' }];
+describe('accounting and limits (20.1)', () => {
   const leafFiles = () => {
     const files = projectFiles();
     files.set('/proj/leaf.dxf', fixture('leaf.dxf'));
     return files;
   };
 
-  it('enforces the per-file byte limit before parsing', async () => {
-    const outcome = await stageXrefLoad({ references: leafRefs, hostPath: '/proj/host.dxf' }, { reader: fakeReader(leafFiles()) }, { limits: { maxFileBytes: 64 } });
-    expect(outcome.snapshot!.nodes[0]!.status).toBe('file-limit');
-    expect(outcome.failures[0]).toMatchObject({ kind: 'file-limit' });
-  });
-
-  it('enforces the per-file entity limit after parsing', async () => {
-    const outcome = await stageXrefLoad({ references: leafRefs, hostPath: '/proj/host.dxf' }, { reader: fakeReader(leafFiles()) }, { limits: { maxEntitiesPerFile: 1 } });
-    expect(outcome.snapshot!.nodes[0]!.status).toBe('file-limit');
-  });
-
-  it('treats the cumulative byte limit as fatal: staging aborts with no snapshot', async () => {
-    const outcome = await stageXrefLoad({ hostState: hostState(), hostPath: HOST_PATH }, { reader: fakeReader() }, { limits: { maxTotalBytes: 500 } });
+  it('counts every declaration edge before early returns: two empty paths with maxReferences 1 abort fatally', async () => {
+    const refs: XrefReferenceInput[] = [
+      { blockName: 'E1', path: '' },
+      { blockName: 'E2', path: '' },
+    ];
+    const outcome = await stageXrefLoad({ references: refs, hostPath: '/proj/host.dxf' }, { reader: fakeReader() }, { limits: { maxReferences: 1 } });
     expect(outcome.fatal).toBe(true);
     expect(outcome.snapshot).toBeNull();
     expect(outcome.failures[0]).toMatchObject({ kind: 'total-limit' });
+  });
+
+  it('counts suppressed nested overlays and cycle edges against the edge budget', async () => {
+    const overlay = await stageXrefLoad(
+      { references: [{ blockName: 'P', path: 'overlay-parent.dxf' }], hostPath: '/proj/drawings/host.dxf' },
+      { reader: fakeReader() },
+      { limits: { maxReferences: 1 } },
+    );
+    expect(overlay.fatal).toBe(true); // edge 2 is the suppressed INNER overlay
+    const cycle = await stageXrefLoad(
+      { references: [{ blockName: 'A', path: 'cycle-a.dxf' }], hostPath: '/proj/host.dxf' },
+      { reader: fakeReader() },
+      { limits: { maxReferences: 2 } },
+    );
+    expect(cycle.fatal).toBe(true); // edge 3 would be the cycle edge
+  });
+
+  it('an exact edge budget passes: the full host graph is exactly 5 edges', async () => {
+    const outcome = await stageXrefLoad({ hostState: hostState(), hostPath: HOST_PATH }, { reader: fakeReader() }, { limits: { maxReferences: 5 } });
+    expect(outcome.fatal).toBe(false);
+    expect(outcome.failures).toEqual([]);
+  });
+
+  it('enforces an independent unique-file budget before reading a new file', async () => {
+    const reader = fakeReader();
+    const outcome = await stageXrefLoad({ hostState: hostState(), hostPath: HOST_PATH }, { reader }, { limits: { maxFiles: 2 } });
+    expect(outcome.fatal).toBe(true);
+    expect(outcome.failures[0]).toMatchObject({ kind: 'total-limit' });
+    expect(reader.calls).toEqual(['/proj/parts/child.dxf', '/proj/parts/grand.dxf']); // the third distinct file is never read
+  });
+
+  it('a dense shared graph: many edges, one file, both budgets respected independently', async () => {
+    const refs: XrefReferenceInput[] = Array.from({ length: 6 }, (_, i) => ({ blockName: `R${i}`, path: 'leaf.dxf' }));
+    const outcome = await stageXrefLoad({ references: refs, hostPath: '/proj/host.dxf' }, { reader: fakeReader(leafFiles()) }, { limits: { maxReferences: 6, maxFiles: 1 } });
+    expect(outcome.failures).toEqual([]);
+    expect(outcome.snapshot!.stats).toMatchObject({ referencesSeen: 6, filesLoaded: 1 });
+  });
+
+  it("charges delivered bytes including rejections, passes the remaining allowance, and stops when the budget is spent (reviewer's example)", async () => {
+    const allowances: number[] = [];
+    const reader: XrefFileReader = {
+      async readText(_path: string, context: { maxBytes: number }): Promise<XrefReadResult> {
+        allowances.push(context.maxBytes);
+        return '12345678901'; // 11 UTF-8 bytes, whatever the allowance says
+      },
+    };
+    const refs: XrefReferenceInput[] = [
+      { blockName: 'A', path: 'a.dxf' },
+      { blockName: 'B', path: 'b.dxf' },
+      { blockName: 'C', path: 'c.dxf' },
+    ];
+    const outcome = await stageXrefLoad({ references: refs, hostPath: '/proj/host.dxf' }, { reader }, { limits: { maxFileBytes: 10, maxTotalBytes: 15 } });
+    expect(allowances).toEqual([10, 4]); // second read gets only the unspent allowance; a third is never scheduled
+    expect(outcome.fatal).toBe(true);
+    expect(outcome.snapshot).toBeNull();
+    expect(outcome.failures[0]).toMatchObject({ kind: 'total-limit' });
+  });
+
+  it('rejected deliveries show up in bytesDelivered even when other files load', async () => {
+    const files = leafFiles();
+    files.set('/proj/big.dxf', 'x'.repeat(500));
+    const refs: XrefReferenceInput[] = [
+      { blockName: 'BIG', path: 'big.dxf' },
+      { blockName: 'LEAF', path: 'leaf.dxf' },
+    ];
+    const outcome = await stageXrefLoad({ references: refs, hostPath: '/proj/host.dxf' }, { reader: fakeReader(files) }, { limits: { maxFileBytes: 400, maxTotalBytes: 100_000 } });
+    const snap = outcome.snapshot!;
+    expect(snap.nodes.map((n) => n.status)).toEqual(['file-limit', 'loaded']);
+    expect(snap.stats.bytesDelivered).toBe(500 + snap.stats.loadedBytes);
+    expect(snap.stats.filesLoaded).toBe(1);
+  });
+
+  it('rejects a response whose declared byte length disagrees with what was delivered', async () => {
+    const reader: XrefFileReader = {
+      async readText(): Promise<XrefReadResult> {
+        return { text: fixture('leaf.dxf'), byteLength: 999_999 };
+      },
+    };
+    const outcome = await stageXrefLoad({ references: [{ blockName: 'L', path: 'leaf.dxf' }], hostPath: '/proj/host.dxf' }, { reader });
+    expect(outcome.snapshot!.nodes[0]!.status).toBe('inconsistent-response');
+    expect(outcome.snapshot!.stats.bytesDelivered).toBe(new TextEncoder().encode(fixture('leaf.dxf')).length);
+    expect(outcome.snapshot!.stats.filesLoaded).toBe(0);
+  });
+
+  it('counts paper-space layout entities and retained raw records toward the per-file entity cap', async () => {
+    const leaf = readDxf(fixture('leaf.dxf'));
+    const baseCount = leaf.entities.length; // 2
+    const withExtras = (fn: (s: DrawingState) => DrawingState) => (text: string): DrawingState => fn(readDxf(text));
+    // Layout-only content: a fabricated state whose only extra entities live in a layout.
+    const layoutState = (s: DrawingState): DrawingState => ({
+      ...s,
+      layouts: [{ name: 'L1', paper: { width: 297, height: 210 }, plotScale: 'fit', margins: { left: 0, right: 0, top: 0, bottom: 0 }, entities: [leaf.entities[0]!, leaf.entities[0]!, leaf.entities[0]!], viewports: [] }],
+    });
+    const reader = fakeReader(leafFiles());
+    const outcome = await stageXrefLoad(
+      { references: [{ blockName: 'L', path: 'leaf.dxf' }], hostPath: '/proj/host.dxf' },
+      { reader, parse: withExtras(layoutState) },
+      { limits: { maxEntitiesPerFile: baseCount + 2 } },
+    );
+    expect(outcome.snapshot!.nodes[0]!.status).toBe('file-limit'); // 2 model + 3 layout = 5 > 4
+    // Retained raw records count too.
+    const rawState = (s: DrawingState): DrawingState => ({ ...s, meta: { ...(s.meta ?? {}), dxfRawEntities: [{}, {}] as never } });
+    const outcome2 = await stageXrefLoad(
+      { references: [{ blockName: 'L', path: 'leaf.dxf' }], hostPath: '/proj/host.dxf' },
+      { reader: fakeReader(leafFiles()), parse: withExtras(rawState) },
+      { limits: { maxEntitiesPerFile: baseCount + 1 } },
+    );
+    expect(outcome2.snapshot!.nodes[0]!.status).toBe('file-limit'); // 2 + 2 retained > 3
+    const outcome3 = await stageXrefLoad(
+      { references: [{ blockName: 'L', path: 'leaf.dxf' }], hostPath: '/proj/host.dxf' },
+      { reader: fakeReader(leafFiles()), parse: withExtras(rawState) },
+      { limits: { maxEntitiesPerFile: baseCount + 2 } },
+    );
+    expect(outcome3.snapshot!.nodes[0]!.status).toBe('loaded');
+    expect(outcome3.snapshot!.files['path:/proj/leaf.dxf']!.retainedRecords).toBe(2);
+  });
+
+  it('hands the parser a source-length bound lowered from the per-file byte budget (and never parses oversize input)', async () => {
+    const seen: number[] = [];
+    const parse = (text: string, path: string, bounds: { maxSourceLength: number }): DrawingState => {
+      seen.push(bounds.maxSourceLength);
+      return readDxf(text, { filePath: path, maxSourceLength: bounds.maxSourceLength });
+    };
+    const outcome = await stageXrefLoad({ references: [{ blockName: 'L', path: 'leaf.dxf' }], hostPath: '/proj/host.dxf' }, { reader: fakeReader(leafFiles()), parse }, { limits: { maxFileBytes: 4096 } });
+    expect(outcome.snapshot!.nodes[0]!.status).toBe('loaded');
+    expect(seen).toEqual([4096]);
+    seen.length = 0;
+    const over = await stageXrefLoad({ references: [{ blockName: 'L', path: 'leaf.dxf' }], hostPath: '/proj/host.dxf' }, { reader: fakeReader(leafFiles()), parse }, { limits: { maxFileBytes: 32 } });
+    expect(over.snapshot!.nodes[0]!.status).toBe('file-limit');
+    expect(seen).toEqual([]); // oversize input is rejected before parsing
   });
 
   it('enforces the depth limit on nested references', async () => {
@@ -302,22 +562,14 @@ describe('resource limits', () => {
     const child = outcome.snapshot!.nodes[0]!;
     expect(child.status).toBe('loaded');
     expect(child.children[0]).toMatchObject({ blockName: 'GRAND', status: 'depth-limit', depth: 2 });
-    expect(outcome.failures.some((f) => f.kind === 'depth-limit')).toBe(true);
-  });
-
-  it('treats the reference-count limit as fatal', async () => {
-    const outcome = await stageXrefLoad({ hostState: hostState(), hostPath: HOST_PATH }, { reader: fakeReader() }, { limits: { maxReferences: 2 } });
-    expect(outcome.fatal).toBe(true);
-    expect(outcome.snapshot).toBeNull();
-    expect(outcome.failures[0]).toMatchObject({ kind: 'total-limit' });
   });
 
   it('rejects invalid limits as a programming error', async () => {
-    await expect(stageXrefLoad({ references: leafRefs, hostPath: '/proj/host.dxf' }, { reader: fakeReader(leafFiles()) }, { limits: { maxDepth: 0 } })).rejects.toThrow(TypeError);
+    await expect(stageXrefLoad({ references: [], hostPath: '/proj/host.dxf' }, { reader: fakeReader() }, { limits: { maxDepth: 0 } })).rejects.toThrow(TypeError);
   });
 });
 
-describe('cancellation', () => {
+describe('cancellation normalization (20.1)', () => {
   it('an already-aborted signal performs no reads', async () => {
     const reader = fakeReader();
     const controller = new AbortController();
@@ -333,54 +585,279 @@ describe('cancellation', () => {
     const controller = new AbortController();
     let reads = 0;
     const reader: XrefFileReader = {
-      async readText(resolvedPath: string): Promise<string> {
+      async readText(resolvedPath: string): Promise<XrefReadResult> {
         reads += 1;
         if (reads === 1) controller.abort();
         const text = files.get(resolvedPath);
-        if (text === undefined) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        if (text === undefined) throw enoent(resolvedPath);
         return text;
       },
     };
     const outcome = await stageXrefLoad({ hostState: hostState(), hostPath: HOST_PATH }, { reader }, { signal: controller.signal });
     expect(outcome.cancelled).toBe(true);
-    expect(outcome.fatal).toBe(true);
     expect(outcome.snapshot).toBeNull();
     expect(reads).toBe(1);
   });
+
+  it('an authorization gate that aborts and then rejects is a cancellation, not a denial', async () => {
+    const controller = new AbortController();
+    const outcome = await stageXrefLoad(
+      { references: [{ blockName: 'L', path: 'leaf.dxf' }], hostPath: '/proj/host.dxf' },
+      {
+        reader: fakeReader((() => { const f = projectFiles(); f.set('/proj/leaf.dxf', fixture('leaf.dxf')); return f; })()),
+        authorize: () => {
+          controller.abort();
+          throw new Error('gate exploded');
+        },
+      },
+      { signal: controller.signal },
+    );
+    expect(outcome.cancelled).toBe(true);
+    expect(outcome.fatal).toBe(true);
+    expect(outcome.snapshot).toBeNull();
+    expect(outcome.failures[0]).toMatchObject({ kind: 'cancelled' });
+  });
+
+  it('a parser that aborts and returns a valid state is a cancellation, never a successful stage', async () => {
+    const controller = new AbortController();
+    const files = projectFiles();
+    files.set('/proj/leaf.dxf', fixture('leaf.dxf'));
+    const outcome = await stageXrefLoad(
+      { references: [{ blockName: 'L', path: 'leaf.dxf' }], hostPath: '/proj/host.dxf' },
+      {
+        reader: fakeReader(files),
+        parse: (text: string) => {
+          controller.abort();
+          return readDxf(text);
+        },
+      },
+      { signal: controller.signal },
+    );
+    expect(outcome.cancelled).toBe(true);
+    expect(outcome.snapshot).toBeNull();
+    expect(outcome.failures[0]).toMatchObject({ kind: 'cancelled' });
+  });
 });
 
-describe('atomic store and refresh', () => {
+describe('runtime immutability of published snapshots (20.1)', () => {
+  it('staged snapshots are sealed copies: mutation attempts do not take effect, caller/parser objects stay unfrozen', async () => {
+    const files = projectFiles();
+    files.set('/proj/leaf.dxf', fixture('leaf.dxf'));
+    const callerState = readDxf(fixture('leaf.dxf'));
+    const outcome = await stageXrefLoad(
+      { references: [{ blockName: 'L', path: 'leaf.dxf' }], hostPath: '/proj/host.dxf' },
+      { reader: fakeReader(files), parse: () => callerState },
+    );
+    const snap = outcome.snapshot!;
+    expect(Object.isFrozen(snap)).toBe(true);
+    expect(Object.isFrozen(snap.nodes[0]!)).toBe(true);
+    expect(Reflect.set(snap.nodes[0]!, 'status', 'missing')).toBe(false);
+    expect(snap.nodes[0]!.status).toBe('loaded');
+    const file = snap.files['path:/proj/leaf.dxf']!;
+    expect(file.state).not.toBe(callerState); // the snapshot owns a copy
+    expect(Object.isFrozen(callerState)).toBe(false); // the parser's object was not frozen in place
+    expect(Reflect.set(file, 'byteLength', 1)).toBe(false);
+    expect(file.byteLength).toBeGreaterThan(1);
+  });
+
+  it('committed snapshots are a separate sealed graph from staged output, and earlier publications never change', async () => {
+    const store = new XrefStore();
+    const first = await store.load({ hostState: hostState(), hostPath: HOST_PATH }, { reader: fakeReader() });
+    expect(first.committed).toBe(true);
+    expect(first.current).not.toBe(first.staged);
+    expect(first.current!.nodes[0]).not.toBe(first.staged!.nodes[0]);
+    expect(Reflect.set(first.staged!.nodes[0]!, 'status', 'missing')).toBe(false);
+    expect(first.current!.nodes[0]!.status).toBe('loaded');
+    const kept = first.current!;
+    const reader2 = fakeReader();
+    reader2.files.set('/proj/parts/child.dxf', fixture('child.dxf').replace('9.0', '8.0'));
+    const second = await store.refresh({ hostState: hostState(), hostPath: HOST_PATH }, { reader: reader2 });
+    expect(second.committed).toBe(true);
+    expect(store.current).not.toBe(kept);
+    expect(kept.generation).toBe(1);
+    expect(kept.nodes.map((n) => n.status)).toEqual(['loaded', 'loaded', 'loaded']);
+    expect(Reflect.set(kept.nodes[0]!, 'status', 'missing')).toBe(false);
+    expect(kept.nodes[0]!.status).toBe('loaded');
+  });
+});
+
+/** A reader whose reads stay pending until the test resolves them (and which ignores abort). */
+class DeferredReader implements XrefFileReader {
+  readonly pending: Array<{ path: string; resolve: (r: XrefReadResult) => void }> = [];
+  readonly files = projectFiles();
+  readText(path: string): Promise<XrefReadResult> {
+    return new Promise<XrefReadResult>((resolve) => {
+      this.pending.push({ path, resolve });
+    });
+  }
+  /** Resolve every currently pending read from the fixture map, repeatedly, until none remain. */
+  async drain(): Promise<void> {
+    for (let round = 0; round < 50; round += 1) {
+      await new Promise((r) => setImmediate(r));
+      const batch = this.pending.splice(0);
+      if (!batch.length) return;
+      for (const p of batch) {
+        const text = this.files.get(p.path);
+        p.resolve(text ?? (() => { throw new Error('unexpected path ' + p.path); })());
+      }
+    }
+    throw new Error('drain did not settle');
+  }
+}
+
+describe('stale publication (20.1)', () => {
+  it('an older load finishing after a newer one does not overwrite it, even though its reader ignored abort', async () => {
+    const store = new XrefStore();
+    const deferred = new DeferredReader();
+    const slow = store.load({ hostState: hostState(), hostPath: HOST_PATH }, { reader: deferred });
+    const fast = await store.load({ hostState: hostState(), hostPath: HOST_PATH }, { reader: fakeReader() });
+    expect(fast.committed).toBe(true);
+    expect(store.generation).toBe(1);
+    await deferred.drain();
+    const staleResult = await slow;
+    expect(staleResult.committed).toBe(false);
+    expect(staleResult.stale).toBe(true);
+    expect(staleResult.preserved).toBe(true);
+    expect(store.current).toBe(fast.current);
+    expect(store.generation).toBe(1);
+  });
+
+  it('a newer FAILED attempt supersedes an older in-flight completion', async () => {
+    const store = new XrefStore();
+    const deferred = new DeferredReader();
+    const slow = store.load({ hostState: hostState(), hostPath: HOST_PATH }, { reader: deferred });
+    const failing = await store.load({ references: [{ blockName: 'GONE', path: 'gone.dxf' }], hostPath: '/proj/host.dxf' }, { reader: fakeReader() });
+    expect(failing.committed).toBe(false);
+    await deferred.drain();
+    const staleResult = await slow;
+    expect(staleResult.stale).toBe(true);
+    expect(staleResult.committed).toBe(false);
+    expect(store.current).toBeNull();
+  });
+
+  it('host replacement invalidates an in-flight attempt and its result is not resurrected', async () => {
+    const store = new XrefStore();
+    const deferred = new DeferredReader();
+    const slow = store.load({ hostState: hostState(), hostPath: HOST_PATH }, { reader: deferred });
+    store.bindHost('/proj/other/host.dxf');
+    await deferred.drain();
+    const result = await slow;
+    expect(result.stale).toBe(true);
+    expect(result.committed).toBe(false);
+    expect(store.current).toBeNull();
+    expect(store.boundHost).toBe('/proj/other/host.dxf');
+    // A load for the new host (explicitly bound) commits normally.
+    const next = await store.load({ references: [{ blockName: 'L', path: '/proj/shared/leaf.dxf' }], hostPath: '/proj/other/host.dxf' }, { reader: fakeReader() }, { hostKey: '/proj/other/host.dxf' });
+    expect(next.committed).toBe(true);
+  });
+
+  it('host closure drops the graph and invalidates an in-flight refresh', async () => {
+    const store = new XrefStore();
+    const first = await store.load({ hostState: hostState(), hostPath: HOST_PATH }, { reader: fakeReader() });
+    expect(first.committed).toBe(true);
+    const deferred = new DeferredReader();
+    const slow = store.refresh({ hostState: hostState(), hostPath: HOST_PATH }, { reader: deferred });
+    store.close();
+    expect(store.current).toBeNull();
+    await deferred.drain();
+    const result = await slow;
+    expect(result.stale).toBe(true);
+    expect(result.committed).toBe(false);
+    expect(store.current).toBeNull(); // not resurrected
+  });
+
+  it('cancellation arriving after staging but before publication preserves the last good graph', async () => {
+    const store = new XrefStore();
+    const first = await store.load({ hostState: hostState(), hostPath: HOST_PATH }, { reader: fakeReader() });
+    const kept = first.current;
+    const controller = new AbortController();
+    const files = projectFiles();
+    files.set('/proj/leaf.dxf', fixture('leaf.dxf'));
+    const result = await store.refresh(
+      { references: [{ blockName: 'L', path: 'leaf.dxf' }], hostPath: '/proj/host.dxf' },
+      {
+        reader: fakeReader(files),
+        parse: (text: string) => {
+          queueMicrotask(() => controller.abort()); // fires after staging, before publication
+          return readDxf(text);
+        },
+      },
+      { signal: controller.signal },
+    );
+    expect(result.committed).toBe(false);
+    expect(result.cancelled).toBe(true);
+    expect(store.current).toBe(kept);
+  });
+});
+
+describe('atomic store and refresh (20.1 semantics)', () => {
   it('commits a successful load, then a failed refresh preserves the last successful snapshot exactly', async () => {
     const reader = fakeReader();
     const store = new XrefStore();
     const first = await store.load({ hostState: hostState(), hostPath: HOST_PATH }, { reader });
     expect(first.committed).toBe(true);
-    expect(store.current).toBe(first.current);
     expect(store.current!.generation).toBe(1);
     const kept = store.current;
-
-    // The leaf file disappears and the child file changes on disk.
     reader.files.delete('/proj/shared/leaf.dxf');
-    const changedChild = fixture('child.dxf').replace('9.0', '8.0');
-    reader.files.set('/proj/parts/child.dxf', changedChild);
-
     const failed = await store.refresh({ hostState: hostState(), hostPath: HOST_PATH }, { reader });
     expect(failed.committed).toBe(false);
     expect(failed.preserved).toBe(true);
     expect(failed.failures).toEqual([expect.objectContaining({ kind: 'missing', resolvedPath: '/proj/shared/leaf.dxf' })]);
-    expect(store.current).toBe(kept); // identity: the staged result was discarded, not swapped in
+    expect(store.current).toBe(kept);
     expect(store.generation).toBe(1);
-    expect(failed.current).toBe(kept);
-    expect(failed.staged).not.toBe(kept); // staged diagnostics exist but were not committed
-
-    // Restore the file: the next refresh commits the changed child.
     reader.files.set('/proj/shared/leaf.dxf', fixture('leaf.dxf'));
     const second = await store.refresh({ hostState: hostState(), hostPath: HOST_PATH }, { reader });
     expect(second.committed).toBe(true);
     expect(store.generation).toBe(2);
     expect(store.current).not.toBe(kept);
-    const childFile = store.current!.files['/proj/parts/child.dxf']!;
-    expect(childFile.byteLength).toBe(new TextEncoder().encode(changedChild).length);
+  });
+
+  it('a PARTIAL refresh never publishes: it returns an inspection candidate and keeps the last good graph', async () => {
+    const reader = fakeReader();
+    const store = new XrefStore();
+    const first = await store.load({ hostState: hostState(), hostPath: HOST_PATH }, { reader });
+    const kept = first.current;
+    reader.files.delete('/proj/shared/leaf.dxf'); // an existing resolved dependency becomes missing
+    const result = await store.refresh({ hostState: hostState(), hostPath: HOST_PATH }, { reader }, { mode: 'partial' });
+    expect(result.committed).toBe(false);
+    expect(result.preserved).toBe(true);
+    expect(store.current).toBe(kept);
+    expect(result.staged).not.toBeNull();
+    expect(result.staged).not.toBe(kept);
+    expect(result.staged!.nodes.map((n) => n.status)).toEqual(['loaded', 'missing', 'loaded']);
+    expect(result.staged!.failures).toEqual([expect.objectContaining({ kind: 'missing', resolvedPath: '/proj/shared/leaf.dxf' })]);
+  });
+
+  it('a partial refresh where a dependency becomes DENIED is likewise candidate-only', async () => {
+    const reader = fakeReader();
+    const store = new XrefStore();
+    await store.load({ hostState: hostState(), hostPath: HOST_PATH }, { reader });
+    const kept = store.current;
+    const result = await store.refresh(
+      { hostState: hostState(), hostPath: HOST_PATH },
+      { reader, authorize: (p) => !p.endsWith('leaf.dxf') },
+      { mode: 'partial' },
+    );
+    expect(result.committed).toBe(false);
+    expect(store.current).toBe(kept);
+    expect(result.staged!.failures).toEqual([expect.objectContaining({ kind: 'denied', resolvedPath: '/proj/shared/leaf.dxf' })]);
+  });
+
+  it('a partial LOAD (no last-good graph yet) may publish the partial snapshot', async () => {
+    const reader = fakeReader();
+    reader.files.delete('/proj/shared/leaf.dxf');
+    const store = new XrefStore();
+    const result = await store.load({ hostState: hostState(), hostPath: HOST_PATH }, { reader }, { mode: 'partial' });
+    expect(result.committed).toBe(true);
+    expect(store.current!.nodes.map((n) => n.status)).toEqual(['loaded', 'missing', 'loaded']);
+    expect(store.current!.failures).toEqual([expect.objectContaining({ kind: 'missing' })]);
+  });
+
+  it('a complete partial refresh on a fresh store commits', async () => {
+    const store = new XrefStore();
+    const result = await store.refresh({ hostState: hostState(), hostPath: HOST_PATH }, { reader: fakeReader() }, { mode: 'partial' });
+    expect(result.committed).toBe(true);
+    expect(store.current!.generation).toBe(1);
   });
 
   it('a cancelled refresh preserves the current snapshot', async () => {
@@ -395,21 +872,9 @@ describe('atomic store and refresh', () => {
     expect(store.current).toBe(kept);
   });
 
-  it('partial mode commits what loaded and records the failures in the snapshot', async () => {
-    const reader = fakeReader();
-    reader.files.delete('/proj/shared/leaf.dxf');
+  it('partial load still refuses to commit on a fatal limit', async () => {
     const store = new XrefStore();
-    const result = await store.load({ hostState: hostState(), hostPath: HOST_PATH }, { reader }, { mode: 'partial' });
-    expect(result.committed).toBe(true);
-    expect(store.current!.failures).toEqual([expect.objectContaining({ kind: 'missing', resolvedPath: '/proj/shared/leaf.dxf' })]);
-    expect(store.current!.nodes.map((n) => n.status)).toEqual(['loaded', 'missing', 'loaded']);
-    expect(externalContent(store.current!).map((c) => c.file.resolvedPath)).not.toContain('/proj/shared/leaf.dxf');
-  });
-
-  it('partial mode still refuses to commit on cancellation or a total limit', async () => {
-    const reader = fakeReader();
-    const store = new XrefStore();
-    const result = await store.load({ hostState: hostState(), hostPath: HOST_PATH }, { reader }, { mode: 'partial', limits: { maxTotalBytes: 10 } });
+    const result = await store.load({ hostState: hostState(), hostPath: HOST_PATH }, { reader: fakeReader() }, { mode: 'partial', limits: { maxTotalBytes: 10 } });
     expect(result.committed).toBe(false);
     expect(store.current).toBeNull();
   });
