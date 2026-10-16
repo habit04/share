@@ -2288,6 +2288,24 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
     if (cf) return cf;
     return { ok: true, vars: x, mag };
   }
+  // F-3034 exit correction: a satisfied final iterate is a success
+  // even when the loop ended by exhausting MAX_ITERATIONS. At the
+  // tangent fold the damped step keeps a component along the near-null
+  // arc-centre direction that changes no residual, so the in-loop
+  // step-size conjunct never fires — measured on fillet-full-1: every
+  // constraint satisfied from iteration ~15 (max residual 1e-12) while
+  // the step was still 1e-5, decaying at only ~0.93/iteration — yet the
+  // delivered order returned 'iteration-limit' before ever reaching
+  // the satisfaction check below (it was dead code on this path). The
+  // iterate returned here is the most-converged one (the loop ran its
+  // full course), so the geometry contract is the delivered one; the
+  // failure verdicts below all presuppose an unsatisfied residual and
+  // are unchanged for systems that never satisfy.
+  if (allSatisfied(comp, mag)) {
+    const cf = collapseFailure(x, mag);
+    if (cf) return cf;
+    return { ok: true, vars: x, mag };
+  }
   if (stationary || iterations > MAX_ITERATIONS) {
     const finalMag = maxAbs(r);
     // Conflict evidence (§5.6): a normalized residual above CONFLICT_TOL,
@@ -2324,13 +2342,9 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
       failure: { code: 'iteration-limit', constraintIds: comp.active.filter((a) => (mag.get(a.c.id) ?? 0) > RESIDUAL_TOL).map((a) => a.c.id), message: `Iteration limit (${MAX_ITERATIONS}) reached while still progressing.` },
     };
   }
-  // Defensive: the loop always exits through a flag above; never claim
-  // success the satisfaction predicate cannot back.
-  if (allSatisfied(comp, mag)) {
-    const cf = collapseFailure(x, mag);
-    if (cf) return cf;
-    return { ok: true, vars: x, mag };
-  }
+  // Defensive: the loop always exits through a flag above, and
+  // satisfaction was already checked — reaching here means the
+  // iteration limit ended an unsatisfied solve.
   return {
     ok: false,
     vars: x,
