@@ -125,6 +125,19 @@ async function main() {
     receipt.ok=true;
   }catch(error){receipt.error=String(error.stack??error);throw error;}
   finally{
+    // Driver failure must still retain and enforce final package identity.
+    if(receipt.proof){
+      try{
+        const executableSha256=await digest(executable),archiveSha256=await digest(archive);
+        receipt.postRunProof={executableSha256,archiveSha256};
+        const fuses=await verifyExecutableFuses(executable,'test');receipt.postRunProof.fuses=fuses;
+        assert.equal(executableSha256,receipt.proof.executableSha256);
+        assert.equal(archiveSha256,receipt.proof.archiveSha256);
+        assert.deepEqual(fuses,receipt.proof.fuses);
+        receipt.packageIdentityUnchanged=true;
+      }catch(error){receipt.ok=false;receipt.packageIdentityUnchanged=false;receipt.postRunProofError=String(error.stack??error);process.exitCode=1;}
+      save();
+    }
     try{const after=await snapshot();writeFileSync(join(reports,'inputs-after.json'),JSON.stringify(after,null,2));assert.deepEqual(after,before,'Packaging/drivers changed source, dependencies or input resources');assert.equal(git('rev-parse','HEAD').trim(),expected);assert.deepEqual(git('diff','--name-only','-z','HEAD').split('\0').filter(Boolean),changed);receipt.inputsUnchanged=true;}
     catch(error){receipt.ok=false;receipt.inputsUnchanged=false;receipt.error=String(error.stack??error);process.exitCode=1;}
   }
