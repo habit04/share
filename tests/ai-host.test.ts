@@ -11,7 +11,7 @@ import type { AiBinding, AiSnapshotSource } from '../src/ai/types';
 const require = createRequire(import.meta.url);
 const {
   AI_LIMITS, aiRequest, aiAnswer, createAiHost, createAiKeyStore,
-  AI_PROVIDERS, AI_DEFAULT_MODEL, validateAiModel, createAiConfigStore, createAiService,
+  AI_PROVIDERS, AI_DEFAULT_MODEL, AI_PROVIDER_DEFAULT_MODELS, validateAiModel, createAiConfigStore, createAiService,
 } = require('../electron/ai-host.cjs') as {
   AI_LIMITS: Record<string, number>;
   aiRequest: (value: unknown) => { requestId: number | string; question: string; snapshotBytes: number; snapshot: Record<string, unknown> };
@@ -40,6 +40,7 @@ const {
   };
   AI_PROVIDERS: string[];
   AI_DEFAULT_MODEL: string;
+  AI_PROVIDER_DEFAULT_MODELS: Record<string, string>;
   validateAiModel: (model: unknown) => boolean;
   createAiConfigStore: (options: {
     filePath: string; writeFileAtomic: unknown; readFile: unknown; fileExists: unknown;
@@ -49,7 +50,7 @@ const {
     update: (patch: Record<string, unknown>) => Promise<AiConfigShape>;
   };
   createAiService: (options: {
-    configStore: unknown; keyStore: unknown; transportFactory: unknown;
+    configStore: unknown; keyStores: unknown; transportFactory: unknown;
   }) => {
     getState: () => Promise<{ enabled: boolean; keyPresent: boolean }>;
     ask: (value: unknown) => Promise<unknown>;
@@ -57,8 +58,10 @@ const {
   };
 };
 
+interface AiProviderEntryShape { model: string; enabled: boolean; keyPersistence: string }
 interface AiConfigShape {
-  version: number; provider: string; model: string; enabled: boolean; keyPersistence: string;
+  version: number; provider: string;
+  providers: { openai: AiProviderEntryShape; anthropic: AiProviderEntryShape };
 }
 
 const root = join(__dirname, '..');
@@ -520,10 +523,12 @@ describe('ai-host config store', () => {
   }
 
   it('exposes the provider/model constants and model validation', () => {
-    expect(AI_PROVIDERS).toEqual(['openai']);
+    expect(AI_PROVIDERS).toEqual(['openai', 'anthropic']);
     expect(AI_DEFAULT_MODEL).toBe('gpt-5');
+    expect(AI_PROVIDER_DEFAULT_MODELS).toEqual({ openai: 'gpt-5', anthropic: 'claude-sonnet-5-5' });
     expect(validateAiModel('gpt-5')).toBe(true);
     expect(validateAiModel('gpt-5.1-mini_x')).toBe(true);
+    expect(validateAiModel('claude-sonnet-5-5')).toBe(true);
     expect(validateAiModel('')).toBe(false);
     expect(validateAiModel('-leading')).toBe(false);
     expect(validateAiModel('has space')).toBe(false);
@@ -534,7 +539,13 @@ describe('ai-host config store', () => {
   it('defaults when no file exists', async () => {
     const { seams } = configSeams();
     const store = createAiConfigStore({ filePath: CONFIG_PATH, ...seams });
-    expect(store.get()).toEqual({ version: 1, provider: 'openai', model: 'gpt-5', enabled: false, keyPersistence: 'session' });
+    expect(store.get()).toEqual({
+      version: 2, provider: 'openai',
+      providers: {
+        openai: { model: 'gpt-5', enabled: false, keyPersistence: 'session' },
+        anthropic: { model: 'claude-sonnet-5-5', enabled: false, keyPersistence: 'session' },
+      },
+    });
     const { config, problem } = await store.load();
     expect(problem).toBeNull();
     expect(config).toEqual(store.get());
@@ -544,23 +555,68 @@ describe('ai-host config store', () => {
     const { seams, files } = configSeams();
     const store = createAiConfigStore({ filePath: CONFIG_PATH, ...seams });
     await store.update({ model: 'gpt-5-mini', enabled: true, keyPersistence: 'encrypted', evil: 'ignored' });
-    expect(store.get()).toEqual({ version: 1, provider: 'openai', model: 'gpt-5-mini', enabled: true, keyPersistence: 'encrypted' });
+    expect(store.get()).toEqual({
+      version: 2, provider: 'openai',
+      providers: {
+        openai: { model: 'gpt-5-mini', enabled: true, keyPersistence: 'encrypted' },
+        anthropic: { model: 'claude-sonnet-5-5', enabled: false, keyPersistence: 'session' },
+      },
+    });
     const onDisk = JSON.parse(files.get(CONFIG_PATH)!.toString('utf8')) as Record<string, unknown>;
     expect(onDisk).not.toHaveProperty('evil');
     const reloaded = createAiConfigStore({ filePath: CONFIG_PATH, ...seams });
     const { config, problem } = await reloaded.load();
     expect(problem).toBeNull();
-    expect(config.model).toBe('gpt-5-mini');
+    expect(config.providers.openai.model).toBe('gpt-5-mini');
+  });
+
+  it('applies entry patches to the provider selected by the same patch', async () => {
+    const { seams } = configSeams();
+    const store = createAiConfigStore({ filePath: CONFIG_PATH, ...seams });
+    await store.update({ provider: 'anthropic', model: 'claude-opus-4-5', enabled: true });
+    expect(store.get().provider).toBe('anthropic');
+    expect(store.get().providers.anthropic).toEqual({ model: 'claude-opus-4-5', enabled: true, keyPersistence: 'session' });
+    expect(store.get().providers.openai.model).toBe('gpt-5');
+    // A later entry patch keeps applying to the now-selected provider.
+    await store.update({ model: 'claude-sonnet-5-5' });
+    expect(store.get().providers.anthropic.model).toBe('claude-sonnet-5-5');
+    expect(store.get().providers.openai.model).toBe('gpt-5');
   });
 
   it('rejects invalid patch values before writing anything', async () => {
     const { seams, files } = configSeams();
     const store = createAiConfigStore({ filePath: CONFIG_PATH, ...seams });
     await expect(store.update({ model: 'bad model!' })).rejects.toMatchObject({ kind: 'invalid-request' });
-    await expect(store.update({ provider: 'anthropic' })).rejects.toMatchObject({ kind: 'invalid-request' });
+    await expect(store.update({ provider: 'bogus' })).rejects.toMatchObject({ kind: 'invalid-request' });
     await expect(store.update({ enabled: 'yes' })).rejects.toMatchObject({ kind: 'invalid-request' });
     await expect(store.update({ keyPersistence: 'forever' })).rejects.toMatchObject({ kind: 'invalid-request' });
     expect(files.size).toBe(0);
+  });
+
+  it('migrates a v1 config on load: values become the openai entry, problem null', async () => {
+    const { seams, files } = configSeams();
+    files.set(CONFIG_PATH, Buffer.from(JSON.stringify({
+      version: 1, provider: 'openai', model: 'gpt-4o', enabled: true, keyPersistence: 'encrypted',
+    })));
+    const store = createAiConfigStore({ filePath: CONFIG_PATH, ...seams });
+    const { config, problem } = await store.load();
+    expect(problem).toBeNull();
+    expect(config).toEqual({
+      version: 2, provider: 'openai',
+      providers: {
+        openai: { model: 'gpt-4o', enabled: true, keyPersistence: 'encrypted' },
+        anthropic: { model: 'claude-sonnet-5-5', enabled: false, keyPersistence: 'session' },
+      },
+    });
+    expect(store.get()).toEqual(config);
+  });
+
+  it('reports config-invalid when the v2 providers map is not a plain object', async () => {
+    const { seams, files } = configSeams();
+    files.set(CONFIG_PATH, Buffer.from(JSON.stringify({ version: 2, provider: 'openai', providers: 'nope' })));
+    const store = createAiConfigStore({ filePath: CONFIG_PATH, ...seams });
+    await expect(store.load()).resolves.toMatchObject({ problem: 'config-invalid' });
+    expect(store.get().providers.anthropic.model).toBe('claude-sonnet-5-5');
   });
 
   it('falls back to defaults with a problem code for corrupt or invalid files', async () => {
@@ -568,8 +624,8 @@ describe('ai-host config store', () => {
     const store = createAiConfigStore({ filePath: CONFIG_PATH, ...seams });
     files.set(CONFIG_PATH, Buffer.from('{not json'));
     await expect(store.load()).resolves.toMatchObject({ problem: 'config-unreadable' });
-    expect(store.get().model).toBe('gpt-5');
-    files.set(CONFIG_PATH, Buffer.from(JSON.stringify({ version: 2, provider: 'openai', model: 'gpt-5', enabled: false, keyPersistence: 'session' })));
+    expect(store.get().providers.openai.model).toBe('gpt-5');
+    files.set(CONFIG_PATH, Buffer.from(JSON.stringify({ version: 3, provider: 'openai', providers: {} })));
     await expect(store.load()).resolves.toMatchObject({ problem: 'config-invalid' });
     files.set(CONFIG_PATH, Buffer.from('x'.repeat(5000)));
     await expect(store.load()).resolves.toMatchObject({ problem: 'config-invalid' });
@@ -581,7 +637,7 @@ describe('ai-host config store', () => {
     await store.update({ model: 'gpt-5-mini' });
     seams.failWrites = true;
     await expect(store.update({ model: 'gpt-5' })).rejects.toMatchObject({ kind: 'credential-unavailable' });
-    expect(store.get().model).toBe('gpt-5-mini');
+    expect(store.get().providers.openai.model).toBe('gpt-5-mini');
   });
 });
 
@@ -640,9 +696,12 @@ describe('ai wiring boundary (milestone 2)', () => {
         readFileSync: (p: string) => files.get(p)!,
         unlinkSync: (p: string) => { files.delete(p); },
       };
-      const keyStore = createAiKeyStore({ safeStorage, filePath: join(dir, 'key.bin'), fsImpl });
+      const keyStores = {
+        openai: createAiKeyStore({ safeStorage, filePath: join(dir, 'openai-key.bin'), fsImpl }),
+        anthropic: createAiKeyStore({ safeStorage, filePath: join(dir, 'anthropic-key.bin'), fsImpl }),
+      };
       const configStore = createAiConfigStore({ filePath: join(dir, 'config.json'), writeFileAtomic: async () => {}, readFile: () => { throw new Error('missing'); }, fileExists: () => false });
-      const service = createAiService({ configStore, keyStore, transportFactory: factory });
+      const service = createAiService({ configStore, keyStores, transportFactory: factory });
       const state = await service.getState();
       expect(state.enabled).toBe(false);
       expect(state.keyPresent).toBe(false);

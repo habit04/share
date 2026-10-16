@@ -3,7 +3,11 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 
-interface ConfigShape { version: number; provider: string; model: string; enabled: boolean; keyPersistence: string }
+interface ProviderEntryShape { model: string; enabled: boolean; keyPersistence: string }
+interface ConfigShape {
+  version: number; provider: string;
+  providers: { openai: ProviderEntryShape; anthropic: ProviderEntryShape };
+}
 interface KeyStoreShape {
   hasKey: () => boolean;
   encryptionAvailable: () => boolean;
@@ -18,9 +22,10 @@ interface ConfigStoreShape {
 }
 interface ServiceShape {
   getState: () => Promise<{
-    provider: string; model: string; enabled: boolean; keyPersistence: string;
+    provider: string; providers: string[]; model: string; enabled: boolean; keyPersistence: string;
     keyPresent: boolean; keySource: string | null; encryptionAvailable: boolean; configProblem: string | null;
   }>;
+  setProvider: (provider: string) => Promise<void>;
   setKey: (key: string, persistence: string) => Promise<void>;
   replaceKey: (key: string) => Promise<void>;
   forgetKey: () => Promise<void>;
@@ -42,7 +47,8 @@ const { createAiKeyStore, createAiConfigStore, createAiService } = require('../e
   createAiService: (options: Record<string, unknown>) => ServiceShape;
 };
 
-const KEY_PATH = '/data/ai-key.bin';
+const KEY_PATH = '/data/openai-key.bin';
+const ANTHROPIC_KEY_PATH = '/data/anthropic-key.bin';
 const CONFIG_PATH = '/data/ai-config.json';
 
 type TransportImpl = (request: unknown, signal: AbortSignal) => Promise<unknown>;
@@ -111,7 +117,10 @@ function makeWorld() {
       return [...text.slice(4)].reverse().join('');
     },
   };
-  const keyStore = createAiKeyStore({ safeStorage, filePath: KEY_PATH, ...seams });
+  const keyStores = {
+    openai: createAiKeyStore({ safeStorage, filePath: KEY_PATH, ...seams }),
+    anthropic: createAiKeyStore({ safeStorage, filePath: ANTHROPIC_KEY_PATH, ...seams }),
+  };
   const configStore = createAiConfigStore({ filePath: CONFIG_PATH, ...seams });
   const factoryCalls: { provider: string; model: string; apiKey: string }[] = [];
   let transportImpl: TransportImpl = async () => ({
@@ -126,9 +135,9 @@ function makeWorld() {
     }
     return transport;
   });
-  const newService = () => createAiService({ configStore, keyStore, transportFactory });
+  const newService = () => createAiService({ configStore, keyStores, transportFactory });
   return {
-    files, fail, keyStore, configStore, factoryCalls, transportFactory, newService,
+    files, fail, keyStores, configStore, factoryCalls, transportFactory, newService,
     service: newService(),
     setTransport: (impl: TransportImpl) => { transportImpl = impl; },
     setProbe: (impl: ProbeImpl | null) => { probeImpl = impl; },
@@ -143,7 +152,7 @@ describe('ai-service connection state', () => {
     const world = makeWorld();
     const state = await world.service.getState();
     expect(state).toEqual({
-      provider: 'openai', model: 'gpt-5', enabled: false, keyPersistence: 'session',
+      provider: 'openai', providers: ['openai', 'anthropic'], model: 'gpt-5', enabled: false, keyPersistence: 'session',
       keyPresent: false, keySource: null, encryptionAvailable: true, configProblem: null,
     });
     await world.service.dispose();
@@ -262,7 +271,7 @@ describe('ai-service configuration changes cancel work', () => {
     await started.promise;
     await world.service.setModel('gpt-5-mini');
     await settled;
-    expect(world.configStore.get().model).toBe('gpt-5-mini');
+    expect(world.configStore.get().providers.openai.model).toBe('gpt-5-mini');
     world.setTransport(async () => ({ text: 'mini answer', references: [] }));
     const answer = await world.service.ask(envelope({ requestId: 4 }));
     expect(answer.text).toBe('mini answer');
@@ -288,7 +297,7 @@ describe('ai-service configuration changes cancel work', () => {
   it('rejects an invalid model without touching the config', async () => {
     const world = makeWorld();
     await expect(world.service.setModel('not a model')).rejects.toMatchObject({ kind: 'invalid-request' });
-    expect(world.configStore.get().model).toBe('gpt-5');
+    expect(world.configStore.get().providers.openai.model).toBe('gpt-5');
     await world.service.dispose();
   });
 });
@@ -322,27 +331,25 @@ describe('ai-service key lifecycle', () => {
     const stored = world.files.get(KEY_PATH)!;
     expect(stored.toString('utf8')).not.toContain('sk-restart');
     // Restart: brand-new stores and service over the same files.
-    const keyStore2 = createAiKeyStore({
-      safeStorage: {
-        isEncryptionAvailable: () => true,
-        getSelectedStorageBackend: () => 'gnome_libsecret',
-        encryptString: (plain: string) => Buffer.from(`enc:${[...plain].reverse().join('')}`, 'utf8'),
-        decryptString: (cipher: Buffer) => [...cipher.toString('utf8').slice(4)].reverse().join(''),
-      },
-      filePath: KEY_PATH,
+    const restartSafeStorage = {
+      isEncryptionAvailable: () => true,
+      getSelectedStorageBackend: () => 'gnome_libsecret',
+      encryptString: (plain: string) => Buffer.from(`enc:${[...plain].reverse().join('')}`, 'utf8'),
+      decryptString: (cipher: Buffer) => [...cipher.toString('utf8').slice(4)].reverse().join(''),
+    };
+    const restartSeams = {
       writeFileAtomic: async (p: string, data: Buffer) => { world.files.set(p, Buffer.from(data)); },
       readFile: (p: string) => world.files.get(p)!,
       removeFile: async (p: string) => { world.files.delete(p); },
       fileExists: (p: string) => world.files.has(p),
-    });
-    const configStore2 = createAiConfigStore({
-      filePath: CONFIG_PATH,
-      writeFileAtomic: async (p: string, data: Buffer) => { world.files.set(p, Buffer.from(data)); },
-      readFile: (p: string) => world.files.get(p)!,
-      fileExists: (p: string) => world.files.has(p),
-    });
+    };
+    const keyStores2 = {
+      openai: createAiKeyStore({ safeStorage: restartSafeStorage, filePath: KEY_PATH, ...restartSeams }),
+      anthropic: createAiKeyStore({ safeStorage: restartSafeStorage, filePath: ANTHROPIC_KEY_PATH, ...restartSeams }),
+    };
+    const configStore2 = createAiConfigStore({ filePath: CONFIG_PATH, ...restartSeams });
     const factory2 = vi.fn(() => async () => ({ text: 'after restart', references: [] }));
-    const service2 = createAiService({ configStore: configStore2, keyStore: keyStore2, transportFactory: factory2 });
+    const service2 = createAiService({ configStore: configStore2, keyStores: keyStores2, transportFactory: factory2 });
     const state = await service2.getState();
     expect(state.keyPresent).toBe(true);
     expect(state.keySource).toBe('stored');
@@ -362,7 +369,7 @@ describe('ai-service key lifecycle', () => {
     world.fail.writes = true;
     await expect(world.service.setKey('sk-new', 'encrypted')).rejects.toMatchObject({ kind: 'credential-unavailable' });
     world.fail.writes = false;
-    expect(world.keyStore.readKey()).toBe('sk-old');
+    expect(world.keyStores.openai.readKey()).toBe('sk-old');
     const answer = await world.service.ask(envelope());
     expect(answer.text).toBe('Two objects.');
     expect(world.factoryCalls.at(-1)).toMatchObject({ apiKey: 'sk-old' });
@@ -373,7 +380,7 @@ describe('ai-service key lifecycle', () => {
     const world = makeWorld();
     await world.service.setKey('sk-one', 'encrypted');
     await world.service.replaceKey('sk-two');
-    expect(world.keyStore.readKey()).toBe('sk-two');
+    expect(world.keyStores.openai.readKey()).toBe('sk-two');
     expect((await world.service.getState()).keyPersistence).toBe('encrypted');
     await world.service.dispose();
   });
@@ -447,6 +454,118 @@ describe('ai-service connection test', () => {
     await world.service.setKey('sk-live', 'session');
     world.setProbe(async () => { throw new Error('socket hang up'); });
     await expect(world.service.testConnection()).rejects.toMatchObject({ kind: 'provider-failure' });
+    await world.service.dispose();
+  });
+});
+
+describe('ai-service providers', () => {
+  it('keeps keys isolated per provider and sends only the selected provider key', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-openai-key', 'session');
+    await world.service.setProvider('anthropic');
+    let state = await world.service.getState();
+    expect(state.provider).toBe('anthropic');
+    expect(state.keyPresent).toBe(false);
+    expect(state.keySource).toBeNull();
+    await world.service.setKey('sk-anthropic-key', 'session');
+    await world.service.setEnabled(true);
+    const answer = await world.service.ask(envelope());
+    expect(answer.text).toBe('Two objects.');
+    // The anthropic ask used the anthropic key and the anthropic default model only.
+    expect(world.factoryCalls).toEqual([
+      { provider: 'anthropic', model: 'claude-sonnet-5-5', apiKey: 'sk-anthropic-key' },
+    ]);
+    await world.service.setProvider('openai');
+    state = await world.service.getState();
+    expect(state.provider).toBe('openai');
+    expect(state.keyPresent).toBe(true);
+    expect(state.keySource).toBe('session');
+    await world.service.setEnabled(true);
+    await world.service.ask(envelope({ requestId: 9 }));
+    expect(world.factoryCalls.at(-1)).toEqual({ provider: 'openai', model: 'gpt-5', apiKey: 'sk-openai-key' });
+    // No factory call ever paired a provider with the other provider's key.
+    for (const call of world.factoryCalls) {
+      if (call.provider === 'openai') expect(call.apiKey).toBe('sk-openai-key');
+      else expect(call.apiKey).toBe('sk-anthropic-key');
+    }
+    await world.service.dispose();
+  });
+
+  it('switching providers cancels an in-flight ask', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-live', 'session');
+    await world.service.setEnabled(true);
+    const started = deferred();
+    world.setTransport(hangUntilAbort(() => started.resolve()));
+    const pending = world.service.ask(envelope());
+    const settled = expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
+    await started.promise;
+    await world.service.setProvider('anthropic');
+    await settled;
+    expect(world.configStore.get().provider).toBe('anthropic');
+    await world.service.dispose();
+  });
+
+  it('keeps model and enabled settings per provider', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-openai', 'session');
+    await world.service.setModel('gpt-5-mini');
+    await world.service.setEnabled(true);
+    await world.service.setProvider('anthropic');
+    let state = await world.service.getState();
+    expect(state.model).toBe('claude-sonnet-5-5');
+    expect(state.enabled).toBe(false);
+    await world.service.setKey('sk-anthropic', 'session');
+    await world.service.setModel('claude-opus-4-5');
+    await world.service.setProvider('openai');
+    state = await world.service.getState();
+    expect(state.model).toBe('gpt-5-mini');
+    expect(state.enabled).toBe(true);
+    await world.service.setProvider('anthropic');
+    state = await world.service.getState();
+    expect(state.model).toBe('claude-opus-4-5');
+    expect(state.enabled).toBe(false);
+    await world.service.dispose();
+  });
+
+  it('forgetKey on one provider leaves the other provider key intact', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-openai', 'encrypted');
+    await world.service.setProvider('anthropic');
+    await world.service.setKey('sk-anthropic', 'encrypted');
+    expect(world.files.has(ANTHROPIC_KEY_PATH)).toBe(true);
+    await world.service.forgetKey();
+    expect(world.files.has(ANTHROPIC_KEY_PATH)).toBe(false);
+    expect((await world.service.getState()).keyPresent).toBe(false);
+    expect(world.files.has(KEY_PATH)).toBe(true);
+    await world.service.setProvider('openai');
+    const state = await world.service.getState();
+    expect(state.keyPresent).toBe(true);
+    expect(state.keySource).toBe('stored');
+    expect(world.keyStores.openai.readKey()).toBe('sk-openai');
+    await world.service.dispose();
+  });
+
+  it('rejects an invalid provider id without changing the selection', async () => {
+    const world = makeWorld();
+    await expect(world.service.setProvider('bogus')).rejects.toMatchObject({ kind: 'invalid-request' });
+    expect((await world.service.getState()).provider).toBe('openai');
+    await world.service.dispose();
+  });
+
+  it('setProvider to the current provider does not cancel in-flight work', async () => {
+    const world = makeWorld();
+    await world.service.setKey('sk-live', 'session');
+    await world.service.setEnabled(true);
+    const started = deferred();
+    const release = deferred<{ text: string; references: string[] }>();
+    world.setTransport(async () => { started.resolve(); return release.promise; });
+    const pending = world.service.ask(envelope());
+    await started.promise;
+    await world.service.setProvider('openai');
+    release.resolve({ text: 'still answered', references: [] });
+    const answer = await pending;
+    expect(answer.text).toBe('still answered');
     await world.service.dispose();
   });
 });

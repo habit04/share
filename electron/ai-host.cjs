@@ -527,46 +527,108 @@ function createAiKeyStore({ safeStorage, filePath, fsImpl = fs, platform = proce
   };
 }
 
-const AI_PROVIDERS = Object.freeze(['openai']);
+const AI_PROVIDERS = Object.freeze(['openai', 'anthropic']);
 const AI_DEFAULT_MODEL = 'gpt-5';
+const AI_PROVIDER_DEFAULT_MODELS = Object.freeze({ openai: 'gpt-5', anthropic: 'claude-sonnet-5-5' });
 const AI_KEY_PERSISTENCE_MODES = Object.freeze(['session', 'encrypted']);
 /** Config JSON is tiny by construction; anything larger on disk is invalid. */
 const AI_MAX_CONFIG_BYTES = 4 * 1024;
+
+/** @typedef {'openai' | 'anthropic'} AiProviderId */
+/** @typedef {{ model: string, enabled: boolean, keyPersistence: string }} AiProviderEntry */
+/** @typedef {{ version: 2, provider: AiProviderId,
+ *             providers: { openai: AiProviderEntry, anthropic: AiProviderEntry } }} AiConfig */
 
 /** A model id is a bounded provider token, never a path or URL fragment. */
 function validateAiModel(model) {
   return typeof model === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(model);
 }
 
+/** @returns {AiConfig} */
 function defaultAiConfig() {
-  return { version: 1, provider: 'openai', model: AI_DEFAULT_MODEL, enabled: false, keyPersistence: 'session' };
+  /** @type {AiConfig} */
+  const config = {
+    version: 2,
+    provider: 'openai',
+    providers: {
+      openai: { model: AI_PROVIDER_DEFAULT_MODELS.openai, enabled: false, keyPersistence: 'session' },
+      anthropic: { model: AI_PROVIDER_DEFAULT_MODELS.anthropic, enabled: false, keyPersistence: 'session' },
+    },
+  };
+  return config;
 }
 
-/** Strictly validate a parsed config value; returns a clean copy or null. */
-function parseAiConfig(value) {
-  if (!isPlainObject(value) || value.version !== 1
-    || !AI_PROVIDERS.includes(/** @type {string} */ (value.provider))
-    || !validateAiModel(value.model)
-    || typeof value.enabled !== 'boolean'
-    || !AI_KEY_PERSISTENCE_MODES.includes(/** @type {string} */ (value.keyPersistence))) {
-    return null;
-  }
+/** Deep copy: config values are plain JSON data by construction. */
+function cloneAiConfig(config) {
+  return /** @type {AiConfig} */ (JSON.parse(JSON.stringify(config)));
+}
+
+/**
+ * Validate one provider entry field by field: an invalid model falls back
+ * to that provider's default, `enabled` counts only when strictly `true`,
+ * and an unknown persistence mode falls back to 'session'. A missing or
+ * non-object entry yields the provider defaults.
+ * @param {AiProviderId} provider
+ * @param {any} value
+ * @returns {AiProviderEntry}
+ */
+function parseProviderEntry(provider, value) {
+  const source = isPlainObject(value) ? value : {};
   return {
-    version: 1,
-    provider: /** @type {string} */ (value.provider),
-    model: /** @type {string} */ (value.model),
-    enabled: value.enabled,
-    keyPersistence: /** @type {string} */ (value.keyPersistence),
+    model: validateAiModel(source.model)
+      ? /** @type {string} */ (source.model)
+      : AI_PROVIDER_DEFAULT_MODELS[provider],
+    enabled: source.enabled === true,
+    keyPersistence: AI_KEY_PERSISTENCE_MODES.includes(/** @type {string} */ (source.keyPersistence))
+      ? /** @type {string} */ (source.keyPersistence)
+      : 'session',
   };
 }
 
 /**
- * Host-authoritative AI connection settings (provider, model, enabled,
- * key persistence mode — never the key itself), persisted as bounded JSON
- * at a fixed application-data path through injected fs seams. A missing
- * file is the defaults; an unreadable or invalid file falls back to the
- * defaults with a `problem` code ('config-unreadable' / 'config-invalid')
- * so the UI can say so instead of silently misbehaving.
+ * Validate a parsed config value; returns a clean v2 copy or null. A v1
+ * config (the short-lived single-provider shape: top-level
+ * model/enabled/keyPersistence) migrates silently — its values become the
+ * OpenAI entry and Anthropic starts from defaults.
+ * @param {any} value
+ * @returns {AiConfig | null}
+ */
+function parseAiConfig(value) {
+  if (!isPlainObject(value)) return null;
+  if (value.version === 2) {
+    if (!isPlainObject(value.providers)) return null;
+    return {
+      version: 2,
+      provider: AI_PROVIDERS.includes(/** @type {AiProviderId} */ (value.provider))
+        ? /** @type {AiProviderId} */ (value.provider)
+        : 'openai',
+      providers: {
+        openai: parseProviderEntry('openai', value.providers.openai),
+        anthropic: parseProviderEntry('anthropic', value.providers.anthropic),
+      },
+    };
+  }
+  if (value.version === 1) {
+    return {
+      version: 2,
+      provider: 'openai',
+      providers: {
+        openai: parseProviderEntry('openai', value),
+        anthropic: parseProviderEntry('anthropic', null),
+      },
+    };
+  }
+  return null;
+}
+
+/**
+ * Host-authoritative AI connection settings (selected provider plus a
+ * per-provider model/enabled/key-persistence entry — never a key),
+ * persisted as bounded v2 JSON at a fixed application-data path through
+ * injected fs seams. A missing file is the defaults; an unreadable or
+ * invalid file falls back to the defaults with a `problem` code
+ * ('config-unreadable' / 'config-invalid') so the UI can say so instead
+ * of silently misbehaving. A v1 file migrates on load (parseAiConfig).
  * @param {{ filePath: string,
  *           writeFileAtomic: (filePath: string, data: Buffer) => Promise<void>,
  *           readFile: (filePath: string) => Buffer,
@@ -578,12 +640,13 @@ function createAiConfigStore({ filePath, writeFileAtomic, readFile, fileExists }
     || typeof fileExists !== 'function') {
     throw new AiHostError('host-unavailable', 'The AI config store needs an absolute file path and fs seams.');
   }
-  /** @type {ReturnType<typeof defaultAiConfig> | null} */
+  /** @type {AiConfig | null} */
   let cache = null;
   return {
     /** Load (or reload) from disk; caches and reports any problem. */
     async load() {
       let problem = null;
+      /** @type {AiConfig} */
       let config = defaultAiConfig();
       if (fileExists(filePath)) {
         let raw = null;
@@ -612,38 +675,41 @@ function createAiConfigStore({ filePath, writeFileAtomic, readFile, fileExists }
         }
       }
       cache = config;
-      return { config: { ...config }, problem };
+      return { config: cloneAiConfig(config), problem };
     },
-    /** The cached config (defaults until load() has run). */
+    /** The cached config as a deep copy (defaults until load() has run). */
     get() {
-      return { ...(cache ?? defaultAiConfig()) };
+      return cloneAiConfig(cache ?? defaultAiConfig());
     },
     /**
-     * Merge a validated patch (unknown keys ignored) and persist it. The
-     * cache changes only after the write succeeds.
+     * Merge a validated patch (unknown keys ignored) and persist it.
+     * `provider` applies first; model/enabled/keyPersistence then apply
+     * to the entry of the provider selected after the patch. The cache
+     * changes only after the write succeeds.
      */
     async update(patch) {
       if (!isPlainObject(patch)) throw new AiHostError('invalid-request', 'Invalid AI settings.');
-      const next = { ...(cache ?? defaultAiConfig()) };
+      const next = cloneAiConfig(cache ?? defaultAiConfig());
       if (Object.hasOwn(patch, 'provider')) {
-        if (!AI_PROVIDERS.includes(/** @type {string} */ (patch.provider))) {
+        if (!AI_PROVIDERS.includes(/** @type {AiProviderId} */ (patch.provider))) {
           throw new AiHostError('invalid-request', 'Invalid AI provider.');
         }
-        next.provider = /** @type {string} */ (patch.provider);
+        next.provider = /** @type {AiProviderId} */ (patch.provider);
       }
+      const entry = next.providers[next.provider];
       if (Object.hasOwn(patch, 'model')) {
         if (!validateAiModel(patch.model)) throw new AiHostError('invalid-request', 'Invalid AI model.');
-        next.model = /** @type {string} */ (patch.model);
+        entry.model = /** @type {string} */ (patch.model);
       }
       if (Object.hasOwn(patch, 'enabled')) {
         if (typeof patch.enabled !== 'boolean') throw new AiHostError('invalid-request', 'Invalid AI enabled flag.');
-        next.enabled = patch.enabled;
+        entry.enabled = patch.enabled;
       }
       if (Object.hasOwn(patch, 'keyPersistence')) {
         if (!AI_KEY_PERSISTENCE_MODES.includes(/** @type {string} */ (patch.keyPersistence))) {
           throw new AiHostError('invalid-request', 'Invalid AI key persistence mode.');
         }
-        next.keyPersistence = /** @type {string} */ (patch.keyPersistence);
+        entry.keyPersistence = /** @type {string} */ (patch.keyPersistence);
       }
       try {
         await writeFileAtomic(filePath, Buffer.from(JSON.stringify(next), 'utf8'));
@@ -651,7 +717,7 @@ function createAiConfigStore({ filePath, writeFileAtomic, readFile, fileExists }
         throw new AiHostError('credential-unavailable', 'The AI settings could not be saved.');
       }
       cache = next;
-      return { ...next };
+      return cloneAiConfig(next);
     },
   };
 }
@@ -665,33 +731,42 @@ const AI_PROBE_TIMEOUT_MS = 15000;
  *   & { probe?: (signal: AbortSignal) => Promise<object> }} AiTransportFn
  */
 
+/** Whether a value quacks like a key store (service construction check). */
+function isKeyStoreShape(value) {
+  return !!value && typeof value.readKey === 'function' && typeof value.saveKey === 'function'
+    && typeof value.clearKey === 'function' && typeof value.hasKey === 'function';
+}
+
 /**
  * The live AI service: the single owner of connection state. It combines
- * the config store (authoritative provider/model), the key store
- * (encrypted persistence) plus an in-memory session key, and a request
- * host it constructs internally with a dispatching transport — the real
- * provider transport is built lazily by `transportFactory` for the
- * current provider/model/key and rebuilt whenever the model or key
- * changes. Nothing here logs or returns key material; the cached key
- * lives only in closures of this factory.
+ * the config store (authoritative selected provider + per-provider
+ * entries), one key store per provider (encrypted persistence) plus a
+ * per-provider in-memory session key, and a request host it constructs
+ * internally with a dispatching transport — the real provider transport
+ * is built lazily by `transportFactory` for the selected provider's
+ * current model/key and rebuilt whenever that provider's model or key
+ * changes. Keys, model/enabled settings and transports are strictly per
+ * provider: a provider's key is only ever sent to that provider, and
+ * there is no automatic fallback. Nothing here logs or returns key
+ * material; cached keys live only in closures of this factory.
  * @param {{ host?: { timeoutMs?: number, maxConcurrent?: number, maxPending?: number },
  *           configStore: ReturnType<typeof createAiConfigStore>,
- *           keyStore: ReturnType<typeof createAiKeyStore>,
+ *           keyStores: { openai: ReturnType<typeof createAiKeyStore>,
+ *                        anthropic: ReturnType<typeof createAiKeyStore> },
  *           transportFactory: (options: { provider: string, model: string, apiKey: string }) =>
  *             AiTransportFn }} options
  */
-function createAiService({ host: hostOptions, configStore, keyStore, transportFactory }) {
+function createAiService({ host: hostOptions, configStore, keyStores, transportFactory }) {
   if (!configStore || typeof configStore.load !== 'function' || typeof configStore.get !== 'function'
     || typeof configStore.update !== 'function'
-    || !keyStore || typeof keyStore.readKey !== 'function' || typeof keyStore.saveKey !== 'function'
-    || typeof keyStore.clearKey !== 'function' || typeof keyStore.hasKey !== 'function'
+    || !keyStores || !isKeyStoreShape(keyStores.openai) || !isKeyStoreShape(keyStores.anthropic)
     || typeof transportFactory !== 'function') {
-    throw new AiHostError('host-unavailable', 'The AI service needs a config store, a key store and a transport factory.');
+    throw new AiHostError('host-unavailable', 'The AI service needs a config store, per-provider key stores and a transport factory.');
   }
-  /** @type {string | null} Session-only key: memory only, never persisted. */
-  let sessionKey = null;
-  /** @type {{ transport: AiTransportFn, model: string, key: string } | null} */
-  let transportCache = null;
+  /** @type {Record<AiProviderId, string | null>} Session-only keys: memory only, never persisted. */
+  const sessionKeys = { openai: null, anthropic: null };
+  /** @type {Record<AiProviderId, { transport: AiTransportFn, model: string, key: string } | null>} */
+  const transportCaches = { openai: null, anthropic: null };
   /** @type {AbortController | null} */
   let probeController = null;
   /** @type {string | null} */
@@ -708,39 +783,53 @@ function createAiService({ host: hostOptions, configStore, keyStore, transportFa
     return loadPromise;
   }
 
-  /** The effective key, or null. Corrupt/unreadable stored keys throw. */
-  function resolveKey() {
-    if (sessionKey !== null) return sessionKey;
-    if (keyStore.hasKey()) return keyStore.readKey();
+  /** @returns {AiProviderId} */
+  function selectedProvider() {
+    return configStore.get().provider;
+  }
+
+  /** @param {AiProviderId} provider */
+  function entryFor(provider) {
+    return configStore.get().providers[provider];
+  }
+
+  /** The effective key for a provider, or null. Corrupt stored keys throw. */
+  function resolveKey(provider) {
+    const session = sessionKeys[provider];
+    if (session !== null) return session;
+    const store = keyStores[provider];
+    if (store.hasKey()) return store.readKey();
     return null;
   }
 
-  function requireKey() {
-    const key = resolveKey();
+  function requireKey(provider) {
+    const key = resolveKey(provider);
     if (key === null) {
       throw new AiHostError('provider-not-configured', 'No API key is saved for Live AI. Save a key in the AI panel connection settings.');
     }
     return key;
   }
 
-  /** Build (or reuse) the provider transport for this model + key. */
-  function transportFor(model, key) {
-    if (transportCache && transportCache.model === model && transportCache.key === key) {
-      return transportCache.transport;
+  /** Build (or reuse) a provider's transport for this model + key. */
+  function transportFor(provider, model, key) {
+    const cached = transportCaches[provider];
+    if (cached && cached.model === model && cached.key === key) {
+      return cached.transport;
     }
-    const transport = transportFactory({ provider: configStore.get().provider, model, apiKey: key });
+    const transport = transportFactory({ provider, model, apiKey: key });
     if (typeof transport !== 'function') {
       throw new AiHostError('provider-not-configured', 'The selected provider is not available.');
     }
-    transportCache = { transport, model, key };
+    transportCaches[provider] = { transport, model, key };
     return transport;
   }
 
   const innerHost = createAiHost({
     ...(isPlainObject(hostOptions) ? hostOptions : {}),
     transport: async (request, signal) => {
-      const key = requireKey();
-      return transportFor(configStore.get().model, key)(request, signal);
+      const provider = selectedProvider();
+      const key = requireKey(provider);
+      return transportFor(provider, entryFor(provider).model, key)(request, signal);
     },
   });
 
@@ -750,9 +839,9 @@ function createAiService({ host: hostOptions, configStore, keyStore, transportFa
   }
 
   /**
-   * Set (or replace) the API key. All outstanding work is cancelled
-   * first. On any persistence failure the previously effective key
-   * remains in effect.
+   * Set (or replace) the selected provider's API key. All outstanding
+   * work is cancelled first. On any persistence failure the previously
+   * effective key remains in effect.
    * @param {string} key
    * @param {string} persistence  'session' | 'encrypted'
    */
@@ -763,19 +852,21 @@ function createAiService({ host: hostOptions, configStore, keyStore, transportFa
       throw new AiHostError('invalid-request', 'Invalid AI key persistence mode.');
     }
     await ensureLoaded();
+    const provider = selectedProvider();
+    const store = keyStores[provider];
     if (persistence === 'encrypted') {
       // Atomic save: a failure leaves the previously stored key readable
       // and the session key untouched.
-      await keyStore.saveKey(key);
-      sessionKey = null;
-      transportCache = null;
+      await store.saveKey(key);
+      sessionKeys[provider] = null;
+      transportCaches[provider] = null;
       await configStore.update({ keyPersistence: 'encrypted' });
     } else {
-      const hadStored = keyStore.hasKey();
+      const hadStored = store.hasKey();
       let previousStoredKey = null;
       if (hadStored) {
-        try { previousStoredKey = keyStore.readKey(); } catch { previousStoredKey = null; }
-        await keyStore.clearKey();
+        try { previousStoredKey = store.readKey(); } catch { previousStoredKey = null; }
+        await store.clearKey();
       }
       try {
         await configStore.update({ keyPersistence: 'session' });
@@ -783,48 +874,71 @@ function createAiService({ host: hostOptions, configStore, keyStore, transportFa
         // Best effort: put the previous stored key back so the failure
         // leaves the previous key in effect.
         if (previousStoredKey !== null) {
-          try { await keyStore.saveKey(previousStoredKey); } catch { /* the original error wins */ }
+          try { await store.saveKey(previousStoredKey); } catch { /* the original error wins */ }
         }
         throw error;
       }
-      sessionKey = key;
-      transportCache = null;
+      sessionKeys[provider] = key;
+      transportCaches[provider] = null;
     }
   }
 
   return {
-    /** Connection state for the UI; never contains key material. */
+    /** Connection state for the selected provider; never contains key material. */
     async getState() {
       await ensureLoaded();
-      const config = configStore.get();
-      const stored = keyStore.hasKey();
+      const provider = selectedProvider();
+      const entry = entryFor(provider);
+      const store = keyStores[provider];
+      const session = sessionKeys[provider];
+      const stored = store.hasKey();
       return {
-        provider: config.provider,
-        model: config.model,
-        enabled: config.enabled,
-        keyPersistence: config.keyPersistence,
-        keyPresent: sessionKey !== null || stored,
-        keySource: sessionKey !== null ? 'session' : stored ? 'stored' : null,
-        encryptionAvailable: keyStore.encryptionAvailable(),
+        provider,
+        providers: [...AI_PROVIDERS],
+        model: entry.model,
+        enabled: entry.enabled,
+        keyPersistence: entry.keyPersistence,
+        keyPresent: session !== null || stored,
+        keySource: session !== null ? 'session' : stored ? 'stored' : null,
+        encryptionAvailable: store.encryptionAvailable(),
         configProblem,
       };
+    },
+
+    /**
+     * Switch the selected provider. Switching cancels all outstanding
+     * work first — there is no automatic fallback, and no answer from
+     * the previous provider may outlive the switch. Selecting the
+     * already-selected provider is a no-op (no cancel, no write).
+     * @param {string} provider
+     */
+    async setProvider(provider) {
+      if (!AI_PROVIDERS.includes(/** @type {AiProviderId} */ (provider))) {
+        throw new AiHostError('invalid-request', 'Invalid AI provider.');
+      }
+      await ensureLoaded();
+      if (provider === selectedProvider()) return;
+      cancelAll();
+      await configStore.update({ provider: /** @type {AiProviderId} */ (provider) });
     },
 
     /** Set (or replace) the API key; see the inner setKey for semantics. */
     setKey,
 
-    /** Replace the key, keeping the current persistence mode. */
+    /** Replace the key, keeping the selected provider's persistence mode. */
     async replaceKey(key) {
       await ensureLoaded();
-      return setKey(key, configStore.get().keyPersistence);
+      return setKey(key, entryFor(selectedProvider()).keyPersistence);
     },
 
-    /** Forget the key everywhere: session copy and stored ciphertext. */
+    /** Forget the selected provider's key: session copy and stored ciphertext. */
     async forgetKey() {
       cancelAll();
-      sessionKey = null;
-      transportCache = null;
-      if (keyStore.hasKey()) await keyStore.clearKey();
+      const provider = selectedProvider();
+      sessionKeys[provider] = null;
+      transportCaches[provider] = null;
+      const store = keyStores[provider];
+      if (store.hasKey()) await store.clearKey();
     },
 
     async setModel(model) {
@@ -842,22 +956,25 @@ function createAiService({ host: hostOptions, configStore, keyStore, transportFa
         await configStore.update({ enabled: false });
         return;
       }
-      if (sessionKey === null && !keyStore.hasKey()) {
+      const provider = selectedProvider();
+      if (sessionKeys[provider] === null && !keyStores[provider].hasKey()) {
         throw new AiHostError('provider-not-configured', 'Save an API key before enabling Live AI.');
       }
       await configStore.update({ enabled: true });
     },
 
     /**
-     * Ask a question through the request host. Refuses before any
-     * transport is built while Live AI is disabled or no key is saved.
+     * Ask a question through the request host, to the selected provider
+     * only. Refuses before any transport is built while that provider
+     * is disabled or has no key saved.
      */
     async ask(value, signal) {
       await ensureLoaded();
-      if (!configStore.get().enabled) {
+      const provider = selectedProvider();
+      if (!entryFor(provider).enabled) {
         throw new AiHostError('live-disabled', 'Live AI is not enabled. Enable it in the AI panel connection settings.');
       }
-      requireKey();
+      requireKey(provider);
       return innerHost.ask(value, signal);
     },
 
@@ -873,15 +990,16 @@ function createAiService({ host: hostOptions, configStore, keyStore, transportFa
     },
 
     /**
-     * A small canned probe through the provider transport (no drawing
-     * content, no host queue). Bounded by a 15 s deadline and aborted by
-     * cancelAll()/dispose() like any other work.
+     * A small canned probe through the selected provider's transport
+     * (no drawing content, no host queue). Bounded by a 15 s deadline
+     * and aborted by cancelAll()/dispose() like any other work.
      */
     async testConnection() {
       await ensureLoaded();
-      const key = requireKey();
-      const model = configStore.get().model;
-      const transport = transportFor(model, key);
+      const provider = selectedProvider();
+      const key = requireKey(provider);
+      const model = entryFor(provider).model;
+      const transport = transportFor(provider, model, key);
       const probe = transport.probe;
       if (typeof probe !== 'function') {
         throw new AiHostError('provider-not-configured', 'The selected provider cannot run a connection test.');
@@ -928,5 +1046,6 @@ function createAiService({ host: hostOptions, configStore, keyStore, transportFa
 
 module.exports = {
   AI_LIMITS, AiHostError, aiRequest, aiAnswer, createAiHost, createAiKeyStore,
-  AI_PROVIDERS, AI_DEFAULT_MODEL, validateAiModel, createAiConfigStore, createAiService,
+  AI_PROVIDERS, AI_DEFAULT_MODEL, AI_PROVIDER_DEFAULT_MODELS, validateAiModel,
+  createAiConfigStore, createAiService,
 };
