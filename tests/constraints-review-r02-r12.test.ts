@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { ArcEntity, CircleEntity, Entity, LineEntity, PointEntity } from '../src/core/entities';
-import type { Constraint, ConstraintSet } from '../src/core/constraints/model';
+import { resolveAnchorPoint, type Constraint, type ConstraintSet } from '../src/core/constraints/model';
 import { analyzeConstraints, solveConstraints } from '../src/core/constraints/solve';
 
 const base = { layer: '0', color: 'ByLayer' as const };
@@ -265,5 +265,112 @@ describe('R03 — successful solves never collapse valid geometry', () => {
     const len = Math.hypot(out.b.x - out.a.x, out.b.y - out.a.y);
     expect(len).toBeGreaterThan(0);
     expect(len).toBeLessThan(1e-12);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R04 — derived-anchor grounding. `fixed` on an arc endpoint is a point
+// constraint on the derived endpoint position (center + radius∠angle):
+// two equations. The delivered engine's stage-2 rule 1 marked EVERY
+// variable the endpoint expression reads as determined — center x/y,
+// radius and angle — freezing the arc, so a feasible radius edit then
+// "conflicted" against the frozen center. Only an anchor that IS a
+// variable pair grounds variables now; derived anchors (arc endpoints,
+// midpoints) are solved by their residuals in stage 3.
+// ---------------------------------------------------------------------------
+
+describe('R04 — fixing a derived anchor does not freeze its underlying variables', () => {
+  it('fixed arc start + radius edit 5 → 8 solves: endpoint stays, center moves, radius changes', () => {
+    const A = arc('A', 0, 0, 5, 0, Math.PI / 2);
+    const result = solveConstraints(
+      [A],
+      set(
+        { id: 'f', kind: 'fixed', role: 'driving', refs: [ref('A', 'start')] },
+        { id: 'rad', kind: 'radius', role: 'driving', value: 8, refs: [ref('A', 'whole')] },
+      ),
+    );
+    expect(result.ok).toBe(true);
+    const out = byId(result.entities!).get('A') as ArcEntity;
+    expect(out.radius).toBeCloseTo(8, 9);
+    const start = resolveAnchorPoint(out, ref('A', 'start'));
+    expect(Math.hypot(start.x - 5, start.y)).toBeLessThanOrEqual(1e-6);
+    // The center must have moved to (-3, 0): the endpoint can only stay
+    // at (5, 0) with radius 8 if it did.
+    expect(Math.hypot(out.center.x + 3, out.center.y)).toBeLessThanOrEqual(1e-6);
+    expect(diag(result, 'f')?.state).toBe('satisfied');
+    expect(diag(result, 'rad')?.state).toBe('satisfied');
+  });
+
+  it('fixed arc end + radius edit 5 → 3 solves symmetrically', () => {
+    const A = arc('A', 0, 0, 5, 0, Math.PI / 2);
+    const result = solveConstraints(
+      [A],
+      set(
+        { id: 'f', kind: 'fixed', role: 'driving', refs: [ref('A', 'end')] },
+        { id: 'rad', kind: 'radius', role: 'driving', value: 3, refs: [ref('A', 'whole')] },
+      ),
+    );
+    expect(result.ok).toBe(true);
+    const out = byId(result.entities!).get('A') as ArcEntity;
+    expect(out.radius).toBeCloseTo(3, 9);
+    const end = resolveAnchorPoint(out, ref('A', 'end'));
+    expect(Math.hypot(end.x, end.y - 5)).toBeLessThanOrEqual(1e-6);
+  });
+
+  it('both arc endpoints fixed + feasible radius 8 solves with the endpoints unmoved', () => {
+    const A = arc('A', 0, 0, 5, 0, Math.PI / 2);
+    const result = solveConstraints(
+      [A],
+      set(
+        { id: 'fs', kind: 'fixed', role: 'driving', refs: [ref('A', 'start')] },
+        { id: 'fe', kind: 'fixed', role: 'driving', refs: [ref('A', 'end')] },
+        { id: 'rad', kind: 'radius', role: 'driving', value: 8, refs: [ref('A', 'whole')] },
+      ),
+    );
+    expect(result.ok).toBe(true);
+    const out = byId(result.entities!).get('A') as ArcEntity;
+    expect(out.radius).toBeCloseTo(8, 9);
+    const start = resolveAnchorPoint(out, ref('A', 'start'));
+    const end = resolveAnchorPoint(out, ref('A', 'end'));
+    expect(Math.hypot(start.x - 5, start.y)).toBeLessThanOrEqual(1e-6);
+    expect(Math.hypot(end.x, end.y - 5)).toBeLessThanOrEqual(1e-6);
+  });
+
+  it('both arc endpoints fixed + radius 3 (below the chord’s minimum) still conflicts honestly', () => {
+    // Endpoints (5,0) and (0,5) are √50 apart; no circle of radius 3
+    // passes through both (r must be ≥ √50/2 ≈ 3.54). The verdict must
+    // stay a conflict — the R04 fix must not manufacture success.
+    const A = arc('A', 0, 0, 5, 0, Math.PI / 2);
+    const result = solveConstraints(
+      [A],
+      set(
+        { id: 'fs', kind: 'fixed', role: 'driving', refs: [ref('A', 'start')] },
+        { id: 'fe', kind: 'fixed', role: 'driving', refs: [ref('A', 'end')] },
+        { id: 'rad', kind: 'radius', role: 'driving', value: 3, refs: [ref('A', 'whole')] },
+      ),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe('conflicting');
+    expect(result.failure?.code).toBe('conflicting-constraints');
+    expect(result.entities).toBeUndefined();
+  });
+
+  it('fixed line midpoint does not freeze the endpoints: a distance edit from the midpoint still solves', () => {
+    const L = line('L', 0, 0, 10, 0);
+    const P = point('P', 5, 8);
+    const result = solveConstraints(
+      [L, P],
+      set(
+        { id: 'f', kind: 'fixed', role: 'driving', refs: [ref('L', 'midpoint')] },
+        { id: 'd', kind: 'distance', role: 'driving', value: 4, refs: [ref('L', 'midpoint'), ref('P', 'position')] },
+      ),
+    );
+    expect(result.ok).toBe(true);
+    const out = byId(result.entities!);
+    const solvedL = out.get('L') as LineEntity;
+    const mid = { x: (solvedL.a.x + solvedL.b.x) / 2, y: (solvedL.a.y + solvedL.b.y) / 2 };
+    expect(Math.hypot(mid.x - 5, mid.y)).toBeLessThanOrEqual(1e-6);
+    const solvedP = out.get('P') as PointEntity;
+    expect(Math.hypot(solvedP.position.x - mid.x, solvedP.position.y - mid.y)).toBeCloseTo(4, 6);
   });
 });

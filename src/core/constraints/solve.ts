@@ -1510,10 +1510,19 @@ function stage2(comp: Comp, work: Work, poll: Poll): { vals: Float64Array; det: 
       fired = true;
       work.used += 1;
     };
-    // Rule 1 — fixed grounds its anchor point (values are the entry values).
+    // Rule 1 — fixed grounds its anchor point (values are the entry
+    // values). Only an anchor that IS a variable pair grounds anything.
+    // A derived anchor (arc endpoint, line/polyline midpoint) is a point
+    // CONSTRAINT on the derived position — two equations over the
+    // variables it reads — not a determination of each of them: the
+    // delivered rule marked an arc endpoint's center, radius and angle
+    // all determined, freezing the arc so a feasible radius edit then
+    // manufactured a conflict (review R04). Derived anchors are left
+    // to stage 3, whose residual expresses exactly those two equations.
     for (const { shape } of comp.active) {
       if (shape.form !== 'fixed') continue;
       const expr = pointExpr(shape.point, comp.layout);
+      if (expr.varPair === null) continue;
       let newly = false;
       for (const v of expr.vars) if (!det[v]) newly = true;
       if (newly) {
