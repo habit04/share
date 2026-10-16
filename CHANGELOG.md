@@ -31,7 +31,19 @@ messages). The date of each version is the date of the commit that set that vers
   plot actually uses (priority 12.3). Subsetting preserves glyph IDs, metrics, Unicode
   mappings and embedding permissions; programs that forbid subsetting in their OS/2 fsType,
   programs that cannot be made smaller, and programs that fail subset validation are
-  embedded whole exactly as before. CFF subsetting remains open with CFF embedding (12.2).
+  embedded whole exactly as before. Variable programs retain whole bytes; CFF subsetting
+  remains deferred.
+- Windows font readers and vector PDF output support bounded standalone, name-keyed CFF1
+  OpenType faces (priority 12.2 slice 1). Programs embed whole, distinct Unicode aliases
+  retain their text through a code-to-CID map, and an actually used OpenType resource raises
+  the PDF version to 1.6. CFF collections, CID-keyed CFF, CFF2 and real installed-CFF
+  acceptance remain open.
+- Eligible variable glyf fonts can provide metrics and embed whole at a verified default
+  instance (priority 12.6 slice 1a). Both readers validate fvar records, legal referenced
+  name IDs and default/style identity; ambiguous weight/width, varying optical size,
+  conflicting named defaults and color formats keep explicit reported refusals.
+  Named-instance selection and true instancing remain deferred. Combined native Windows
+  acceptance is still required before release.
 
 ## [0.5.2] - 2026-10-15
 

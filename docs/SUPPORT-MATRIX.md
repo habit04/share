@@ -142,8 +142,12 @@ see `WINDOWS-FONT-METRICS.md`.
 The style's font file / TrueType family is kept and written back. In vector PDF output,
 Windows embeds permitted installed standalone TrueType programs, native advances and Unicode maps.
 Missing/restricted faces, unsupported font formats/glyph origins and contextual shaping use a
-reported Helvetica or stroke substitute. Browser PDF retains its legacy substitution. Collections,
-CFF/variable/color font embedding remain open; see `PDF-FONT-EMBEDDING.md`. Eligible type-0 Unicode
+reported Helvetica or stroke substitute. Browser PDF retains its legacy substitution. The current
+development branch selects matching TrueType collection faces, subsets eligible static glyf
+programs, embeds standalone name-keyed CFF1 whole and admits eligible variable glyf defaults
+under a conservative identity policy. Native acceptance and shipping remain separate gates;
+CFF collections/CFF2, true variable instancing, color embedding and contextual shaping remain
+open; see `PDF-FONT-EMBEDDING.md`. Eligible type-0 Unicode
 SHX fonts plot as vector outlines; other headers retain a reported substitute. BigFont, vertical
 and mirrored generation, missing glyphs and complex-linetype glyph placement remain open.
 Text in pre-2007 DXF

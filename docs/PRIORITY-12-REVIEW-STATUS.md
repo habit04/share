@@ -3,30 +3,40 @@
 Windows development review, 2026-10-15. Nothing in this batch is pushed, merged
 or released. Earlier released TTC support remains the v0.5.2 baseline.
 
+Current source composes the corrected CFF1 and variable-default implementations
+with existing collection selection, used-glyph validation, static subsetting and
+DWG/F4 safeguards. The full two-worker gate is **red: 6,955 passed, one failed,
+38 skipped**. The failure is the existing large-PDF fixture's native file deletion;
+split stage logging shows disposal complete with zero reader descriptors before
+`unlink` stops returning at 296 ms. No cleanup cause or product fix is established.
+The isolated unchanged case passes in 261 ms. Limits, deadlines and assertions
+remain unchanged; no further full-suite retries are used to claim clearance.
+Fresh combined native checks can proceed independently; merge remains held.
+
 | Piece | Current evidence and status | Next gate / owner |
 |---|---|---|
 | 12.1 collection selection | Reviewed and corrected locally; real Windows workers/IPC/Plot and private AutoCAD reference pass for the tested Nirmala faces and Arial. | Lead: combined acceptance, packaged checks and CI. |
 | Used-glyph validation (SimSun scope) | Algorithm and DWG/F4 source composition reviewed; 132 independent authored-PDF checks pass. Real SimSun still refuses at bitmap/origin validation, YaHei at conflicting PostScript names. | Lead: packaged/CI gates; native Han vector acceptance remains absent. Actual missing-SHX raster output and explicit vector refusal pass. |
 | 12.3 glyf subsetting | Reviewed and corrected; real Windows subset/whole-control Unicode and pixels match. Added actual-byte whole-program guard for variation tables: eight failing-before/passing-after regressions. | Lead: combined suite and native gates. Variation-aware subsetting remains deferred. |
-| 12.6a variable defaults | Updated 14-patch delivery verifies; original negatives and 49 supplied tests pass, with genuine live gvar deltas and conservative default-identity policy. Lead privately fixes remaining name-ID ranges; 11 range, 11 current-code TTC/used-glyph, 41 independent PDF and 45 Windows Bahnschrift default-identity checks pass. | Lead: compose corrected readers/writer, rerun combined gates and real Windows Plot/save/reopen/viewer checks. Admission remains held; these are private candidates, not the F4 production source. |
-| 12.2 standalone CFF1 | Updated eight-patch delivery resolves all 11 original Type2 goldens, Unicode aliases and emitted-resource PDF1.6. All 296 supplied targeted tests pass on Windows. Lead privately fixes implicit matrix/late-width edges and one test type error; 119 corrected targeted tests and both scoped typechecks pass. Fresh 24-PDF production-route fixtures pass 623 independent checks. | Lead: compose corrected candidate with current selected-face/used-glyph/subsetting/F4 code, then combined/native gates. No installed standalone CFF font is available here; native positive validation remains limited. Supplied full-suite log is red, not merge evidence. |
+| 12.6a variable defaults | Corrected reader/writer composed with current TTC/used-glyph/subset/F4 source; lead legal-name-ID guards retained. Final archive adds no code: all 14 patches are byte-identical to the previous handoff. 49 supplied tests, combined regression cases and the earlier 45-check installed Bahnschrift probe pass. | Lead: clean combined/full/native Plot/save/reopen gates; default-instance and viewer limits remain. Supplied partial/timeout logs do not establish clearance. |
+| 12.2 standalone CFF1 | Corrected bounded parser and writer composed with current source, including implicit-matrix and late-width repairs, aliases and resource-scoped PDF1.6. New regressions include mixed CFF/static-subset/whole-variable pages. Earlier private candidate produces 24 PDFs passing 623 independent checks plus 30 whole-program checks. | Lead: fresh combined/full/native and authored-PDF gates. No installed standalone CFF font is available here; synthetic checks do not establish real-font IPC/viewer compatibility. |
 | 12.4 preview/print permissions | qpdf 12.4.2 self-build selected for implementation; delivered binary remains a prototype. Windows Node smoke passes 89 strict independent assertions and exact encrypted/plain pixels on one small authored fixture. Actual WASM max is 2 GiB; MEMFS/IPC copies need separate bounds. | Muse: capped rebuild, aggregate resource/lifecycle/IPC guards, strict evidence and full notices. Lead: eventual Windows app/viewer acceptance and shipping pin. Refusal remains active. |
 | 12.5 shaping | v4 design approved for additive interface/helpers and synthetic contract tests. Capped prototype passes 106 bounded Windows Node checks across 33 cases; no app/runtime/consumer adoption. | Muse: scoped interface commit with epoch, selected-face, wire/copy and exit-join tests; correct three probe labels. Lead: later runtime/Windows/render/extraction gates. |
 | DWG/F4 combined source | 63 Windows workflow assertions and 721 independent native checks pass on `167c50b`; effective STYLE, metrics, title/signature, source protection and DXF reopen verified. | Lead: maintain font/projection refusals; remote CI and packaged gates remain separate. No merge clearance. |
 
-The combined two-worker Windows suite passes **6,822 tests, zero failures and
+Historical checkpoint `167c50b` passes **6,822 tests, zero failures and
 38 skips** in 190 seconds, including both hash-pinned private-DWG cases and all
 11 font-composition regressions. Three typecheck projects, full lint, fixture and
 nine workflow checks, and the renderer build pass. The earlier lifecycle repair
 and its failed-run history remain documented; no deadline or work cap is raised.
 
-Actual Windows Open/edit/undo/redo/DXF save/reopen and Plot pass. Raster Han output
+On that historical source, actual Windows Open/edit/undo/redo/DXF save/reopen and Plot pass. Raster Han output
 passes nine independent checks and visual inspection; font subset/whole-control
 Unicode and pixels match. The wider PDF inspector passes 2,376/2,377 checks: the
 same missing-Symbol warning on a Helvetica control remains a strict failure and
 is independently reproduced without JCad. Six consumed-ticket cancellation
 diagnostics are disclosed, not a clean-main-log claim. Packaged acceptance,
-remote CI and Muse's outstanding corrections still prevent merge clearance.
+remote CI and the current combined gate still prevent merge clearance.
 
 The updated five-patch 12.3 delivery is verified but not replayed: its sole added
 source/test patch duplicates the existing lead variation guard. Replacing the

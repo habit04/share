@@ -1,8 +1,10 @@
 # Windows PDF font embedding
 
-This development milestone implements the standalone TrueType part of priority 12,
-plus extraction of one collection face for embedding. It does not complete
-priority 12, the font roadmap or certify an installed release.
+The current development source implements standalone TrueType embedding, matching
+collection-face extraction, static glyf subsetting, standalone name-keyed CFF1
+embedding and conservative variable-glyf default admission. It does not complete
+priority 12, the font roadmap or certify an installed release. Native acceptance
+and source gates are recorded separately from historical candidate reviews below.
 
 The Windows plot bridge reads only installed Windows Fonts files, through the same confined,
 bounded workers as metrics. Programs, permissions and geometry come from one race-checked file
@@ -49,7 +51,7 @@ selected program; write-time subsetting is described below. Screen/interactive m
 keep the eager whole-face validation, so these faces continue to render on screen through
 the existing Canvas fallback, and no budget was raised anywhere.
 
-Used faces become FontFile2 programs, Type0 Identity-H fonts and CIDFontType2 descendants.
+Used glyf faces become FontFile2 programs, Type0 Identity-H fonts and CIDFontType2 descendants.
 CIDToGIDMap and ToUnicode keep glyph identity, including distinct Unicode aliases and supported
 supplementary characters. Native unkerned advances, capital-A height, bearings, FIT/ALIGNED,
 width factor, oblique and rotation drive PDF text. Resources are shared across pages. The format
@@ -60,15 +62,15 @@ a GID-preserving glyf subset keeps the used glyphs, GID 0 and composite componen
 byte-identical and empties the rest, so CIDToGIDMap, ToUnicode, widths and glyph metrics are
 unchanged. Programs whose OS/2 fsType sets the no-subsetting bit are embedded whole, as are
 programs subsetting cannot shrink or safely rebuild. The embedded `cmap` is kept verbatim
-in this slice (trimming it is a named follow-up); CFF subsetting waits on CFF embedding (12.2).
+in this slice (trimming it is a named follow-up); CFF subsetting remains deferred.
 Actual subsets receive distinct six-uppercase-letter tags in PDF BaseFont/FontName.
 Whole-font fallbacks keep their original names and exact bytes. Rebuilt `maxp` counts
 must fit their uint16 fields; unsafe counts retain the whole program. Valid ten-byte
 zero-contour glyphs and bounded optional instruction spans are supported.
 
 Unsupported/missing faces or unsupported runs use the existing Helvetica/stroke fallback and
-the plot log reports substitutions. Browser plots keep their existing path. CFF,
-variable/color fonts, uncertain glyph origins, contextual shaping and
+the plot log reports substitutions. Browser plots keep their existing path. CFF2,
+CID-keyed/collection CFF, ambiguous variable defaults, color fonts, uncertain glyph origins, contextual shaping and
 preview/print-only embedding remain open. Within collection-face selection, what
 remains open is acceptance, not selection. Two refusal causes are confirmed on
 Windows by the lead and are classified separately from collection defects:
@@ -90,6 +92,48 @@ Windows by the lead and are classified separately from collection defects:
 
 Real SHX decoding is priority 21. Native tall-glyph
 MTEXT line leading remains approximate even when its font is embedded.
+
+## Current combined CFF1 and variable-default source gate
+
+Corrected standalone name-keyed CFF1 and variable-glyf default support now compose
+with the existing selected-face, used-glyph, subsetting and DWG/F4 source. The
+lead's implicit FontMatrix/late-width and legal fvar-name-ID guards are included.
+CFF programs remain whole in FontFile3/OpenType with CIDFontType0 descendants and
+a custom code-to-CID Encoding; Unicode aliases retain separate character codes.
+Only an actually emitted CFF resource raises the header to PDF1.6. Static glyf
+subsets retain their existing prefixes; variable and no-subsetting programs stay
+whole with original names. CFF2, CID-keyed CFF, mixed outline tables, CFF+fvar and
+CFF collections remain refused. Variable defaults require conservative style and
+coordinate identity; named-instance selection and true instancing are deferred.
+
+The final 12.6a ZIP has SHA256
+`b753440ec2b91b67d6af0f7709a54d7d8cfa6aa74088a89a2d49b47b02783678`.
+All 17 manifest entries verify, and all 14 patches are byte-identical to the prior
+corrected handoff. It adds documentation and partial-suite evidence, not source.
+Its bounded log still has a failed suite/exit1 despite 504 passing assertions;
+separate solo/base controls do not replace complete current-tree validation.
+
+All three TypeScript projects, full ESLint, fixture checks and nine workflow
+checks pass. The new combined regressions include original nonzero TTC selection,
+joint used-codepoint requests, CFF aliases, legal name-ID ranges and compressed/
+uncompressed mixed CFF/static-subset/whole-variable pages. Earlier 147 targeted
+checks and 120 affected-reader/writer checks pass; 23 authored static programs
+remain byte-identical to the prior source's fixtures.
+
+The current two-worker full run is **6,955 passed, one failed, 38 skipped**.
+The sole failure is the existing large-file admission fixture's cleanup. Refusal,
+hash, cancellation, disposal and zero-reader checks finish by 288 ms; detailed
+stage logging reaches `unlink-start` at 296 ms but never records its return.
+The test then reaches its unchanged 60-second body and 10-second hook deadlines.
+One isolated unchanged diagnostic passes in 261 ms. This establishes a native
+unlink wait, not its cause, and not a fixed product deadlock. Prior failed logs
+and the source/input hash receipt are retained; no full-suite retry loop or
+deadline/limit changes are used to clear it. Merge clearance remains withheld.
+
+Fresh committed-tree Windows Plot/F4 and authored-CFF/mixed-PDF checks remain
+required. The 623+30/41/45 checks below belong to earlier private candidates;
+they do not replace those combined-source gates. No installed standalone CFF font
+is available, and no new AutoCAD, packaged-app or remote-CI acceptance is claimed.
 
 ## Validation
 
@@ -400,7 +444,7 @@ admission must keep a safe shaping unit or refuse an unsafe boundary; passing a
 whole context string does not expand the engine's five-codepoint context storage.
 No runtime consumer or compatibility claim follows from interface-only approval.
 
-### Corrected 12.2 and 12.6a deliveries, 2026-10-15
+### Historical private review: corrected 12.2 and 12.6a deliveries, 2026-10-15
 
 Both updated archives are reconstructed privately from genuine `a68dba5` Git
 blobs with every patch hunk and intermediate blob prefix checked. The CFF archive

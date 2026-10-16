@@ -1,6 +1,18 @@
 # Windows 2D and reliability implementation checklist
 
-Current priority-12 source review (2026-10-15): `review/p12-dwg-f4` combines the
+Current priority-12 composition (2026-10-15): corrected standalone CFF1 and
+variable-default reader/writer support is integrated with the reviewed font/DWG
+source. The combined full gate remains **6,955 passed / one failed / 38 skipped**:
+native deletion of the existing large-PDF test fixture stalls after product checks,
+disposal and zero-reader assertions finish. The isolated case passes; its cause is
+unresolved and full-suite clearance is withheld. No limits/deadlines are relaxed.
+Fresh native Plot/F4 and authored-PDF checks are next; nothing is merged/released.
+
+Priority 30 may be implemented separately by Muse under the
+[dynamic-block and constraint handoff](PRIORITY-30-MUSE-HANDOFF.txt). Codex retains
+Windows review/integration; the rest of this long roadmap remains paused.
+
+Historical priority-12 source checkpoint `167c50b` (2026-10-15) combines the
 reviewed collection/used-glyph/subsetting tree with the verified final DWG handoff.
 The two-worker suite passes 6,822 tests with zero failures and 38 skips. Static,
 fixture, workflow and renderer-build checks pass. Actual Windows Open/edit/DXF
@@ -13,11 +25,11 @@ remain open. See [PDF source-review evidence](PDF-FONT-EMBEDDING.md). The long
 roadmap stays paused; completed GPU/DWG work is not being reimplemented.
 
 Delivery review continues: [priority-12 status](PRIORITY-12-REVIEW-STATUS.md)
-distinguishes reviewed code from acceptance. Updated 12.6a and 12.2 deliveries
-resolve the earlier major findings; small remaining guards have tested private
-lead corrections. Reader/writer composition and native acceptance remain held,
-and the 12.3 subsetter keeps variation-table programs whole. Neither corrected
-candidate replaces the F4 source checkpoint. 12.4 shipping dependency admission
+distinguishes reviewed code from acceptance. Corrected 12.6a and 12.2 readers,
+writer and regressions now compose with the current collection/used-glyph/F4
+source; the 12.3 subsetter keeps variation-table programs whole. The final 12.6a
+archive changes documentation/evidence only; all 14 patches match the previous
+handoff. Fresh combined and native acceptance remain required. 12.4 shipping dependency admission
 and 12.5 runtime shaping remain gated.
 
 Current source-only continuation: [PR #18/#19 integration checkpoint](WINDOWS-SOURCE-INTEGRATION.md)
