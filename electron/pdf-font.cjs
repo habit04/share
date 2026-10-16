@@ -7,8 +7,8 @@ function fail(message) { throw new Error(`PDF font: ${message}`); }
 
 /**
  * https://learn.microsoft.com/en-us/typography/opentype/spec/os2#fstype
- * Full embedding satisfies no-subsetting. Preview/print fonts need a read-only PDF,
- * which this exporter does not provide; installed/editable fonts alone are accepted.
+ * Full embedding satisfies no-subsetting. Ordinary PDF refuses preview/print fonts;
+ * only an explicitly restricted captured export may excuse that one permission problem.
  * @param {number} fsType @param {number} os2Version @returns {string | null}
  */
 function pdfFontEmbeddingProblem(fsType, os2Version) {
@@ -85,13 +85,14 @@ async function readWindowsPdfFont(request, options) {
   if (outline === 'cff' && tables.has('fvar')) fail('variable CFF font instances are unsupported');
   const os2 = table('OS/2', 78), hhea = table('hhea', 36), post = table('post', 32);
   const os2Version = os2.readUInt16BE(0), problem = pdfFontEmbeddingProblem(os2.readUInt16BE(8), os2Version);
-  if (problem) fail(problem);
+  const previewPrint = problem === 'preview/print embedding requires a read-only PDF';
+  if (problem && !(previewPrint && request && request.restricted === true)) fail(problem);
   const ascender = hhea.readInt16BE(4), descender = hhea.readInt16BE(6), weight = os2.readUInt16BE(4), italicAngle = post.readInt32BE(4) / 65536;
   if (ascender < 0 || descender > 0) fail('unsupported font vertical metrics');
   if (weight < 1 || weight > 1000 || Math.abs(italicAngle) > 90) fail('invalid font weight or italic angle');
   if (![0x00010000, 0x00020000, 0x00025000, 0x00030000].includes(post.readUInt32BE(0))) fail('unsupported post table version');
   return { bytes: collection ? data : bytes, metrics, outline, postscriptName: postscriptName(table('name', 6)), ascender, descender,
-    italicAngle, weight, isFixedPitch: !!post.readUInt32BE(12), os2Version };
+    italicAngle, weight, isFixedPitch: !!post.readUInt32BE(12), os2Version, ...(previewPrint ? { previewPrint: true } : {}) };
 }
 
 module.exports = { readWindowsPdfFont, pdfFontEmbeddingProblem };

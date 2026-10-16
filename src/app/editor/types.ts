@@ -129,7 +129,15 @@ export interface FileBridge {
   /** Print the rendered sheet through the system print dialog; resolves true when a job was sent. */
   printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: PlotSheet): Promise<boolean>;
   /** Save finished PDF bytes (vector plot, app/plot-vector.ts); resolves the written path or null. */
-  savePdf?(bytes: Uint8Array, suggestName: string, opts?: { path?: string; admission?: string }): Promise<string | null>;
+  savePdf?(bytes: Uint8Array, suggestName: string, opts?: { path?: string; admission?: string; restricted?: { sha256: string; byteLength: number } }): Promise<string | null>;
+  /**
+   * Restricted PDF (12.4, Windows desktop only): register the frozen buffer's
+   * digest and the preview/print face claims against the bound admission
+   * ticket, immediately before the matching savePdf call. Main verifies the
+   * claims against its own font-host admission records; see
+   * electron/restricted-pdf/registry.cjs for what the binding proves.
+   */
+  registerRestrictedPdf?(admission: string, claim: { path: string; sha256: string; byteLength: number; faces: readonly import('../../core/text-metrics').FontMetricsRequest[] }): Promise<boolean>;
 }
 
 /** What older desktop builds answered from `backup-file`: the .bak path, or null / false on failure. */

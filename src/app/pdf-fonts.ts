@@ -16,10 +16,12 @@ export const pdfFontKey = textFontKey;
 const familyName = (face: Extract<TextAppearance, { kind: 'canvas' }>) => face.family.split(',')[0]!.trim().replace(/^"|"$/g, '');
 
 /** Programs and matching geometry stay local to a captured PDF, outside global font caches. */
-export async function capturedPdfLookup(state: DrawingState, reader?: PdfFontReader, groups?: readonly PdfDrawGroup[], capturedLookup?: BlockLookup) {
+export async function capturedPdfLookup(state: DrawingState, reader?: PdfFontReader, groups?: readonly PdfDrawGroup[], capturedLookup?: BlockLookup, options?: { restricted?: boolean }) {
+  const restricted = options?.restricted === true;
   const initialLookup = capturedLookup ?? await capturedPlotLookup(state);
   const strokeGeometry = initialLookup.textGeometry?.shxRun ? initialLookup.textGeometry : undefined;
-  if (!reader) return { lookup: initialLookup, fonts: undefined, geometry: strokeGeometry, issues: [] as string[] };
+  if (!reader) return { lookup: initialLookup, fonts: undefined, geometry: strokeGeometry, issues: [] as string[], restrictedFaces: [] as { key: string; request: FontMetricsRequest }[] };
+  const read: PdfFontReader = restricted ? (request) => reader({ ...request, restricted: true }) : reader;
   const styles = textStylesOf(state), metrics = new FontMetricsRegistry(), native = createTextGeometryContext(styles, metrics);
   const wanted = new Map<string, { face: Extract<TextAppearance, { kind: 'canvas' }>; request: FontMetricsRequest }>();
   const usedByKey = new Map<string, Set<number>>();
@@ -83,12 +85,12 @@ export async function capturedPdfLookup(state: DrawingState, reader?: PdfFontRea
     if (faces.length >= 8) { issues.push(`Font ${request.family}: PDF font limit reached.`); continue; }
     try {
       const used = usedByKey.get(key);
-      const result = await reader(used?.size ? { ...request, usedCodepoints: [...used].sort((a, b) => a - b) } : request);
+      const result = await read(used?.size ? { ...request, usedCodepoints: [...used].sort((a, b) => a - b) } : request);
       if (!result.font) { issues.push(`Font ${request.family}: ${result.problem || 'installed font unavailable'}`); continue; }
       if (!(result.font.bytes instanceof Uint8Array) || bytes + result.font.bytes.byteLength > 128 * 1024 * 1024) { issues.push(`Font ${request.family}: PDF font size limit reached.`); continue; }
       const candidate = { ...result.font, key };
       // Validate the actual program before accepting geometry from its metrics.
-      const checked = new PdfFontRegistry([candidate]);
+      const checked = new PdfFontRegistry([candidate], { restricted });
       const problem = checked.rejections.get(key);
       if (problem) { issues.push(`Font ${request.family}: ${problem}`); continue; }
       const accepted = checked.face(key)!;
@@ -96,7 +98,13 @@ export async function capturedPdfLookup(state: DrawingState, reader?: PdfFontRea
       faces.push(accepted); bytes += accepted.bytes.byteLength;
     } catch (error) { issues.push(`Font ${request.family}: ${error instanceof Error ? error.message : 'font unavailable'}`); }
   }
-  const fonts = new PdfFontRegistry(faces);
+  const fonts = new PdfFontRegistry(faces, { restricted });
+  // Descriptor claims are checked against host admission records at registration.
+  // Plotting subsequently filters these to resources the PDF actually emitted.
+  const restrictedFaces = restricted ? fonts.previewPrintKeys.flatMap((key) => {
+    const entry = wanted.get(key);
+    return entry ? [{ key, request: entry.request }] : [];
+  }) : [];
   let oldNative: object | undefined, oldStroke: object | undefined, geometryKey = {};
   const geometry: TextGeometryContext | undefined = faces.length || strokeGeometry ? {
     get cacheKey() {
@@ -118,5 +126,5 @@ export async function capturedPdfLookup(state: DrawingState, reader?: PdfFontRea
     get fontIssues() { return new Set([...(strokeGeometry?.fontIssues ?? []), ...(native.fontIssues ?? [])]); },
   } : undefined;
   const lookup: BlockLookup = Object.assign((name: string) => state.blocks[name], { textGeometry: geometry });
-  return { lookup, fonts, geometry, issues };
+  return { lookup, fonts, geometry, issues, restrictedFaces };
 }

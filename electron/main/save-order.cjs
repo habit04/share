@@ -43,7 +43,7 @@ function registerSaveOrder(ctx, authorize) {
       watched.add(contents);
       const retire = () => {
         const previous = owners.get(contents);
-        if (previous) { admissions.retireOwner(previous); sourceProofs.retireOwner(previous); receipts.delete(previous); }
+        if (previous) { admissions.retireOwner(previous); sourceProofs.retireOwner(previous); receipts.delete(previous); ctx.restrictedPdf?.registry.retireOwner(previous); }
         for (const [ticket, source] of sourceBinds) if (source.owner === previous) sourceBinds.delete(ticket);
         owners.delete(contents);
       };
@@ -129,6 +129,11 @@ function registerSaveOrder(ctx, authorize) {
       if (kind === 'text-export' || kind === 'pdf-export') await admissions.cancelJoined(ticket, owner(ev), kind);
       else admissions.cancel(ticket, owner(ev), kind);
     } catch (error) { throw transportError(error); }
+    finally {
+      // A cancelled PDF export retires its restricted-PDF registration with
+      // it (12.4 corrections): the record must never outlive the admission.
+      if (kind === 'pdf-export') { try { ctx.restrictedPdf?.registry.cancel(ticket, owner(ev)); } catch { /* already retired */ } }
+    }
   });
   ipcMain.handle('save-admission-result', (ev, ticket) => {
     const saved = receipts.get(owner(ev));
@@ -166,7 +171,13 @@ function registerSaveOrder(ctx, authorize) {
     captures.add(captured); return captured;
   }
   function discard(captured) {
-    if (!captured || !captures.has(captured) || !captured.implicit) return;
+    if (!captured || !captures.has(captured)) return;
+    // Any discarded capture retires its restricted-PDF registration, even
+    // for renderer-owned (non-implicit) tickets whose admission retires
+    // through cancel-save-admission instead (12.4 corrections). Cancelling
+    // an already-consumed registration is a no-op.
+    try { ctx.restrictedPdf?.registry.cancel(captured.ticket, captured.owner); } catch { /* Already consumed/retired. */ }
+    if (!captured.implicit) return;
     try { admissions.cancel(captured.ticket, captured.owner, captured.kind); } catch { /* Already consumed/retired. */ }
   }
   function currentCapture(ev, kind, ticket) {

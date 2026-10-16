@@ -56,11 +56,34 @@ export interface PlotOptions {
   lineweights?: boolean;
   /** Plot with plot styles (default on). */
   usePlotStyles?: boolean;
+  /**
+   * PDF security for this plot only (milestone 12.4): 'restricted-p2' opts the
+   * vector PDF into the editing-restrictions mode, which is what allows
+   * preview/print fonts to embed. Absent/'none' is the ordinary export.
+   * Never a drawing or persistent-settings field; the choice is frozen into
+   * the captured plot at capture time.
+   */
+  security?: 'none' | 'restricted-p2';
   /** Picked immutable CTB/STB data for this plot only; never drawing or persistent settings data. */
   styleTable?: import('../core/plot-styles').PlotStyleTable;
   styleTableName?: string;
   /** Explicit whole-plot STB selection; omitted uses Normal. */
   namedStyle?: string;
+}
+
+/**
+ * Whether the restricted-PDF mode (milestone 12.4) may be offered for a
+ * plot at all: it exists only on the Windows desktop host, whose bridge
+ * carries both the vector save and the registration call the mode's save
+ * path requires. Browser and other bridges never offer it — offering a
+ * mode whose save would refuse later would be a silent dead end, and the
+ * plot flow additionally refuses a restricted request on any non-vector
+ * route rather than writing an ordinary file (app/plot-vector.ts).
+ */
+export function restrictedPdfOffered(bridge: { platform?: string; registerRestrictedPdf?: unknown; savePdf?: unknown } | null | undefined): boolean {
+  return bridge?.platform === 'win32'
+    && typeof bridge.registerRestrictedPdf === 'function'
+    && typeof bridge.savePdf === 'function';
 }
 
 export interface PageLayout {

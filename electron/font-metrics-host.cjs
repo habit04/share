@@ -10,13 +10,20 @@ function fontRequest(value) {
   if (typeof value.font !== 'string' || value.font.length > 256 || /[\u0000-\u001f]/.test(value.font)) throw new Error('Invalid font name.');
   if (value.family !== undefined && (typeof value.family !== 'string' || value.family.length > 256 || /[\u0000-\u001f]/.test(value.family))) throw new Error('Invalid font family.');
   for (const key of ['bold', 'italic']) if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new Error('Invalid font face.');
+  if (value.restricted !== undefined && typeof value.restricted !== 'boolean') throw new Error('Invalid font face.');
   if (value.usedCodepoints !== undefined && (!Array.isArray(value.usedCodepoints) || value.usedCodepoints.length > MAX_USED_CODEPOINTS
     || Array.from(value.usedCodepoints).some((code) => !Number.isInteger(code) || code < 0 || code > 0x10ffff))) throw new Error('Invalid used codepoints.');
   // Deduplicated and sorted host-side so the pending-request key distinguishes used sets exactly.
   const usedCodepoints = value.usedCodepoints === undefined ? undefined : [...new Set(value.usedCodepoints)].sort((a, b) => a - b);
   return { font: value.font, ...(value.family !== undefined ? { family: value.family } : {}),
     ...(value.bold !== undefined ? { bold: value.bold } : {}), ...(value.italic !== undefined ? { italic: value.italic } : {}),
-    ...(usedCodepoints !== undefined ? { usedCodepoints } : {}) };
+    ...(usedCodepoints !== undefined ? { usedCodepoints } : {}), ...(value.restricted ? { restricted: true } : {}) };
+}
+
+/** Descriptor identity for host admissions, independent of plot mode and glyph seeds. */
+function fontRecordKey(request) {
+  return JSON.stringify({ font: request.font, ...(request.family !== undefined ? { family: request.family } : {}),
+    ...(request.bold !== undefined ? { bold: request.bold } : {}), ...(request.italic !== undefined ? { italic: request.italic } : {}) });
 }
 
 /** Parsing runs outside Electron's main thread, with two workers and bounded waiters. */
@@ -29,6 +36,20 @@ function createFontMetricsHost({ workerFactory = (request) => new Worker(path.jo
   const workers = new Set();
   /** @type {Map<string, Promise<any>>} */
   const pending = new Map();
+  // These records prove a host read occurred, not that a renderer discarded its bytes.
+  /** @type {Map<string, number>} */
+  const previewPrintRecords = new Map();
+  const RECORD_TTL_MS = 30 * 60 * 1000, RECORD_MAX = 256;
+  function recordPreviewPrint(request) {
+    const nowMs = Date.now();
+    for (const [key, at] of previewPrintRecords) if (nowMs - at > RECORD_TTL_MS) previewPrintRecords.delete(key);
+    previewPrintRecords.set(fontRecordKey(request), nowMs);
+    while (previewPrintRecords.size > RECORD_MAX) {
+      const oldest = previewPrintRecords.keys().next().value;
+      if (oldest === undefined) break;
+      previewPrintRecords.delete(oldest);
+    }
+  }
   let disposed = false;
   function pump() {
     while (!disposed && workers.size < 2 && queue.length) {
@@ -71,13 +92,25 @@ function createFontMetricsHost({ workerFactory = (request) => new Worker(path.jo
       const promise = new Promise((resolve, reject) => { queue.push({ request, resolve, reject }); });
       pending.set(key, promise);
       void promise.finally(() => { pending.delete(key); }).catch(() => {});
+      if (pdf && request.restricted === true) {
+        void promise.then((result) => {
+          if (result && typeof result === 'object' && result.previewPrint === true) recordPreviewPrint(request);
+        }).catch(() => {});
+      }
       pump(); return promise;
   }
   return {
     read: (value) => read(value),
     readPdf: (value) => read(value, true),
+    admittedPreviewPrint(value) {
+      let request;
+      try { request = fontRequest(value); } catch { return false; }
+      const at = previewPrintRecords.get(fontRecordKey(request));
+      return at !== undefined && Date.now() - at <= RECORD_TTL_MS;
+    },
     async dispose() {
       disposed = true;
+      previewPrintRecords.clear();
       for (const item of queue.splice(0)) item.reject(new Error('Font metric reader is closed.'));
       await Promise.all([...workers].map(async (worker) => {
         const exited = new Promise((resolve) => worker.once('exit', resolve));
@@ -87,4 +120,4 @@ function createFontMetricsHost({ workerFactory = (request) => new Worker(path.jo
     },
   };
 }
-module.exports = { createFontMetricsHost, fontRequest };
+module.exports = { createFontMetricsHost, fontRequest, fontRecordKey };

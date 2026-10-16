@@ -6,14 +6,20 @@ embedding and conservative variable-glyf default admission. It does not complete
 priority 12, the font roadmap or certify an installed release. Native acceptance
 and source gates are recorded separately from historical candidate reviews below.
 
-Current packaging head `e72c9f8` passes **7,029 Windows/private-DWG tests, zero
-failures, 38 skips**. Both actual CI archives verify license/notices and desktop
-257/257. Push CI passes; PR CI fails the first packaged-origin launch. A bounded
-settings-migration repair passes 68 focused checks and prevents failed reads
-from permanently acknowledging empty settings. Its broader/fresh packaged
-gates remain required; the underlying native stall is unproven. No font/PDF
-behavior is changed by that repair. Muse's two 12.4 guard corrections and
-native/composed acceptance remain required. Merge is held.
+Current development composition adds the opt-in preview/print mode described
+below. The round-3 engine guard has a further lead correction: buffer-storage
+forecasts refuse over-budget writes before making a slice copy. Windows checks
+pass all 152 targeted font/export/startup cases (one optional fixture generator
+skipped) and all three typecheck projects. Native Plot, utility-process,
+combined-suite and packaged acceptance of this new composition remain required.
+Merge is held.
+
+The preceding committed head `3057bda` passes **7,065 Windows/private-DWG tests,
+zero failures and 38 skips**, both five-job CI runs and both actual packaged
+desktop/origin gates. Exact license/notices and source identity were verified.
+Its bounded settings-migration repair prevents failed reads from permanently
+acknowledging empty settings; the original native stall's cause remains
+unproven. These are controls for the new composition, not its acceptance.
 
 Historical complete source checkpoint `74369d3` passes **7,022 Windows/private-DWG
 tests, zero failures and 38 skips**, both five-job CI runs and both actual
@@ -21,8 +27,8 @@ packaged desktop/origin gates. The cleanup and Chrome comparison failures
 described in historical entries below have separate passing follow-up evidence;
 Chrome native text passes 31/31 and authored CFF/mixed text passes 12/12. The
 next packaging change adds exact source license/notice documents to the ASAR
-and requires its own final gate. The unadopted 12.4 candidate still has two
-memory-guard defects; preview/print admission and merge remain held. See the
+and required its own final gate. The then-unadopted 12.4 candidate had two
+memory-guard defects; later corrections require their own acceptance. See the
 [Windows checkpoint](PRIORITY-12-WINDOWS-CHECKPOINT.md) and draft PR #23 for exact
 heads, receipts and acceptance limits.
 
@@ -45,8 +51,9 @@ nothing is subset — while directory checksums and the head checkSumAdjustment 
 standalone layout. The extractor is pure and bounded (64 faces, 128 tables, 64 MiB of
 output) and validates collection headers, face offsets and table ranges before copying.
 OS/2 permission versions are interpreted explicitly; full programs satisfy no-subsetting flags.
-Restricted, bitmap-only and preview/print-only faces are refused. Preview/print requires a
-read-only document mode that this exporter does not implement. See Microsoft's
+Restricted and bitmap-only faces are refused in every mode. Ordinary exports
+also refuse preview/print-only faces; the opt-in editing-restrictions mode below
+admits that permission alone. See Microsoft's
 [OS/2 specification](https://learn.microsoft.com/en-us/typography/opentype/spec/os2#fstype).
 
 Each captured PDF owns copied programs and metric arrays outside drawing state, dirty state,
@@ -90,8 +97,8 @@ zero-contour glyphs and bounded optional instruction spans are supported.
 
 Unsupported/missing faces or unsupported runs use the existing Helvetica/stroke fallback and
 the plot log reports substitutions. Browser plots keep their existing path. CFF2,
-CID-keyed/collection CFF, ambiguous variable defaults, color fonts, uncertain glyph origins, contextual shaping and
-preview/print-only embedding remain open. Within collection-face selection, what
+CID-keyed/collection CFF, ambiguous variable defaults, color fonts, uncertain glyph origins and contextual shaping
+remain open. Native preview/print acceptance remains a separate gate. Within collection-face selection, what
 remains open is acceptance, not selection. Two refusal causes are confirmed on
 Windows by the lead and are classified separately from collection defects:
 
@@ -201,6 +208,51 @@ The 623+30/41/45 checks below remain historical private-candidate evidence. No
 installed standalone CFF font is available, and no new AutoCAD, installed-package,
 Acrobat or remote-CI acceptance is claimed. Priority12 and merge clearance remain
 incomplete; the new results do not clear failed or unexecuted gates.
+
+## PDFs with editing restrictions (12.4)
+
+Windows desktop Vector PDF offers an opt-in **PDF with editing restrictions
+(for preview/print fonts)** choice. It is captured before reading fonts and is
+never saved into drawing state or preferences. It excuses only the selected
+face's actual preview/print permission; restricted, bitmap-only, invalid and
+conflicting permissions keep their existing refusals. Existing TTC selection,
+used-glyph validation, CFF1 and default-variable guards remain in force.
+
+Only preview/print resources actually emitted by the writer trigger the
+transform. With no such resource, export retains the ordinary writer's bytes
+and PDF version and reports that no restrictions were needed. A restricted
+request cannot silently take the raster or print route.
+
+The frozen PDF is transformed inside the guarded save operation by pinned
+qpdf 12.4.2 WASM in a one-shot utility process. The destination receives the
+encrypted result, with PDF1.7 / Adobe extension level8, Standard security
+revision6 / AES256 and permission value -1324: printing, extraction and
+accessibility are allowed; modification, annotations, form filling and page
+assembly are denied. The user password is empty. A random owner password is
+generated inside the child and discarded, never sent back or recorded.
+
+These are requested PDF permissions, not a guarantee that other software
+prevents editing, and they do not establish a font licence or PDF/A compliance.
+Viewer behavior is a separate acceptance gate. Font bytes cross to the
+renderer for PDF production. Main verifies a recent descriptor admission and
+binds the destination, owner, single-use save ticket, buffer digest and length;
+it cannot prove that a compromised renderer discarded the font bytes.
+
+The WASM linear-memory maximum is 768MiB. Host byte reservations separately
+cover one maximum-size job envelope (1,923MiB) plus at most 128MiB of queued
+input. These figures are accounting limits, not a total-process memory cap.
+The host retains the 128MiB input ceiling and 120s job deadline; cancellation
+and timeout join child exit before reuse, and an unconfirmed exit quarantines
+the host. MEMFS checks precede buffer allocation and reconcile retained storage
+after delegated writes. The post-run size check remains a readback backstop.
+See [bounds evidence](../validation/restricted-pdf/BOUNDS.md) and
+[independent verifier](../validation/restricted-pdf/VERIFIER.md).
+
+Windows targeted checks pass 152 cases, including 19 authored composition cases,
+real Node child encryption, the committed verifier pairs and negative controls.
+The optional fixture generator is skipped. Authored font fixtures establish
+code contracts, not installed-font or native Plot acceptance. Full combined,
+utility-process, Plot/IPC, independent output and packaged checks remain open.
 
 ## Validation
 

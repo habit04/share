@@ -15,5 +15,6 @@
  * @property {Set<string>} handedOverProjects  one-use project grants made only by OS hand-over or the native Recent menu
  * @property {boolean} openFilesReady  the page asked for the files handed over (take-open-files); false while a new page loads
  * @property {ReturnType<typeof import('./save-order.cjs').registerSaveOrder>|null} [saveOrder] Windows drawing/export owner and ordering service, registered before plot handlers
+ * @property {{ host: ReturnType<typeof import('../restricted-pdf/host.cjs').createRestrictedPdfHost>, registry: ReturnType<typeof import('../restricted-pdf/registry.cjs').createRestrictedPdfRegistry> } | null} restrictedPdf  Restricted PDF transform + registration (12.4); null off Windows
  */
 module.exports = {};

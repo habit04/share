@@ -15,14 +15,22 @@ export interface CapturedPlot {
   readonly vectorGeometry?: TextGeometryContext;
   readonly pdfFont?: FileBridge['pdfFont'];
   readonly imageLoader?: ImageLoader;
+  /**
+   * The PDF security decision frozen at capture (milestone 12.4): 'none' for
+   * ordinary exports, 'restricted-p2' when the user opted into the
+   * editing-restrictions mode for THIS plot. It is read from the plot choice
+   * at capture time and never from live settings afterwards, so changing the
+   * dialog or the drawing mid-export cannot change an in-flight export.
+   */
+  readonly security: 'none' | 'restricted-p2';
 }
 
 /** Capture after the plot-options choice, before its destination picker or any producer awaits. */
-export function capturePlot(ed: Editor, bridge: FileBridge | null = ed.fileBridge ?? null): CapturedPlot {
+export function capturePlot(ed: Editor, bridge: FileBridge | null = ed.fileBridge ?? null, security: CapturedPlot['security'] = 'none'): CapturedPlot {
   const state = ed.doc.snapshot;
   const resources = ed.shxResources?.for(ed.sessions.current), styles = textStylesOf(state);
   return Object.freeze({ state, bridge, base: ed.fileName().replace(/\.[^.]+$/, ''), geometry: resources?.capture(styles), vectorGeometry: resources?.capture(styles, true),
-    pdfFont: bridge?.platform === 'win32' ? bridge.pdfFont?.bind(bridge) : undefined, imageLoader: renderSettings.imageLoader });
+    pdfFont: bridge?.platform === 'win32' ? bridge.pdfFont?.bind(bridge) : undefined, imageLoader: renderSettings.imageLoader, security });
 }
 
 export class ExportAdmission {
@@ -68,11 +76,29 @@ export class ExportAdmission {
     void task.then(() => this.writes.delete(task), () => this.writes.delete(task));
     return task;
   }
-  async savePdf(bytes: Uint8Array, name: string): Promise<string | null> {
+  /**
+   * Save a vector PDF. With `restricted` (milestone 12.4: the preview/print
+   * face requests this captured plot actually used), the frozen buffer's
+   * SHA-256 + length and those claims are registered with main against the
+   * bound ticket first, and the save call carries the matching digest claim;
+   * main consumes the registration against the received bytes and only then
+   * transforms. Without it this is exactly the ordinary save.
+   */
+  async savePdf(bytes: Uint8Array, name: string, restricted?: { faces: readonly import('../core/text-metrics').FontMetricsRequest[] }): Promise<string | null> {
     this.active(); const save = this.bridge?.savePdf;
     if (!save) throw new Error('Plotting is not available here.');
     const opts = this.options;
     if (this.enabled && !opts) throw new Error('Choose and bind a PDF destination before producing this export.');
+    if (restricted) {
+      if (!opts || !this.bridge?.registerRestrictedPdf) throw new Error('Restricted PDF export requires the Windows desktop host.');
+      if (!restricted.faces.length) throw new Error('Restricted PDF export requires at least one preview/print font.');
+      const digest = await crypto.subtle.digest('SHA-256', bytes as BufferSource);
+      const sha256 = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+      const claim = { sha256, byteLength: bytes.byteLength };
+      await this.bridge.registerRestrictedPdf(opts.admission, { path: opts.path, ...claim, faces: restricted.faces });
+      this.active();
+      return this.writing(() => save.call(this.bridge, bytes, name, { ...opts, restricted: claim }));
+    }
     return this.writing(() => opts ? save.call(this.bridge, bytes, name, opts) : save.call(this.bridge, bytes, name));
   }
   async plotPdf(dataUrl: string, name: string, landscape: boolean, sheet: PlotSheet): Promise<string | null> {

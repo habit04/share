@@ -180,7 +180,7 @@ function variableFontProblem(bytes: Uint8Array, data: DataView, fvar: { start: n
 }
 
 /** Check the actual SFNT permission/format fields, rather than trusting a metrics cache. */
-function validateFace(face: PdfFontFace): string | null {
+function validateFace(face: PdfFontFace, restricted = false): string | null {
   if (!face || typeof face.key !== 'string' || !face.key || face.key.length > 512 || /[\u0000-\u001f]/.test(face.key)) fail('invalid face key');
   if (!(face.bytes instanceof Uint8Array) || face.bytes.byteLength < 12 || face.bytes.byteLength > MAX_FONT_BYTES) fail('font program must contain 12 bytes to 64 MiB');
   const data = new DataView(face.bytes.buffer, face.bytes.byteOffset, face.bytes.byteLength);
@@ -231,7 +231,7 @@ function validateFace(face: PdfFontFace): string | null {
   if (!metrics || metrics.fsType !== fsType || face.os2Version !== os2Version) fail('font permissions do not match the program');
   if ((metrics.variable === true) !== tables.has('fvar')) fail('font variable metadata does not match the program');
   const permission = pdfFontEmbeddingProblem(fsType, os2Version);
-  if (permission) return permission;
+  if (permission && !(restricted && permission === 'preview/print embedding requires a read-only PDF')) return permission;
   if (!integer(metrics.unitsPerEm, 16, 16384) || metrics.unitsPerEm !== data.getUint16(head + 18) || !integer(metrics.capitalHeight, 1, 32767)) fail('invalid native font height');
   if (!glyphCount || !denseArray(metrics.advances, glyphCount) || metrics.advances.some((n) => !integer(n, 0, 65535))) fail('invalid native advances');
   if (!denseArray(metrics.cmap, 65536) || metrics.cmap.some((n) => !integer(n, 0, glyphCount - 1))) fail('invalid native cmap');
@@ -420,10 +420,13 @@ export class PdfFontRegistry {
   private faces = new Map<string, PdfFontFace>();
   private used = new Map<string, UsedFace>();
   readonly rejections: ReadonlyMap<string, string>;
+  /** Faces admitted from actual program permissions only because this PDF is restricted. */
+  readonly previewPrintKeys: readonly string[];
 
-  constructor(faces: readonly PdfFontFace[]) {
+  constructor(faces: readonly PdfFontFace[], options?: { restricted?: boolean }) {
     if (!Array.isArray(faces) || faces.length > MAX_FACES) fail('at most eight font faces are allowed');
-    const rejected = new Map<string, string>(), keys = new Set<string>();
+    const restricted = options?.restricted === true;
+    const rejected = new Map<string, string>(), keys = new Set<string>(), previewPrint: string[] = [];
     let total = 0;
     // Preflight the aggregate budget before allocating any owned font-program snapshots.
     for (const face of faces) {
@@ -432,14 +435,18 @@ export class PdfFontRegistry {
       if (total > MAX_TOTAL_BYTES) fail('font programs exceed 128 MiB');
     }
     for (const face of faces) {
-      const problem = validateFace(face);
+      const problem = validateFace(face, restricted);
       if (keys.has(face.key)) fail('duplicate font face key');
       keys.add(face.key);
       if (problem) { rejected.set(face.key, problem); continue; }
+      // Successful validation established these values equal the program's OS/2.
+      // A caller's previewPrint flag is never used to classify the face.
+      if (restricted && pdfFontEmbeddingProblem(face.metrics.fsType, face.os2Version) === 'preview/print embedding requires a read-only PDF') previewPrint.push(face.key);
       const metrics: NativeFontMetrics = { ...face.metrics, advances: [...face.metrics.advances], cmap: [...face.metrics.cmap], groups: face.metrics.groups.map((group) => [...group] as [number, number, number]), fontBounds: [...face.metrics.fontBounds] as [number, number, number, number], glyphBounds: face.metrics.glyphBounds.map((box) => [...box] as [number, number, number, number]), glyphBoundsKnown: face.metrics.glyphBoundsKnown ? [...face.metrics.glyphBoundsKnown] : undefined };
       this.faces.set(face.key, { ...face, bytes: new Uint8Array(face.bytes), metrics });
     }
     this.rejections = rejected;
+    this.previewPrintKeys = previewPrint;
   }
 
   face(key: string): PdfFontFace | undefined { return this.faces.get(key); }

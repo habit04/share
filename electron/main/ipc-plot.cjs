@@ -12,14 +12,39 @@ const { validatePaperDimensions } = require('../resource-limits.cjs');
 
 /** @param {MainContext} ctx */
 function registerPlotIpc(ctx) {
-  const { ipcMain, senderWindow, registry, pathPolicy, saveOrder } = ctx;
+  const { ipcMain, senderWindow, registry, pathPolicy, saveOrder, restrictedPdf } = ctx;
   const cancelled = () => Object.assign(new Error('ERR_SAVE_CANCELLED: the original exporting document is no longer active.'), { code: 'ERR_SAVE_CANCELLED' });
   function exportOptions(opts) {
     if (opts === undefined) return {};
     if (!opts || typeof opts !== 'object' || Array.isArray(opts) || opts.path !== undefined && typeof opts.path !== 'string' || opts.admission !== undefined && typeof opts.admission !== 'string') throw new Error('Invalid PDF admission options');
     if (opts.path !== undefined && (!opts.path || !opts.admission || !saveOrder)) throw new Error('A bound Windows PDF admission is required.');
+    // Restricted mode (12.4): the save call carries only the digest claim; the
+    // authoritative registration was made earlier through register-restricted-pdf
+    // and is consumed against the received bytes inside the producer.
+    if (opts.restricted !== undefined) {
+      const claim = opts.restricted;
+      if (!claim || typeof claim !== 'object' || Array.isArray(claim) || typeof claim.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(claim.sha256)
+        || !Number.isInteger(claim.byteLength) || claim.byteLength < 8 || claim.byteLength > 128 * 1024 * 1024) throw new Error('Invalid restricted PDF claim');
+      if (!opts.path || !opts.admission || !restrictedPdf) throw new Error('A registered restricted PDF export is required.');
+    }
     return opts;
   }
+  /**
+   * Register one restricted export (12.4): the ticket must already be bound to
+   * the claimed destination for this sender, and every claimed preview/print
+   * face is checked against the font host's own admission records inside the
+   * registry. Registration is single-use and expires; see registry.cjs for
+   * exactly what this binding does and does not prove.
+   */
+  ipcMain.handle('register-restricted-pdf', async (ev, ticket, claim) => {
+    if (!restrictedPdf || !saveOrder) throw new Error('Restricted PDF export is not available.');
+    if (!claim || typeof claim !== 'object' || Array.isArray(claim) || typeof claim.path !== 'string') throw new Error('Invalid restricted PDF registration');
+    const captured = saveOrder.capture(ev, 'pdf-export', ticket);
+    const file = pathPolicy?.writable(claim.path, 'register-restricted-pdf', /./);
+    if (!file || !saveOrder.assertBound(ev, 'pdf-export', file, captured)) throw new Error('The restricted PDF destination is not bound to this export.');
+    restrictedPdf.registry.register({ ticket: captured.ticket, owner: captured.owner, claim });
+    return true;
+  });
   async function pickPdf(ev, win, suggestName, captured) {
     const res = await dialog.showSaveDialog(win, {
       title: 'Plot to PDF', defaultPath: String(suggestName || 'Drawing1.pdf'),
@@ -68,6 +93,7 @@ function registerPlotIpc(ctx) {
     if (typeof dataUrl !== 'string' || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) throw new Error('Invalid image');
     validatePaperDimensions(sheet); // before the dialog: at most 200 inches a side (E-18)
     const options = exportOptions(opts);
+    if (options.restricted !== undefined) throw new Error('Restricted PDF mode is available only for vector PDF output.');
     const captured = options.path !== undefined ? saveOrder?.capture(ev, 'pdf-export', options.admission) : saveOrder?.capturePicked(ev, 'pdf-export', options.admission);
     try {
       const file = await selectedPdf(ev, win, suggestName, options, captured);
@@ -110,7 +136,23 @@ function registerPlotIpc(ctx) {
     try {
       const file = await selectedPdf(ev, win, suggestName, options, captured);
       if (!file) return null;
-      return await producePdf(ev, file, captured, async () => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+      // A dangling registration with an ordinary save is a mode mix-up: refuse
+      // rather than guess which output the user asked for (12.4 binding).
+      if (!options.restricted && restrictedPdf && captured && restrictedPdf.registry.has(captured.ticket, captured.owner)) {
+        throw new Error('This export was registered as restricted but saved without its restricted claim.');
+      }
+      return await producePdf(ev, file, captured, async (signal) => {
+        const plain = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        if (!options.restricted) return plain;
+        if (!restrictedPdf || !captured) throw new Error('Restricted PDF export is not available.');
+        // Consume the single-use registration against the exact received
+        // bytes BEFORE transforming; the ciphertext, not the plaintext, is
+        // what the save-order scope snapshots and commits.
+        restrictedPdf.registry.consume({ ticket: captured.ticket, owner: captured.owner, claim: options.restricted, bytes: plain });
+        const encrypted = await restrictedPdf.host.transform(plain, signal ?? undefined);
+        if (signal?.aborted) throw cancelled();
+        return Buffer.from(encrypted.buffer, encrypted.byteOffset, encrypted.byteLength);
+      });
     } finally { saveOrder?.discard(captured); }
   });
 

@@ -105,4 +105,6 @@ export interface FontMetricsRequest {
   /** Captured-PDF reads only: codepoints of the plotted strings for this face,
    * so the reader point-validates just those glyphs. Screen reads omit it. */
   readonly usedCodepoints?: readonly number[];
+  /** This captured PDF opted into editing restrictions; never a persisted drawing setting. */
+  readonly restricted?: boolean;
 }

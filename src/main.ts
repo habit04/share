@@ -71,7 +71,9 @@ declare global {
       plotPdf(dataUrl: string, suggestName: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }, opts?: { path?: string; admission?: string }): Promise<string | null>;
       printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }): Promise<boolean>;
       /** Track E: write vector PDF bytes (save-pdf IPC). */
-      savePdf?(bytes: Uint8Array, suggestName: string, opts?: { path?: string; admission?: string }): Promise<string | null>;
+      savePdf?(bytes: Uint8Array, suggestName: string, opts?: { path?: string; admission?: string; restricted?: { sha256: string; byteLength: number } }): Promise<string | null>;
+      /** Restricted PDF (12.4): register the frozen digest + preview/print face claims before savePdf. */
+      registerRestrictedPdf?(admission: string, claim: { path: string; sha256: string; byteLength: number; faces: readonly import('./core/text-metrics').FontMetricsRequest[] }): Promise<boolean>;
       saveDxf(path: string | null, text: string, suggestName: string, opts?: { backup?: boolean }): Promise<string | null>;
       chooseDrawingPath?(suggestName: string): Promise<string | null>;
       dwgExportStatus?(): Promise<{ available: boolean; reason?: string }>;

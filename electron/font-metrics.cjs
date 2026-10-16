@@ -22,7 +22,7 @@ const MAX_VARIATION_INSTANCES = 512;
 /** @typedef {[number, number, number, number]} FontBounds */
 /** @typedef {[number, number, number]} CmapGroup */
 /** @typedef {{ family: string, subfamily: string, unitsPerEm: number, capitalHeight: number, winDescent: number, fontBounds: FontBounds, advances: number[], glyphBounds: FontBounds[], glyphBoundsKnown: boolean[], cmap: number[], groups: CmapGroup[], fsType: number, bold: boolean, italic: boolean, variable?: boolean }} NativeFontMetrics */
-/** @typedef {{ font: string, family?: string, bold?: boolean, italic?: boolean, usedCodepoints?: number[] }} FontMetricsRequest */
+/** @typedef {{ font: string, family?: string, bold?: boolean, italic?: boolean, usedCodepoints?: number[], restricted?: boolean }} FontMetricsRequest */
 
 /** @returns {never} */
 function fail(message) { throw new Error(`Font metrics: ${message}`); }
