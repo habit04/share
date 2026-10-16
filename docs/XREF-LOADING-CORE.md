@@ -81,6 +81,18 @@ adapter. They are **not** file identity and **not** authorization:
   identity: staging returns an explicit incomplete candidate in which
   every root is `unresolved-location`, and nothing is read — so a SELF
   edge can never reload the host as external geometry.
+- **Host identity evidence is validated, from either origin.** Adapter-
+  returned and caller-supplied (`input.hostIdentity`) host identities
+  pass the same validator as dependency identities — a nonempty string
+  id and an absolute owning location — BEFORE the evidence anchors
+  resolution or seeds ancestry. Invalid evidence (an empty id, a
+  relative owning location) fails closed exactly like an unidentifiable
+  host: a host-level diagnostic, unresolved roots, and no external
+  reference identification or reads. Caller-supplied evidence is never
+  silently replaced by adapter evidence; an empty id in particular
+  must never seed ancestry as `id:` while a SELF edge identifies as
+  `id:HOST`. The store likewise derives its host binding only from
+  validated identity evidence.
 - Ancestry is **seeded with the host identity** (from
   `input.hostIdentity`, or by identifying `hostPath` when the adapter
   offers it), and root references resolve against the host's owning
@@ -258,7 +270,7 @@ the parent — see limitations.
 
 ## Tests (headless)
 
-`tests/xref-loading.test.ts` (63 tests) runs against authored fixtures
+`tests/xref-loading.test.ts` (69 tests) runs against authored fixtures
 in `tests/fixtures/xref/` (registered in `tests/fixtures/manifest.json`)
 through fake in-memory adapters mapped to a virtual project layout.
 Covered, in addition to the original milestone's cases: app/paths-based
@@ -289,7 +301,14 @@ initial-only partial publication as a state condition (a second
 partial `load` preserves the graph); missing/denied classification of
 identification refusals; and platform-pinned path-helper expectations
 (POSIX pinned for the file, with a dedicated win32-pinned contract
-test), so the suite is portable to Windows Node.
+test), so the suite is portable to Windows Node. A third review round
+added host-evidence validation: the four invalid host cases (empty id /
+relative owning location, from the adapter and from the caller) fail
+closed with the review's exact expectations — no external
+identification or reads, a host-level diagnostic, unresolved roots —
+plus a valid-host control and a store-preservation regression. The
+review packet's own authored test files were also executed against
+this candidate during validation (see the handoff validation record).
 
 These are Linux/Node headless unit checks against the **existing** DXF
 parser. They are not AutoCAD compatibility evidence.

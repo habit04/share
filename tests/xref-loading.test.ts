@@ -1080,3 +1080,89 @@ describe('20.1 round-2 review regressions', () => {
     expect(reader.calls).toEqual([]);
   });
 });
+
+describe('20.1 round-3 host evidence validation', () => {
+  const HOST2 = '/proj/drawings/host.dxf';
+  const VALID_HOST2: XrefFileIdentity = { id: 'HOST', owningLocation: HOST2, version: 'host-v1' };
+  const invalidCases: ReadonlyArray<{ label: string; evidence: XrefFileIdentity; reference: XrefReferenceInput }> = [
+    {
+      label: 'empty identity with an absolute owning location',
+      evidence: { id: '', owningLocation: HOST2, version: 'host-v1' },
+      // A valid identification of SELF must not turn the invalid host
+      // seed (`id:`) into permission to reload the host externally.
+      reference: { blockName: 'SELF', path: 'host.dxf' },
+    },
+    {
+      label: 'nonempty identity with a relative owning location',
+      evidence: { id: 'HOST', owningLocation: 'relative/host.dxf', version: 'host-v1' },
+      // An absolute non-host target, so no incidental cycle/path
+      // failure can hide acceptance of the invalid owning location.
+      reference: { blockName: 'LEAF', path: '/proj/shared/leaf.dxf' },
+    },
+  ];
+
+  for (const origin of ['adapter', 'caller'] as const) {
+    for (const { label, evidence, reference } of invalidCases) {
+      it(`fails closed for ${label} (evidence from ${origin})`, async () => {
+        const identified: Array<{ path: string; depth: number }> = [];
+        const readPaths: string[] = [];
+        const reader: XrefFileReader = {
+          async identify(path: string, context: { depth: number }) {
+            identified.push({ path, depth: context.depth });
+            if (context.depth === 0) return evidence;
+            if (path === HOST2) return VALID_HOST2;
+            if (path === '/proj/shared/leaf.dxf') return { id: 'LEAF', owningLocation: path, version: 'leaf-v1' };
+            throw new Error(`unexpected identification: ${path}`);
+          },
+          async readText(path: string): Promise<XrefReadResult> {
+            readPaths.push(path);
+            return fixture('leaf.dxf');
+          },
+        };
+        const outcome = await stageXrefLoad(
+          { references: [reference], hostPath: HOST2, ...(origin === 'caller' ? { hostIdentity: evidence } : {}) },
+          { reader },
+        );
+        // Adapter evidence: exactly one identification (the host itself).
+        // Caller evidence: the adapter is never consulted at all.
+        expect(identified).toEqual(origin === 'adapter' ? [{ path: HOST2, depth: 0 }] : []);
+        expect(readPaths).toEqual([]);
+        expect(outcome.failures).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'unresolved-location', blockName: '', depth: 0 })]));
+        expect(outcome.snapshot?.stats.filesLoaded ?? 0).toBe(0);
+        expect(outcome.snapshot?.nodes.some((n) => n.status === 'loaded') ?? false).toBe(false);
+        expect(outcome.snapshot?.nodes[0]?.status).toBe('unresolved-location');
+        expect(outcome.snapshot?.hostIdentity).toBeUndefined(); // invalid evidence is not recorded as the host identity
+      });
+    }
+  }
+
+  it('valid host evidence control: a valid canonical host identity loads normally (adapter origin)', async () => {
+    const files = projectFiles();
+    files.set('/proj/shared/leaf.dxf', fixture('leaf.dxf'));
+    const reader = fakeReader(files, (path) => {
+      if (path === HOST2) return VALID_HOST2;
+      if (path === '/proj/shared/leaf.dxf') return { id: 'LEAF', owningLocation: path, version: 'leaf-v1' };
+      return null;
+    });
+    const outcome = await stageXrefLoad({ references: [{ blockName: 'LEAF', path: '/proj/shared/leaf.dxf' }], hostPath: HOST2 }, { reader });
+    expect(outcome.failures).toEqual([]);
+    expect(outcome.snapshot!.nodes[0]!.status).toBe('loaded');
+    expect(outcome.snapshot!.hostIdentity).toBe('HOST');
+  });
+
+  it('store preservation: a refresh carrying invalid caller host evidence preserves the last good graph', async () => {
+    const reader = fakeReader();
+    const store = new XrefStore();
+    const first = await store.load({ hostState: hostState(), hostPath: HOST_PATH, hostIdentity: { id: 'HOST', owningLocation: HOST_PATH } }, { reader });
+    expect(first.committed).toBe(true);
+    const kept = store.current;
+    const result = await store.refresh(
+      { hostState: hostState(), hostPath: HOST_PATH, hostIdentity: { id: '', owningLocation: HOST_PATH } },
+      { reader },
+    );
+    expect(result.committed).toBe(false);
+    expect(store.current).toBe(kept);
+    expect(result.staged).not.toBeNull();
+    expect(result.staged!.nodes.every((n) => n.status === 'unresolved-location')).toBe(true);
+  });
+});
