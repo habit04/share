@@ -561,29 +561,41 @@ describe('realistic corpus (§9.2)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// FINDING F-3034 — measured behaviour of record (30.3.4). These tests pin
-// what the engine DOES today on tangent systems, so the evidence lives
-// in the suite next to the corpus it explains. They are not assertions
-// of correct behaviour: a solver improvement should flip the corpus
-// expectations above and update these pins in the same change.
+// FINDING F-3034 — behaviour of record, RESOLVED in the review
+// correction round (2026-10-16). These tests originally pinned what
+// the engine DID on tangent systems at 30.3.4 (iteration-limit stalls;
+// rank deflated by 1 per tangent), so the evidence lived in the suite
+// next to the corpus it explains. The header then prescribed: "a
+// solver improvement should flip the corpus expectations above and
+// update these pins in the same change." That change has now landed —
+// the corpus expectations above flipped unedited (they asserted
+// analytic truth all along), and these pins now assert the corrected
+// behaviour. The frozen corpus's cases, thresholds, tolerances and
+// work limits were never modified.
 //
 // Root phenomenon (measured, probes in the 30.3.4 session): at an
-// exactly-tangent configuration the tangent row is numerically
-// near-dependent on the coincident rows of the shared endpoint. The
+// exactly-tangent configuration the tangent row is an exact linear
+// combination of the coincident rows of the shared endpoint. The
 // resulting near-null direction (arc-centre motion along the tangent)
-// (1) deflates the Jacobian rank by 1 per tangent constraint, and
-// (2) makes the damped Gauss–Newton relaxation crawl whenever a solve
-// must move an arc centre, reaching MAX_ITERATIONS "while still
-// progressing" (§5.5's honest iteration-limit) instead of converging.
+// (1) deflates the pointwise Jacobian rank by 1 per tangent
+// constraint, and (2) made the damped relaxation crawl along the
+// fold, reaching the iteration limit instead of converging.
+// Corrections (in-house, no new dependency): the stage-3 step is a
+// Householder-QR Levenberg step; a satisfied final iterate is a
+// success even at the iteration limit; an Anderson(1)/Aitken
+// extrapolation, gated on a measured alternating contraction and a
+// strict residual decrease, crosses the fold crawl; and rank is also
+// read at a deterministically perturbed point when tangent rows are
+// present, taking the max — which breaks only pointwise fold
+// accidents, never functional dependencies.
 // ---------------------------------------------------------------------------
 
 describe('finding F-3034 — tangent-system behaviour of record', () => {
-  it('F-3034-1: a +2% slot length edit (arc centres must move) stalls to the iteration limit', () => {
+  it('F-3034-1 (resolved): a +2% slot length edit (arc centres must move) solves', () => {
     const { entities, constraints } = slot(10, 5, 10.2, 5, true);
     const r = solveConstraints(entities, constraints);
-    expect(r.ok).toBe(false);
-    expect(r.failure?.code).toBe('iteration-limit');
-    expect(r.entities).toBeUndefined();
+    expect(r.ok).toBe(true);
+    expect(r.entities).toBeDefined();
   });
 
   it('F-3034-1 control: the same slot with a radius-only edit (centres stay) solves even at +20%', () => {
@@ -592,22 +604,23 @@ describe('finding F-3034 — tangent-system behaviour of record', () => {
     expect(r.ok).toBe(true);
   });
 
-  it('F-3034-1: a −1% fillet radius edit (centre must move) stalls likewise', () => {
+  it('F-3034-1 (resolved): a −1% fillet radius edit (centre must move) solves', () => {
     const { entities, constraints } = filletPlate(20, 12, 4.4, 20, 12, 4.35);
     const r = solveConstraints(entities, constraints);
-    expect(r.ok).toBe(false);
-    expect(r.failure?.code).toBe('iteration-limit');
+    expect(r.ok).toBe(true);
   });
 
-  it('F-3034-2: the status reporter overstates remaining by 1 per tangent at exact tangency', () => {
+  it('F-3034-2 (resolved): the status reporter counts tangent consumption at exact tangency', () => {
     const { entities, constraints } = filletPlate(20, 12, 4, 20, 12, 4);
     const a = analyzeConstraints(entities, constraints);
     expect(a.dof.total).toBe(21);
-    // Nominal consumption is 21 (fully constrained). The Jacobian rank
-    // at the exactly-tangent point reads 19 — one lost per tangent —
-    // so a fully-constrained plate reports 'underconstrained'.
-    expect(a.dof.effectiveConsumed).toBe(19);
-    expect(a.dof.remaining).toBe(2);
-    expect(a.status).toBe('underconstrained');
+    // Nominal consumption is 21 (fully constrained). The pointwise
+    // Jacobian rank at the exactly-tangent point still reads 19 —
+    // one lost per tangent — but the rank probe now also reads a
+    // deterministically perturbed point, so the plate reports its
+    // true fully-constrained status.
+    expect(a.dof.effectiveConsumed).toBe(21);
+    expect(a.dof.remaining).toBe(0);
+    expect(a.status).toBe('fully-constrained');
   });
 });
