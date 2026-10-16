@@ -35,6 +35,14 @@ export const DIMSTYLE_APP = 'JCAD_DIMSTYLE';
 export const TABLE_APP = 'JCAD_TABLE';
 
 /**
+ * XDATA application name carrying JCad's authored dynamic-block data (priority 30):
+ * a versioned JSON definition on the BLOCK record and sparse per-instance parameter
+ * values on the INSERT (src/io/dxf/dynamic-data.ts). JCad-specific data — it is NOT
+ * native dynamic-block data; other programs ignore it and show the static block.
+ */
+export const DYNAMIC_APP = 'JCAD_DYNAMIC';
+
+/**
  * XDATA application name carrying an MTEXT's column definition (JSON in 1000 chunks): AC1015 has
  * no MTEXT columns, so JCad keeps them here and other programs show one column.
  */
@@ -66,7 +74,7 @@ export const UNSUPPORTED_DIM_CODES: Readonly<Record<number, string>> = { 49: 'DI
 export const SUPPORTED_DIM_NAMES = new Set([...DIM_VARIABLES.map((v) => v.name), 'DIMSTYLE', 'DIMTOL', 'DIMLIM', 'DIMTIH', 'DIMTOH', 'DIMZIN', 'DIMSAH', 'DIMBLK']);
 
 /** Applications whose data the reader models; other applications are reported as losses. */
-export const isQuietXdataApp = (app: string, ownerKind?: string): boolean => app === DIMSTYLE_APP || app === TABLE_APP || app === MTEXT_COLUMNS_APP || (app === MTEXT_BACKGROUND_APP && ownerKind === 'MTEXT') || app === ANNO_APP;
+export const isQuietXdataApp = (app: string, ownerKind?: string): boolean => app === DIMSTYLE_APP || app === TABLE_APP || app === DYNAMIC_APP || app === MTEXT_COLUMNS_APP || (app === MTEXT_BACKGROUND_APP && ownerKind === 'MTEXT') || app === ANNO_APP;
 
 /** Pointer groups that refer to other objects (dropped from raw records: those objects are not kept). */
 export const isPointerCode = (code: number): boolean => code === 5 || code === 105 || (code >= 320 && code <= 369) || (code >= 390 && code <= 399) || (code >= 480 && code <= 481) || code === 67;
