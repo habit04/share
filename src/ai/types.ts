@@ -1,0 +1,182 @@
+import type { Entity } from '../core/entities';
+import type { Bounds } from '../core/geometry';
+import type { UnitSettings } from '../core/units';
+
+/**
+ * Provider-independent types for the AI assistant (docs/AI-ASSISTANT.md).
+ * Nothing in this module touches the editor, the DOM, or the network.
+ */
+
+/** Active space copied by value: layout name plus viewport id when inside one. */
+export interface AiSpaceBinding {
+  readonly layout: string | null;
+  readonly viewport: string | null;
+}
+
+/**
+ * Identity of the exact selection in the exact document a request was made
+ * against. Captured by value at request time and re-read before an answer is
+ * shown; any difference makes the answer stale. `docRevision` is the drawing's
+ * monotonic mutation counter — it advances on edits, undo, redo, loads and
+ * quiet patches, so an edit-then-undo (which restores the identical state
+ * object) still invalidates an in-flight request.
+ */
+export interface AiBinding {
+  readonly sessionId: number;
+  readonly docId: string;
+  readonly contentGeneration: number;
+  readonly docRevision: number;
+  readonly docLoadCount: number;
+  readonly space: AiSpaceBinding;
+  readonly selectionIds: readonly string[];
+}
+
+export function aiBindingsEqual(a: AiBinding, b: AiBinding): boolean {
+  return a.sessionId === b.sessionId
+    && a.docId === b.docId
+    && a.contentGeneration === b.contentGeneration
+    && a.docRevision === b.docRevision
+    && a.docLoadCount === b.docLoadCount
+    && a.space.layout === b.space.layout
+    && a.space.viewport === b.space.viewport
+    && a.selectionIds.length === b.selectionIds.length
+    && a.selectionIds.every((id, i) => id === b.selectionIds[i]);
+}
+
+/**
+ * The read-only surface the snapshot builder needs. Implemented for the real
+ * editor in editor-source.ts and by plain fakes in tests. There are no
+ * mutating methods here on purpose: asking a question can never reach a
+ * drawing, selection, tool, undo or save operation through this interface.
+ */
+export interface AiSnapshotSource {
+  /** Current binding, copied by value. */
+  binding(): AiBinding;
+  /** Drawing unit settings. */
+  units(): UnitSettings;
+  /** Selected entities in drawing order (active space only). */
+  selectedEntities(): readonly Entity[];
+  /** Look up one entity by id in the active space. */
+  entityById(id: string): Entity | undefined;
+  /** Bounds for an entity, or null when they cannot be computed. */
+  boundsFor(entity: Entity): Bounds | null;
+  /**
+   * Why a selected id did not resolve to an entity: a known non-entity
+   * object (e.g. a 3D solid in the selection) is 'unsupported-object';
+   * anything else is a stale 'missing-object'.
+   */
+  missingIdKind(id: string): AiOmitReason;
+}
+
+export type AiOmitReason =
+  | 'unsupported-object'
+  | 'missing-object'
+  | 'unsupported-type'
+  | 'object-limit'
+  | 'byte-limit';
+
+export interface AiOmitted {
+  readonly id: string;
+  readonly reason: AiOmitReason;
+}
+
+export interface AiPoint {
+  readonly x: number;
+  readonly y: number;
+}
+
+export type AiGeometryValue =
+  | number
+  | string
+  | boolean
+  | AiPoint
+  | readonly AiPoint[];
+
+/** One selected object, field-whitelisted per type — never a raw entity. */
+export interface AiObjectSnapshot {
+  readonly id: string;
+  readonly type: string;
+  readonly layer: string;
+  readonly geometry: Readonly<Record<string, AiGeometryValue>>;
+  readonly bounds?: { readonly min: AiPoint; readonly max: AiPoint };
+  /** Permitted text content (text / mtext / leader / dimension override). */
+  readonly text?: string;
+  /** Insert attributes, tag order sorted for determinism. */
+  readonly attributes?: readonly { readonly tag: string; readonly value: string; readonly hidden?: boolean }[];
+  /** Table cell texts, row-major, non-empty only. */
+  readonly tableText?: readonly string[];
+  /** Transparency notes: truncations and exclusions applied to this object. */
+  readonly notes?: readonly string[];
+}
+
+export interface AiSnapshot {
+  readonly kind: 'jcad.ai.selection-snapshot';
+  readonly version: 1;
+  readonly units: {
+    readonly insunits: number;
+    readonly insunitsName: string;
+    readonly lunits: number;
+    readonly luprec: number;
+    readonly auprec: number;
+  };
+  readonly space:
+    | { readonly kind: 'model' }
+    | { readonly kind: 'layout'; readonly layout: string; readonly viewport?: string };
+  readonly selection: {
+    readonly total: number;
+    readonly included: number;
+    readonly omittedCount: number;
+    readonly omitted: readonly AiOmitted[];
+    readonly omittedListTruncated: boolean;
+  };
+  readonly objects: readonly AiObjectSnapshot[];
+  /** Exact UTF-8 byte length of the serialized snapshot. */
+  readonly serializedBytes: number;
+}
+
+export interface AiAskRequest {
+  readonly requestId: number;
+  readonly question: string;
+  readonly snapshot: AiSnapshot;
+  readonly binding: AiBinding;
+}
+
+export interface AiUsage {
+  readonly inputBytes?: number;
+  readonly outputChars?: number;
+  readonly durationMs?: number;
+}
+
+export interface AiAnswer {
+  readonly text: string;
+  /** Object ids the answer discusses; validated against the snapshot before display. */
+  readonly references: readonly string[];
+  readonly usage?: AiUsage;
+}
+
+export type AiErrorKind =
+  | 'provider-not-configured'
+  | 'provider-failure'
+  | 'host-unavailable'
+  | 'timeout'
+  | 'cancelled'
+  | 'stale'
+  | 'invalid-question'
+  | 'invalid-answer'
+  | 'output-too-large'
+  | 'disposed';
+
+export class AiError extends Error {
+  readonly kind: AiErrorKind;
+  constructor(kind: AiErrorKind, message: string) {
+    super(message);
+    this.name = 'AiError';
+    this.kind = kind;
+  }
+}
+
+/** A provider answers questions about a snapshot. It receives no editor access. */
+export interface AiProvider {
+  readonly id: string;
+  ask(request: AiAskRequest, signal: AbortSignal): Promise<AiAnswer>;
+}
