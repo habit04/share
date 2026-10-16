@@ -435,6 +435,18 @@ function scalarFormResidual(
   };
 }
 
+/** Signed principal wrap to (−π, π] — the §5.4 angle residual's wrap.
+ *  (The geometry module's normAngle normalizes to [0, 2π) for measured
+ *  angles; a residual of 2π − ε for an almost-satisfied angle would be
+ *  wrong, so the residual wraps signed.) */
+function wrapPi(a: number): number {
+  const t = 2 * Math.PI;
+  let r = a % t;
+  if (r <= -Math.PI) r += t;
+  else if (r > Math.PI) r -= t;
+  return r;
+}
+
 interface SegGeom {
   readonly d: Point;
   readonly L: number;
@@ -580,7 +592,7 @@ function buildResidual(c: Constraint, shape: ConstraintShape, layout: ReadonlyMa
           (vs) => {
             const s1 = segGeom(p1, q1, vs);
             const s2 = segGeom(p2, q2, vs);
-            return normAngle(Math.atan2(s2.d.y, s2.d.x) - Math.atan2(s1.d.y, s1.d.x) - c.value!);
+            return wrapPi(Math.atan2(s2.d.y, s2.d.x) - Math.atan2(s1.d.y, s1.d.x) - c.value!);
           },
           (vs) => {
             const s1 = segGeom(p1, q1, vs);
@@ -1691,9 +1703,21 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
     }
     let accepted = false;
     let step = new Float64Array(nVars);
+    // Damping scale for this iteration: the largest normal-equation
+    // diagonal. Damping is λ·κ·I (a scalar multiple of the identity at
+    // the system's own scale). Per-diagonal Marquardt scaling is NOT
+    // used: it breaks the eigen-decomposition of the rank-1 blocks that
+    // direction/distance rows produce, coupling a radial right-hand
+    // side into large tangential steps (a point driven to a target
+    // distance slid sideways along its circle instead of moving
+    // radially). A scalar κ keeps the damping scale-free across
+    // coordinate magnitudes (case 8a, S ≈ 1e8) without that coupling.
+    let kappa = 0;
+    for (let i = 0; i < f; i += 1) kappa = Math.max(kappa, Math.abs(A[i * f + i]!));
+    if (kappa === 0) kappa = 1;
     for (let attempt = 0; attempt < 80; attempt += 1) {
       const Ad = new Float64Array(A);
-      for (let i = 0; i < f; i += 1) Ad[i * f + i] = Ad[i * f + i]! + lambda * (Ad[i * f + i]! !== 0 ? Math.abs(Ad[i * f + i]!) : 1);
+      for (let i = 0; i < f; i += 1) Ad[i * f + i] = Ad[i * f + i]! + lambda * kappa;
       const neg = new Float64Array(f);
       for (let i = 0; i < f; i += 1) neg[i] = -g[i]!;
       const delta = solveDense(Ad, neg, f);
