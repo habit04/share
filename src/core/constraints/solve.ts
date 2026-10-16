@@ -10,10 +10,14 @@
  * `perpendicular` orientation adoption, `equal` length, `angle`) and
  * the remaining residual forms: direction pairs, equal length, all
  * distance modes, and point-on-object coincident (line / circle / arc
- * objects). Still refused with 'unsupported-constraint' — never silently
- * ignored, because a driving constraint the solver skipped would fake
- * success: `tangent` and point-on-object coincident on a polyline
- * 'whole' (slice 30.3.3).
+ * objects). Slice 30.3.3 adds `tangent` (line–curve and circle–circle,
+ * §5.4; no stage-2 rule exists for it — §5.3 names tangent conditions
+ * as stage-3 work) and point-on-object coincident on a polyline 'whole'
+ * (minimum over segments, §2.1 "per segment"). The only shape still
+ * refused with 'unsupported-constraint' — never silently ignored,
+ * because a driving constraint the solver skipped would fake success —
+ * is a point-on-object coincident whose polyline object has fewer than
+ * two points and therefore no segment to measure against.
  *
  * Pure and deterministic: same input ⇒ same output, bit-for-bit. Work is
  * bounded by an integer counter, never a timer. A failed or cancelled
@@ -25,6 +29,7 @@ import type { Entity } from '../entities';
 import {
   anchorKey,
   entityDof,
+  hasBulge,
   isConstrainable,
   nominalConsumption,
   resolveAnchorPoint,
@@ -94,6 +99,10 @@ export interface ConstraintDiagnostic {
   readonly residual: number;
   /** Live measured value for dimensional constraints (driving + reference). */
   readonly measured?: number;
+  /** Circle–circle tangent only: the branch chosen once at entry from the
+   *  current geometry (design §5.4 — recorded in diagnostics, never
+   *  switched mid-solve). */
+  readonly branch?: 'external' | 'internal';
 }
 
 export interface SolveNote {
@@ -311,6 +320,9 @@ interface ResidualSet {
   readonly rowCount: number;
   /** Union of variables this constraint's rows read. */
   readonly vars: readonly number[];
+  /** Circle–circle tangent: entry branch (design §5.4), surfaced in the
+   *  constraint's diagnostic. */
+  readonly branch?: 'external' | 'internal';
   eval(vars: Float64Array, out: Float64Array, at: number): void;
   /** Dense Jacobian rows over the component's variables. */
   jac(vars: Float64Array, out: Float64Array, rowAt: number, nVars: number): void;
@@ -544,6 +556,171 @@ function scaleGrads(g: ScalarGrads, k: number): ScalarGrads {
   };
 }
 
+type TangentBranch = 'external' | 'internal';
+
+/** Tangent line–curve (§5.4): (distToLine(c) − r)/S over the infinite
+ *  line. The center's side of the line is an entry branch exactly like
+ *  the circle–circle one: σ = sign of the signed distance at entry is
+ *  captured once, so the residual is smooth and the circle is never
+ *  flipped across the line mid-solve. Arc curve sides use their circle
+ *  carrier (center + radius), as for point-on-circle (§5.4). */
+function tangentLineCurveResidual(
+  c: Constraint,
+  seg: Side,
+  curve: Side,
+  layout: ReadonlyMap<string, EntVars>,
+  S: number,
+  entry: Float64Array,
+): ResidualSet {
+  const [aE, bE] = segmentExprs(seg, layout);
+  const cE = pointExpr({ entity: curve.entity, ref: { entityId: curve.entity.id, anchor: 'center' } }, layout);
+  const rv = radiusVar(curve, layout);
+  const vars = [...new Set([...exprVars(cE, aE, bE), rv])];
+  const sigma = lineCrossForm(cE, aE, bE, entry).f < 0 ? -1 : 1;
+  return scalarFormResidual(
+    c,
+    vars,
+    1 / S,
+    (vs) => sigma * lineCrossForm(cE, aE, bE, vs).f - vs[rv]!,
+    (vs) => {
+      const g = scaleGrads(lineCrossForm(cE, aE, bE, vs).grads, sigma);
+      return { points: g.points, varTerms: [{ v: rv, g: -1 }] };
+    },
+  );
+}
+
+/** Tangent circle–circle (§5.4): (dist(c₁,c₂) − (r₁+r₂))/S externally,
+ *  (dist − |r₁−r₂|)/S internally. The branch is chosen once at entry —
+ *  internal when the entry geometry is internally tangent within the
+ *  residual tolerance (dist < |r₁−r₂| + RESIDUAL_TOL·S) — recorded on
+ *  the residual set for diagnostics, and never switched mid-solve.
+ *  Arc sides use their circle carriers. */
+function tangentCircleCircleResidual(
+  c: Constraint,
+  s1: Side,
+  s2: Side,
+  layout: ReadonlyMap<string, EntVars>,
+  S: number,
+  entry: Float64Array,
+): ResidualSet {
+  const centerOf = (s: Side) => pointExpr({ entity: s.entity, ref: { entityId: s.entity.id, anchor: 'center' } }, layout);
+  const c1E = centerOf(s1);
+  const c2E = centerOf(s2);
+  const r1 = radiusVar(s1, layout);
+  const r2 = radiusVar(s2, layout);
+  const vars = [...new Set([...exprVars(c1E, c2E), r1, r2])];
+  const d0 = dist(c1E.eval(entry), c2E.eval(entry));
+  const branch: TangentBranch = d0 < Math.abs(entry[r1]! - entry[r2]!) + RESIDUAL_TOL * S ? 'internal' : 'external';
+  const rs = scalarFormResidual(
+    c,
+    vars,
+    1 / S,
+    (vs) => {
+      const d = dist(c1E.eval(vs), c2E.eval(vs));
+      return branch === 'external' ? d - (vs[r1]! + vs[r2]!) : d - Math.abs(vs[r1]! - vs[r2]!);
+    },
+    (vs) => {
+      const p1 = c1E.eval(vs);
+      const p2 = c2E.eval(vs);
+      const d = dist(p1, p2);
+      const ux = d > 0 ? (p2.x - p1.x) / d : 0;
+      const uy = d > 0 ? (p2.y - p1.y) / d : 0;
+      // ∂(−|r₁−r₂|): −sign(r₁−r₂) on r₁, +sign(r₁−r₂) on r₂ (external:
+      // −1 on both). At r₁ = r₂ either subgradient is valid; +1 is used.
+      const s = vs[r1]! < vs[r2]! ? -1 : 1;
+      return {
+        points: [
+          { expr: c2E, gx: ux, gy: uy },
+          { expr: c1E, gx: -ux, gy: -uy },
+        ],
+        varTerms:
+          branch === 'external'
+            ? [
+                { v: r1, g: -1 },
+                { v: r2, g: -1 },
+              ]
+            : [
+                { v: r1, g: -s },
+                { v: r2, g: s },
+              ],
+      };
+    },
+  );
+  return { ...rs, branch };
+}
+
+/** Point-on-object coincident on a polyline 'whole' (§2.1: the 'whole'
+ *  anchor on a polyline is per segment): the residual is the distance
+ *  from the point to the polyline — the minimum over segments of the
+ *  clamped point-to-segment distance — normalized by S. The active
+ *  segment is the argmin, ties broken by the lowest segment index
+ *  (stored order), so the form is deterministic. Its gradient is taken
+ *  at the active segment with the projection parameter frozen (envelope
+ *  theorem: at an interior projection ∂dist/∂t = 0, at a clamped end t
+ *  is locally constant). Bulges are not part of the form: they are
+ *  carried data (§2.5), and a solve engaging a bulged polyline reports
+ *  'bulge-carried' rather than pretending the arc is the chord. */
+function coincidentPolylineResidual(
+  c: Constraint,
+  point: Side,
+  object: Side,
+  layout: ReadonlyMap<string, EntVars>,
+  S: number,
+): ResidualSet | null {
+  const pl = object.entity as Extract<ConstrainableEntity, { type: 'polyline' }>;
+  const n = pl.points.length;
+  const segCount = pl.closed ? n : n - 1;
+  if (segCount < 1) return null; // no segment to measure against — refused by the caller
+  const o = layout.get(pl.id)!.offset;
+  const vertex = (i: number) => varPairExpr(o + 2 * (pl.closed ? i % n : i));
+  const segments: readonly (readonly [PointExpr, PointExpr])[] = Array.from({ length: segCount }, (_, i) => [vertex(i), vertex(i + 1)] as const);
+  const pE = pointExpr(point, layout);
+  const vars = [...new Set([...pE.vars, ...segments.flatMap(([a, b]) => [...a.vars, ...b.vars])])];
+  /** Active segment at `vs`: its endpoints, frozen projection parameter,
+   *  distance, and unit vector from the projection to the point. */
+  const active = (vs: Float64Array) => {
+    const P = pE.eval(vs);
+    let best: { a: PointExpr; b: PointExpr; t: number; d: number; gx: number; gy: number } | null = null;
+    for (const [aE, bE] of segments) {
+      const A = aE.eval(vs);
+      const B = bE.eval(vs);
+      const dx = B.x - A.x;
+      const dy = B.y - A.y;
+      const L2 = dx * dx + dy * dy;
+      const t = L2 > 0 ? Math.min(1, Math.max(0, ((P.x - A.x) * dx + (P.y - A.y) * dy) / L2)) : 0;
+      const wx = P.x - (A.x + t * dx);
+      const wy = P.y - (A.y + t * dy);
+      const d = Math.hypot(wx, wy);
+      if (best === null || d < best.d) {
+        best = { a: aE, b: bE, t, d, gx: d > 0 ? wx / d : 0, gy: d > 0 ? wy / d : 0 };
+      }
+    }
+    return best!;
+  };
+  return scalarFormResidual(
+    c,
+    vars,
+    1 / S,
+    (vs) => active(vs).d,
+    (vs) => {
+      const act = active(vs);
+      if (act.d === 0) {
+        // On the segment: the distance is 0 and any subgradient is
+        // valid; the zero gradient is used (cf. dist = 0 in §5.4 forms).
+        return { points: [{ expr: pE, gx: 0, gy: 0 }], varTerms: [] };
+      }
+      return {
+        points: [
+          { expr: pE, gx: act.gx, gy: act.gy },
+          { expr: act.a, gx: -(1 - act.t) * act.gx, gy: -(1 - act.t) * act.gy },
+          { expr: act.b, gx: -act.t * act.gx, gy: -act.t * act.gy },
+        ],
+        varTerms: [],
+      };
+    },
+  );
+}
+
 /** Supported shapes. Everything else returns null (unsupported in this
  *  build) — the caller refuses, never skips. `entry` is the component's
  *  entry variable vector: entry-fixed signs (§5.4 distance modes,
@@ -769,7 +946,16 @@ function buildResidual(c: Constraint, shape: ConstraintShape, layout: ReadonlyMa
           },
         );
       }
-      return null; // polyline 'whole' object — later slice (§5.4 has no form for it)
+      // Polyline 'whole' object: minimum over segments (per-segment
+      // reading of the §2.1 'whole' anchor).
+      return coincidentPolylineResidual(c, shape.point, shape.object, layout, S);
+    }
+    case 'tangent': {
+      const segSide = (s: Side): boolean =>
+        (s.entity.type === 'line' && s.ref.anchor === 'whole') || (s.entity.type === 'polyline' && s.ref.anchor === 'segment');
+      if (segSide(shape.a) && !segSide(shape.b)) return tangentLineCurveResidual(c, shape.a, shape.b, layout, S, entry);
+      if (segSide(shape.b) && !segSide(shape.a)) return tangentLineCurveResidual(c, shape.b, shape.a, layout, S, entry);
+      return tangentCircleCircleResidual(c, shape.a, shape.b, layout, S, entry);
     }
     default:
       return null;
@@ -816,10 +1002,14 @@ function shapeSupported(shape: ConstraintShape): boolean {
     case 'distance-points': // all modes (30.3.2)
     case 'distance-point-line': // 30.3.2
     case 'distance-length': // 30.3.2
+    case 'tangent': // line–curve and circle–circle (30.3.3)
       return true;
     case 'coincident-object':
       // Line / circle / arc objects have §5.4 residual forms; a polyline
-      // 'whole' does not — it stays refused until a later slice.
+      // 'whole' is the minimum over its segments (30.3.3) — but a
+      // polyline with fewer than two points has no segment to measure
+      // against and stays refused.
+      if (shape.object.entity.type === 'polyline') return shape.object.entity.points.length >= 2;
       return shape.object.entity.type === 'line' || shape.object.entity.type === 'circle' || shape.object.entity.type === 'arc';
     default:
       return false;
@@ -1030,6 +1220,8 @@ interface Comp {
   readonly residuals: readonly ResidualSet[];
   readonly rowOffset: ReadonlyMap<string, number>;
   readonly totalRows: number;
+  /** Circle–circle tangent branches chosen at entry (§5.4). */
+  readonly branchById: ReadonlyMap<string, 'external' | 'internal'>;
 }
 
 function makeLayout(list: readonly ConstrainableEntity[], inputIndex: ReadonlyMap<string, number>): { list: EntVars[]; layout: Map<string, EntVars>; vars0: Float64Array } {
@@ -1054,12 +1246,14 @@ function buildComp(list: readonly ConstrainableEntity[], active: readonly Active
   for (const { c } of active) if (c.value !== undefined && Math.abs(c.value) > S) S = Math.abs(c.value);
   const residuals = active.map(({ c, shape }) => buildResidual(c, shape, layout, S, vars0)!);
   const rowOffset = new Map<string, number>();
+  const branchById = new Map<string, 'external' | 'internal'>();
   let totalRows = 0;
   for (const r of residuals) {
     rowOffset.set(r.constraint.id, totalRows);
     totalRows += r.rowCount;
+    if (r.branch) branchById.set(r.constraint.id, r.branch);
   }
-  return { list: evs, layout, active, S, vars0, residuals, rowOffset, totalRows };
+  return { list: evs, layout, active, S, vars0, residuals, rowOffset, totalRows, branchById };
 }
 
 function buildComponents(prep: Prep, inputIndex: ReadonlyMap<string, number>): Comp[] {
@@ -1585,8 +1779,10 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
   const nVars = comp.vars0.length;
   // Stage 1 degenerate detection (design §5.3): a segment of ~zero length
   // has no direction, so any kind that reads its direction (horizontal/
-  // vertical, parallel/perpendicular/angle, point-on-line forms) refuses;
-  // a concentric partner with ~zero radius is degenerate.
+  // vertical, parallel/perpendicular/angle, point-on-line forms, and the
+  // line side of a tangent — its distance-to-line form divides by the
+  // segment length) refuses; a tangent/concentric partner with ~zero
+  // radius is degenerate (§5.3 names tangent explicitly).
   for (const { c, shape } of comp.active) {
     const dirSides: readonly Side[] | null =
       shape.form === 'hv-segment'
@@ -1597,7 +1793,9 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
             ? [shape.seg]
             : shape.form === 'coincident-object' && shape.object.entity.type === 'line'
               ? [shape.object]
-              : null;
+              : shape.form === 'tangent'
+                ? [shape.a, shape.b].filter((s) => segmentEndpoints(s.entity, s.ref) !== null)
+                : null;
     if (dirSides) {
       for (const s of dirSides) {
         const ends = segmentEndpoints(s.entity, s.ref)!;
@@ -1611,17 +1809,43 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
         }
       }
     }
-    if (shape.form === 'concentric') {
-      for (const s of [shape.a, shape.b]) {
+    const curveSides: readonly Side[] | null =
+      shape.form === 'concentric'
+        ? [shape.a, shape.b]
+        : shape.form === 'tangent'
+          ? [shape.a, shape.b].filter((s) => s.entity.type === 'circle' || s.entity.type === 'arc')
+          : null;
+    if (curveSides) {
+      for (const s of curveSides) {
         const r = (s.entity as Extract<ConstrainableEntity, { type: 'circle' | 'arc' }>).radius;
         if (r < DEGENERATE_REL * comp.S) {
           return {
             ok: false,
             vars: comp.vars0,
             mag: new Map(),
-            failure: { code: 'degenerate-geometry', constraintIds: [c.id], message: `Constraint '${c.id}' (concentric) references entity '${s.entity.id}' with a degenerate radius.` },
+            failure: { code: 'degenerate-geometry', constraintIds: [c.id], message: `Constraint '${c.id}' (${c.kind}) references entity '${s.entity.id}' with a degenerate radius.` },
           };
         }
+      }
+    }
+    // A line-length distance whose target is inside the degenerate band
+    // would collapse its segment (§5.7: a driven length crossing
+    // DEGENERATE_REL·S; §7 case 9(iii)). A point–point distance of 0 is
+    // legitimate and is not this form. If the segment is already inside
+    // the band there is nothing to collapse and the row simply reads ~0.
+    if (shape.form === 'distance-length' && c.value! < DEGENERATE_REL * comp.S) {
+      const ends = segmentEndpoints(shape.seg.entity, shape.seg.ref)!;
+      if (dist(ends[0], ends[1]) >= DEGENERATE_REL * comp.S) {
+        return {
+          ok: false,
+          vars: comp.vars0,
+          mag: new Map(),
+          failure: {
+            code: 'degenerate-geometry',
+            constraintIds: [c.id],
+            message: `Constraint '${c.id}' (distance) drives the length of entity '${shape.seg.entity.id}' to ${c.value}, collapsing it through the degenerate band.`,
+          },
+        };
       }
     }
   }
@@ -1659,15 +1883,33 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
   }
   const free = [...freeSet].sort((a, b) => a - b);
 
-  // Endpoint variable pairs of every direction-pair segment, for the
-  // mid-solve degeneracy check (a direction collapsing to zero length
-  // leaves its residual form undefined, design §5.7).
-  const dirSegVars: { a: number; b: number }[] = [];
+  // Endpoint variable pairs of every segment whose residual form reads
+  // its length or direction (direction pairs, the length and point–line
+  // distance forms, point-on-line, the line side of a tangent), with
+  // entry lengths, for the mid-solve degeneracy check: a segment that
+  // starts outside the degenerate band and collapses into it mid-solve
+  // leaves its residual form undefined (design §5.7). The entry guard
+  // keeps a segment that legitimately starts inside the band (possible
+  // only for the distance-length form, which stage 1 does not refuse)
+  // from tripping the check.
+  const collapseSegVars: { a: number; b: number; entry: number }[] = [];
   for (const { shape } of comp.active) {
-    if (shape.form !== 'direction-pair') continue;
-    for (const s of [shape.a, shape.b]) {
+    const segSides: readonly Side[] =
+      shape.form === 'direction-pair' || shape.form === 'tangent'
+        ? [shape.a, shape.b]
+        : shape.form === 'distance-length' || shape.form === 'distance-point-line'
+          ? [shape.seg]
+          : shape.form === 'coincident-object' && shape.object.entity.type === 'line'
+            ? [shape.object]
+            : [];
+    for (const s of segSides) {
+      if (segmentEndpoints(s.entity, s.ref) === null) continue;
       const [e0, e1] = segmentExprs(s, comp.layout);
-      if (e0.varPair !== null && e1.varPair !== null) dirSegVars.push({ a: e0.varPair, b: e1.varPair });
+      if (e0.varPair !== null && e1.varPair !== null) {
+        const pa = e0.eval(comp.vars0);
+        const pb = e1.eval(comp.vars0);
+        collapseSegVars.push({ a: e0.varPair, b: e1.varPair, entry: dist(pa, pb) });
+      }
     }
   }
 
@@ -1738,14 +1980,16 @@ function solveComponent(comp: Comp, work: Work, poll: Poll): CompOutcome {
         continue;
       }
       // Mid-solve degeneracy: a driven radius crossing the degenerate
-      // band, or a direction-pair segment collapsing to zero length.
+      // band, or a length/direction-reading segment collapsing from
+      // outside the band into it.
       let degenerate = false;
       for (const ev of comp.list) {
         if (ev.entity.type === 'circle' || ev.entity.type === 'arc') {
           if (trial[ev.offset + 2]! < DEGENERATE_REL * comp.S) degenerate = true;
         }
       }
-      for (const sv of dirSegVars) {
+      for (const sv of collapseSegVars) {
+        if (sv.entry < DEGENERATE_REL * comp.S) continue;
         const dx = trial[sv.b]! - trial[sv.a]!;
         const dy = trial[sv.b + 1]! - trial[sv.a + 1]!;
         if (Math.hypot(dx, dy) < DEGENERATE_REL * comp.S) degenerate = true;
@@ -1874,6 +2118,8 @@ interface DiagContext {
   readonly mode: 'solved' | 'conflict' | 'failed';
   readonly geometry: readonly Entity[];
   readonly shapes: ReadonlyMap<string, ConstraintShape | null>;
+  /** Circle–circle tangent entry branches (§5.4); empty when unknown. */
+  readonly branchById?: ReadonlyMap<string, 'external' | 'internal'>;
 }
 
 function buildDiagnostics(set: ConstraintSet, ctx: DiagContext): ConstraintDiagnostic[] {
@@ -1895,11 +2141,13 @@ function buildDiagnostics(set: ConstraintSet, ctx: DiagContext): ConstraintDiagn
     } else {
       state = mag !== undefined && mag <= RESIDUAL_TOL ? 'satisfied' : 'unresolved';
     }
+    const branch = ctx.branchById?.get(c.id);
     return {
       constraintId: c.id,
       state,
       residual: mag ?? 0,
       measured: measuredValue(c, shape, byId),
+      ...(branch ? { branch } : {}),
     };
   });
 }
@@ -2029,6 +2277,8 @@ export function solveConstraints(entities: readonly Entity[], set: ConstraintSet
 
   const magById = new Map<string, number>();
   for (const o of outcomes) for (const [k, v] of o.mag) magById.set(k, v);
+  const branchById = new Map<string, 'external' | 'internal'>();
+  for (const comp of comps) for (const [k, v] of comp.branchById) branchById.set(k, v);
 
   const failures = outcomes.filter((o) => !o.ok);
   if (failures.length > 0) {
@@ -2041,7 +2291,7 @@ export function solveConstraints(entities: readonly Entity[], set: ConstraintSet
       ok: false,
       status: conflict ? 'conflicting' : 'unsolved',
       dof: nominalDof(),
-      diagnostics: buildDiagnostics(set, { magById, redundant: new Set(), mode: conflict ? 'conflict' : 'failed', geometry: entities, shapes }),
+      diagnostics: buildDiagnostics(set, { magById, redundant: new Set(), mode: conflict ? 'conflict' : 'failed', geometry: entities, shapes, branchById }),
       notes: [],
       failure: { code: chosen.failure!.code, constraintIds: violatedIds, message: chosen.failure!.message },
       workUsed: work.used,
@@ -2075,6 +2325,18 @@ export function solveConstraints(entities: readonly Entity[], set: ConstraintSet
       notes.push({ code: 'bulge-carried', entityId: e.id, constraintId: first?.id });
     }
   });
+  // Point-on-object on a bulged polyline (§2.5): the form measures the
+  // point against the polyline's segments while the bulges ride along
+  // as carried data — if the point (or the polyline) moved under such a
+  // constraint, the carried bulge is part of the result and is reported
+  // rather than silently treated as the chord's arc.
+  const movedById = new Map<string, boolean>(entities.map((e, i) => [e.id, resultEntities[i] !== e]));
+  for (const { c, shape } of prep.active) {
+    if (shape.form !== 'coincident-object' || shape.object.entity.type !== 'polyline' || !hasBulge(shape.object.entity)) continue;
+    if (!movedById.get(shape.point.entity.id) && !movedById.get(shape.object.entity.id)) continue;
+    if (notes.some((n) => n.entityId === shape.object.entity.id && n.constraintId === c.id)) continue;
+    notes.push({ code: 'bulge-carried', entityId: shape.object.entity.id, constraintId: c.id });
+  }
 
   // DOF rank machinery at the result (design §5.6/§3.3).
   let effectiveConsumed = 0;
@@ -2167,7 +2429,7 @@ export function solveConstraints(entities: readonly Entity[], set: ConstraintSet
     status: dof.remaining === 0 ? 'fully-constrained' : 'underconstrained',
     entities: resultEntities,
     dof,
-    diagnostics: buildDiagnostics(set, { magById, redundant, mode: 'solved', geometry: resultEntities, shapes }),
+    diagnostics: buildDiagnostics(set, { magById, redundant, mode: 'solved', geometry: resultEntities, shapes, branchById }),
     notes,
     workUsed: work.used,
   };
@@ -2204,11 +2466,13 @@ export function analyzeConstraints(entities: readonly Entity[], set: ConstraintS
 
   const work: Work = { used: 0, limit: SOLVE_WORK_LIMIT };
   const magById = new Map<string, number>();
+  const branchById = new Map<string, 'external' | 'internal'>();
   let effectiveConsumed = 0;
   const perEntityRemaining = new Map<string, number>();
   const supportedActive = prep.active.filter(({ shape }) => shapeSupported(shape));
   if (supportedActive.length > 0) {
     const residuals = supportedActive.map(({ c, shape }) => buildResidual(c, shape, layout, S, vars0)!);
+    for (const r of residuals) if (r.branch) branchById.set(r.constraint.id, r.branch);
     let totalRows = 0;
     const offsets = new Map<string, number>();
     for (const r of residuals) {
@@ -2269,6 +2533,7 @@ export function analyzeConstraints(entities: readonly Entity[], set: ConstraintS
       mode: status === 'unsolved' ? 'failed' : 'solved',
       geometry: entities,
       shapes,
+      branchById,
     }),
     status,
   };

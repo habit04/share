@@ -336,21 +336,19 @@ describe('honest failure reporting', () => {
   });
 
   it('refuses kinds belonging to later slices instead of skipping them', () => {
-    const L = line('L', 0, 0, 10, 0);
-    const C = circle('C', 0, 10, 5);
-    const tangent = solveConstraints([L, C], set({ id: 't', kind: 'tangent', role: 'driving', refs: [ref('L', 'whole'), ref('C', 'whole')] }));
-    expect(tangent.ok).toBe(false);
-    expect(tangent.status).toBe('unsolved'); // explicitly NOT conflicting
-    expect(tangent.failure?.code).toBe('unsupported-constraint');
-    expect(tangent.failure?.constraintIds).toEqual(['t']);
-
-    // Point-on-object coincident on a line / circle / arc is solved since
-    // 30.3.2; on a polyline 'whole' it still belongs to a later slice.
+    // Every kind/shape in the model is solved since 30.3.3 (tangent and
+    // point-on-polyline-'whole' landed last). The refusal path is kept
+    // for the one shape with no residual form: a point-on-object
+    // coincident whose polyline object has fewer than two points and
+    // therefore no segment to measure against.
     const onObject = solveConstraints(
-      [point('P', 1, 1), polyline('PL', [[0, 0], [10, 0], [10, 10]])],
+      [point('P', 1, 1), polyline('PL', [[0, 0]])],
       set({ id: 'k', kind: 'coincident', role: 'driving', refs: [ref('P', 'position'), ref('PL', 'whole')] }),
     );
+    expect(onObject.ok).toBe(false);
+    expect(onObject.status).toBe('unsolved'); // explicitly NOT conflicting
     expect(onObject.failure?.code).toBe('unsupported-constraint');
+    expect(onObject.failure?.constraintIds).toEqual(['k']);
   });
 
   it('a suppressed constraint is reported, excluded, and consumes no DOF', () => {
