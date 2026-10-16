@@ -15,6 +15,7 @@ import { polylineWidthGeometry, polylineWidthFrame, transformWidthFrame, polylin
 import { appearanceProperties, inheritedTransparency, resolveAlpha, type TransparencySpec } from './appearance';
 import { insertArrayCount, insertArrayInstances, MAX_INSERT_ARRAY_INSTANCES } from './insert-array';
 import { evaluateDynamicBlock } from './parametric/evaluate';
+import { dynamicGrips } from './parametric/grips';
 import { hasHatchGradient, hatchGradientDataProblem, hatchGradientFrame, hatchGradientFrameProblem, transformHatchGradientFrame, type HatchGradient, type HatchGradientFrame } from './hatch-gradient';
 
 export type { DimensionEntity, DimStyle, DimKind } from './dimension';
@@ -1435,6 +1436,48 @@ export function insertExpansionLimited(ins: InsertEntity, lookup: BlockLookup): 
   return cachedInsert(ins, lookup)?.limited ?? false;
 }
 
+/** Why a dynamic insert's current state cannot be established (EXPLODE probe, 30.4). */
+export interface InsertEvaluationRefusal {
+  readonly code: string;
+  readonly message: string;
+}
+
+/**
+ * Priority 30.4 (design §1.4(d)) — the evaluation-status probe beside
+ * insertExpansionLimited. Expansion itself falls back to authored geometry
+ * SILENTLY when evaluation refuses (see expansionBlock); a destructive
+ * consumer such as EXPLODE must not consume that fallback and discard the
+ * parameter state with it, so it asks here first. Returns the refusal when
+ * the insert carries dynamic state whose evaluation refuses (or whose data
+ * is retained unmodeled), and null when EXPLODE may proceed: no dynamic
+ * data on either side, or evaluation succeeds, or a dynamic definition
+ * with NO stored instance values (nothing to lose — expansion presents
+ * the authored geometry, which is what the explode produces). The gating
+ * mirrors expansionBlock exactly.
+ */
+export function insertEvaluationRefusal(ins: InsertEntity, lookup: BlockLookup): InsertEvaluationRefusal | null {
+  const block = lookup(ins.block);
+  if (!block) return null;
+  const definition = block.dynamic;
+  const instance = ins.dynamic;
+  if (!definition && !instance && block.dynamicRetained === undefined && ins.dynamicRetained === undefined) return null;
+  if (block.dynamicRetained !== undefined) {
+    return { code: 'definition-retained', message: `Block "${block.name}" has a dynamic definition this build cannot model; it is retained as data and has no evaluated state.` };
+  }
+  if (ins.dynamicRetained !== undefined) {
+    return { code: 'instance-retained', message: `Block reference "${ins.id}" carries dynamic values this build cannot model; they are retained as data and have no evaluated state.` };
+  }
+  if (!definition) {
+    return { code: 'no-dynamic-definition', message: `Block reference "${ins.id}" carries dynamic values but block "${block.name}" has no dynamic definition to evaluate them against.` };
+  }
+  if (!instance) return null;
+  if (instance.block !== block.name) {
+    return { code: 'block-mismatch', message: `Block reference "${ins.id}" carries dynamic values for block "${instance.block}", not "${block.name}".` };
+  }
+  const result = evaluateDynamicBlock(definition, block.entities, block.attributes, instance);
+  return result.ok ? null : { code: result.refusal.code, message: result.refusal.message };
+}
+
 /** Append the expansion of `ins` to `out` (no spread: nested results may be large). */
 function explodeInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup, depth: number, budget: ExpansionBudget): void {
   // Refuse multiplicative work before iterating, including empty or missing definitions.
@@ -2014,8 +2057,15 @@ export function mirrorEntityAcross(e: Entity, a: Point, b: Point): Entity {
   }
 }
 
-/** Grip points (AutoCAD-style) for an entity. */
-export function gripPoints(e: Entity, context?: TextGeometryContext): Point[] {
+/**
+ * Grip points (AutoCAD-style) for an entity. For an insert, index 0 is the
+ * position grip; when a block `lookup` is supplied and the insert's block
+ * has a dynamic definition, the dynamic parameter grips (core/parametric/
+ * grips.ts) are APPENDED after it — indices are positional, so existing
+ * grips never shift. Without a lookup an insert reports only its position
+ * grip, exactly as before dynamic blocks.
+ */
+export function gripPoints(e: Entity, context?: TextGeometryContext, lookup?: BlockLookup): Point[] {
   switch (e.type) {
     case 'line':
       return [e.a, g.mid(e.a, e.b), e.b];
@@ -2035,8 +2085,14 @@ export function gripPoints(e: Entity, context?: TextGeometryContext): Point[] {
       return [...e.points];
     case 'text':
       return e.justification && (e.justification.horizontal === 3 || e.justification.horizontal === 5) && e.alignmentPoint ? [e.position, e.alignmentPoint] : [textAnchor(e)];
-    case 'insert':
-      return [e.position];
+    case 'insert': {
+      const block = lookup?.(e.block);
+      if (!block) return [e.position];
+      const dynamic = dynamicGrips(e, block);
+      if (dynamic.length === 0) return [e.position];
+      const tf = insertTransform(e, block);
+      return [e.position, ...dynamic.map((grip) => tf(grip.localPoint))];
+    }
     case 'ellipse':
       return [e.center, g.add(e.center, e.majorAxis), g.sub(e.center, e.majorAxis), ellipsePoint(e, Math.PI / 2), ellipsePoint(e, -Math.PI / 2)];
     case 'point':
@@ -2107,6 +2163,14 @@ export function moveGrip(e: Entity, index: number, p: Point): Entity | null {
       return translateEntity(e, g.sub(p, textAnchor(e)));
     }
     case 'insert':
+      // Only the position grip (index 0) reaches this function for an
+      // insert: dynamic parameter grips (indices >= 1, produced only when
+      // gripPoints is given a block lookup) are parameter edits, not entity
+      // moves — the pointer routes them through
+      // core/parametric/grips.ts dynamicGripEdit -> setDynamicParameter,
+      // never through here. This function has no block lookup and cannot
+      // resolve a parameter, so it must not be handed a dynamic index.
+      return { ...e, position: p };
     case 'point':
     case 'mtext':
       return { ...e, position: p };
