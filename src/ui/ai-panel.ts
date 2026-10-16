@@ -1,9 +1,9 @@
 import type { Editor } from '../app/editor/editor';
 import { AiAskController, type AiAskStatus } from '../ai/ask-controller';
 import { createEditorAiSource } from '../ai/editor-source';
-import { FixtureProvider } from '../ai/fixture-provider';
+import { FixtureProvider, FIXTURE_PROVIDER_ID } from '../ai/fixture-provider';
 import { serializeSnapshot } from '../ai/snapshot';
-import type { AiProvider } from '../ai/types';
+import type { AiBinding, AiProvider, AiSnapshot } from '../ai/types';
 import { icon } from './icons';
 
 /**
@@ -28,10 +28,20 @@ export class AiAssistantPanel {
   private readonly statusEl: HTMLElement;
   private readonly answerEl: HTMLElement;
   private readonly refsEl: HTMLElement;
+  private answerBinding: AiBinding | null = null;
 
   constructor(editor: Editor, container: HTMLElement, provider: AiProvider = new FixtureProvider()) {
     this.el = container;
     this.el.className = 'palette ai-assistant hidden';
+    // Buttons and other focused descendants need the same boundary as the
+    // textarea: Enter/Delete/Escape must never reach global CAD shortcuts.
+    this.el.addEventListener('keydown', (ev) => {
+      ev.stopPropagation();
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        this.controller.cancel();
+      }
+    });
 
     const strip = document.createElement('div');
     strip.className = 'palette-strip';
@@ -49,6 +59,11 @@ export class AiAssistantPanel {
 
     const content = document.createElement('div');
     content.className = 'ai-body';
+    const providerLabel = document.createElement('div');
+    providerLabel.className = 'ai-provider';
+    providerLabel.textContent = provider.id === FIXTURE_PROVIDER_ID
+      ? 'Offline demo — no AI model connected. Responses are generated locally; nothing is sent outside JCad.'
+      : `Provider: ${provider.id}`;
 
     this.summaryEl = document.createElement('div');
     this.summaryEl.className = 'ai-summary';
@@ -66,7 +81,6 @@ export class AiAssistantPanel {
     // Keep keystrokes out of the canvas/command line (Properties pattern),
     // and never let Enter reach a command path: it just asks.
     this.questionEl.addEventListener('keydown', (ev) => {
-      ev.stopPropagation();
       if (ev.key === 'Enter' && !ev.shiftKey) {
         ev.preventDefault();
         void this.ask();
@@ -94,7 +108,7 @@ export class AiAssistantPanel {
     this.refsEl.className = 'ai-refs';
 
     content.append(
-      this.summaryEl, sentLabel, this.sentEl, this.questionEl,
+      providerLabel, this.summaryEl, sentLabel, this.sentEl, this.questionEl,
       buttons, this.statusEl, this.answerEl, this.refsEl,
     );
     body.append(bar, content);
@@ -114,6 +128,7 @@ export class AiAssistantPanel {
   toggle(): void {
     this.el.classList.toggle('hidden');
     this.refreshPreview();
+    if (this.isVisible) this.questionEl.focus();
   }
 
   get isVisible(): boolean {
@@ -132,10 +147,29 @@ export class AiAssistantPanel {
 
   private refreshPreview(): void {
     if (!this.isVisible) return;
-    const snapshot = this.controller.previewSnapshot();
+    let snapshot: AiSnapshot;
+    try {
+      if (this.answerBinding && !this.controller.isCurrentBinding(this.answerBinding)) {
+        this.answerBinding = null;
+        this.answerEl.textContent = '';
+        this.refsEl.textContent = '';
+        this.statusEl.textContent = 'The drawing context changed. Ask again to refresh the answer.';
+      }
+      snapshot = this.controller.previewSnapshot();
+    } catch (cause) {
+      this.askBtn.disabled = true;
+      this.summaryEl.textContent = 'The current selection cannot be used as AI context.';
+      this.sentEl.textContent = '';
+      this.answerBinding = null;
+      this.answerEl.textContent = '';
+      this.refsEl.textContent = '';
+      this.statusEl.textContent = cause instanceof Error ? cause.message : 'The drawing context could not be read.';
+      return;
+    }
+    this.askBtn.disabled = this.controller.status.state === 'asking';
     const { total, included, omittedCount } = snapshot.selection;
     this.summaryEl.textContent = total === 0
-      ? 'Nothing is selected. Select objects in the drawing, then ask about them here. Nothing is sent anywhere — the fixture provider answers locally.'
+      ? 'Nothing is selected. Select objects in the drawing, then ask about them here.'
       : `${included} of ${total} selected objects will be included`
         + (omittedCount > 0 ? `; ${omittedCount} omitted (see below for why)` : '')
         + '.';
@@ -151,10 +185,14 @@ export class AiAssistantPanel {
         break;
       case 'asking':
         this.statusEl.textContent = 'Asking…';
+        this.answerBinding = null;
+        this.answerEl.textContent = '';
+        this.refsEl.textContent = '';
         break;
       case 'answered':
         this.statusEl.textContent = '';
         this.answerEl.textContent = status.answer.text;
+        this.answerBinding = status.binding;
         this.refsEl.textContent = status.answer.references.length > 0
           ? `Objects discussed: ${status.answer.references.join(', ')}`
           : '';

@@ -162,6 +162,7 @@ export type AiErrorKind =
   | 'cancelled'
   | 'stale'
   | 'invalid-question'
+  | 'invalid-context'
   | 'invalid-answer'
   | 'output-too-large'
   | 'disposed';

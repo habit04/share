@@ -14,6 +14,8 @@ export const AI_MAX_ATTRIBUTES = 32;
 export const AI_MAX_TABLE_CELLS = 64;
 /** Maximum sample vertices listed for polyline-like geometry. */
 export const AI_MAX_SAMPLE_POINTS = 16;
+/** Snapshot-only work cap for exact polyline measurements and attribute metadata. */
+export const AI_MAX_GEOMETRY_POINTS = 4096;
 /** Maximum serialized snapshot size, UTF-8 bytes. */
 export const AI_MAX_SNAPSHOT_BYTES = 64 * 1024;
 /** Maximum omitted-object entries listed (the omitted count stays exact). */

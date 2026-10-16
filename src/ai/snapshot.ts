@@ -1,8 +1,9 @@
-import type { Entity } from '../core/entities';
+import { polylineLength, type Entity } from '../core/entities';
 import type { Point } from '../core/geometry';
 import { INSUNIT_NAMES } from '../core/units';
 import {
   AI_MAX_ATTRIBUTES,
+  AI_MAX_GEOMETRY_POINTS,
   AI_MAX_OBJECTS,
   AI_MAX_OMITTED_LISTED,
   AI_MAX_SAMPLE_POINTS,
@@ -18,6 +19,7 @@ import type {
   AiSnapshot,
   AiSnapshotSource,
 } from './types';
+import { AiError } from './types';
 
 /**
  * Builds the bounded snapshot of explicitly selected objects that — and only
@@ -73,19 +75,17 @@ function samplePoints(points: readonly Point[], notes: string[]): readonly AiPoi
   return points.slice(0, AI_MAX_SAMPLE_POINTS).map(pt);
 }
 
-function polylineLength(points: readonly Point[], closed: boolean): number {
-  let total = 0;
-  for (let i = 1; i < points.length; i++) total += dist(points[i - 1]!, points[i]!);
-  if (closed && points.length > 2) total += dist(points[points.length - 1]!, points[0]!);
-  return total;
-}
-
 function summarize(entity: Entity, source: AiSnapshotSource): AiObjectSnapshot {
   const notes: string[] = [];
   const geometry: Record<string, AiGeometryValue> = {};
   let text: string | undefined;
   let attributes: AiObjectSnapshot['attributes'];
   let tableText: readonly string[] | undefined;
+  const name = (raw: string, label: string): string => {
+    const bounded = boundText(raw);
+    if (bounded.note) notes.push(`${label}: ${bounded.note}`);
+    return bounded.text;
+  };
 
   const withText = (raw: string | undefined): void => {
     if (raw === undefined) return;
@@ -117,7 +117,12 @@ function summarize(entity: Entity, source: AiSnapshotSource): AiObjectSnapshot {
       geometry.vertexCount = entity.points.length;
       geometry.closed = entity.closed;
       geometry.vertices = samplePoints(entity.points, notes);
-      geometry.length = polylineLength(entity.points, entity.closed);
+      if (entity.points.length <= AI_MAX_GEOMETRY_POINTS && !entity.widthFrame) {
+        geometry.length = polylineLength(entity);
+      } else {
+        notes.push('polyline length not included: geometry exceeds the measurement work limit or has an affine width frame');
+      }
+      if (entity.bulges?.length) notes.push('sampled vertices are endpoints; curved segments may lie between them');
       break;
     case 'text':
       geometry.position = pt(entity.position);
@@ -133,23 +138,37 @@ function summarize(entity: Entity, source: AiSnapshotSource): AiObjectSnapshot {
       withText(entity.text);
       break;
     case 'insert': {
-      geometry.block = entity.block;
+      geometry.block = name(entity.block, 'block name');
       geometry.position = pt(entity.position);
       geometry.rotationDeg = deg(entity.rotation);
       geometry.scale = entity.scale;
       if (entity.scaleY !== undefined) geometry.scaleY = entity.scaleY;
-      const hidden = new Set(entity.hiddenAttributes ?? []);
-      const tags = Object.keys(entity.attributes).sort();
-      const listed = tags.slice(0, AI_MAX_ATTRIBUTES);
-      if (tags.length > listed.length) {
-        notes.push(`attributes truncated to ${AI_MAX_ATTRIBUTES} of ${tags.length}`);
+      geometry.mirror = entity.mirror ?? false;
+      geometry.columns = entity.columns ?? 1;
+      geometry.rows = entity.rows ?? 1;
+      if (entity.columnSpacing !== undefined) geometry.columnSpacing = entity.columnSpacing;
+      if (entity.rowSpacing !== undefined) geometry.rowSpacing = entity.rowSpacing;
+      const hidden = new Set((entity.hiddenAttributes ?? []).slice(0, AI_MAX_GEOMETRY_POINTS));
+      if ((entity.hiddenAttributes?.length ?? 0) > AI_MAX_GEOMETRY_POINTS) {
+        notes.push(`hidden attribute flags are based on the first ${AI_MAX_GEOMETRY_POINTS} hidden tags`);
       }
+      const listed: string[] = [];
+      for (const tag in entity.attributes) {
+        if (!Object.hasOwn(entity.attributes, tag)) continue;
+        if (listed.length === AI_MAX_ATTRIBUTES) {
+          notes.push(`attributes limited to the first ${AI_MAX_ATTRIBUTES} entries; additional entries excluded`);
+          break;
+        }
+        listed.push(tag);
+      }
+      listed.sort();
       attributes = listed.map((tag) => {
         const bounded = boundText(entity.attributes[tag]!);
-        if (bounded.note) notes.push(`attribute ${tag}: ${bounded.note}`);
+        if (bounded.note) notes.push(`attribute value: ${bounded.note}`);
+        const shownTag = name(tag, 'attribute tag');
         return hidden.has(tag)
-          ? { tag, value: bounded.text, hidden: true }
-          : { tag, value: bounded.text };
+          ? { tag: shownTag, value: bounded.text, hidden: true }
+          : { tag: shownTag, value: bounded.text };
       });
       break;
     }
@@ -157,6 +176,8 @@ function summarize(entity: Entity, source: AiSnapshotSource): AiObjectSnapshot {
       geometry.center = pt(entity.center);
       geometry.majorAxis = pt(entity.majorAxis);
       geometry.ratio = entity.ratio;
+      geometry.startParam = entity.startParam;
+      geometry.endParam = entity.endParam;
       break;
     case 'point':
       geometry.position = pt(entity.position);
@@ -173,7 +194,7 @@ function summarize(entity: Entity, source: AiSnapshotSource): AiObjectSnapshot {
       geometry.controlPoints = samplePoints(entity.controlPoints, notes);
       break;
     case 'hatch':
-      geometry.pattern = entity.pattern;
+      geometry.pattern = name(entity.pattern, 'hatch pattern');
       geometry.solid = entity.solid;
       geometry.loopCount = entity.loops.length;
       geometry.angleDeg = deg(entity.angle);
@@ -205,33 +226,42 @@ function summarize(entity: Entity, source: AiSnapshotSource): AiObjectSnapshot {
     case 'table': {
       geometry.position = pt(entity.position);
       geometry.rows = entity.cells.length;
-      geometry.columns = entity.cells.reduce((max, row) => Math.max(max, row.length), 0);
+      geometry.columns = entity.columnWidths.length;
       const cells: string[] = [];
-      let totalCells = 0;
-      for (const row of entity.cells) {
-        for (const cell of row) {
+      let inspected = 0;
+      let truncated = false;
+      for (let r = 0; r < entity.cells.length; r++) {
+        if (r >= AI_MAX_TABLE_CELLS) { truncated = true; break; }
+        const row = entity.cells[r]!;
+        for (let c = 0; c < row.length; c++) {
+          if (inspected >= AI_MAX_TABLE_CELLS) { truncated = true; break; }
+          inspected += 1;
+          const cell = row[c]!;
           if (cell.text === '') continue;
-          totalCells += 1;
-          if (cells.length < AI_MAX_TABLE_CELLS) {
-            const bounded = boundText(cell.text);
-            if (bounded.note) notes.push(`table cell: ${bounded.note}`);
-            cells.push(bounded.text);
-          }
+          const bounded = boundText(cell.text);
+          if (bounded.note) notes.push(`table cell: ${bounded.note}`);
+          cells.push(bounded.text);
         }
+        if (truncated) break;
       }
-      if (totalCells > cells.length) {
-        notes.push(`table cells truncated to ${AI_MAX_TABLE_CELLS} of ${totalCells}`);
+      if (truncated) {
+        notes.push(`table scan limited to ${AI_MAX_TABLE_CELLS} cells and rows; later cell texts not included`);
       }
       tableText = cells;
       break;
     }
   }
 
-  const bounds = source.boundsFor(entity);
+  // Generic bounds can expand entire blocks/tables, format unbounded text,
+  // tessellate curves or traverse hatch data. Those are not bounded reads.
+  const cheapBounds = ['line', 'circle', 'arc', 'ellipse', 'point', 'xline', 'ray'].includes(entity.type);
+  const bounds = cheapBounds ? source.boundsFor(entity) : null;
+  if (!cheapBounds) notes.push('bounds enrichment not included for this entity type');
+  const layer = name(entity.layer, 'layer name');
   const out: AiObjectSnapshot = {
     id: entity.id,
     type: entity.type,
-    layer: entity.layer,
+    layer,
     geometry,
     ...(bounds ? { bounds: { min: pt(bounds.min), max: pt(bounds.max) } } : {}),
     ...(text !== undefined ? { text } : {}),
@@ -242,22 +272,30 @@ function summarize(entity: Entity, source: AiSnapshotSource): AiObjectSnapshot {
   return out;
 }
 
-function serialize(snapshot: Omit<AiSnapshot, 'serializedBytes'>): string {
-  return JSON.stringify(snapshot);
-}
-
 /** Build the snapshot for the source's current selection. */
 export function buildSelectionSnapshot(source: AiSnapshotSource): AiSnapshot {
   const binding = source.binding();
+  for (const value of [binding.space.layout, binding.space.viewport]) {
+    if (value !== null && (value.length > AI_MAX_SNAPSHOT_BYTES || byteLength(value) > AI_MAX_SNAPSHOT_BYTES)) {
+      throw new AiError('invalid-context', 'The drawing space metadata exceeds the AI context limit.');
+    }
+  }
   const units = source.units();
   const entities = source.selectedEntities();
   const byId = new Map(entities.map((e) => [e.id, e] as const));
 
   const omitted: AiOmitted[] = [];
+  let omissionBytes = 0;
   let omittedCount = 0;
   const noteOmitted = (id: string, reason: AiOmitted['reason']): void => {
     omittedCount += 1;
-    if (omitted.length < AI_MAX_OMITTED_LISTED) omitted.push({ id, reason });
+    if (omitted.length >= AI_MAX_OMITTED_LISTED || id.length > AI_MAX_SNAPSHOT_BYTES) return;
+    const entry = { id, reason };
+    const bytes = byteLength(JSON.stringify(entry));
+    if (omissionBytes + bytes <= AI_MAX_SNAPSHOT_BYTES / 4) {
+      omitted.push(entry);
+      omissionBytes += bytes;
+    }
   };
 
   // Selection ids that are not active-space entities: unsupported or stale.
@@ -266,16 +304,30 @@ export function buildSelectionSnapshot(source: AiSnapshotSource): AiSnapshot {
   }
 
   const objects: AiObjectSnapshot[] = [];
+  let objectBytes = 0;
+  let inspectedObjects = 0;
   for (const entity of entities) {
     if (!SUPPORTED_TYPES.has(entity.type)) {
       noteOmitted(entity.id, 'unsupported-type');
       continue;
     }
-    if (objects.length >= AI_MAX_OBJECTS) {
+    if (inspectedObjects >= AI_MAX_OBJECTS) {
       noteOmitted(entity.id, 'object-limit');
       continue;
     }
-    objects.push(summarize(entity, source));
+    inspectedObjects += 1;
+    if (entity.id.length > AI_MAX_SNAPSHOT_BYTES) {
+      noteOmitted(entity.id, 'byte-limit');
+      continue;
+    }
+    const object = summarize(entity, source);
+    const bytes = byteLength(JSON.stringify(object));
+    if (objectBytes + bytes > AI_MAX_SNAPSHOT_BYTES) {
+      noteOmitted(entity.id, 'byte-limit');
+      continue;
+    }
+    objects.push(object);
+    objectBytes += bytes;
   }
 
   const space = binding.space.layout === null
@@ -309,21 +361,39 @@ export function buildSelectionSnapshot(source: AiSnapshotSource): AiSnapshot {
     objects: included,
   });
 
-  // Byte cap: omit whole objects from the end until the snapshot fits.
-  // Object contents are already individually bounded, so this terminates.
+  // Include the byte-count field itself in the exact wire representation.
+  const measured = (included: readonly AiObjectSnapshot[]): AiSnapshot => {
+    const payload = assemble(included);
+    let snapshot: AiSnapshot = { ...payload, serializedBytes: 0 };
+    let bytes = byteLength(serializeSnapshot(snapshot));
+    while (snapshot.serializedBytes !== bytes) {
+      snapshot = { ...payload, serializedBytes: bytes };
+      bytes = byteLength(serializeSnapshot(snapshot));
+    }
+    return snapshot;
+  };
+
+  // Omission metadata is also inside the byte budget. Keep reference IDs
+  // intact, trimming listed entries (never the exact count) when necessary.
   let included = objects;
-  let bytes = byteLength(serialize(assemble(included)));
-  while (bytes > AI_MAX_SNAPSHOT_BYTES && included.length > 0) {
+  let snapshot = measured(included);
+  while (snapshot.serializedBytes > AI_MAX_SNAPSHOT_BYTES && included.length > 0) {
     const removed = included[included.length - 1]!;
     included = included.slice(0, -1);
     noteOmitted(removed.id, 'byte-limit');
-    bytes = byteLength(serialize(assemble(included)));
+    snapshot = measured(included);
   }
-
-  return { ...assemble(included), serializedBytes: bytes };
+  while (snapshot.serializedBytes > AI_MAX_SNAPSHOT_BYTES && omitted.length > 0) {
+    omitted.pop();
+    snapshot = measured(included);
+  }
+  if (snapshot.serializedBytes > AI_MAX_SNAPSHOT_BYTES) {
+    throw new AiError('invalid-context', 'The drawing space metadata exceeds the AI context limit.');
+  }
+  return snapshot;
 }
 
 /** The exact text a provider would be given for a snapshot. */
 export function serializeSnapshot(snapshot: AiSnapshot): string {
-  return JSON.stringify(snapshot, null, 2);
+  return JSON.stringify(snapshot);
 }

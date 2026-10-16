@@ -53,8 +53,11 @@ export function fixtureRespond(request: AiAskRequest): AiAnswer {
   const references: string[] = [];
   let text: string;
 
-  // "describe e-line" / an id mentioned in the question → that object only.
-  const mentioned = request.snapshot.objects.filter((o) => question.includes(o.id.toLowerCase()));
+  // Explicit object descriptions only: a search term or a longer id must not
+  // accidentally match an id by substring before the text-search branch.
+  const described = /^(?:describe|object)\s+(.+)$/.exec(question)?.[1];
+  const ids = new Set(described?.split(/[\s,;]+/).filter(Boolean) ?? []);
+  const mentioned = request.snapshot.objects.filter((object) => ids.has(object.id.toLowerCase()));
   if (mentioned.length > 0) {
     text = mentioned
       .map((o) => objectLine(request, o.id))

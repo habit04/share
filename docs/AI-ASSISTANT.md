@@ -1,6 +1,8 @@
 # AI assistant — milestone 1: “Ask about selected objects”
 
-Status: **implemented, not integrated by the lead.** This milestone is strictly
+Status: **reviewed, corrected and integrated locally on `review/ai-m1`**
+(base `a68dba5b16ed4099d8decae32f936ebc023129fa`). Windows source validation
+passes; see [review evidence](AI-ASSISTANT-REVIEW.md). This milestone is strictly
 read-only. The live provider has **not** been selected: the live adapter in this
 tree is inactive, is not registered with the Electron main process, is not
 exposed by the preload bridge, and performs no network requests. Development
@@ -27,6 +29,11 @@ current drawing tool. The panel shows:
 - the answer as plain text, with references to selected object IDs that have
   been validated against the snapshot,
 - clear stale / cancelled / error states.
+
+An always-visible **Offline demo — no AI model connected** notice identifies
+the current rule-based demonstration. It must not be presented as a live AI
+model. The palette and its status-bar button contain keyboard events so that
+Enter, Delete, Escape and editing shortcuts cannot reach drawing commands.
 
 ## Architecture
 
@@ -69,20 +76,28 @@ Built only from explicitly selected objects, in drawing order:
 - per object: `id`, `type`, `layer` name, a bounded geometry summary per type
   (e.g. line endpoints + length, circle centre + radius, polyline vertex
   count + closed + truncated vertex sample, insert block name + position +
-  rotation + scale, text position + height), overall bounds when computable,
+  rotation + scale, text position + height), cheap primitive bounds where available,
   and **permitted text only**: text/mtext content, insert attribute
   tag → value pairs, dimension text overrides, leader text, table cell text.
 - Explicitly **never** included: image file paths, field expressions
   (`FieldLink.code`), drawing metadata (`meta`), the CAD graph, file paths of
   the drawing, block definition internals, undo history, anything unselected.
 
-Bounds (see `src/ai/limits.ts`): at most 200 objects; each text string at most
+Bounds (see `src/ai/limits.ts`): inspect at most 200 candidate objects; each text/name string at most
 500 characters (truncated with an explicit marker); at most 32 attributes per
-insert; at most 64 table cells; at most 16 sample vertices per polyline-like
-object; the whole serialized snapshot at most 64 KiB — beyond that, objects
-are omitted from the end and reported. Omissions are always reported as
+insert; inspect at most 64 table cells/rows; at most 16 sample vertices per polyline-like
+object. Exact polyline lengths include bulged arcs, with full measurement limited
+to 4,096 vertices; larger or affine-frame measurements are explicitly omitted.
+Compound, text, table and polyline bounds enrichment is skipped so opening the
+panel cannot trigger full block expansion or unbounded text/geometry work.
+The whole compact serialized snapshot, including its own byte-count field, is
+at most 64 KiB. Over-budget objects are omitted and reported. The preview uses
+this exact compact representation. Omissions are reported as
 `{ id, reason }` (unsupported object, object limit, byte limit, …) with total
-vs included counts; nothing is silently dropped. Selection ids that are not
+vs included counts, with at most 100 listed entries within a 16 KiB omission
+budget; the exact omitted count survives list truncation. Oversized root space
+metadata fails with a controlled context error. Reference IDs are never
+silently shortened. Selection ids that are not
 drawing entities in the active space — for example 3D solids legitimately
 present in the selection — are reported as unsupported, not dropped.
 
@@ -106,8 +121,9 @@ live editor and compares every field; any difference (edit, undo, selection
 change, space change, tab switch — a tab switch reuses the same `Drawing`
 object for a different document, which is why `docId`/`contentGeneration` are
 in the tuple — document replacement, close) suppresses the answer as stale.
-A newer request supersedes an older one; older answers can never overwrite
-newer ones. Cancellation and disposal abort the provider call and suppress
+A newer request supersedes an older one; each call resolves its own terminal
+status and older answers can never overwrite newer ones. Answers already on
+screen are also cleared when the drawing context changes. Cancellation and disposal abort the provider call and suppress
 any late result. Disposal also unsubscribes the panel from the editor.
 
 ## Read-only guarantee
@@ -123,7 +139,10 @@ current tool and active space are all unchanged.
 
 ## Answers
 
-Answers are displayed as text. A provider answer carries `references` (object
+Malformed provider results and context-read failures become controlled error
+statuses, with timers cleaned up; they do not leave a rejected UI promise or
+an indefinitely busy panel. Answers are copied through a field whitelist and
+displayed as text. A provider answer carries `references` (object
 IDs it claims to discuss); the controller validates them against the snapshot:
 references to IDs that were not in the snapshot are dropped and the drop is
 surfaced in the UI (“2 references to objects outside the selection were
@@ -152,19 +171,24 @@ interface AiProvider {
 
 ### Eventual live adapter (contract for the future milestone)
 
-- One guarded IPC channel to `electron/ai-host.cjs`; the renderer supplies
+- A guarded, sender-scoped request/cancellation bridge to `electron/ai-host.cjs`; the renderer supplies
   only the validated request envelope (question + snapshot + binding), never
   a URL, path or key.
-- Host validates and re-bounds everything (the host validator mirrors
+- Host reconstructs the snapshot from a per-type whitelist and re-bounds it (the host validator mirrors
   `src/ai/limits.ts`), enforces timeout and request/output limits, and
   reports usage (request count, input/output sizes, provider id, duration —
-  never content or keys in logs).
+  never content or keys in logs). Cancellation removes queued work before any
+  transport call and aborts running work. Enqueue deadlines cover queued jobs;
+  a timed-out transport retains its physical concurrency slot until it settles.
+  Future transports must enforce token/body limits before buffering responses;
+  usage counters are not a monetary spend limit. No cancellation IPC or live
+  transport is wired in this milestone.
 - API keys live only in the host key store: encrypted with Electron
   `safeStorage` (OS-backed: DPAPI / Keychain / libsecret), stored as opaque
   ciphertext in the app data directory, never returned to the renderer, and
   never placed in plugin settings, browser storage, drawings, exports or
   logs. If `safeStorage` encryption is unavailable, the store refuses to
-  persist a key.
+  persist a key; Linux `basic_text` and unknown storage backends are refused.
 - Existing trusted plugins retain their current authority (they run in the
   page with full editor access). This milestone introduces **no** plugin
   isolation and claims none.

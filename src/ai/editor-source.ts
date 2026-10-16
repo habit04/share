@@ -1,6 +1,8 @@
 import { entityBounds, type Entity } from '../core/entities';
 import type { Bounds } from '../core/geometry';
 import type { UnitSettings } from '../core/units';
+import { paperSpaceLayout } from '../core/layouts';
+import type { Model3D } from '../model3d/types';
 import type { Editor } from '../app/editor/editor';
 import type { AiBinding, AiOmitReason, AiSnapshotSource } from './types';
 
@@ -12,6 +14,9 @@ import type { AiBinding, AiOmitReason, AiSnapshotSource } from './types';
  * bookkeeping the save flow relies on; it never touches the drawing itself.
  */
 export function createEditorAiSource(editor: Editor): AiSnapshotSource {
+  // Accepted model objects are immutable and shared across snapshots/history.
+  // Build the unsupported-id index once per model, without retaining closed drawings.
+  const unsupportedIdsByModel = new WeakMap<Model3D, ReadonlySet<string>>();
   const binding = (): AiBinding => {
     const session = editor.sessions.current;
     const space = editor.doc.space;
@@ -31,7 +36,13 @@ export function createEditorAiSource(editor: Editor): AiSnapshotSource {
 
   return {
     binding,
-    units: (): UnitSettings => editor.doc.header.units,
+    units: (): UnitSettings => {
+      const model = editor.doc.header.units;
+      const paper = paperSpaceLayout(editor.doc.snapshot);
+      // Paper coordinates use the sheet's units. MSPACE edits model geometry,
+      // and paperSpaceLayout deliberately returns undefined inside a viewport.
+      return paper ? { ...model, insunits: paper.paper.units === 'mm' ? 4 : 1 } : model;
+    },
     selectedEntities: (): readonly Entity[] => editor.entitiesSelected(),
     entityById: (id: string): Entity | undefined => editor.doc.entity(id),
     boundsFor: (entity: Entity): Bounds | null => {
@@ -45,8 +56,15 @@ export function createEditorAiSource(editor: Editor): AiSnapshotSource {
     missingIdKind: (id: string): AiOmitReason => {
       const model3d = editor.doc.snapshot.model3d;
       if (model3d) {
-        for (const solid of model3d.solids) if (solid.id === id) return 'unsupported-object';
-        for (const dim of model3d.dimensions ?? []) if (dim.id === id) return 'unsupported-object';
+        let ids = unsupportedIdsByModel.get(model3d);
+        if (!ids) {
+          const index = new Set<string>();
+          for (const solid of model3d.solids) index.add(solid.id);
+          for (const dim of model3d.dimensions ?? []) index.add(dim.id);
+          ids = index;
+          unsupportedIdsByModel.set(model3d, ids);
+        }
+        if (ids.has(id)) return 'unsupported-object';
       }
       return 'missing-object';
     },

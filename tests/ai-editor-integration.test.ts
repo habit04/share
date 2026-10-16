@@ -4,6 +4,8 @@ import { AiAskController } from '../src/ai/ask-controller';
 import { createEditorAiSource } from '../src/ai/editor-source';
 import { FixtureProvider } from '../src/ai/fixture-provider';
 import type { AiProvider } from '../src/ai/types';
+import { defaultLayout } from '../src/core/layouts';
+import type { Model3D } from '../src/model3d/types';
 
 /**
  * State preservation against a real Editor (docs/AI-ASSISTANT.md §2):
@@ -80,6 +82,49 @@ function expectStatePreserved(editor: InstanceType<EditorClass>, before: ReturnT
 }
 
 describe('AI ask flow against a real Editor', () => {
+  it('indexes unsupported ids once per immutable model and refreshes after model replacement', () => {
+    const scans = { firstSolids: 0, firstDimensions: 0, nextSolids: 0, nextDimensions: 0 };
+    const countedIds = (ids: string[], key: keyof typeof scans) => new Proxy(Object.freeze(ids.map((id) => Object.freeze({ id }))), {
+      get(target, property, receiver) {
+        if (property === Symbol.iterator) return function* () { scans[key] += 1; yield* target; };
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    // The adapter only reads ids; the fixture deliberately instruments array iteration,
+    // without constructing or evaluating experimental 3D geometry.
+    const first = Object.freeze({
+      version: 1,
+      solids: countedIds(['solid-a', 'solid-b'], 'firstSolids'),
+      dimensions: countedIds(['dim-a'], 'firstDimensions'),
+    }) as unknown as Model3D;
+    const next = Object.freeze({
+      version: 1,
+      solids: countedIds(['solid-new'], 'nextSolids'),
+      dimensions: countedIds(['dim-new'], 'nextDimensions'),
+    }) as unknown as Model3D;
+    let model3d: Model3D | undefined = first;
+    const source = createEditorAiSource({ doc: { get snapshot() { return { model3d }; } } } as unknown as InstanceType<EditorClass>);
+    for (let i = 0; i < 100; i++) {
+      expect(source.missingIdKind('solid-a')).toBe('unsupported-object');
+      expect(source.missingIdKind('dim-a')).toBe('unsupported-object');
+      expect(source.missingIdKind('absent')).toBe('missing-object');
+    }
+    expect(scans).toEqual({ firstSolids: 1, firstDimensions: 1, nextSolids: 0, nextDimensions: 0 });
+    model3d = next;
+    expect(source.missingIdKind('solid-a')).toBe('missing-object');
+    expect(source.missingIdKind('dim-a')).toBe('missing-object');
+    expect(source.missingIdKind('solid-new')).toBe('unsupported-object');
+    expect(source.missingIdKind('dim-new')).toBe('unsupported-object');
+    expect(scans).toEqual({ firstSolids: 1, firstDimensions: 1, nextSolids: 1, nextDimensions: 1 });
+    model3d = undefined;
+    expect(source.missingIdKind('solid-new')).toBe('missing-object');
+    model3d = first; // An undo may restore a previously accepted immutable model.
+    expect(source.missingIdKind('dim-a')).toBe('unsupported-object');
+    expect(scans).toEqual({ firstSolids: 1, firstDimensions: 1, nextSolids: 1, nextDimensions: 1 });
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.isFrozen(first.solids)).toBe(true);
+  });
+
   it('binds the snapshot to the live session/document/revision/space/selection', () => {
     const editor = makeEditor();
     const source = createEditorAiSource(editor);
@@ -101,6 +146,59 @@ describe('AI ask flow against a real Editor', () => {
     const status = await controller.ask('how many objects?');
     expect(status.state).toBe('answered');
     expectStatePreserved(editor, before);
+    controller.dispose();
+  });
+
+  it('asks while a drawing tool is active without cancelling or changing the tool', async () => {
+    const editor = makeEditor();
+    editor.runCommand('LINE');
+    expect(editor.tool).not.toBeNull();
+    const before = editorState(editor);
+    const controller = new AiAskController(createEditorAiSource(editor), new FixtureProvider());
+    expect((await controller.ask('how many objects?')).state).toBe('answered');
+    expectStatePreserved(editor, before);
+    controller.dispose();
+    editor.cancel();
+  });
+
+  it.each([
+    { modelUnits: 1, paperUnits: 'mm' as const, paperInsunits: 4 },
+    { modelUnits: 4, paperUnits: 'in' as const, paperInsunits: 1 },
+  ])('labels paper coordinates using $paperUnits while viewport coordinates retain model units', ({ modelUnits, paperUnits, paperInsunits }) => {
+    const editor = makeEditor();
+    const paperLine: Entity = { ...line, id: 'paper-line', a: { x: 0, y: 0 }, b: { x: 25.4, y: 0 } };
+    const layout = {
+      ...defaultLayout('Ask sheet', paperUnits),
+      pristine: false,
+      entities: [paperLine],
+      viewports: [{
+        id: 'ask-viewport', center: { x: 5, y: 5 }, width: 4, height: 3,
+        view: { center: { x: 0, y: 0 }, scale: 1 }, layer: '0', on: true,
+      }],
+    };
+    editor.doc.transactDrawing((state) => ({
+      ...state, layouts: [layout],
+      header: { ...editor.doc.header, units: { ...editor.doc.header.units, insunits: modelUnits } },
+    }));
+    editor.doc.setSpace({ layout: layout.name });
+    editor.selection = new Set(['paper-line']);
+    const controller = new AiAskController(createEditorAiSource(editor), new FixtureProvider());
+    const beforePaper = editorState(editor);
+    const paper = controller.previewSnapshot();
+    expect(paper.units.insunits).toBe(paperInsunits);
+    expect(paper.objects[0]?.id).toBe('paper-line');
+    expect(paper.objects[0]?.geometry.length).toBe(25.4);
+    expectStatePreserved(editor, beforePaper);
+    expect(editor.doc.header.units.insunits).toBe(modelUnits);
+
+    editor.doc.setSpace({ layout: layout.name, viewport: 'ask-viewport' });
+    editor.selection = new Set(['ai-line']);
+    const beforeModel = editorState(editor);
+    const model = controller.previewSnapshot();
+    expect(model.units.insunits).toBe(modelUnits);
+    expect(model.objects[0]?.id).toBe('ai-line');
+    expect(model.objects[0]?.geometry.length).toBe(5);
+    expectStatePreserved(editor, beforeModel);
     controller.dispose();
   });
 

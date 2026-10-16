@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { LiveProvider, type AiHostBridge } from '../src/ai/live-provider';
-import { AiError, type AiAskRequest } from '../src/ai/types';
+import { AiError, type AiAnswer, type AiAskRequest } from '../src/ai/types';
 
 const request: AiAskRequest = {
   requestId: 1,
@@ -52,5 +52,28 @@ describe('LiveProvider (inactive adapter)', () => {
     controller.abort();
     await expect(provider.ask(request, controller.signal)).rejects.toMatchObject({ kind: 'cancelled' });
     expect(bridge.ask).not.toHaveBeenCalled();
+  });
+
+  it('forwards cancellation to the bridge and refuses a bridge that resolves on abort', async () => {
+    const bridge: AiHostBridge = { ask: vi.fn((_request: AiAskRequest, signal: AbortSignal) => new Promise<AiAnswer>((resolve) => {
+      signal.addEventListener('abort', () => resolve({ text: 'late', references: [] }));
+    })) };
+    const provider = new LiveProvider(bridge, { providerId: 'p', model: 'm' });
+    const abort = new AbortController();
+    const pending = provider.ask(request, abort.signal);
+    const cancelled = expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
+    abort.abort();
+    await cancelled;
+    expect(bridge.ask).toHaveBeenCalledWith(request, abort.signal);
+  });
+
+  it('settles cancellation even if the bridge ignores the signal', async () => {
+    const bridge: AiHostBridge = { ask: vi.fn(() => new Promise<AiAnswer>(() => {})) };
+    const provider = new LiveProvider(bridge, { providerId: 'p', model: 'm' });
+    const abort = new AbortController();
+    const pending = provider.ask(request, abort.signal);
+    const cancelled = expect(pending).rejects.toMatchObject({ kind: 'cancelled' });
+    abort.abort();
+    await cancelled;
   });
 });

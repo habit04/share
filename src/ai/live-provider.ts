@@ -15,7 +15,13 @@ import { AiError, type AiAnswer, type AiAskRequest, type AiProvider } from './ty
  * refuses every request with 'provider-not-configured'.
  */
 
-/** The narrow host bridge a future preload registration would provide. */
+/**
+ * The narrow host bridge a future preload registration would provide.
+ * The bridge must forward cancellation to the sender-scoped host, removing
+ * queued jobs and aborting running work. An AbortSignal itself cannot cross
+ * Electron IPC: a future preload must translate it to host.cancel(requestId).
+ * This milestone registers neither channel.
+ */
 export interface AiHostBridge {
   ask(request: AiAskRequest, signal: AbortSignal): Promise<AiAnswer>;
 }
@@ -33,7 +39,7 @@ export class LiveProvider implements AiProvider {
 
   constructor(bridge?: AiHostBridge, config?: LiveProviderConfig) {
     this.bridge = bridge;
-    this.config = config;
+    this.config = config ? { ...config } : undefined;
     this.id = config?.providerId ?? 'live-unconfigured';
   }
 
@@ -61,6 +67,16 @@ export class LiveProvider implements AiProvider {
     if (request.snapshot.serializedBytes > AI_MAX_SNAPSHOT_BYTES) {
       throw new AiError('invalid-answer', 'The snapshot exceeds the permitted size.');
     }
-    return this.bridge.ask(request, signal);
+    let onAbort: () => void = () => {};
+    const aborted = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(new AiError('cancelled', 'The request was cancelled.'));
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+      if (signal.aborted) throw new AiError('cancelled', 'The request was cancelled.');
+      return await Promise.race([this.bridge.ask(request, signal), aborted]);
+    } finally {
+      signal.removeEventListener('abort', onAbort);
+    }
   }
 }

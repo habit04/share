@@ -578,6 +578,7 @@ function boot(): void {
   aiToggle.className = 'status-btn text';
   aiToggle.textContent = 'AI';
   aiToggle.title = 'AI Assistant — ask about selected objects (read-only)';
+  aiToggle.addEventListener('keydown', (ev) => ev.stopPropagation());
   aiToggle.addEventListener('click', () => editor.hooks.aiAssistant?.());
   document.getElementById('statusbar')!.appendChild(aiToggle);
   const clipboard = new EntityClipboard(editor);

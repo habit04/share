@@ -4,7 +4,7 @@ import { DEFAULT_UNITS } from '../src/core/units';
 import { AiAskController } from '../src/ai/ask-controller';
 import { FixtureProvider, fixtureRespond } from '../src/ai/fixture-provider';
 import { AiError, type AiAnswer, type AiAskRequest, type AiBinding, type AiProvider, type AiSnapshotSource } from '../src/ai/types';
-import { AI_MAX_ANSWER_CHARS } from '../src/ai/limits';
+import { AI_MAX_ANSWER_CHARS, AI_MAX_REFERENCES } from '../src/ai/limits';
 
 const line: Entity = {
   type: 'line', id: 'e-line', layer: 'WIRES', color: 'ByLayer',
@@ -79,6 +79,141 @@ describe('AiAskController', () => {
     const b = fixtureRespond(request);
     expect(a).toEqual(b);
     expect(a.references).toEqual(['e-text']);
+  });
+
+  it('fixture text searches do not interpret the search term as an object id', async () => {
+    const { source, state } = makeSource();
+    state.entities = [{ ...line, id: 'PB101' }, text];
+    state.selectionIds = ['PB101', 'e-text'];
+    const controller = new AiAskController(source, new FixtureProvider());
+    const status = await controller.ask('find PB101');
+    expect(status.state).toBe('answered');
+    if (status.state === 'answered') expect(status.answer.references).toEqual(['e-text']);
+    controller.dispose();
+  });
+
+  it('fixture descriptions match complete ids instead of id prefixes', async () => {
+    const { source, state } = makeSource();
+    state.entities = [line, { ...text, id: 'e-line-extra' }];
+    state.selectionIds = ['e-line', 'e-line-extra'];
+    const controller = new AiAskController(source, new FixtureProvider());
+    const status = await controller.ask('describe e-line-extra');
+    expect(status.state).toBe('answered');
+    if (status.state === 'answered') expect(status.answer.references).toEqual(['e-line-extra']);
+    controller.dispose();
+  });
+
+  it.each([null, undefined, [], 'not an object', 3, {}, { text: '   ', references: [] }])(
+    'settles malformed provider output as an error and clears the timer: %j', async (value) => {
+      const { source } = makeSource();
+      const clearTimeoutFn = vi.fn();
+      const controller = new AiAskController(source, {
+        id: 'malformed', ask: async () => value as AiAnswer,
+      }, { setTimeoutFn: () => 17, clearTimeoutFn });
+      const status = await controller.ask('count');
+      expect(status.state).toBe('error');
+      if (status.state === 'error') expect(status.error.kind).toBe('invalid-answer');
+      expect(controller.status).toBe(status);
+      expect(clearTimeoutFn).toHaveBeenCalledExactlyOnceWith(17);
+      controller.dispose();
+    },
+  );
+
+  it('whitelists answer fields, bounds references and counts every discarded reference', async () => {
+    const { source } = makeSource();
+    const rawReferences = ['e-line', 'e-nope', 'e-line', 5, ...Array(AI_MAX_REFERENCES + 5).fill('e-text')];
+    const controller = new AiAskController(source, {
+      id: 'fields',
+      ask: async () => ({
+        text: 'safe', references: rawReferences,
+        toolCalls: [{ command: 'ERASE' }], privateData: 'discard this',
+        usage: { inputBytes: Infinity, outputChars: -1, durationMs: 0.5, secret: 'discard this too' },
+      }) as unknown as AiAnswer,
+    });
+    const status = await controller.ask('count');
+    expect(status.state).toBe('answered');
+    if (status.state === 'answered') {
+      expect(status.answer).toEqual({ text: 'safe', references: ['e-line', 'e-text'], usage: { durationMs: 0.5 } });
+      expect(status.droppedReferences).toBe(rawReferences.length - 2);
+    }
+    controller.dispose();
+  });
+
+  it('reports a source failure before dispatch without calling the provider', async () => {
+    const { source } = makeSource();
+    source.units = () => { throw new AiError('invalid-context', 'Context exceeds the permitted size.'); };
+    const provider: AiProvider = { id: 'spy', ask: vi.fn(async () => okAnswer) };
+    const controller = new AiAskController(source, provider);
+    const status = await controller.ask('count');
+    expect(status.state).toBe('error');
+    if (status.state === 'error') {
+      expect(status.error.kind).toBe('invalid-context');
+      expect(status.error.message).toBe('Context exceeds the permitted size.');
+    }
+    expect(provider.ask).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it('settles a binding failure after dispatch and allows a later request to succeed', async () => {
+    const { source } = makeSource();
+    const originalBinding = source.binding;
+    const gate = deferred<AiAnswer>();
+    let calls = 0;
+    const clearTimeoutFn = vi.fn();
+    const controller = new AiAskController(source, {
+      id: 'delayed', ask: () => calls++ === 0 ? gate.promise : Promise.resolve(okAnswer),
+    }, { setTimeoutFn: () => 18, clearTimeoutFn });
+    const asking = controller.ask('count');
+    source.binding = () => { throw new Error('Document unavailable.'); };
+    expect(controller.isCurrentBinding(originalBinding())).toBe(false);
+    gate.resolve(okAnswer);
+    const status = await asking;
+    expect(status.state).toBe('error');
+    if (status.state === 'error') expect(status.error.kind).toBe('invalid-context');
+    expect(clearTimeoutFn).toHaveBeenCalledExactlyOnceWith(18);
+    source.binding = originalBinding;
+    expect((await controller.ask('count')).state).toBe('answered');
+    controller.dispose();
+  });
+
+  it('resolves a superseded call with its own terminal status before the replacement finishes', async () => {
+    const { source } = makeSource();
+    const gates = [deferred<AiAnswer>(), deferred<AiAnswer>()];
+    let calls = 0;
+    const controller = new AiAskController(source, { id: 'overlap', ask: () => gates[calls++]!.promise });
+    const first = controller.ask('first');
+    const second = controller.ask('second');
+    expect(await first).toEqual({ state: 'cancelled', requestId: 1 });
+    expect(controller.status).toEqual({ state: 'asking', requestId: 2 });
+    gates[0]!.reject(new Error('Late rejection.'));
+    gates[1]!.resolve(okAnswer);
+    const final = await second;
+    expect(final.state).toBe('answered');
+    expect('requestId' in final && final.requestId).toBe(2);
+    controller.dispose();
+  });
+
+  it('supports synchronous subscriber cancellation without starting or stranding a provider', async () => {
+    const { source } = makeSource();
+    const provider: AiProvider = { id: 'never', ask: vi.fn(() => new Promise<AiAnswer>(() => {})) };
+    const clearTimeoutFn = vi.fn();
+    const controller = new AiAskController(source, provider, { setTimeoutFn: () => 19, clearTimeoutFn });
+    controller.subscribe((status) => { if (status.state === 'asking') controller.cancel(); });
+    expect(await controller.ask('count')).toEqual({ state: 'cancelled', requestId: 1 });
+    expect(provider.ask).not.toHaveBeenCalled();
+    expect(clearTimeoutFn).toHaveBeenCalledExactlyOnceWith(19);
+    controller.dispose();
+  });
+
+  it('isolates a failing status subscriber from request settlement and other subscribers', async () => {
+    const { source } = makeSource();
+    const controller = new AiAskController(source, new FixtureProvider());
+    const statuses: string[] = [];
+    controller.subscribe(() => { throw new Error('A panel failed to render.'); });
+    controller.subscribe((status) => statuses.push(status.state));
+    expect((await controller.ask('count')).state).toBe('answered');
+    expect(statuses).toEqual(['asking', 'answered']);
+    controller.dispose();
   });
 
   it('rejects empty and over-long questions without calling the provider', async () => {

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { Entity } from '../src/core/entities';
 import { DEFAULT_UNITS } from '../src/core/units';
 import { buildSelectionSnapshot, serializeSnapshot } from '../src/ai/snapshot';
-import { AI_MAX_OBJECTS, AI_MAX_SNAPSHOT_BYTES, AI_MAX_TEXT_CHARS } from '../src/ai/limits';
+import { AI_MAX_GEOMETRY_POINTS, AI_MAX_OBJECTS, AI_MAX_SNAPSHOT_BYTES, AI_MAX_TEXT_CHARS } from '../src/ai/limits';
 import type { AiBinding, AiSnapshotSource } from '../src/ai/types';
 
 function binding(selectionIds: string[], over: Partial<AiBinding> = {}): AiBinding {
@@ -60,8 +60,7 @@ describe('AI selection snapshot', () => {
     expect(lineSnap.geometry.length).toBe(5);
     const textSnap = snap.objects.find((o) => o.id === 'e-text')!;
     expect(textSnap.text).toBe('PB101 START');
-    const { serializedBytes, ...payload } = snap;
-    expect(serializedBytes).toBe(new TextEncoder().encode(JSON.stringify(payload)).length);
+    expect(snap.serializedBytes).toBe(new TextEncoder().encode(serializeSnapshot(snap)).length);
   });
 
   it('includes insert attributes sorted by tag and flags hidden ones', () => {
@@ -115,9 +114,82 @@ describe('AI selection snapshot', () => {
     }));
     const snap = buildSelectionSnapshot(fakeSource(fat, fat.map((e) => e.id)));
     expect(snap.serializedBytes).toBeLessThanOrEqual(AI_MAX_SNAPSHOT_BYTES);
+    expect(new TextEncoder().encode(serializeSnapshot(snap)).length).toBe(snap.serializedBytes);
     expect(snap.selection.included).toBeLessThan(AI_MAX_OBJECTS);
     expect(snap.selection.omitted.some((o) => o.reason === 'byte-limit')).toBe(true);
     expect(snap.selection.included + snap.selection.omittedCount).toBe(snap.selection.total);
+  });
+
+  it('keeps omission metadata bounded without changing reference ids or counts', () => {
+    const ids = Array.from({ length: 100 }, (_, i) => `${i}-${'雪'.repeat(250)}`);
+    const snap = buildSelectionSnapshot(fakeSource([], ids));
+    expect(snap.selection.omittedCount).toBe(100);
+    expect(snap.selection.omittedListTruncated).toBe(true);
+    expect(snap.selection.omitted.every(({ id }) => ids.includes(id))).toBe(true);
+    expect(new TextEncoder().encode(serializeSnapshot(snap)).length).toBe(snap.serializedBytes);
+    expect(snap.serializedBytes).toBeLessThanOrEqual(AI_MAX_SNAPSHOT_BYTES);
+  });
+
+  it('reports impossible root metadata as a controlled context error', () => {
+    const source = fakeSource([], [], { space: { layout: '雪'.repeat(AI_MAX_SNAPSHOT_BYTES), viewport: null } });
+    expect(() => buildSelectionSnapshot(source)).toThrow('drawing space metadata exceeds');
+  });
+
+  it('measures bulged and closed two-vertex polylines using their actual arcs', () => {
+    const semicircle: Entity = {
+      type: 'polyline', id: 'semi', layer: '0', color: 'ByLayer',
+      points: [{ x: 0, y: 0 }, { x: 2, y: 0 }], closed: false, bulges: [1, 0],
+    };
+    const full: Entity = { ...semicircle, id: 'full', closed: true, bulges: [1, 1] };
+    const snap = buildSelectionSnapshot(fakeSource([semicircle, full], ['semi', 'full']));
+    expect(snap.objects[0]!.geometry.length).toBeCloseTo(Math.PI);
+    expect(snap.objects[1]!.geometry.length).toBeCloseTo(2 * Math.PI);
+  });
+
+  it('samples large geometry without walking its remaining vertices or generic bounds', () => {
+    const points = Array.from({ length: AI_MAX_GEOMETRY_POINTS + 1 }, (_, x) => ({ x, y: 0 }));
+    Object.defineProperty(points, AI_MAX_GEOMETRY_POINTS, {
+      get: () => { throw new Error('unbounded geometry was read'); },
+    });
+    const large: Entity = { type: 'polyline', id: 'large', layer: '0', color: 'ByLayer', points, closed: false };
+    const source = fakeSource([large], ['large']);
+    source.boundsFor = () => { throw new Error('generic bounds expanded geometry'); };
+    const obj = buildSelectionSnapshot(source).objects[0]!;
+    expect(obj.geometry.vertexCount).toBe(AI_MAX_GEOMETRY_POINTS + 1);
+    expect(obj.geometry.length).toBeUndefined();
+    expect(obj.notes?.join(' ')).toContain('measurement work limit');
+  });
+
+  it('bounds table scans even when the initial cells are blank', () => {
+    const row = Array.from({ length: 65 }, () => ({ text: '' }));
+    Object.defineProperty(row, 64, { get: () => { throw new Error('table scan exceeded its budget'); } });
+    const table: Entity = {
+      type: 'table', id: 'table', layer: '0', color: 'ByLayer', position: { x: 0, y: 0 },
+      cells: [row], rowHeights: [1], columnWidths: Array.from({ length: 65 }, () => 1),
+      rotation: 0, textHeight: 0.2,
+    };
+    const source = fakeSource([table], ['table']);
+    source.boundsFor = () => { throw new Error('generic table bounds expanded geometry'); };
+    const obj = buildSelectionSnapshot(source).objects[0]!;
+    expect(obj.geometry.columns).toBe(65);
+    expect(obj.tableText).toEqual([]);
+    expect(obj.notes?.join(' ')).toContain('later cell texts not included');
+  });
+
+  it('excludes inherited attributes and bounds names, tags and values explicitly', () => {
+    const attributes = Object.assign(Object.create({ inherited: 'foreign-secret' }) as Record<string, string>, {
+      ['tag'.repeat(400)]: 'value'.repeat(400),
+    });
+    const long: Entity = { ...insert, layer: 'layer'.repeat(400), block: 'block'.repeat(400), attributes };
+    const snap = buildSelectionSnapshot(fakeSource([long], [long.id]));
+    const obj = snap.objects[0]!;
+    expect(serializeSnapshot(snap)).not.toContain('foreign-secret');
+    expect(obj.attributes).toHaveLength(1);
+    expect(obj.attributes![0]!.tag).toHaveLength(AI_MAX_TEXT_CHARS);
+    expect(obj.attributes![0]!.value).toHaveLength(AI_MAX_TEXT_CHARS);
+    expect(obj.layer).toHaveLength(AI_MAX_TEXT_CHARS);
+    expect(obj.geometry.block).toHaveLength(AI_MAX_TEXT_CHARS);
+    expect(obj.notes?.join(' ')).toContain('attribute tag: text truncated');
   });
 
   it('never includes image paths or field expressions', () => {

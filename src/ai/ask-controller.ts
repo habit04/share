@@ -1,18 +1,15 @@
 import { buildSelectionSnapshot } from './snapshot';
-import { aiBindingsEqual, AiError, type AiAnswer, type AiAskRequest, type AiProvider, type AiSnapshot, type AiSnapshotSource } from './types';
+import { aiBindingsEqual, AiError, type AiAnswer, type AiAskRequest, type AiBinding, type AiProvider, type AiSnapshot, type AiSnapshotSource, type AiUsage } from './types';
 import { AI_DEFAULT_TIMEOUT_MS, AI_MAX_ANSWER_CHARS, AI_MAX_QUESTION_CHARS, AI_MAX_REFERENCES } from './limits';
 
 /**
- * Request lifecycle for “Ask about selected objects”
- * (docs/AI-ASSISTANT.md). Owns sequencing, cancellation, timeout, staleness
- * and answer validation. It never touches the editor except through the
- * read-only snapshot source, and it never dispatches commands.
+ * Owns the read-only ask lifecycle. Each call resolves its own terminal status;
+ * only the current request may publish a status to the panel.
  */
-
 export type AiAskStatus =
   | { readonly state: 'idle' }
   | { readonly state: 'asking'; readonly requestId: number }
-  | { readonly state: 'answered'; readonly requestId: number; readonly answer: AiAnswer; readonly droppedReferences: number }
+  | { readonly state: 'answered'; readonly requestId: number; readonly binding: AiBinding; readonly answer: AiAnswer; readonly droppedReferences: number }
   | { readonly state: 'stale'; readonly requestId: number }
   | { readonly state: 'cancelled'; readonly requestId: number }
   | { readonly state: 'error'; readonly requestId: number; readonly error: AiError };
@@ -29,11 +26,64 @@ interface Pending {
   readonly abort: AbortController;
   timer: unknown;
   settled: boolean;
+  readonly finish: (status: AiAskStatus, publish?: boolean) => AiAskStatus;
+}
+
+function providerError(cause: unknown): AiError {
+  if (cause instanceof AiError) return cause;
+  let message = 'The provider failed.';
+  try {
+    if (cause instanceof Error && typeof cause.message === 'string') message = cause.message.slice(0, AI_MAX_ANSWER_CHARS);
+  } catch { /* A provider can reject with an arbitrary value. */ }
+  return new AiError('provider-failure', message);
+}
+
+function contextError(cause: unknown): AiError {
+  return cause instanceof AiError ? cause : new AiError('invalid-context', 'The selected drawing context could not be read. Select the objects again and retry.');
+}
+
+/** Copy only permitted fields; provider results remain untrusted at runtime. */
+function validateAnswer(value: unknown, snapshot: AiSnapshot): { answer: AiAnswer; droppedReferences: number } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new AiError('invalid-answer', 'The provider returned an invalid answer.');
+  }
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.text !== 'string' || raw.text.trim().length === 0) {
+    throw new AiError('invalid-answer', 'The provider returned an empty answer.');
+  }
+  if (raw.text.length > AI_MAX_ANSWER_CHARS) {
+    throw new AiError('output-too-large', 'The provider answer exceeded ' + AI_MAX_ANSWER_CHARS + ' characters and was not shown.');
+  }
+  const validIds = new Set(snapshot.objects.map((object) => object.id));
+  const rawReferences: unknown[] = Array.isArray(raw.references) ? raw.references : [];
+  const seen = new Set<string>();
+  const references: string[] = [];
+  // Inspect at most the cap, but count every removed reference, including the tail.
+  for (let i = 0; i < Math.min(rawReferences.length, AI_MAX_REFERENCES); i++) {
+    const id = rawReferences[i];
+    if (typeof id === 'string' && validIds.has(id) && !seen.has(id)) {
+      references.push(id);
+      seen.add(id);
+    }
+  }
+  let usage: AiUsage | undefined;
+  if (raw.usage && typeof raw.usage === 'object' && !Array.isArray(raw.usage)) {
+    const input = raw.usage as Record<string, unknown>;
+    const clean: { inputBytes?: number; outputChars?: number; durationMs?: number } = {};
+    for (const key of ['inputBytes', 'outputChars', 'durationMs'] as const) {
+      const amount = input[key];
+      if (typeof amount === 'number' && Number.isFinite(amount) && amount >= 0
+        && (key === 'durationMs' || Number.isSafeInteger(amount))) clean[key] = amount;
+    }
+    if (Object.keys(clean).length > 0) usage = clean;
+  }
+  return {
+    answer: { text: raw.text, references, ...(usage ? { usage } : {}) },
+    droppedReferences: rawReferences.length - references.length,
+  };
 }
 
 export class AiAskController {
-  private readonly source: AiSnapshotSource;
-  private readonly provider: AiProvider;
   private readonly timeoutMs: number;
   private readonly setTimeoutFn: (fn: () => void, ms: number) => unknown;
   private readonly clearTimeoutFn: (handle: unknown) => void;
@@ -43,21 +93,14 @@ export class AiAskController {
   private disposed = false;
   private currentStatus: AiAskStatus = { state: 'idle' };
 
-  constructor(source: AiSnapshotSource, provider: AiProvider, options: AiAskControllerOptions = {}) {
-    this.source = source;
-    this.provider = provider;
+  constructor(private readonly source: AiSnapshotSource, private readonly provider: AiProvider, options: AiAskControllerOptions = {}) {
     this.timeoutMs = options.timeoutMs ?? AI_DEFAULT_TIMEOUT_MS;
     this.setTimeoutFn = options.setTimeoutFn ?? ((fn, ms) => setTimeout(fn, ms));
-    this.clearTimeoutFn = options.clearTimeoutFn ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
+    this.clearTimeoutFn = options.clearTimeoutFn ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
   }
 
-  get status(): AiAskStatus {
-    return this.currentStatus;
-  }
-
-  get providerId(): string {
-    return this.provider.id;
-  }
+  get status(): AiAskStatus { return this.currentStatus; }
+  get providerId(): string { return this.provider.id; }
 
   subscribe(listener: (status: AiAskStatus) => void): () => void {
     this.listeners.add(listener);
@@ -66,146 +109,123 @@ export class AiAskController {
 
   private emit(status: AiAskStatus): void {
     this.currentStatus = status;
-    for (const listener of [...this.listeners]) listener(status);
+    for (const listener of [...this.listeners]) {
+      if (this.disposed || this.currentStatus !== status) break;
+      try { listener(status); } catch { /* A subscriber must not strand a request or block other subscribers. */ }
+    }
+  }
+
+  /** Safe binding check for answers already displayed by the panel. */
+  isCurrentBinding(binding: AiBinding): boolean {
+    if (this.disposed) return false;
+    try { return aiBindingsEqual(binding, this.source.binding()); } catch { return false; }
   }
 
   /** The snapshot the panel previews and the next ask will send. Read-only. */
-  previewSnapshot(): AiSnapshot {
-    return buildSelectionSnapshot(this.source);
-  }
+  previewSnapshot(): AiSnapshot { return buildSelectionSnapshot(this.source); }
 
-  /**
-   * Ask a question about the current selection. Resolves with the final
-   * status; provider failures, timeouts, staleness and cancellation are
-   * reported as statuses, not thrown, so the panel has one rendering path.
-   */
+  /** Resolves to this call's terminal status, including on cancellation or supersession. */
   async ask(question: string): Promise<AiAskStatus> {
     if (this.disposed) {
-      const status: AiAskStatus = {
-        state: 'error', requestId: this.lastRequestId,
-        error: new AiError('disposed', 'The AI assistant has been closed.'),
-      };
-      return status;
+      return { state: 'error', requestId: this.lastRequestId, error: new AiError('disposed', 'The AI assistant has been closed.') };
     }
-    const trimmed = question.trim();
+    this.abortPending();
+    const requestId = ++this.lastRequestId;
+    const trimmed = typeof question === 'string' ? question.trim() : '';
     if (trimmed.length === 0 || trimmed.length > AI_MAX_QUESTION_CHARS) {
       const status: AiAskStatus = {
-        state: 'error', requestId: this.lastRequestId,
-        error: new AiError('invalid-question', `Questions must be 1–${AI_MAX_QUESTION_CHARS} characters.`),
+        state: 'error', requestId,
+        error: new AiError('invalid-question', 'Questions must be 1–' + AI_MAX_QUESTION_CHARS + ' characters.'),
       };
       this.emit(status);
       return status;
     }
 
-    // A new ask supersedes any in-flight request: abort it so its late
-    // answer can never overwrite this one.
-    this.abortPending();
-
-    const requestId = ++this.lastRequestId;
-    const snapshot = buildSelectionSnapshot(this.source);
-    const binding = this.source.binding();
-    const request: AiAskRequest = { requestId, question: trimmed, snapshot, binding };
-    const abort = new AbortController();
-    const pending: Pending = { requestId, abort, timer: null, settled: false };
-    this.pending = pending;
-    this.emit({ state: 'asking', requestId });
-
-    const finish = (status: AiAskStatus): AiAskStatus => {
-      if (pending.settled) return this.currentStatus;
-      pending.settled = true;
-      if (pending.timer !== null) this.clearTimeoutFn(pending.timer);
-      if (this.pending === pending) this.pending = null;
+    let snapshot: AiSnapshot;
+    let binding: AiBinding;
+    try {
+      snapshot = buildSelectionSnapshot(this.source);
+      binding = this.source.binding();
+    } catch (cause) {
+      const status: AiAskStatus = { state: 'error', requestId, error: contextError(cause) };
       this.emit(status);
       return status;
-    };
+    }
+    const request: AiAskRequest = { requestId, question: trimmed, snapshot, binding };
 
-    pending.timer = this.setTimeoutFn(() => {
-      abort.abort();
-      finish({
-        state: 'error', requestId,
-        error: new AiError('timeout', `The provider did not answer within ${this.timeoutMs} ms.`),
-      });
-    }, this.timeoutMs);
-
-    let answer: AiAnswer;
-    try {
-      // Race the provider against the abort signal so timeout / cancel /
-      // supersede resolve this ask even if a provider ignores the signal.
-      const aborted = new Promise<never>((_resolve, reject) => {
-        abort.signal.addEventListener('abort', () => reject(new Error('AI request aborted.')), { once: true });
-      });
-      answer = await Promise.race([this.provider.ask(request, abort.signal), aborted]);
-    } catch (cause) {
-      if (pending.settled) return this.currentStatus; // timed out already
-      if (abort.signal.aborted) {
-        return finish({ state: 'cancelled', requestId });
+    return new Promise<AiAskStatus>((resolve) => {
+      const abort = new AbortController();
+      const pending: Pending = {
+        requestId, abort, timer: null, settled: false,
+        finish: (status, publish = true) => {
+          if (pending.settled) return status;
+          pending.settled = true;
+          if (pending.timer !== null) {
+            try { this.clearTimeoutFn(pending.timer); } catch { /* Settlement must still complete. */ }
+            pending.timer = null;
+          }
+          const current = this.pending === pending;
+          if (current) this.pending = null;
+          resolve(status);
+          if (publish && current && !this.disposed) this.emit(status);
+          return status;
+        },
+      };
+      this.pending = pending;
+      try {
+        pending.timer = this.setTimeoutFn(() => {
+          pending.finish({
+            state: 'error', requestId,
+            error: new AiError('timeout', 'The provider did not answer within ' + this.timeoutMs + ' ms.'),
+          });
+          abort.abort();
+        }, this.timeoutMs);
+        if (pending.settled) {
+          try { this.clearTimeoutFn(pending.timer); } catch { /* Synchronously fired test timer. */ }
+          return;
+        }
+        this.emit({ state: 'asking', requestId });
+        if (pending.settled) return; // A subscriber may have cancelled or disposed synchronously.
+        Promise.resolve(this.provider.ask(request, abort.signal)).then((value: unknown) => {
+          if (pending.settled) return;
+          let current: AiBinding;
+          try {
+            current = this.source.binding();
+            if (!aiBindingsEqual(binding, current)) {
+              pending.finish({ state: 'stale', requestId });
+              return;
+            }
+          } catch (cause) {
+            pending.finish({ state: 'error', requestId, error: contextError(cause) });
+            return;
+          }
+          try {
+            const validated = validateAnswer(value, snapshot);
+            pending.finish({ state: 'answered', requestId, binding, ...validated });
+          } catch (cause) {
+            const error = cause instanceof AiError ? cause : new AiError('invalid-answer', 'The provider returned an invalid answer.');
+            pending.finish({ state: 'error', requestId, error });
+          }
+        }, (cause: unknown) => {
+          if (!pending.settled) pending.finish({ state: 'error', requestId, error: providerError(cause) });
+        });
+      } catch (cause) {
+        pending.finish({ state: 'error', requestId, error: providerError(cause) });
+        abort.abort();
       }
-      if (cause instanceof AiError) {
-        return finish({ state: 'error', requestId, error: cause });
-      }
-      return finish({
-        state: 'error', requestId,
-        error: new AiError('provider-failure', cause instanceof Error ? cause.message : 'The provider failed.'),
-      });
-    }
-
-    if (pending.settled) return this.currentStatus; // timed out / superseded while awaiting
-    if (abort.signal.aborted) return finish({ state: 'cancelled', requestId });
-
-    // Staleness: re-read the binding now. Any difference — edit, undo, redo,
-    // selection change, space change, tab switch, replacement, close —
-    // suppresses the answer. docRevision catches edit-then-undo.
-    const now = this.source.binding();
-    if (!aiBindingsEqual(binding, now)) {
-      return finish({ state: 'stale', requestId });
-    }
-
-    // Answer validation: bounded text, references only into the snapshot.
-    if (typeof answer.text !== 'string' || answer.text.length === 0) {
-      return finish({
-        state: 'error', requestId,
-        error: new AiError('invalid-answer', 'The provider returned an empty answer.'),
-      });
-    }
-    if (answer.text.length > AI_MAX_ANSWER_CHARS) {
-      return finish({
-        state: 'error', requestId,
-        error: new AiError('output-too-large', `The provider answer exceeded ${AI_MAX_ANSWER_CHARS} characters and was not shown.`),
-      });
-    }
-    const validIds = new Set(snapshot.objects.map((o) => o.id));
-    const rawRefs = Array.isArray(answer.references) ? answer.references.slice(0, AI_MAX_REFERENCES) : [];
-    const references = rawRefs.filter((id) => typeof id === 'string' && validIds.has(id));
-    const droppedReferences = rawRefs.length - references.length;
-
-    return finish({
-      state: 'answered', requestId,
-      answer: { ...answer, references },
-      droppedReferences,
     });
   }
 
   /** Cancel the in-flight request, if any. Late answers are suppressed. */
-  cancel(): void {
-    if (!this.pending || this.pending.settled) return;
+  cancel(): void { this.abortPending(true); }
+
+  private abortPending(publish = false): void {
     const pending = this.pending;
+    if (!pending) return;
+    pending.finish({ state: 'cancelled', requestId: pending.requestId }, publish);
     pending.abort.abort();
-    pending.settled = true;
-    if (pending.timer !== null) this.clearTimeoutFn(pending.timer);
-    this.pending = null;
-    this.emit({ state: 'cancelled', requestId: pending.requestId });
   }
 
-  private abortPending(): void {
-    if (!this.pending) return;
-    const pending = this.pending;
-    pending.abort.abort();
-    pending.settled = true;
-    if (pending.timer !== null) this.clearTimeoutFn(pending.timer);
-    this.pending = null;
-  }
-
-  /** Cancel everything and refuse further asks. */
   dispose(): void {
     this.disposed = true;
     this.abortPending();
