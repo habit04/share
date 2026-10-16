@@ -11,11 +11,12 @@
  * by parameter id so the encoding is canonical.
  *
  * Model version stays 1 for the 30.2 kinds (angle/flip parameters; move/rotate/scale/flip
- * actions): they are additive union members, as the design planned (§1.3). A v1 payload
- * written before 30.2 contains only linear-distance/stretch members and decodes
- * identically; a payload using the new kinds, read by a pre-30.2 build, fails that
- * build's structural decode and is retained verbatim — the designed fallback — instead
- * of being half-modeled. The version only moves when a member's shape changes.
+ * actions) and the 30.2a visibility parameter + value: they are additive union members,
+ * as the design planned (§1.3, visibility design §6.2). A v1 payload written before
+ * those slices contains only the earlier members and decodes identically; a payload
+ * using the new kinds, read by an older build, fails that build's structural decode
+ * and is retained verbatim — the designed fallback — instead of being half-modeled.
+ * The version only moves when a member's shape changes.
  *
  * Escaping decision (explicit, following the JCAD_TABLE variant in write-annotations.ts,
  * NOT the unescaped MTEXT-columns variant): the JSON text is escaped to 7-bit ASCII —
@@ -40,7 +41,10 @@
  * names). Decode maps `#<index>` back to the freshly read entity's id, so the modeled
  * definition after a round-trip is exactly the authored one. (The evaluator resolves
  * an id as an entity first, then as an attribute tag; ordinal encoding preserves that
- * precedence even if an entity id and a tag collide.)
+ * precedence even if an entity id and a tag collide.) The same `#<index>`/tag rule
+ * applies to a visibility state's `visible` list (design §1.5): entity ids in the
+ * list serialize as ordinals, attribute tags verbatim — so the ordinal map is
+ * threaded into parameter encoding for the visibility kind.
  */
 import type { Pair } from './groups';
 import {
@@ -53,6 +57,7 @@ import {
   type DynamicParameter,
   type ParameterGrip,
   type StretchAction,
+  type VisibilityState,
   type WholeSelection,
 } from '../../core/parametric/definitions';
 import {
@@ -114,7 +119,7 @@ function encodeWholeSelection(selection: readonly WholeSelection[], entityIdsInO
   return selection.map((sel) => ({ entityId: encodeEntityRef(sel.entityId, entityIdsInOrder) }));
 }
 
-function encodeParameter(p: DynamicParameter): Record<string, unknown> {
+function encodeParameter(p: DynamicParameter, entityIdsInOrder?: readonly string[]): Record<string, unknown> {
   switch (p.kind) {
     case 'opaque-parameter':
       return { kind: 'opaque-parameter', id: p.id, name: p.name, sourceKind: p.sourceKind, payload: p.payload };
@@ -146,6 +151,18 @@ function encodeParameter(p: DynamicParameter): Record<string, unknown> {
         name: p.name,
         basePoint: { x: p.basePoint.x, y: p.basePoint.y },
         defaultValue: p.defaultValue,
+      };
+    case 'visibility':
+      return {
+        kind: 'visibility',
+        id: p.id,
+        name: p.name,
+        basePoint: { x: p.basePoint.x, y: p.basePoint.y },
+        defaultState: p.defaultState,
+        states: p.states.map((s) => ({
+          name: s.name,
+          visible: s.visible.map((ref) => encodeEntityRef(ref, entityIdsInOrder)),
+        })),
       };
   }
 }
@@ -210,7 +227,7 @@ export function encodeDynamicDefinition(definition: DynamicBlockDefinition, enti
   return escapeDynamicJson(JSON.stringify({
     v: DYNAMIC_MODEL_VERSION,
     kind: 'definition',
-    parameters: definition.parameters.map(encodeParameter),
+    parameters: definition.parameters.map((p) => encodeParameter(p, entityIdsInOrder)),
     actions: definition.actions.map((a) => encodeAction(a, entityIdsInOrder)),
   }));
 }
@@ -308,12 +325,37 @@ function decodeWholeSelection(raw: unknown, entityIdsInOrder?: readonly string[]
   return selection;
 }
 
-function decodeParameter(raw: unknown): DynamicParameter | undefined {
+function decodeParameter(raw: unknown, entityIdsInOrder?: readonly string[]): DynamicParameter | undefined {
   if (!isRecord(raw) || typeof raw.id !== 'string' || typeof raw.name !== 'string') return undefined;
   if (raw.kind === 'opaque-parameter') {
     return typeof raw.sourceKind === 'string' && typeof raw.payload === 'string'
       ? { kind: 'opaque-parameter', id: raw.id, name: raw.name, sourceKind: raw.sourceKind, payload: raw.payload }
       : undefined;
+  }
+  if (raw.kind === 'visibility') {
+    if (!isPoint(raw.basePoint) || typeof raw.defaultState !== 'string' || !Array.isArray(raw.states)) return undefined;
+    const states: VisibilityState[] = [];
+    for (const s of raw.states) {
+      if (!isRecord(s) || typeof s.name !== 'string' || !Array.isArray(s.visible)) return undefined;
+      const visible: string[] = [];
+      for (const ref of s.visible) {
+        if (typeof ref !== 'string') return undefined;
+        // Entity ids resolve from `#<index>` ordinals; attribute tags pass
+        // through verbatim. An unresolvable ordinal retains the whole payload.
+        const resolved = resolveEntityRef(ref, entityIdsInOrder);
+        if (resolved === undefined) return undefined;
+        visible.push(resolved);
+      }
+      states.push({ name: s.name, visible });
+    }
+    return {
+      kind: 'visibility',
+      id: raw.id,
+      name: raw.name,
+      basePoint: { x: raw.basePoint.x, y: raw.basePoint.y },
+      defaultState: raw.defaultState,
+      states,
+    };
   }
   if (raw.kind === 'flip') {
     if (!isPoint(raw.basePoint) || typeof raw.defaultValue !== 'boolean') return undefined;
@@ -462,7 +504,7 @@ export function decodeDynamicDefinition(raw: string, base?: DynamicDefinitionBas
   if (!parsed || !Array.isArray(parsed.parameters) || !Array.isArray(parsed.actions)) return retained;
   const parameters: DynamicParameter[] = [];
   for (const p of parsed.parameters) {
-    const decoded = decodeParameter(p);
+    const decoded = decodeParameter(p, base?.entityIdsInOrder);
     if (!decoded) return retained;
     parameters.push(decoded);
   }
@@ -498,6 +540,7 @@ export function decodeDynamicInstance(raw: string, definition?: DynamicBlockDefi
     if (value.kind === 'distance' && isFiniteNumber(value.value)) values[id] = { kind: 'distance', value: value.value };
     else if (value.kind === 'angle' && isFiniteNumber(value.value)) values[id] = { kind: 'angle', value: value.value };
     else if (value.kind === 'flip' && typeof value.value === 'boolean') values[id] = { kind: 'flip', value: value.value };
+    else if (value.kind === 'visibility' && typeof value.value === 'string') values[id] = { kind: 'visibility', value: value.value };
     else if (value.kind === 'opaque' && typeof value.payload === 'string') values[id] = { kind: 'opaque', payload: value.payload };
     else return retained;
   }
