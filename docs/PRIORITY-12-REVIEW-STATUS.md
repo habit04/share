@@ -1,7 +1,8 @@
 # Priority 12 review status
 
-Windows development review, 2026-10-15. Nothing in this batch is pushed, merged
-or released. Earlier released TTC support remains the v0.5.2 baseline.
+Windows development review, 2026-10-16. The combined branch is published as
+draft PR #23; it is not merged or released. Earlier released TTC support remains
+the v0.5.2 baseline.
 
 Current source composes the corrected CFF1 and variable-default implementations
 with existing collection selection, used-glyph validation, static subsetting and
@@ -18,7 +19,26 @@ A subsequent normal run of the entire Windows export-admission file passes
 assertions and deadlines, without a preload or external observer. This narrows
 the cleanup diagnosis without clearing the failed full-suite gate. The existing
 Windows CI job now runs that file and retains its JSON result; Linux unit jobs
-skip its Windows-conditional cases. Fresh CI remains pending.
+skip its Windows-conditional cases. PR CI on `4b5e1a1` passes that native file
+34/34 and both Node 22/24 jobs. The GPU job also passes. Windows Electron and
+UI comparison fail on stale expectations: the source-loss controls still await
+the former overwrite-consent modal, while production now hard-refuses the
+partial source; one DWG screenshot predates the partial-import badge, 3D tab
+label and dictionary-loss warning. The thrown modal timeout skips the later
+damaged-drawing setup, explaining that run's secondary recovery-row failure.
+
+The corrected E2E controls assert atomic refusal of Save and same-source Save
+As, cancellation, an exact prior-destination backup for a separate copy, and
+raw polyface/geometry preservation through fresh reopen. RECENT uses the real
+full list rather than assuming the fixture is among its first three entries.
+Older-release smoke tests keep their prior consent/No-to-Save-As branch.
+The corrected Windows source-runtime flow passes **256 checks, zero failures**,
+including the unchanged cut-short autosave/close/crash-recovery assertions.
+Only `site-app-dwg.png` is reviewed and updated from the exact Ubuntu CI capture:
+its canvas and sidebar are pixel-identical to the prior baseline; all differences
+are accounted for in the three UI/report regions. The official comparison of
+all 48 CI images passes with unchanged tolerances/masks. Script typechecking,
+lint and the fresh renderer build pass; exact corrected-head CI remains a gate.
 
 Commit `743fdbb` passes the fresh Windows source-runtime Plot/edit/save/reopen
 workflow, including Bahnschrift through app IPC, exact whole-variable programs,
