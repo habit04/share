@@ -208,7 +208,10 @@ export type AiErrorKind =
   | 'credential-corrupt'
   | 'credential-delete-failed'
   | 'credential-rollback-failed'
-  | 'invalid-request';
+  | 'invalid-request'
+  // Milestone 3 (Draft / Edit).
+  | 'invalid-plan'
+  | 'busy';
 
 export class AiError extends Error {
   readonly kind: AiErrorKind;
@@ -223,4 +226,48 @@ export class AiError extends Error {
 export interface AiProvider {
   readonly id: string;
   ask(request: AiAskRequest, signal: AbortSignal): Promise<AiAnswer>;
+}
+
+// ---- Milestone 3 (Draft / Edit): docs/AI-ASSISTANT-M3.md ----
+
+import type { AiDraftResponse } from './draft-plan';
+
+/**
+ * Everything a staged draft proposal is bound to: the full Ask binding plus
+ * fingerprints of the units, the frozen creation defaults and the target
+ * eligibility in force at generation, and the provider configuration key
+ * (provider | model | configuration generation). Any difference at Apply
+ * time makes the proposal stale; it is discarded, never rebased.
+ */
+export interface AiDraftBinding {
+  readonly ask: AiBinding;
+  readonly unitsKey: string;
+  readonly defaultsKey: string;
+  readonly eligibilityKey: string;
+  readonly configKey: string;
+}
+
+export function aiDraftBindingsEqual(a: AiDraftBinding, b: AiDraftBinding): boolean {
+  return aiBindingsEqual(a.ask, b.ask)
+    && a.unitsKey === b.unitsKey
+    && a.defaultsKey === b.defaultsKey
+    && a.eligibilityKey === b.eligibilityKey
+    && a.configKey === b.configKey;
+}
+
+/** A draft request: the user's wording plus the exact context JSON shown in the panel. */
+export interface AiDraftRequest {
+  readonly requestId: string;
+  readonly prompt: string;
+  /** The serialized draft context (snapshot + eligibility/defaults/units blocks). */
+  readonly contextJson: string;
+  readonly binding: AiDraftBinding;
+  /** Live requests pin the destination shown in the panel; the host rejects mismatches. */
+  readonly destination?: { readonly provider: string; readonly model: string };
+}
+
+/** A draft provider returns a validated plan response. It receives no editor access. */
+export interface AiDraftProvider {
+  readonly id: string;
+  draft(request: AiDraftRequest, signal: AbortSignal): Promise<AiDraftResponse>;
 }
