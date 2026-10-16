@@ -142,6 +142,8 @@ jobs:
       - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - name: Native export admission regressions (Windows)
+        run: npm test -- tests/windows-export-admissions.test.ts --reporter=default --reporter=json --outputFile.json=windows-export-admission-results.json
       # Electron 44's package fetches its binary on first use, not at install; fetch it here
       # (checked against the package's checksums) so a slow download cannot eat the launch timeout.
       - run: node node_modules/electron/install.js
@@ -172,6 +174,13 @@ jobs:
             release/dwg-writer/JcadDwgWriter-Source.zip
             release/dwg-writer/ThirdPartyNotices.json
             release/dwg-writer/integrity.json
+          if-no-files-found: warn
+      - name: Native export admission results (Windows)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-export-admission-${{ matrix.os }}
+          path: windows-export-admission-results.json
           if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         if: always()

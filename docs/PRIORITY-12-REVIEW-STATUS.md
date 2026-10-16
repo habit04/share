@@ -13,6 +13,13 @@ The isolated unchanged case passes in 261 ms. Limits, deadlines and assertions
 remain unchanged; no further full-suite retries are used to claim clearance.
 Fresh combined native checks below have now executed; merge remains held.
 
+A subsequent normal run of the entire Windows export-admission file passes
+**34/34** in 1.63 seconds (large-file case 372 ms), using unchanged source,
+assertions and deadlines, without a preload or external observer. This narrows
+the cleanup diagnosis without clearing the failed full-suite gate. The existing
+Windows CI job now runs that file and retains its JSON result; Linux unit jobs
+skip its Windows-conditional cases. Fresh CI remains pending.
+
 Commit `743fdbb` passes the fresh Windows source-runtime Plot/edit/save/reopen
 workflow, including Bahnschrift through app IPC, exact whole-variable programs,
 three optical-size refusals, all 63 real-DWG F4 assertions and nine independent

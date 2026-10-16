@@ -130,6 +130,14 @@ unlink wait, not its cause, and not a fixed product deadlock. Prior failed logs
 and the source/input hash receipt are retained; no full-suite retry loop or
 deadline/limit changes are used to clear it. Merge clearance remains withheld.
 
+One subsequent normal run of the complete 34-test Windows export-admission file
+passes in 1.63 seconds; its large-file case takes 372 ms. Source and test hashes
+are unchanged. No private preload/observer was applied, and no further full-suite
+retry was performed. That normal focused result does not supersede the red full
+run. The existing Windows CI job now executes this platform-conditional unit file
+and uploads its JSON receipt; CI results remain pending. Release workflows are
+unchanged and are not triggered by the development branch.
+
 Fresh committed-tree Windows Plot/F4 and authored-CFF/mixed-PDF checks have now
 executed on clean commit `743fdbbf5da42c3bc8ff6c90b9c38e947b822f49`, using its fresh
 renderer build. Actual app IPC reads, native Plot, cancellation, edit/undo/redo,
