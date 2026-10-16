@@ -7,13 +7,31 @@ remains the default until the user deliberately enables live AI. Drafting,
 electrical assistance, MCP, billing services and autonomous tools are out
 of scope.
 
-## First provider: OpenAI
+## Providers: OpenAI and Anthropic (Justin's update, 2026-10-16)
 
-The brief's provider placeholder was unfilled; §6 of the brief specifies
-OpenAI behaviour (documented structured outputs, `store: false`, data
-controls), so OpenAI is the first provider. The transport is one isolated
-module (`electron/ai-openai-transport.cjs`); everything else is
-provider-independent, so a second provider later is an additive change.
+Both providers are supported, each with a native adapter behind the
+shared host transport interface, delivered in its own focused commit.
+The panel carries an explicit provider selector. Keys, model settings,
+enablement, connection tests and Forget Key are **per provider**: each
+provider's key lives in its own encrypted file (`openai-key.bin` /
+`anthropic-key.bin`) or its own session slot, and is only ever sent to
+that provider's fixed origin. A question goes only to the currently
+selected provider — **there is no automatic fallback**, because silently
+rerouting could send drawing information to another service and incur
+additional charges. Switching providers cancels all outstanding work
+and the panel clears the displayed answer, so an answer produced by one
+provider can never be presented as the other's.
+
+Configuration is v2: `{ version: 2, provider, providers: { openai:
+{ model, enabled, keyPersistence }, anthropic: { … } } }`. A v1 config
+(the short-lived single-provider shape) migrates on load: its values
+become the OpenAI entry and Anthropic starts from defaults.
+
+### OpenAI
+
+The brief's §6 specifies OpenAI behaviour (documented structured
+outputs, `store: false`, data controls); its adapter is
+`electron/ai-openai-transport.cjs`.
 
 - Endpoint: fixed `https://api.openai.com/v1/responses`. No configurable
   origin, no proxy setting. Requests use `redirect: 'manual'`; any 3xx is
@@ -46,19 +64,46 @@ provider-independent, so a second provider later is an additive change.
   retain prompts/responses for up to 30 days; Zero Data Retention is a
   separate, provider-approved account control this app does not claim.
 
+### Anthropic
+
+- Endpoint: fixed `https://api.anthropic.com/v1/messages`, headers
+  `x-api-key` and `anthropic-version: 2023-06-01`, `redirect: 'manual'`
+  (the key is never forwarded). Default model `claude-sonnet-5-5`.
+- Request: `model`, `max_tokens: 2048`, `system` (the same fixed
+  instructions), `messages` (question + snapshot JSON only), and
+  `output_config.format` = JSON Schema `{ text, references }`
+  (Anthropic structured outputs). No tools, no sampling overrides.
+- Response handling: same 256 KiB read cap before parsing. Content
+  blocks are read by type — current Claude models may emit `thinking`
+  blocks before the text block, and only `text` blocks count: exactly
+  one text block carrying schema-valid JSON is required.
+  `stop_reason: 'max_tokens'` → `output-too-large`; `'refusal'` →
+  `refused`; any other non-`end_turn` outcome → `invalid-answer`.
+  Usage (`usage.input_tokens` / `output_tokens`) is carried as with
+  OpenAI. Errors map by HTTP status with the same redacted kinds
+  (401 → `auth-failed`, 403 → `auth-failed`/`model-access`, 404 →
+  `model-access`, 429 → `rate-limited`, 400 → `invalid-request`,
+  5xx/529 → `provider-failure`); no automatic retries.
+- Retention wording (accurate, also shown in the UI): requests go
+  directly to Anthropic's API, which does not train on API inputs or
+  outputs; standard API data-retention terms apply — this is **not**
+  zero retention, and this app claims no special data controls.
+
 ## Host-authoritative configuration
 
 All AI configuration lives in the main process. The renderer can neither
 choose an endpoint nor see a key; the model it displays is the model the
 host will use, read back from host state.
 
-- Config (non-secret) at `<userData>/ai/config.json`:
-  `{ version: 1, provider: 'openai', model: string, enabled: boolean,
-  keyPersistence: 'session' | 'encrypted' }`. Defaults: provider `openai`,
-  model `gpt-5`, enabled **false**, persistence **session**. Written with
-  the app's shared atomic writer (`electron/atomic-write.cjs`). A corrupt
-  or out-of-shape config falls back to defaults and is reported in state
-  as `configProblem` — never silently trusted.
+- Config (non-secret) at `<userData>/ai/config.json`, v2:
+  `{ version: 2, provider: 'openai' | 'anthropic', providers:
+  { openai: { model, enabled, keyPersistence }, anthropic: { … } } }`.
+  Defaults: provider `openai`; OpenAI model `gpt-5`, Anthropic model
+  `claude-sonnet-5-5`; both disabled, both session persistence. Written
+  with the app's shared atomic writer (`electron/atomic-write.cjs`). A
+  corrupt or out-of-shape config falls back to defaults and is reported
+  in state as `configProblem` — never silently trusted. A v1 config
+  migrates on load (its values become the OpenAI entry).
 - Model is a bounded string (`[A-Za-z0-9._-]{1,128}`), chosen from presets
   or typed; the host validates it in config, in state responses and again
   when building a transport.
@@ -77,8 +122,9 @@ host will use, read back from host state.
   written to disk; it is gone when the app exits.
 - Encrypted persistence (opt-in): ciphertext only, produced by Electron
   `safeStorage` (OS-backed: DPAPI / Keychain / libsecret), at the fixed
-  path `<userData>/ai/openai-key.bin`, written atomically through the
-  shared writer. Following Electron's credential-storage guidance:
+  per-provider path `<userData>/ai/<provider>-key.bin`, written atomically
+  through the shared writer. Each provider's key is stored, loaded and
+  sent only for that provider. Following Electron's credential-storage guidance:
   encryption availability is checked before encrypt/decrypt; on Linux,
   `basic_text` and unknown backends are refused (carried over from the
   reviewed M1 store). Plaintext fallback does not exist.
@@ -98,8 +144,10 @@ host will use, read back from host state.
 Channels (all through the app's guarded `ipcMain`; the guard rejects any
 caller that is not the main window's main frame on the app page):
 
-`ai-get-state`, `ai-set-model`, `ai-set-key`, `ai-forget-key`,
-`ai-set-enabled`, `ai-test-connection`, `ai-ask`, `ai-cancel`, `ai-usage`.
+`ai-get-state`, `ai-set-provider`, `ai-set-model`, `ai-set-key`,
+`ai-forget-key`, `ai-set-enabled`, `ai-test-connection`, `ai-ask`,
+`ai-cancel`, `ai-usage`. All settings channels act on the currently
+selected provider (the host is authoritative for which that is).
 
 - Every handler returns a bounded result value
   (`{ ok: true, … }` / `{ ok: false, error: { kind, message, retryAfterSeconds? } }`);
@@ -121,7 +169,8 @@ caller that is not the main window's main frame on the app page):
   its process goes away (`destroyed` / `render-process-gone` on the app
   webContents — a new hook, registered in `electron/main/ipc-ai.cjs`),
   the app quits (`will-quit` dispose, like the other hosts), the config
-  changes (provider/model/enabled), or the key is replaced/forgotten.
+  changes (provider/model/enabled — switching provider included), or the
+  key is replaced/forgotten.
 - M1's stale-answer protection is untouched: answers are re-bound to the
   captured session/document/revision/space/selection before display.
 
@@ -132,15 +181,18 @@ caller that is not the main window's main frame on the app page):
   Ask button reads “Ask OpenAI”. In demo mode it keeps the M1 wording and
   persistent offline label.
 - Under the buttons, live mode shows: “Questions are billed to your
-  OpenAI API account. Cancelling stops JCad from waiting, but a request
-  already processing at OpenAI may still be charged.” After an answer,
-  available token usage is shown.
-- Connection settings live in a section of the AI panel: provider (fixed
-  OpenAI), model select (presets + custom), API-key password field,
-  persistence choice (session-only default / remember encrypted), Save
-  Key, Replace Key, Forget Key, Test Connection, and an explicit
-  **Enable Live AI** checkbox (disabled until a key is present). Errors
-  render in place as text.
+  <provider> API account. Cancelling stops JCad from waiting, but a
+  request already processing at the provider may still be charged.”
+  After an answer, available token usage is shown.
+- Connection settings live in a section of the AI panel: a provider
+  selector (OpenAI / Anthropic), per-provider model select (presets +
+  custom), API-key password field, persistence choice (session-only
+  default / remember encrypted), Save Key, Replace Key, Forget Key, Test
+  Connection, and an explicit **Enable Live AI** checkbox (disabled
+  until a key is present for that provider). Switching the selector
+  re-reads host state for the newly selected provider, cancels any
+  in-flight question and clears the displayed answer. Errors render in
+  place as text.
 - Test Connection sends a small canned probe with **no drawing content**
   (fixed text, tiny output cap) and its label/dialog text discloses that
   it is a real API call that may incur a small charge on the account.
@@ -161,9 +213,11 @@ retained unchanged.
 
 ## Live smoke (opt-in, manual, not part of automated validation)
 
-With a real OpenAI key on a disposable drawing: open the AI panel →
-Connection settings → paste key (session-only) → Test Connection (expect
-success; a tiny charge may apply) → Enable Live AI → select objects →
-verify the preview names OpenAI + model → Ask. Then: Forget Key and
-confirm state shows no key and queued/running work is cancelled. Never use
-a production drawing for the smoke test.
+Per provider, with a real key for that provider on a disposable drawing:
+open the AI panel → Connection settings → select the provider → paste
+key (session-only) → Test Connection (expect success; a tiny charge may
+apply) → Enable Live AI → select objects → verify the preview names the
+provider + model → Ask. Then: switch providers mid-question and confirm
+the old answer never appears; Forget Key and confirm state shows no key
+and queued/running work is cancelled. Never use a production drawing
+for the smoke test.
