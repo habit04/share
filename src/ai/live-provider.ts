@@ -1,0 +1,66 @@
+import { AI_MAX_QUESTION_CHARS, AI_MAX_SNAPSHOT_BYTES } from './limits';
+import { AiError, type AiAnswer, type AiAskRequest, type AiProvider } from './types';
+
+/**
+ * Live provider adapter — INACTIVE in this milestone
+ * (docs/AI-ASSISTANT.md). The live provider has not been selected: no
+ * provider, endpoint, credentials or data handling has been agreed, so
+ * nothing in the application constructs this class, no host bridge is wired,
+ * and `electron/ai-host.cjs` is not registered with the main process.
+ *
+ * The adapter exists so the eventual live path is separately reviewable:
+ * it can only talk through an injected host bridge (the renderer cannot
+ * reach the network — the page CSP has no connect-src), it carries no
+ * endpoint or key material, and an incompletely configured instance
+ * refuses every request with 'provider-not-configured'.
+ */
+
+/** The narrow host bridge a future preload registration would provide. */
+export interface AiHostBridge {
+  ask(request: AiAskRequest, signal: AbortSignal): Promise<AiAnswer>;
+}
+
+/** Non-secret configuration only. Endpoint and credentials stay host-side. */
+export interface LiveProviderConfig {
+  readonly providerId: string;
+  readonly model: string;
+}
+
+export class LiveProvider implements AiProvider {
+  readonly id: string;
+  private readonly bridge?: AiHostBridge;
+  private readonly config?: LiveProviderConfig;
+
+  constructor(bridge?: AiHostBridge, config?: LiveProviderConfig) {
+    this.bridge = bridge;
+    this.config = config;
+    this.id = config?.providerId ?? 'live-unconfigured';
+  }
+
+  /** True only when a host bridge and a complete agreed config are present. */
+  get configured(): boolean {
+    return this.bridge !== undefined
+      && this.config !== undefined
+      && this.config.providerId.length > 0
+      && this.config.model.length > 0;
+  }
+
+  async ask(request: AiAskRequest, signal: AbortSignal): Promise<AiAnswer> {
+    if (!this.configured || !this.bridge) {
+      throw new AiError(
+        'provider-not-configured',
+        'No live AI provider has been selected. The live adapter is inactive until a provider, endpoint, credentials and data handling are agreed.',
+      );
+    }
+    if (signal.aborted) throw new AiError('cancelled', 'The request was cancelled.');
+    // Defence in depth: the host re-validates everything, but an out-of-bound
+    // envelope is refused here rather than handed to the bridge at all.
+    if (request.question.length > AI_MAX_QUESTION_CHARS) {
+      throw new AiError('invalid-question', 'The question exceeds the permitted length.');
+    }
+    if (request.snapshot.serializedBytes > AI_MAX_SNAPSHOT_BYTES) {
+      throw new AiError('invalid-answer', 'The snapshot exceeds the permitted size.');
+    }
+    return this.bridge.ask(request, signal);
+  }
+}
