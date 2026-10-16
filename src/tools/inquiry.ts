@@ -4,8 +4,10 @@
  */
 import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
-import type { Entity } from '../core/entities';
-import { entityTypeName, polylineArea, polylineLength, ellipsePoints, ellipseSweep, isFullEllipse, arcEndpoints, entityBounds, splinePoints } from '../core/entities';
+import type { Entity, InsertEntity } from '../core/entities';
+import { entityTypeName, polylineArea, polylineLength, ellipsePoints, ellipseSweep, isFullEllipse, arcEndpoints, entityBounds, splinePoints, insertEvaluationRefusal } from '../core/entities';
+import { resolvedEffectiveValues } from '../core/parametric/evaluate';
+import type { DynamicParameterValue } from '../core/parametric/instance';
 import { loopPolygon } from '../core/hatch';
 import { textStyleOf } from '../io/encoding';
 import { dimensionMeasurement, dimensionText } from '../core/dimension';
@@ -241,6 +243,7 @@ export function listEntity(e: Entity, doc: Drawing): string[] {
     case 'insert':
       lines.push(`               Block name: "${e.block}"`, `                 at point, ${P(e.position)}`, `                 X scale factor  ${e.scale.toFixed(4)}`, `                 Y scale factor  ${e.scale.toFixed(4)}`, `           rotation angle  ${formatAngle(e.rotation, 0)}`);
       for (const [k, v] of Object.entries(e.attributes)) lines.push(`                ATTRIB  ${k} = "${v}"`);
+      lines.push(...dynamicListLines(e, doc));
       break;
     case 'ellipse': {
       const a = g.len(e.majorAxis);
@@ -304,6 +307,74 @@ export function listEntity(e: Entity, doc: Drawing): string[] {
   }
   const b = entityBounds(e, doc.lookupBlock);
   if (b && e.type !== 'line' && e.type !== 'point') lines.push(`             Bounding box: ${f(b.min.x)}, ${f(b.min.y)}  to  ${f(b.max.x)}, ${f(b.max.y)}`);
+  return lines;
+}
+
+/** One resolved parameter value as LIST shows it (DYNSET's display conventions). */
+function dynamicValueText(v: DynamicParameterValue, f: (v: number) => string): string {
+  switch (v.kind) {
+    case 'distance':
+      return f(v.value);
+    case 'angle':
+      return formatAngle(v.value, 2);
+    case 'flip':
+      return v.value ? 'on' : 'off';
+    case 'visibility':
+      return `"${v.value}"`;
+    case 'lookup':
+      return v.value === null ? 'Custom (no row)' : `"${v.value}"`;
+    case 'opaque':
+      return 'opaque (retained verbatim)';
+  }
+}
+
+/**
+ * Priority 30 review §3 — the Dynamic section of LIST for one block reference.
+ * Empty unless the reference or its block carries dynamic data (a definition,
+ * instance values, or a retained payload), so LIST output for ordinary inserts
+ * is byte-identical to before. Values are the LOOKUP-RESOLVED effective values
+ * (resolvedEffectiveValues — the same resolution geometry, grips and
+ * Properties read, review R11), never the raw stored map: a parameter a
+ * lookup row sets shows the row's value and is marked as row-sourced, and the
+ * applied row is named. The Evaluation line is the insertEvaluationRefusal
+ * probe: 'evaluated', or the refusal code + message — with the fallback made
+ * explicit, because expansion silently presents authored geometry in that
+ * case and LIST is where a user can see that it happened.
+ */
+export function dynamicListLines(e: InsertEntity, doc: Drawing): string[] {
+  const block = doc.lookupBlock(e.block);
+  const definition = block?.dynamic;
+  if (!definition && !e.dynamic && block?.dynamicRetained === undefined && e.dynamicRetained === undefined) return [];
+  const f = (v: number) => formatLength(v, doc.header.units);
+  const lines: string[] = [`          Dynamic block: "${e.block}"`];
+  if (!block) {
+    lines.push(`             Evaluation: block "${e.block}" is not defined; this reference's dynamic values are retained but cannot be evaluated.`);
+    return lines;
+  }
+  if (definition) {
+    const res = resolvedEffectiveValues(definition, e.dynamic, e.block);
+    if (res.ok) {
+      for (const p of definition.parameters) {
+        const fromRow = res.appliedRow !== undefined && res.rowSetParameters.has(p.id) ? `  (from lookup row "${res.appliedRow}")` : '';
+        lines.push(`              Parameter  ${p.id} (${p.name}) [${p.kind}] = ${dynamicValueText(res.resolved[p.id]!, f)}${fromRow}`);
+      }
+      if (res.appliedRow !== undefined) lines.push(`              Lookup row: "${res.appliedRow}"`);
+      const vis = definition.parameters.find((p) => p.kind === 'visibility');
+      if (vis) {
+        const v = res.resolved[vis.id];
+        if (v?.kind === 'visibility') lines.push(`             Visibility: state "${v.value}" (parameter ${vis.id})`);
+      }
+    } else {
+      lines.push(`              Parameter values could not be resolved: ${res.issues.map((i) => i.message).join(' ')}`);
+    }
+  }
+  const refusal = insertEvaluationRefusal(e, doc.lookupBlock);
+  if (refusal) {
+    lines.push(`             Evaluation: REFUSED (${refusal.code}): ${refusal.message}`);
+    lines.push(`                            Displayed geometry is the authored geometry of block "${e.block}".`);
+  } else if (definition) {
+    lines.push(`             Evaluation: evaluated`);
+  }
   return lines;
 }
 
