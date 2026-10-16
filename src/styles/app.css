@@ -1240,6 +1240,56 @@ canvas#drawing {
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* AI Draft / Edit (milestone 3, src/ui/ai-panel.ts) */
+.ai-modes {
+  display: flex;
+  gap: 4px;
+}
+.ai-mode-btn {
+  flex: 1;
+  padding: 4px 8px;
+  opacity: 0.75;
+}
+.ai-mode-btn.active {
+  opacity: 1;
+  font-weight: 600;
+  border-color: var(--accent, #4a9eff);
+}
+.ai-section-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ai-section-wrap.hidden {
+  display: none;
+}
+.ai-changes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ai-legend {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 11px;
+  opacity: 0.9;
+}
+.ai-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 4px;
+  border-radius: 2px;
+}
+.ai-swatch.dashed {
+  height: 0;
+  border-top: 2px dashed;
+  background: transparent !important;
+}
 .prop-header {
   padding: 5px 8px;
   background: #3a3a3a;

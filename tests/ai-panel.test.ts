@@ -188,7 +188,9 @@ describe('AiAssistantPanel', () => {
 
   it('dispose unsubscribes from the editor and the controller', () => {
     const { editor, panel } = makePanel();
-    expect(editor.listenerCount()).toBe(4);
+    // 4 preview-refresh listeners (selection/change/file/space) + 5 draft
+    // invalidation listeners (the same four plus tool) — milestone 3.
+    expect(editor.listenerCount()).toBe(9);
     panel.dispose();
     expect(editor.listenerCount()).toBe(0);
   });

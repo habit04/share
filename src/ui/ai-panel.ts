@@ -1,11 +1,17 @@
 import type { Editor } from '../app/editor/editor';
 import { AiAskController, type AiAskStatus } from '../ai/ask-controller';
+import { AiDraftController, type AiDraftStatus } from '../ai/draft-controller';
+import { captureDraftContext, type AiDraftSource } from '../ai/draft-context';
 import { createEditorAiSource } from '../ai/editor-source';
+import { createEditorAiDraftSource } from '../ai/editor-draft-source';
+import { previewSets } from '../ai/draft-compiler';
 import { FixtureProvider } from '../ai/fixture-provider';
-import { LiveProvider } from '../ai/live-provider';
+import { FixtureDraftProvider } from '../ai/fixture-draft';
+import { LiveProvider, LiveDraftProvider } from '../ai/live-provider';
 import { serializeSnapshot } from '../ai/snapshot';
+import { INSUNIT_NAMES } from '../core/units';
 import type { WindowAiConnection, AiConnectionState } from '../ai/host-bridge';
-import { AiError, type AiBinding, type AiProvider, type AiSnapshot } from '../ai/types';
+import { AiError, type AiBinding, type AiDraftProvider, type AiProvider, type AiSnapshot } from '../ai/types';
 import { icon } from './icons';
 
 /**
@@ -65,7 +71,32 @@ function credentialNote(problem: string): string {
 export class AiAssistantPanel {
   readonly el: HTMLElement;
   private readonly controller: AiAskController;
+  private readonly editorRef: Editor;
   private readonly unsubscribes: Array<() => void> = [];
+
+  // Milestone 3 Draft / Edit state.
+  private readonly draftController: AiDraftController;
+  private readonly draftSource: AiDraftSource;
+  private readonly fixtureDraftProvider = new FixtureDraftProvider();
+  private mode: 'ask' | 'draft' = 'ask';
+  private applyingDraft = false;
+  private askSectionEl: HTMLElement | null = null;
+  private draftEls: {
+    section: HTMLElement;
+    askTab: HTMLButtonElement;
+    draftTab: HTMLButtonElement;
+    summaryEl: HTMLElement;
+    sentLabelEl: HTMLElement;
+    sentEl: HTMLElement;
+    promptEl: HTMLTextAreaElement;
+    generateBtn: HTMLButtonElement;
+    cancelBtn: HTMLButtonElement;
+    statusEl: HTMLElement;
+    changesEl: HTMLElement;
+    applyBtn: HTMLButtonElement;
+    discardBtn: HTMLButtonElement;
+    fitBtn: HTMLButtonElement;
+  } | null = null;
   private readonly summaryEl: HTMLElement;
   private readonly sentEl: HTMLElement;
   private readonly sentLabelEl: HTMLElement;
@@ -102,6 +133,7 @@ export class AiAssistantPanel {
 
   constructor(editor: Editor, container: HTMLElement, provider?: AiProvider, connection?: WindowAiConnection | null) {
     this.el = container;
+    this.editorRef = editor;
     this.el.className = 'palette ai-assistant hidden';
     this.connection = connection ?? null;
     // Buttons and other focused descendants need the same boundary as the
@@ -111,6 +143,7 @@ export class AiAssistantPanel {
       if (ev.key === 'Escape') {
         ev.preventDefault();
         this.controller.cancel();
+        this.draftController?.cancel();
       }
     });
 
@@ -125,7 +158,7 @@ export class AiAssistantPanel {
     bar.className = 'palette-titlebar';
     const title = document.createElement('span');
     title.className = 'palette-title';
-    title.textContent = 'AI Assistant — ask about selected objects';
+    title.textContent = 'AI Assistant';
     bar.append(title);
 
     const content = document.createElement('div');
@@ -183,10 +216,15 @@ export class AiAssistantPanel {
     this.usageEl = document.createElement('div');
     this.usageEl.className = 'ai-refs';
 
-    content.append(
+    const askSection = document.createElement('div');
+    askSection.className = 'ai-section-wrap';
+    this.askSectionEl = askSection;
+    askSection.append(
       this.providerLabelEl, this.summaryEl, this.sentLabelEl, this.sentEl, this.questionEl,
       buttons, this.billingEl, this.statusEl, this.answerEl, this.refsEl, this.usageEl,
     );
+    const draftBuilt = this.buildDraftSection();
+    content.append(draftBuilt.tabs, askSection, draftBuilt.section);
     if (this.connection) content.append(this.buildSettingsSection());
     body.append(bar, content);
     this.el.append(body, strip);
@@ -202,11 +240,26 @@ export class AiAssistantPanel {
       : (provider ?? this.fixtureProvider);
     this.controller = new AiAskController(createEditorAiSource(editor), routed);
     this.unsubscribes.push(this.controller.subscribe((status) => this.renderStatus(status)));
+    this.draftSource = createEditorAiDraftSource(editor);
+    this.draftController = new AiDraftController(this.draftSource, editor.doc);
+    this.unsubscribes.push(this.draftController.subscribe((status) => this.renderDraftStatus(status)));
     // Rebuild the preview when the selection or document changes. The events
     // are only a hint — the controller re-reads and compares the binding
     // before showing any answer.
     for (const ev of ['selection', 'change', 'file', 'space'] as const) {
       this.unsubscribes.push(editor.on(ev, () => this.refreshPreview()));
+    }
+    // Draft invalidation mirrors the binding: any editor change, selection
+    // change, space/file change or tool start drops a staged proposal. The
+    // one exception is the change our own Apply commits, which is guarded
+    // by applyingDraft (the proposal is consumed, not invalidated).
+    for (const ev of ['selection', 'change', 'file', 'space', 'tool'] as const) {
+      this.unsubscribes.push(editor.on(ev, () => {
+        if (this.applyingDraft) return;
+        const state = this.draftController.status.state;
+        if (state === 'staged' || state === 'generating') this.draftController.invalidate();
+        if (this.mode === 'draft') this.refreshDraftPreview();
+      }));
     }
     this.renderStatus(this.controller.status);
     this.updateSettingsAvailability();
@@ -234,6 +287,267 @@ export class AiAssistantPanel {
     for (const unsubscribe of this.unsubscribes) unsubscribe();
     this.unsubscribes.length = 0;
     this.controller.dispose();
+    this.draftController.dispose();
+    this.clearDraftOverlay();
+  }
+
+  // ------------------------------------------------------------ Draft / Edit (milestone 3)
+
+  private buildDraftSection(): { tabs: HTMLElement; section: HTMLElement } {
+    const tabs = document.createElement('div');
+    tabs.className = 'ai-modes';
+    const askTab = document.createElement('button');
+    askTab.className = 'ai-mode-btn active';
+    askTab.textContent = 'Ask';
+    const draftTab = document.createElement('button');
+    draftTab.className = 'ai-mode-btn';
+    draftTab.textContent = 'Draft / Edit';
+    askTab.addEventListener('click', () => this.setMode('ask'));
+    draftTab.addEventListener('click', () => this.setMode('draft'));
+    tabs.append(askTab, draftTab);
+
+    const section = document.createElement('div');
+    section.className = 'ai-section-wrap ai-draft hidden';
+    const summaryEl = document.createElement('div');
+    summaryEl.className = 'ai-summary';
+    const sentLabelEl = document.createElement('div');
+    sentLabelEl.className = 'ai-section-label';
+    sentLabelEl.textContent = 'What will be sent (exactly)';
+    const sentEl = document.createElement('pre');
+    sentEl.className = 'ai-sent';
+    const promptEl = document.createElement('textarea');
+    promptEl.className = 'ai-question';
+    promptEl.placeholder = 'Describe the drawing or edit…';
+    promptEl.rows = 3;
+    // Prompt edits invalidate a staged proposal: what was approved was a
+    // plan for the previous wording. Enter never generates or applies —
+    // generation is the button below, deliberately.
+    promptEl.addEventListener('input', () => {
+      if (this.draftController.status.state === 'staged') {
+        this.draftController.invalidate('The description changed — generate again.');
+      }
+      this.refreshDraftPreview();
+    });
+    const buttons = document.createElement('div');
+    buttons.className = 'ai-buttons';
+    const generateBtn = document.createElement('button');
+    generateBtn.className = 'ai-ask';
+    generateBtn.textContent = 'Generate Preview';
+    generateBtn.addEventListener('click', () => { void this.generateDraft(); });
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'ai-cancel';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.disabled = true;
+    cancelBtn.addEventListener('click', () => this.draftController.cancel());
+    buttons.append(generateBtn, cancelBtn);
+
+    const legend = document.createElement('div');
+    legend.className = 'ai-legend';
+    const swatch = (color: string, label: string, dashed: boolean): void => {
+      const box = document.createElement('span');
+      box.className = dashed ? 'ai-swatch dashed' : 'ai-swatch';
+      box.style.background = color;
+      const text = document.createElement('span');
+      text.textContent = label;
+      legend.append(box, text);
+    };
+    swatch('#3fb950', 'New', false);
+    swatch('#e8a13a', 'New position', false);
+    swatch('#9aa4ad', 'Original', true);
+    swatch('#e5534b', 'Deleted', true);
+
+    const statusEl = document.createElement('div');
+    statusEl.className = 'ai-status';
+    const changesEl = document.createElement('div');
+    changesEl.className = 'ai-changes';
+    const actions = document.createElement('div');
+    actions.className = 'ai-buttons';
+    const applyBtn = document.createElement('button');
+    applyBtn.className = 'ai-ask';
+    applyBtn.textContent = 'Apply Changes';
+    applyBtn.disabled = true;
+    applyBtn.addEventListener('click', () => this.applyDraft());
+    const discardBtn = document.createElement('button');
+    discardBtn.textContent = 'Discard';
+    discardBtn.disabled = true;
+    discardBtn.addEventListener('click', () => this.draftController.discard());
+    const fitBtn = document.createElement('button');
+    fitBtn.textContent = 'Fit Preview';
+    fitBtn.disabled = true;
+    fitBtn.addEventListener('click', () => this.fitDraftPreview());
+    actions.append(applyBtn, discardBtn, fitBtn);
+
+    section.append(summaryEl, sentLabelEl, sentEl, promptEl, buttons, legend, statusEl, changesEl, actions);
+    this.draftEls = {
+      section, askTab, draftTab, summaryEl, sentLabelEl, sentEl, promptEl,
+      generateBtn, cancelBtn, statusEl, changesEl, applyBtn, discardBtn, fitBtn,
+    };
+    return { tabs, section };
+  }
+
+  private setMode(mode: 'ask' | 'draft'): void {
+    if (!this.draftEls || this.mode === mode) return;
+    this.mode = mode;
+    // Leaving Draft drops any staged proposal and its overlay.
+    this.draftController.invalidate();
+    this.clearDraftOverlay();
+    this.draftEls.askTab.classList.toggle('active', mode === 'ask');
+    this.draftEls.draftTab.classList.toggle('active', mode === 'draft');
+    this.draftEls.section.classList.toggle('hidden', mode !== 'draft');
+    this.askSectionEl?.classList.toggle('hidden', mode !== 'ask');
+    if (mode === 'draft') this.refreshDraftPreview();
+    else this.refreshPreview();
+  }
+
+  private draftConfigKey(): string {
+    const s = this.connState;
+    if (!s) return 'fixture';
+    return [s.provider, s.model, s.enabled, s.keyPresent, s.keySource ?? '', s.keyPersistence, s.credentialProblem ?? ''].join('|');
+  }
+
+  private routeDraftProvider(): AiDraftProvider {
+    if (this.connection && this.connState?.enabled && this.connState.keyPresent && !this.connState.credentialProblem) {
+      return new LiveDraftProvider(this.connection.bridge, { providerId: this.connState.provider, model: this.connState.model });
+    }
+    return this.fixtureDraftProvider;
+  }
+
+  private async generateDraft(): Promise<void> {
+    if (this.disposed || this.connectionBusy || !this.draftEls) return;
+    if (this.editorRef.interactionBusy) {
+      this.draftEls.statusEl.textContent = 'Finish the current command or selection first, then generate a preview.';
+      return;
+    }
+    await this.draftController.generate(this.draftEls.promptEl.value, this.routeDraftProvider(), this.draftConfigKey());
+  }
+
+  private applyDraft(): void {
+    if (!this.draftEls) return;
+    if (this.editorRef.interactionBusy) {
+      this.draftEls.statusEl.textContent = 'Finish the current command or selection first, then apply.';
+      return;
+    }
+    this.applyingDraft = true;
+    try {
+      this.draftController.apply();
+    } finally {
+      this.applyingDraft = false;
+    }
+    this.refreshPreview();
+    if (this.mode === 'draft') this.refreshDraftPreview();
+  }
+
+  private fitDraftPreview(): void {
+    const status = this.draftController.status;
+    if (status.state !== 'staged' || !status.proposal.bounds) return;
+    const { min, max } = status.proposal.bounds;
+    this.editorRef.viewport.zoomToPoints([min, max]);
+  }
+
+  private clearDraftOverlay(): void {
+    if (typeof this.editorRef.setAiPreview === 'function') this.editorRef.setAiPreview(null);
+  }
+
+  private refreshDraftPreview(): void {
+    const els = this.draftEls;
+    if (!els || !this.isVisible || this.mode !== 'draft') return;
+    if (this.draftController.status.state === 'staged' || this.draftController.status.state === 'generating') return;
+    const live = this.liveRoute;
+    els.sentLabelEl.textContent = live
+      ? `What will be sent to ${providerLabel(this.connState!.provider)} (model: ${this.connState!.model}) — exactly`
+      : 'What will be sent (exactly) — offline demonstration, nothing leaves JCad';
+    els.generateBtn.textContent = live ? `Generate Preview with ${providerLabel(this.connState!.provider)}` : 'Generate Preview';
+    if (!els.promptEl.value.trim()) {
+      els.summaryEl.textContent = 'Describe the drawing or edit above. Nothing is sent — and nothing in the drawing changes — until you click Generate Preview, review the preview, and Apply.';
+      els.sentEl.textContent = '';
+      els.generateBtn.disabled = true;
+      return;
+    }
+    try {
+      const capture = captureDraftContext(this.draftSource, els.promptEl.value, this.draftConfigKey());
+      const unitsName = INSUNIT_NAMES[capture.units.insunits] ?? `code ${capture.units.insunits}`;
+      els.summaryEl.textContent = `Model tab · World XY · Units: ${unitsName}${capture.units.insunits === 0 ? ' (unitless — no physical scale)' : ''}`
+        + ` · Creation layer: ${capture.defaults.layer} · Eligible targets: ${capture.eligibleIds.length} of ${capture.targets.length} selected.`;
+      const ineligible = capture.targets.filter((t) => !t.eligible);
+      if (ineligible.length > 0) {
+        els.summaryEl.textContent += ` Not editable: ${ineligible.map((t) => `${t.id} (${t.reason})`).join('; ')}.`;
+      }
+      els.sentEl.textContent = capture.contextJson;
+      els.generateBtn.disabled = this.disposed || this.connectionBusy;
+    } catch (cause) {
+      els.summaryEl.textContent = 'Draft / Edit is unavailable for the current drawing state.';
+      els.sentEl.textContent = cause instanceof Error ? cause.message : 'The draft context could not be read.';
+      els.generateBtn.disabled = true;
+    }
+  }
+
+  private renderDraftStatus(status: AiDraftStatus): void {
+    const els = this.draftEls;
+    if (!els) return;
+    els.cancelBtn.disabled = status.state !== 'generating';
+    els.generateBtn.disabled = status.state === 'generating' || this.connectionBusy;
+    const staged = status.state === 'staged';
+    els.applyBtn.disabled = !staged;
+    els.discardBtn.disabled = !staged;
+    els.fitBtn.disabled = !staged;
+    switch (status.state) {
+      case 'idle':
+        els.statusEl.textContent = '';
+        els.changesEl.textContent = '';
+        this.clearDraftOverlay();
+        break;
+      case 'generating':
+        els.statusEl.textContent = 'Generating preview…';
+        els.changesEl.textContent = '';
+        this.clearDraftOverlay();
+        break;
+      case 'staged': {
+        const sets = previewSets(status.proposal);
+        if (typeof this.editorRef.setAiPreview === 'function') {
+          this.editorRef.setAiPreview({
+            added: sets.added,
+            modifiedAfter: sets.modifiedAfter,
+            originals: sets.originals,
+            deleted: sets.deleted,
+          });
+        }
+        const c = status.proposal.counts;
+        els.statusEl.textContent = 'Preview ready — the drawing has not changed. Review the changes, then Apply or Discard.';
+        els.changesEl.textContent = '';
+        const counts = document.createElement('div');
+        counts.textContent = `Changes: ${c.created} created, ${c.copied} copied, ${c.modified} modified, ${c.deleted} deleted.`;
+        els.changesEl.append(counts);
+        if (status.proposal.plan.message) {
+          const note = document.createElement('div');
+          note.textContent = `Provider note: ${status.proposal.plan.message}`;
+          els.changesEl.append(note);
+        }
+        for (const change of status.proposal.changes) {
+          const row = document.createElement('div');
+          row.textContent = `• ${change.summary}`;
+          els.changesEl.append(row);
+        }
+        break;
+      }
+      case 'message':
+        els.statusEl.textContent = status.kind === 'clarification'
+          ? `More detail needed: ${status.message}`
+          : `Unsupported: ${status.message}`;
+        els.changesEl.textContent = '';
+        this.clearDraftOverlay();
+        break;
+      case 'invalidated':
+        els.statusEl.textContent = status.message;
+        els.changesEl.textContent = '';
+        this.clearDraftOverlay();
+        break;
+      case 'error':
+        els.statusEl.textContent = status.error.message;
+        els.changesEl.textContent = '';
+        this.clearDraftOverlay();
+        break;
+    }
+    if (this.mode === 'draft' && status.state !== 'staged') this.refreshDraftPreview();
   }
 
   /** Live only when the host says enabled with a key; the demo otherwise. */
@@ -259,6 +573,9 @@ export class AiAssistantPanel {
 
   private hide(): void {
     this.clearKeyInput();
+    // A staged preview must not linger on the canvas with no panel to act on it.
+    this.draftController.invalidate();
+    this.clearDraftOverlay();
     this.el.classList.add('hidden');
   }
 
@@ -276,6 +593,7 @@ export class AiAssistantPanel {
     const epoch = ++this.connectionEpoch;
     if (invalidate) {
       this.controller.cancel();
+      this.draftController.invalidate();
       this.clearAnswer();
       this.statusEl.textContent = '';
     }
@@ -571,6 +889,9 @@ export class AiAssistantPanel {
     )) {
       this.controller.cancel();
       this.clearAnswer();
+      // Any connection change also drops a staged draft proposal: switching
+      // away and back must never revive it.
+      this.draftController.invalidate();
     }
     this.connState = state;
     this.liveProvider = this.connection
