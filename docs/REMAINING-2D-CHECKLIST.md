@@ -1,17 +1,16 @@
 # Windows 2D and reliability implementation checklist
 
-Current priority-12 source review (2026-10-15): `review/p12-used-glyphs-subsetting`
-retains the tested 12.1 correction and reviews delivered used-glyph validation and
-12.3 glyf subsetting. Static checks and real Windows subset Plot/save/reopen pass;
-subset/whole-control Unicode and pixels match. Installed SimSun remains refused,
-and the actual DWG/missing-SHX/Han composition remains unvalidated. The initial
-two concurrent runs retained a large-file timeout; a test-lifecycle repair now
-joins owned work and propagates cancellation before fixture cleanup. The fresh
-two-worker gate passes 6,709 tests with 38 skips and unchanged deadlines. Earlier
-failures remain recorded; the initial stall's cause is not established.
-Packaged checks, remote CI and release integration remain
-separate. See [PDF source-review evidence](PDF-FONT-EMBEDDING.md). The rest of the
-long roadmap stays paused and GPU/DWG ownership is unchanged.
+Current priority-12 source review (2026-10-15): `review/p12-dwg-f4` combines the
+reviewed collection/used-glyph/subsetting tree with the verified final DWG handoff.
+The two-worker suite passes 6,822 tests with zero failures and 38 skips. Static,
+fixture, workflow and renderer-build checks pass. Actual Windows Open/edit/DXF
+save/reopen/Plot passes 63 F4 assertions and 721 independent native checks;
+effective STYLE/metrics and unrelated text are checked explicitly. Readable Han
+raster output and explicit vector refusal pass; installed SimSun remains refused.
+The wider PDF check retains the independently reproduced Poppler fallback warning.
+Packaged checks, remote CI, outstanding Muse corrections and merge clearance
+remain open. See [PDF source-review evidence](PDF-FONT-EMBEDDING.md). The long
+roadmap stays paused; completed GPU/DWG work is not being reimplemented.
 
 Delivery review continues: [priority-12 status](PRIORITY-12-REVIEW-STATUS.md)
 distinguishes reviewed code from acceptance. 12.6a admission is held for confirmed

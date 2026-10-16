@@ -306,3 +306,64 @@ every assertion are retained. This source-runtime prototype evidence does not
 exercise production Plot/IPC, utilityProcess isolation, installed fonts,
 AutoCAD or viewer restriction enforcement. Preview/print-font refusal remains
 active until the implementation and its acceptance gates pass.
+
+### DWG/F4 combined Windows source review, 2026-10-15
+
+Source `167c50b6b57d700f6d22da3ec6212e5a4a14afac` combines the verified final
+DWG handoff with the corrected collection/used-glyph/subsetting tree. The fresh
+two-worker suite passes **6,822 tests, zero failures and 38 skips** in 190 seconds,
+including both private hash-pinned DWG cases and eleven F4 font regressions.
+Three typecheck projects, full lint, fixture checks, nine workflows and a fresh
+renderer build pass. No point, glyph, memory or timeout cap is increased.
+
+Private Electron 44.7.2 exercises real Open, the exact restored title edit,
+undo/redo, source-overwrite refusal before backup, DXF Save As/reopen and Plot.
+All **63 F4 assertions** and **721 independent native receipt/raw-DXF checks**
+pass. The signature, 1,072 model entities, four title fields and unrelated
+same-string diagram text survive. Actual resolved appearance, all five
+unit-height measurements and font size agree after reopening within absolute
+`1e-7`. Effective STYLE records match apart from the pre-existing blank-font,
+no-family normalization to `txt`; exact source font-string identity is not claimed.
+
+Actual missing-SHX and declared-TTF Han vector plots refuse with Raster image
+guidance and no output PDF. Raster Han output passes nine independent checks,
+warning-free Poppler rendering and visual review. The separate eligible authored
+embedding fixture passes 132 independent checks, including exact selected-face
+subset reconstruction, extraction and visible ink. Its Han glyph is an authored
+rectangle, not an installed Chinese typeface acceptance result. Real SimSun and
+YaHei admission refusals remain intact. Source, fonts and private inputs retain
+their hashes; only owned test processes are closed.
+
+The broader independent PDF inspector records **2,376/2,377** checks. The only
+failure is the same Poppler missing-Symbol warning on Helvetica fallback,
+reproduced by a hash-pinned independently authored Helvetica-only control. Its
+strict stderr assertion is retained. Six consumed-ticket cancellation diagnostics
+remain in the native main log, also seen in the earlier font-only workflow;
+neither log is described as clean. Five Canvas/PDF crops meet the unchanged
+three-pixel criterion; subset/whole Unicode and literal 144-dpi RGB pixels match.
+No new AutoCAD, packaged installer, remote CI, merge or release is certified.
+
+### Updated 12.3 and shaping v3 delivery review, 2026-10-15
+
+The updated 12.3 package verifies all eight declared hashes. Its first four
+patches are unchanged apart from numbering; the fifth composes the already
+integrated lead variation guard and eight tests. It is not reapplied. Its older
+candidate still lacks later empty-glyph, maxp overflow/readback and subset-name
+corrections, so replacing current source would regress the reviewed branch.
+
+The shaping-v3 package verifies all four declared hashes and independently
+hashes all 23 payloads. Static bounded WASM parsing confirms the delivered
+445,284-byte artifact declares a **256 MiB** maximum. No supplied code is run or
+WASM instantiated. This resolves the earlier declared-limit defect without
+admitting the runtime. Remaining contract gaps include repeated GIDs within one
+cluster duplicating extraction, actual context/line cache identity, ignorable and
+direct-path boundary semantics, and producer/transport/outline/aggregate bounds.
+The existing raw build/measurement records and reproducible inputs are requested,
+rather than repeating the delivered experiments. The npm SHA1 statement needs
+correction; the reported SHA512 matches official metadata.
+
+An independently authored parser control observes pypdf 6.10.0 extracting shown
+`A` rather than the `ActualText` replacement `LOGICAL`. A repeated-GID contract
+model extracts `AA` for one logical `A`. These are synthetic extraction controls,
+not HarfBuzz, bidi, native-font or Windows shaping acceptance. Contract/interface
+approval and runtime adoption remain held; no shaping consumer is added.

@@ -30,7 +30,7 @@ cannot be used, and directs the user to Raster image output. This explicit
 refusal replaces unreadable stroke substitution; it does not establish Chinese
 vector embedding or extraction compatibility.
 
-## F3 integration evidence and remaining gate
+## F3/F4 combined Windows source review
 
 The DWG owner's `c2cb121` results are historical, separate from this combined
 priority-12 review. Eleven authored font-composition regressions pass: missing-SHX
@@ -40,13 +40,30 @@ unknown bounds/origins and embedding permissions still refuse. A positive author
 fixture uses a visible rectangle mapped to a Han codepoint; it is not a faithful
 Chinese typeface or installed-font acceptance test.
 
-Combined Windows production Open/edit/undo/redo/DXF-copy/reopen and Plot validation
-is pending. Acceptance requires unchanged source/font/input-copy hashes, correct
-edit/undo/redo history and unchanged document state across plotting; retained
-partial-import and DWG preservation refusals; explicit unembeddable-Han vector
-refusal with no PDF committed; and a real raster PDF with visible Canvas Unicode
-output. Actual Windows workflows, independent PDF inspection and visual review
-must verify those outcomes before this combined gate is marked complete.
+Combined source `167c50b6b57d700f6d22da3ec6212e5a4a14afac` passes the Windows
+Electron 44.7.2 workflow: Open, title edit, undo/redo, source-overwrite refusals,
+DXF-copy save/reopen and Plot. All 63 F4 assertions and 721 independent native
+receipt/raw-DXF checks pass. The unrelated same-string diagram label is retained.
+Title placement and actual resolved appearance, five unit-height metrics and font
+size match after reopening within the unchanged absolute `1e-7` criterion.
+
+Effective STYLE records are checked explicitly. Existing DXF writing normalizes
+a blank font without a family to `txt`, for both Standard and named styles; all
+other tested STYLE properties remain equal. This is not exact source font-string
+preservation. Undo retains the existing conservative dirty state. Plotting and
+refused writes preserve document identity, contents, history, dirty state and path.
+
+Both declared-TTF and missing-SHX Han vector cases refuse without producing a
+PDF and give Raster image guidance. Raster output passes nine independent
+structure/render checks and visual inspection of readable Chinese text. The
+authored positive embedding case separately passes 132 independent checks.
+Source, font and private-input hashes remain unchanged; only owned test processes
+are closed. These source checks do not certify installed-package or AutoCAD use.
+
+The broader PDF inspector retains one known external Poppler missing-Symbol
+warning on its Helvetica fallback control; the strict warning assertion remains
+failed. Six existing consumed-ticket cancellation diagnostics also remain in the
+main log. No clean-stderr, remote-CI, merge or release clearance is claimed.
 
 ## Standalone attribute definitions
 

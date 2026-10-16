@@ -6,21 +6,31 @@ or released. Earlier released TTC support remains the v0.5.2 baseline.
 | Piece | Current evidence and status | Next gate / owner |
 |---|---|---|
 | 12.1 collection selection | Reviewed and corrected locally; real Windows workers/IPC/Plot and private AutoCAD reference pass for the tested Nirmala faces and Arial. | Lead: combined acceptance, packaged checks and CI. |
-| Used-glyph validation (SimSun scope) | Algorithm reviewed; real SimSun still refuses at bitmap/origin validation, YaHei at conflicting PostScript names. Synthetic admission is not native Han acceptance. | Lead and separate DWG owner: F1-F4 composition, actual missing-SHX/Han fallback, doc reconciliation. |
+| Used-glyph validation (SimSun scope) | Algorithm and DWG/F4 source composition reviewed; 132 independent authored-PDF checks pass. Real SimSun still refuses at bitmap/origin validation, YaHei at conflicting PostScript names. | Lead: packaged/CI gates; native Han vector acceptance remains absent. Actual missing-SHX raster output and explicit vector refusal pass. |
 | 12.3 glyf subsetting | Reviewed and corrected; real Windows subset/whole-control Unicode and pixels match. Added actual-byte whole-program guard for variation tables: eight failing-before/passing-after regressions. | Lead: combined suite and native gates. Variation-aware subsetting remains deferred. |
 | 12.6a variable defaults | ZIP integrity verified; production admission held. Executed probes reproduce malformed-record admission and missing coordinate policy; delivered gvar fixture is invalid. | Muse: record validation, genuine variation fixtures, default-coordinate identity policy. Lead: Windows Canvas/Plot and viewer matrix. Keep current refusal until proved. |
 | 12.2 standalone CFF1 | All ZIP hashes verified. Integration held: nine independent Type2 goldens fail; same-glyph Unicode aliases extract incorrectly; supplied OpenType PDF declares 1.4. Basic supplied artifacts pass 60/61 independent checks, failing the version gate. | Muse: parser/alias/validation corrections and feature-scoped PDF1.6. Lead: reader/writer composition and Windows proof. No CFF acceptance yet. |
 | 12.4 preview/print permissions | qpdf 12.4.2 self-build selected for implementation; delivered binary remains a prototype. Windows Node smoke passes 89 strict independent assertions and exact encrypted/plain pixels on one small authored fixture. Actual WASM max is 2 GiB; MEMFS/IPC copies need separate bounds. | Muse: capped rebuild, aggregate resource/lifecycle/IPC guards, strict evidence and full notices. Lead: eventual Windows app/viewer acceptance and shipping pin. Refusal remains active. |
-| 12.5 shaping | Contract v2 reviewed; current contract and stock HarfBuzz binary not admitted unchanged. | Muse: contract v3, interface tests, hard-capped build/provenance spike. Lead: review before runtime adoption. |
+| 12.5 shaping | v3 delivery reviewed. Actual WASM maximum is independently verified at 256 MiB; contract still has repeated-GID extraction, context/cache and validation gaps. No interface/runtime adoption. | Muse: bounded contract corrections and existing raw build/measurement evidence. Lead: interface review, then Windows/runtime acceptance. |
+| DWG/F4 combined source | 63 Windows workflow assertions and 721 independent native checks pass on `167c50b`; effective STYLE, metrics, title/signature, source protection and DXF reopen verified. | Lead: maintain font/projection refusals; remote CI and packaged gates remain separate. No merge clearance. |
 
-The fresh two-worker Windows gate passes **6,709 tests with 38 skips** in 191
-seconds after the variation guard and test-lifecycle cancellation/join repair.
-The targeted export/content-identity control passes all 47 tests. No deadline,
-evidence assertion, real fixture size or hash bound changed. The two earlier
-timeout failures remain recorded; this pass does not prove the initial stall's
-cause. The known Poppler fallback warning remains a preserved external-control
-failure. F4, packaged acceptance and remote CI remain open; no merge/release
-gate is declared clear.
+The combined two-worker Windows suite passes **6,822 tests, zero failures and
+38 skips** in 190 seconds, including both hash-pinned private-DWG cases and all
+11 font-composition regressions. Three typecheck projects, full lint, fixture and
+nine workflow checks, and the renderer build pass. The earlier lifecycle repair
+and its failed-run history remain documented; no deadline or work cap is raised.
+
+Actual Windows Open/edit/undo/redo/DXF save/reopen and Plot pass. Raster Han output
+passes nine independent checks and visual inspection; font subset/whole-control
+Unicode and pixels match. The wider PDF inspector passes 2,376/2,377 checks: the
+same missing-Symbol warning on a Helvetica control remains a strict failure and
+is independently reproduced without JCad. Six consumed-ticket cancellation
+diagnostics are disclosed, not a clean-main-log claim. Packaged acceptance,
+remote CI and Muse's outstanding corrections still prevent merge clearance.
+
+The updated five-patch 12.3 delivery is verified but not replayed: its sole added
+source/test patch duplicates the existing lead variation guard. Replacing the
+integrated tree would omit later empty-glyph, overflow and subset-name repairs.
 
 The long 2D roadmap stays paused. DWG and GPU ownership remains separate. CFF2,
 CID-keyed CFF, CFF collections/subsetting, true variable instancing and faithful
