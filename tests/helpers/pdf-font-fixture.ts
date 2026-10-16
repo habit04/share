@@ -14,6 +14,8 @@ export interface PdfFontFixtureOptions {
   fsType?: number;
   alias?: boolean;
   postscriptName?: string;
+  /** Scalar mapped to the authored fifth glyph, for script-specific output tests. */
+  unicodeCodePoint?: number;
 }
 
 /** Standalone glyf SFNT with real nameID6, native widths/bearings and a supplementary scalar. */
@@ -25,7 +27,7 @@ export function pdfFontFixture(options: PdfFontFixtureOptions = {}): Omit<PdfFon
     source.writeUInt16BE(1, cmap + source.readUInt32BE(cmap + 8) + 42);
   } else {
     const cmap = fontTable(source, 'cmap').offset, supplementary = cmap + source.readUInt32BE(cmap + 16) + 40;
-    source.writeUInt32BE(0x20000, supplementary); source.writeUInt32BE(0x20000, supplementary + 4);
+    source.writeUInt32BE(options.unicodeCodePoint ?? 0x20000, supplementary); source.writeUInt32BE(options.unicodeCodePoint ?? 0x20000, supplementary + 4);
   }
   const italicAngle = italic ? -12 : 0;
   source.writeInt32BE(italicAngle * 65536, fontTable(source, 'post').offset + 4);

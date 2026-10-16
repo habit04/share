@@ -254,8 +254,8 @@ export function lowerStrokeScene(state: DrawingState, view: Gpu2DView, overlay: 
       const problem = textPlacementProblem(rebased);
       if (problem) throw new Error(`${problem} (${source.id})`);
       if (![rebased.height, rebased.rotation, rebased.widthFactor ?? 1, rebased.oblique ?? 0].every(Number.isFinite) || rebased.height <= 0) throw new Error(`Invalid TEXT geometry (${source.id})`);
-      const appearance = textGeometry?.resolve(rebased) ?? textRenderer(textStyleOf(rebased), styles);
-      const nativeAppearance = textGeometry?.resolve(canvasSource) ?? textRenderer(textStyleOf(canvasSource), styles);
+      const appearance = textGeometry?.resolve(rebased) ?? textRenderer(textStyleOf(rebased), styles, rebased.text);
+      const nativeAppearance = textGeometry?.resolve(canvasSource) ?? textRenderer(textStyleOf(canvasSource), styles, canvasSource.text);
       if (!hasStrokeFont || appearance.kind !== 'stroke' || nativeAppearance.kind !== 'stroke') throw new Error(`Unsupported Canvas font (${source.id})`);
       if (appearance.shxResourceId !== undefined || nativeAppearance.shxResourceId !== undefined) throw new Error(`Loaded SHX text requires Canvas rendering (${source.id})`);
       const placed = placedText(rebased, strokeTextWidth);

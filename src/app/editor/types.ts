@@ -93,6 +93,8 @@ export interface FileBridge {
    * skips that copy (a project-wide command made its own, or the user chose to write without one).
    */
   saveDxf(path: string | null, text: string, suggestName: string, opts?: { backup?: boolean; admission?: string }): Promise<string | null>;
+  /** Browser download-only bridge: saving cannot replace an existing authorized source. */
+  readonly saveDxfCreatesCopy?: boolean;
   /**
    * Desktop only: ask where to save a drawing (Save As); the path is not written yet. With it, a
    * Save As is written through the per-file save queue like every other save of that file.

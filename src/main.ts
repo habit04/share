@@ -220,6 +220,7 @@ function browserFileBridge(): FileBridge {
       }
       return { path: f.name, kind: 'dxf', text: decodeDxfBytes(new Uint8Array(await drawingBytes(f))).text };
     },
+    saveDxfCreatesCopy: true,
     saveDxf: async (path, text, suggestName) => {
       const name = path ?? suggestName;
       const blob = new Blob([text], { type: 'application/dxf' });

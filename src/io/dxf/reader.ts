@@ -7,7 +7,8 @@
 import type { FieldContext } from '../../core/fields';
 import type { DrawingState, NamedView } from '../../core/document';
 import type { DimStyle, Layer, BlockDef, Entity } from '../../core/entities';
-import { ImportReportBuilder, reportBlockExpansion, withImportData } from '../import-report';
+import { ImportReportBuilder, reportBlockExpansion, rawEntitiesOf, withImportData } from '../import-report';
+import { recoverOversizedReferences } from '../import-recovery';
 import type { RawDxfEntity } from '../import-report';
 import { diffDimStyles, STANDARD_DIMSTYLE, DIMSTYLES_META_KEY } from '../../core/dimension';
 import { DxfReadError, tokenize, objects, has, str, num, isIntegerText } from './groups';
@@ -28,7 +29,7 @@ import { EMPTY_MODEL3D } from '../../model3d/model';
 import { DXF_READ_LIMITS } from '../../model3d/file-format';
 
 export interface DxfReadOptions {
-  /** Internal interchange check: every exposed source record, including unsupported geometry. */
+  /** Internal interchange check: every original source record; defer geometry recovery until the DWG identity join. */
   recordInventory?: (handle: string, type: string, tableName?: string) => void;
   /** Allocation budgets; callers may lower them for untrusted or constrained imports. */
   maxSourceLength?: number;
@@ -76,7 +77,7 @@ function readDxfImport(text: string, opts: DxfReadOptions): DrawingState {
   const dimStyles = new Map<string, DimStyle>();
   const report = new ImportReportBuilder();
   const raw: RawDxfEntity[] = [];
-  const state = withDimStylesMeta(readDxfState(text, opts, dimStyles, report, raw), dimStyles);
+  const state = withImportData(withDimStylesMeta(readDxfState(text, opts, dimStyles, report, raw), dimStyles), null, raw);
   if (state.cadGraph) report.retainItems(
     item => ['HEADER', 'DIMSTYLE'].includes(item.type) && item.reason.includes('not modeled or written back')
       || item.type === 'LTYPE' && item.reason.startsWith('complex linetype'),
@@ -97,7 +98,22 @@ function readDxfImport(text: string, opts: DxfReadOptions): DrawingState {
   if (retained3dHandles.size) report.retainItems(item => !!item.handle && retained3dHandles.has(canonicalCadHandle(item.handle))
     && (item.action === 'dropped' || item.reason.includes('extended data (XDATA)') || item.reason.includes('true colour, colour book and transparency are not kept')),
   item => item.action === 'dropped' ? `Original 3D source records are retained without being displayed (${item.reason}). Unsafe placement, malformed structure or unsupported own payload regeneration refuses save explicitly.` : 'Unmodeled 3D source properties and application data are retained in the CAD graph; their effects may not be displayed.');
-  return withImportData(state, report.empty ? null : report.build('DXF', opts.filePath), raw);
+  // Partial opening (io/import-recovery.ts): exclude block references whose expansion alone
+  // breaks the geometry budget, so the rest of the drawing opens and the report lists them.
+  // A source-inventory read is an internal projection check: every original
+  // identity must remain until the trusted DWG geometry and metadata are joined.
+  // Ordinary DXF imports erase through the retained graph, including owned raw
+  // records, so excluded objects cannot reappear on Save As.
+  const opened = opts.recordInventory ? state : recoverOversizedReferences(state, (item) => {
+    const changed = item.action === 'dropped' && item.handle ? report.dropItems(
+      old => old.type === item.type && !!old.handle && /^[0-9A-Fa-f]{1,16}$/.test(old.handle.trim()) && /^[0-9A-Fa-f]{1,16}$/.test(item.handle!)
+        && canonicalCadHandle(old.handle.trim()) === canonicalCadHandle(item.handle!),
+      () => item.reason,
+      item,
+    ) : 0;
+    if (!changed) report.add(item);
+  }, (t) => report.note(t));
+  return withImportData(opened, report.empty ? null : report.build('DXF', opts.filePath), rawEntitiesOf(opened));
 }
 
 /**

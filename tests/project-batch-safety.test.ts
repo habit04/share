@@ -334,7 +334,7 @@ describe('changes apply only to the revision they were calculated from', () => {
 });
 
 describe('closed drawings with import losses', () => {
-  it('requires an explicit loss warning answer before rewriting the source', async () => {
+  it('refuses partial source replacement regardless of the loss warning answer', async () => {
     const f = fake({ ...base, files: { '/p/c.dxf': closed() } });
     const original = readFileSync(join(__dirname, 'fixtures', 'unsupported-content.dxf'), 'latin1');
     f.disk.set('/p/c.dxf', original);
@@ -344,13 +344,16 @@ describe('closed drawings with import losses', () => {
     projectUi.confirmLoss = async (_title, message) => { asked.push(message); return false; };
     const changes = new Map([[index, { state: sheets[index]!.doc.snapshot, detail: 'update' }]]);
     const declined = await commitSheets(f.editor, sheets, changes, 'T', 'I');
-    expect(asked[0]).toMatch(/contained \d+ object\(s\).*removes them/);
-    expect(declined!.notSaved).toEqual(['c.dxf']);
+    expect(asked).toEqual([]);
+    expect(declined!.failed.join('\n')).toMatch(/cannot be saved over its source/);
     expect(f.writes).toEqual([]);
     expect(f.disk.get('/p/c.dxf')).toBe(original);
     projectUi.confirmLoss = async () => true;
     const accepted = await commitSheets(f.editor, sheets, changes, 'T', 'I');
-    expect(accepted!.written).toBe(1);
+    expect(accepted!.written).toBe(0);
+    expect(accepted!.failed.join('\n')).toMatch(/cannot be saved over its source/);
+    expect(f.backups).toEqual([]);
+    expect(f.disk.get('/p/c.dxf')).toBe(original);
   });
 });
 

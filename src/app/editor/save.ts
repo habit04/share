@@ -18,7 +18,7 @@ import { fallbackUi, type EditorInternals } from './internals';
 import { rememberRecent } from './documents';
 import { SaveAdmission, isStaleSaveAdmission, isCommittedSaveAdmissionError, isSaveAdmissionAuthorizationError, unverifiedImportSource, UNVERIFIED_SOURCE_WARNING } from '../save-admission';
 import { adoptOpenedSourceProof, captureOpenedSourceProof, releaseOpenedSourceProof } from '../opened-source-proof';
-import { importReportOf } from '../../io/import-report';
+import { importReportOf, isPartialImport, partialImportSaveBlock } from '../../io/import-report';
 import { model3dDwgRefusal, model3dDxfLimitRefusal, model3dDxfSaveNotes } from '../../model3d/save-guard';
 
 export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean, format?: 'dxf'): Promise<boolean> {
@@ -64,22 +64,39 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
     ed.log(`Not saved: ${reason}.`);
     return false;
   };
+  const refusePartial = (unverified = false): boolean => {
+    const reason = partialImportSaveBlock(savedState, target)
+      ?? (unverified && isPartialImport(savedState) && admission.destinationExists !== false ? 'This partial import cannot replace an existing file while its original source identity is unverified. Use Save As and choose a new file to preserve the original.' : null);
+    if (!reason) return false;
+    ed.lastFileError = reason;
+    ed.log(`Not saved: ${reason}`);
+    return true;
+  };
   let path: string | null;
   let notes3d: string[] = [];
   let preparedText: string | undefined;
   const dxfText = () => preparedText ??= writeDxf(withoutUnusedLibraryBlocks(savedState));
+  let checked3dDxf = false;
+  const prepare3dDxf = (): boolean => {
+    if (!dwgRefusal || checked3dDxf) return true;
+    const tooLarge = model3dDxfLimitRefusal(savedState, dxfText());
+    if (tooLarge) return refuse3d(tooLarge);
+    notes3d = model3dDxfSaveNotes(savedState);
+    checked3dDxf = true;
+    return true;
+  };
   try {
     await admission.ready;
     if (source && !admission.enabled) throw new Error('The Windows opened-source proof requires a guarded save admission. Reload the drawing or use a supported desktop bridge.');
     compatibilityProblem = dwgCompatibilityProblem(savedState);
+    if (target && refusePartial()) return false;
     if (dwgRefusal) {
       // Keep refusal and all borrowed source/admission cleanup inside this try/finally.
       if (target && /\.dwg$/i.test(target)) return refuse3d(dwgRefusal);
       // The captured host order precedes this pure DXF producer. Refuse an unreopenable
       // 3D file before requesting its destination, including a dimensions-only model.
-      const tooLarge = model3dDxfLimitRefusal(savedState, dxfText());
-      if (tooLarge) return refuse3d(tooLarge);
-      notes3d = model3dDxfSaveNotes(savedState);
+      // Partial imports resolve and protect their chosen source before serialization.
+      if (!isPartialImport(savedState) && !prepare3dDxf()) return false;
     }
     // Save As picks the file first and then queues the write behind any save of that file still on its way.
     if (!target && bridge.chooseDrawingPath) {
@@ -87,6 +104,10 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
       if (!target) return false;
     }
     if (admission.enabled && !target) throw new Error('The Windows bridge must choose a destination before preparing this save.');
+    // A partial import (content dropped/simplified at open, or a recovered file) must never
+    // overwrite its source file: a hard block for every destination — the in-place target and
+    // a Save As choice alike — instead of the confirm-over warning below.
+    if (target && refusePartial()) return false;
     if (target) {
       try { await admission.bind(target, source ? { ...source.hint, mode: sourceMode } : undefined); }
       catch (error) {
@@ -94,11 +115,15 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
         throw error;
       }
       const unverified = await unverifiedImportSource(bridge, savedState);
+      // Binding the destination and resolving the source publish native aliases. The
+      // lexical precheck above cannot recognize a newly selected junction/short-name path.
+      if (refusePartial(unverified)) return false;
       const dwg = /\.dwg$/i.test(target);
       if (dwg && dwgRefusal) return refuse3d(dwgRefusal);
       if (dwg && format === 'dxf') throw new Error('The DXF save destination must end in .dxf. Choose a DXF destination with Save As.');
       if (dwg && !canSaveDwg) throw new Error('DWG saving is available in the Windows desktop edition. Choose a DXF destination with Save As.');
       if (dwg && compatibilityProblem) throw new Error(compatibilityProblem);
+      if (!prepare3dDxf()) return false;
       if (dwg && !sessionExists()) return changed();
       const needsReview = unverified || !!saveOverwriteWarning(savedState, target);
       const permitted = unverified ? (await (ed.ui ?? fallbackUi).confirm('Review imported drawing before saving', UNVERIFIED_SOURCE_WARNING) ? 'save' : 'save-as') : await confirmSaveOver(savedState, target, (t, m) => (ed.ui ?? fallbackUi).confirm(t, m), session, stillCurrent);
@@ -113,6 +138,7 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
       const text = dxfText();
       const r = await saveQueue.run(target, revision, async () => {
         if ((needsReview && !stillCurrent()) || (dwg && !sessionExists())) return null;
+        if (refusePartial(unverified)) return null;
         if (!dwg) {
           const saved = admission.ticket ? await bridge.saveDxf(target, text, suggest, { admission: admission.ticket }) : await bridge.saveDxf(target, text, suggest);
           savedProof = await admission.confirmSaved(saved); return saved;
@@ -132,6 +158,14 @@ export async function saveFile(ed: Editor, st: EditorInternals, saveAs: boolean,
       path = r.value;
       if (!path && dwg && (!sessionExists() || (needsReview && !stillCurrent()))) return changed();
     } else {
+      // A bridge which chooses and writes in one operation cannot enforce the source
+      // prohibition before its write. Browser downloads explicitly guarantee a copy.
+      if (isPartialImport(savedState) && !bridge.saveDxfCreatesCopy) {
+        ed.lastFileError = 'This partial import requires Save As with a destination chosen before writing. Use a supported file picker to save a separate copy.';
+        ed.log(`Not saved: ${ed.lastFileError}`);
+        return false;
+      }
+      if (!prepare3dDxf()) return false;
       path = await bridge.saveDxf(null, dxfText(), suggest);
       if (path) saveQueue.markCompleted(path, revision);
     }

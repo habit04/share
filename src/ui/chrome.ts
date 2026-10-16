@@ -4,6 +4,7 @@ import './icons-ui';
 import { esc } from './dom';
 import { drawPreview } from '../render/draw';
 import { sessionTitle } from '../app/sessions';
+import { isPartialImport } from '../io/import-report';
 import { showMenu, type MenuItem } from './menu';
 import { symbolBuilderOf } from '../tools/symbol-builder';
 import { buildLayoutTabs as buildLayoutTabsImpl } from './layouts';
@@ -110,8 +111,22 @@ export function buildFileTabs(editor: Editor, el: HTMLElement): void {
       const dirty = editor.sessions.isDirty(i);
       tab.innerHTML = `<span class="file-tab-name">${esc(sessionTitle(s))}${dirty ? '*' : ''}</span><button class="file-tab-close" title="Close">${icon('close')}</button>`;
       tab.title = s.filePath ?? sessionTitle(s);
+      // Partial-import badge: stays on the tab while the document is open (the import report
+      // travels with the document) and opens that report on click.
+      if (isPartialImport(s.state)) {
+        const badge = document.createElement('button');
+        badge.className = 'file-tab-partial';
+        badge.textContent = 'Partial import';
+        badge.title = 'This drawing opened as a partial import: some content was dropped or simplified. Show the import report.';
+        badge.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          editor.showImportReport(true, s.state, sessionTitle(s));
+        });
+        tab.insertBefore(badge, tab.querySelector('.file-tab-close'));
+      }
       tab.addEventListener('click', (ev) => {
         if ((ev.target as HTMLElement).closest('.file-tab-close')) return;
+        if ((ev.target as HTMLElement).closest('.file-tab-partial')) return;
         editor.switchSession(i);
       });
       tab.addEventListener('auxclick', (ev) => {

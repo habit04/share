@@ -6,7 +6,7 @@ import { textFontKey } from '../core/text-metrics';
 import { textStylesOf } from '../io/encoding';
 import { PdfFontRegistry, type PdfFontFace } from '../io/pdf-fonts';
 import { pdfGroupEntityVisible, pdfGroupView, type PdfDrawGroup } from '../io/pdf-vector';
-import { expandControlCodes, findTextStyle, strokeTextWidth } from '../render/hershey';
+import { expandControlCodes, findTextStyle, strokeTextWidth, UNICODE_FALLBACK_FONT } from '../render/hershey';
 import { createTextGeometryContext, FontMetricsRegistry } from '../render/font-metrics';
 import { capturedPlotLookup } from './plot-fonts';
 
@@ -24,10 +24,11 @@ export async function capturedPdfLookup(state: DrawingState, reader?: PdfFontRea
   const wanted = new Map<string, { face: Extract<TextAppearance, { kind: 'canvas' }>; request: FontMetricsRequest }>();
   const usedByKey = new Map<string, Set<number>>();
   const discover = (input: Parameters<TextGeometryContext['resolve']>[0]) => {
-    const face = native.resolve(input);
+    const selected = strokeGeometry?.resolve(input);
+    const face = selected?.kind === 'stroke' ? selected : native.resolve(input);
     if (face.kind === 'canvas') {
       const style = findTextStyle(input.style, styles);
-      wanted.set(pdfFontKey(face), { face, request: { font: (style?.font || style?.family || familyName(face)).replace(/^.*[\\/]/, ''), family: familyName(face), bold: face.bold, italic: face.italic } });
+      wanted.set(pdfFontKey(face), { face, request: { font: (face.strokeFallback ? UNICODE_FALLBACK_FONT : style?.font || style?.family || familyName(face)).replace(/^.*[\\/]/, ''), family: familyName(face), bold: face.bold, italic: face.italic } });
     }
     return face;
   };
@@ -114,7 +115,7 @@ export async function capturedPdfLookup(state: DrawingState, reader?: PdfFontRea
     advances: (text, height, face) => native.advances!(text, height, face),
     baselineDescent: (height, face) => face.kind === 'stroke' && strokeGeometry ? strokeGeometry.baselineDescent!(height, face) : native.baselineDescent!(height, face),
     shxRun: strokeGeometry?.shxRun,
-    fontIssues: strokeGeometry?.fontIssues,
+    get fontIssues() { return new Set([...(strokeGeometry?.fontIssues ?? []), ...(native.fontIssues ?? [])]); },
   } : undefined;
   const lookup: BlockLookup = Object.assign((name: string) => state.blocks[name], { textGeometry: geometry });
   return { lookup, fonts, geometry, issues };

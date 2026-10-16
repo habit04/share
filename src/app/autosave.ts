@@ -6,6 +6,8 @@ import type { DrawingState } from '../core/document';
 import { withoutUnusedLibraryBlocks } from '../electrical/library';
 import { sessionTitle } from './sessions';
 import { recoveryDxf } from '../model3d/save-guard';
+import { partialImportProvenance, restorePartialImportProvenance, cleanPartialImportProvenance, cleanImportSourcePath, type PartialImportProvenance } from '../io/import-provenance';
+import { withDwgRecoveryWarning, importReportOf } from '../io/import-report';
 
 export interface AutosaveMeta {
   /** Path of the drawing being edited, or null for an untitled drawing. */
@@ -20,9 +22,19 @@ export interface AutosaveMeta {
    * solid (electron/autosave-store.cjs validates it).
    */
   omitted3d?: number;
+  /** Bounded diagnostic history only; carries no source path or source-write authority. */
+  partialImport?: PartialImportProvenance;
+  /** Original import spelling survives Save As. Diagnostic/protection-only, never a grant or proof. */
+  partialImportSourcePath?: string;
 }
 export interface AutosaveEntry extends AutosaveMeta {
   name: string;
+}
+
+/** The recovered source binding comes from the entry, never from persisted drawing diagnostics. */
+export function restoreAutosaveImportData(state: DrawingState, entry: Pick<AutosaveMeta, 'originalPath' | 'partialImport' | 'partialImportSourcePath'>): DrawingState {
+  const source = cleanImportSourcePath(entry.partialImportSourcePath) ?? entry.originalPath;
+  return withDwgRecoveryWarning(restorePartialImportProvenance(state, entry.partialImport, source), source);
 }
 
 /**
@@ -83,7 +95,10 @@ export function localAutosaveStore(storage: KeyValueStorage): AutosaveStore {
       for (const k of keys()) {
         try {
           const v = JSON.parse(storage.getItem(k) ?? '') as { meta: AutosaveMeta };
-          out.push({ name: k.slice(PREFIX.length), ...v.meta });
+          const partialImport = cleanPartialImportProvenance(v.meta.partialImport);
+          const { partialImportSourcePath: _storedSource, ...meta } = v.meta;
+          const partialImportSourcePath = partialImport ? cleanImportSourcePath(v.meta.partialImportSourcePath) : undefined;
+          out.push({ name: k.slice(PREFIX.length), ...meta, ...(partialImport ? { partialImport } : {}), ...(partialImportSourcePath ? { partialImportSourcePath } : {}) });
         } catch {
           /* ignore broken entries */
         }
@@ -250,7 +265,9 @@ export class Autosaver {
         // but must never replace a previously written or adopted recovery copy.
         const { text, omitted3d } = recoveryDxf(withoutUnusedLibraryBlocks(job.state));
         if (omitted3d > 0 && this.names.has(job.id)) throw new Error(`Recovery was not updated: ${omitted3d} 3D ${omitted3d === 1 ? 'object does' : 'objects do'} not fit the reopenable copy. The previous recovery copy is kept.`);
-        const meta: AutosaveMeta = { originalPath: job.originalPath, title: job.title, savedAt: job.savedAt, ...(omitted3d > 0 ? { omitted3d } : {}) };
+        const partialImport = partialImportProvenance(job.state);
+        const partialImportSourcePath = partialImport ? cleanImportSourcePath(importReportOf(job.state)?.sourcePath) : undefined;
+        const meta: AutosaveMeta = { originalPath: job.originalPath, title: job.title, savedAt: job.savedAt, ...(omitted3d > 0 ? { omitted3d } : {}), ...(partialImport ? { partialImport } : {}), ...(partialImportSourcePath ? { partialImportSourcePath } : {}) };
         await this.store.write(job.name, text, meta);
         // Only a complete copy proves this immutable revision is backed up. A first partial
         // copy retains its omission metadata and stays eligible for a complete later revision.

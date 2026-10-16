@@ -840,8 +840,8 @@ class PageWriter {
     const raw = e.text.includes('%%') ? e.text.replace(/%%[uUoOkK]/g, '') : e.text;
     const text = expandControlCodes(raw);
     if (!text.trim()) return;
-    const r = textRenderer(textStyleOf(e), this.ctx.textStyles);
     const appearance = this.ctx.textGeometry?.resolve(e);
+    const r = appearance ?? textRenderer(textStyleOf(e), this.ctx.textStyles, text);
     const shx = appearance && this.ctx.textGeometry?.shxRun?.(raw, e.height, appearance);
     if (shx?.ok) {
       const placed = metricTextPlacement(e, this.ctx.textGeometry!);
@@ -879,6 +879,9 @@ class PageWriter {
         this.ops.push(`BT /${run.resourceName} ${numbers[0]} Tf ${numbers.slice(1).join(' ')} Tm <${run.hex}> Tj ET`);
         return;
       }
+    }
+    if (r.kind === 'canvas' && !isWinAnsi(text) && (r.strokeFallback || /\p{Script=Han}/u.test(text))) {
+      throw new Error(`Unicode text cannot be plotted with the available embedded font (${r.family.split(',')[0]}). Choose Raster image output to use the installed Unicode font substitute.`);
     }
     if (r.kind === 'canvas' && this.ctx.fontFallbacks) this.ctx.fontFallbacks.add(r.family.split(',')[0]!);
     const initialWidthFactor = e.widthFactor !== undefined && Number.isFinite(e.widthFactor) && e.widthFactor > 0 ? e.widthFactor : r.widthFactor;

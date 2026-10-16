@@ -1,9 +1,8 @@
 import type { Editor } from '../app/editor';
 import type { AutosaveEntry, AutosaveStore, Autosaver } from '../app/autosave';
-import { omitted3dText } from '../app/autosave';
+import { omitted3dText, restoreAutosaveImportData } from '../app/autosave';
 import { RecoveryActions } from '../app/recovery-actions';
 import { describeFileError } from '../app/file-errors';
-import { withDwgRecoveryWarning } from '../io/import-report';
 import { modal, button } from './dialogkit';
 import { icon } from './icons';
 import './icons-ui';
@@ -42,7 +41,7 @@ export async function recoveryDialog(editor: Editor, store: AutosaveStore, autos
       // Read like OPEN: a backup that ends early offers to open what was readable (marked as recovered).
       const state = await editor.readDxfText(text, e.originalPath);
       if (!state) throw new Error(`The backup of ${e.title} is damaged and was not opened.`);
-      const idx = editor.sessions.add(withDwgRecoveryWarning(state, e.originalPath), e.originalPath, true);
+      const idx = editor.sessions.add(restoreAutosaveImportData(state, e), e.originalPath, true);
       editor.zoomExtents();
       // The backup stays on disk (and keeps being refreshed) until this drawing is saved.
       const session = editor.sessions.all[idx];

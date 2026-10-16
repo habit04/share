@@ -85,7 +85,13 @@ export function expandControlCodes(text: string): string {
 }
 
 export function glyphFor(ch: string): Glyph | undefined {
-  return glyphs.get(ch.charCodeAt(0));
+  return glyphs.get(ch.codePointAt(0)!);
+}
+
+/** Test real coverage before the legacy stroke renderer substitutes question marks. */
+export function hasStrokeGlyphs(text: string): boolean {
+  for (const ch of expandControlCodes(text.replace(/%%[uUoOkK]|[\r\n\t]/g, ''))) if (!glyphFor(ch)) return false;
+  return true;
 }
 
 /** Width of a string at the given cap height. */
@@ -141,6 +147,8 @@ export type TextRenderer =
   | { readonly kind: 'stroke'; readonly widthFactor: number; readonly oblique: number; readonly shxResourceId?: string }
   | {
       readonly kind: 'canvas';
+      /** Display substitution only; the source STYLE/font identity remains unchanged. */
+      readonly strokeFallback?: true;
       /** CSS font-family list, most specific first. */
       readonly family: string;
       readonly bold: boolean;
@@ -166,6 +174,17 @@ export function isTrueTypeStyle(s: Pick<TextStyle, 'font' | 'family'>): boolean 
 }
 
 const SANS = '"Liberation Sans", Arimo, Helvetica, sans-serif';
+export const UNICODE_FONT_STACK = 'SimSun, "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", sans-serif';
+/** Safe literal basename accepted by the existing installed-font host (family aliases are bounded). */
+export const UNICODE_FALLBACK_FONT = 'simsun.ttc';
+export const UNICODE_STROKE_FALLBACK_NOTICE = 'Missing stroke-font glyphs use an installed Unicode font substitute (SimSun / Microsoft YaHei or system fallback); appearance and metrics may differ from the source font.';
+
+/** A complete run uses one shaping/measurement backend; never replace individual glyphs with '?'. */
+export function unicodeStrokeFallback(text: string | undefined, face: TextRenderer): TextRenderer {
+  return face.kind === 'stroke' && text !== undefined && !hasStrokeGlyphs(text)
+    ? { kind: 'canvas', family: UNICODE_FONT_STACK, bold: false, italic: false, widthFactor: face.widthFactor, oblique: face.oblique, strokeFallback: true }
+    : face;
+}
 /** Font files AutoCAD drawings commonly name, with metric-compatible free substitutes. */
 const FONT_FAMILIES: Array<[RegExp, string]> = [
   [/^(arialn|arialnb|arialni|arialnbi)$/, `"Arial Narrow", "Liberation Sans Narrow", ${SANS}`],
@@ -185,7 +204,11 @@ const FONT_FAMILIES: Array<[RegExp, string]> = [
   [/^(pala|palab|palai|palabi)$/, '"Palatino Linotype", "Book Antiqua", Palatino, serif'],
   [/^(isocpeur|isocp|isoct|isoct2|isoct3)$/, `ISOCPEUR, "Liberation Sans Narrow", ${SANS}`],
   [/^(msgothic|msmincho|meiryo|yugoth\w*)$/, '"MS Gothic", "Yu Gothic", "Noto Sans CJK JP", "Noto Sans JP", sans-serif'],
-  [/^(simsun|simhei|msyh\w*)$/, 'SimSun, "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", sans-serif'],
+  [/^simsun$/, UNICODE_FONT_STACK],
+  [/^simhei$/, `SimHei, ${UNICODE_FONT_STACK}`],
+  [/^simfang$/, `FangSong, ${UNICODE_FONT_STACK}`],
+  [/^simkai$/, `KaiTi, ${UNICODE_FONT_STACK}`],
+  [/^msyh\w*$/, `"Microsoft YaHei", ${UNICODE_FONT_STACK}`],
   [/^(mingliu|msjh\w*)$/, 'MingLiU, "Microsoft JhengHei", "Noto Sans CJK TC", "Noto Sans TC", sans-serif'],
   [/^(gulim|batang|malgun\w*)$/, 'Gulim, "Malgun Gothic", "Noto Sans CJK KR", "Noto Sans KR", sans-serif'],
 ];
@@ -218,11 +241,11 @@ export function findTextStyle(name: string | undefined, styles: Readonly<Record<
 }
 
 /** The renderer for a style name (unknown names and SHX fonts draw with the Hershey strokes). */
-export function textRenderer(styleName?: string, styles: Readonly<Record<string, TextStyle>> = textStyleRegistry.styles): TextRenderer {
+export function textRenderer(styleName?: string, styles: Readonly<Record<string, TextStyle>> = textStyleRegistry.styles, text?: string): TextRenderer {
   const s = findTextStyle(styleName, styles);
   const widthFactor = s?.widthFactor && s.widthFactor > 0 ? s.widthFactor : 1;
   const oblique = ((s?.oblique ?? 0) * Math.PI) / 180;
-  if (!s || !isTrueTypeStyle(s)) return { kind: 'stroke', widthFactor, oblique };
+  if (!s || !isTrueTypeStyle(s)) return unicodeStrokeFallback(text, { kind: 'stroke', widthFactor, oblique });
   return { kind: 'canvas', family: fontStack(s), ...fontWeight(s), widthFactor, oblique };
 }
 
@@ -277,7 +300,7 @@ export function drawStyledText(
   styleName: string | undefined = textStyleOf(e),
   geometry?: TextGeometryContext,
 ): boolean {
-  const base = geometry?.resolve({ ...e, style: styleName }) ?? textRenderer(styleName);
+  const base = geometry?.resolve({ ...e, style: styleName }) ?? textRenderer(styleName, undefined, e.text);
   if (base.kind !== 'canvas') return false;
   const r = {
     ...base,

@@ -1,4 +1,4 @@
-import { expandControlCodes, strokeTextWidth, textRenderer, type TextRenderer } from './hershey';
+import { expandControlCodes, strokeTextWidth, textRenderer, unicodeStrokeFallback, UNICODE_FALLBACK_FONT, UNICODE_STROKE_FALLBACK_NOTICE, type TextRenderer } from './hershey';
 import { findTextStyle, isTrueTypeStyle, fontWeight } from './hershey';
 import type { TextStyle } from '../io/encoding';
 import type { FontMetricsRequest, NativeFontMetrics, TextAppearance, TextGeometryContext, TextMetricResult, TextMetricStyle } from '../core/text-metrics';
@@ -155,6 +155,7 @@ export class FontMetricsRegistry {
   }
   measure(text: string, height: number, appearance: TextAppearance): TextMetricResult {
     text = plainText(text);
+    appearance = unicodeStrokeFallback(text, appearance);
     if (appearance.kind === 'stroke') {
       const advance = strokeTextWidth(text, height);
       return { advance, left: 0, right: advance, ascent: height, descent: 0 };
@@ -190,19 +191,24 @@ const contexts = new WeakMap<Styles, TextGeometryContext>();
 export const EMPTY_TEXT_STYLES: Styles = Object.freeze({});
 export function createTextGeometryContext(styles: Styles, registry: FontMetricsRegistry = fontMetrics): TextGeometryContext {
   let epoch = registry.cacheKey, cacheKey: object = {};
+  const issues = new Set<string>();
   return {
     get cacheKey() { if (epoch !== registry.cacheKey) { epoch = registry.cacheKey; cacheKey = {}; } return cacheKey; },
     resolve(input: TextMetricStyle): TextAppearance {
-      const base = textRenderer(input.style, styles);
+      const base = textRenderer(input.style, styles, input.text);
       const face = { ...base, ...(input.widthFactor !== undefined ? { widthFactor: input.widthFactor } : {}), ...(input.oblique !== undefined ? { oblique: input.oblique } : {}),
         ...(base.kind === 'canvas' && input.bold ? { bold: true } : {}), ...(base.kind === 'canvas' && input.italic ? { italic: true } : {}) };
-      if (face.kind === 'canvas') registry.request(face, findTextStyle(input.style, styles)?.font ?? '');
+      if (face.kind === 'canvas') {
+        if (face.strokeFallback) issues.add(UNICODE_STROKE_FALLBACK_NOTICE);
+        registry.request(face, face.strokeFallback ? UNICODE_FALLBACK_FONT : findTextStyle(input.style, styles)?.font ?? '');
+      }
       return face;
     },
     measure: (text, height, appearance) => registry.measure(text, height, appearance),
     fontSize: (height, appearance) => appearance.kind === 'canvas' ? registry.fontSize(height, appearance) : height,
     advances: (text, height, appearance) => registry.advances(text, height, appearance),
     baselineDescent: (height, appearance) => registry.baselineDescent(height, appearance),
+    fontIssues: issues,
   };
 }
 export function textGeometryForStyles(styles: Styles): TextGeometryContext {

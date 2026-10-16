@@ -315,9 +315,9 @@ describe('normal DWG saves in the editor', () => {
     expect(f.drawingSaved).not.toHaveBeenCalled();
   });
 
-  it.each(['dropped', 'unsupported'] as const)('warns before normal Save overwrites a DWG with %s import content', async (action) => {
+  it('warns before normal Save overwrites a DWG with unsupported import content', async () => {
     const f = setup();
-    imported(f, action);
+    imported(f, 'unsupported');
     f.confirm.mockResolvedValue(false);
     expect(await f.ed.saveFile(false)).toBe(true);
     expect(f.confirm).toHaveBeenCalledTimes(1);
@@ -326,9 +326,38 @@ describe('normal DWG saves in the editor', () => {
     expect(f.ed.doc.filePath).toBe(f.out);
   });
 
-  it('cancels an acknowledged lossy-source save after a queued revision changes', async () => {
+  it('refuses normal Save over a DWG whose import dropped content (partial import)', async () => {
+    const f = setup();
+    imported(f, 'dropped');
+    expect(await f.ed.saveFile(false)).toBe(false);
+    expect(f.confirm).not.toHaveBeenCalled();
+    expect(f.writes).toEqual([]);
+    expect(f.ed.doc.filePath).toBe(f.original);
+    expect(f.ed.doc.dirty).toBe(true);
+    expect(f.ed.lastFileError).toMatch(/partial import/);
+    expect(f.logs.join('\n')).toMatch(/Not saved: .*partial import/);
+    expect(f.drawingSaved).not.toHaveBeenCalled();
+  });
+
+  it('refuses a queued lossy-source save without asking, even after a revision change', async () => {
     const f = setup();
     imported(f);
+    const gate = deferred<string>();
+    const blocker = saveQueue.run(f.original, captureRevision(), () => gate.promise);
+    const pending = f.ed.saveFile(false);
+    f.edit('unreviewed');
+    gate.resolve(f.original);
+    await blocker;
+    expect(await pending).toBe(false);
+    expect(f.confirm).not.toHaveBeenCalled();
+    expect(f.writes).toEqual([]);
+    expect(f.ed.doc.dirty).toBe(true);
+    expect(f.drawingSaved).not.toHaveBeenCalled();
+  });
+
+  it('cancels an acknowledged unsupported-source save after a queued revision changes', async () => {
+    const f = setup();
+    imported(f, 'unsupported');
     const gate = deferred<string>();
     const blocker = saveQueue.run(f.original, captureRevision(), () => gate.promise);
     const pending = f.ed.saveFile(false);

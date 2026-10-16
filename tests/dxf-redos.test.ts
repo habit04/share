@@ -13,6 +13,7 @@ import { tokenize } from '../src/io/dxf/groups';
 import { decodeDxfBytes } from '../src/io/encoding';
 import { readDxf } from '../src/io/dxf';
 import { evaluateFields, replaceFields, splitArgs } from '../src/core/fields';
+import { MAX_DRAWING_EXPANSION_WORK } from '../src/core/geometry-budget';
 
 const MB10 = 10 * 1024 * 1024;
 const MAX_STRING = 1024 * 1024;
@@ -109,7 +110,12 @@ describe('field expressions in linear time (E-6)', () => {
     expect(timed(() => evaluateFields(many)).ms).toBeLessThan(5000);
     // The DXF reader rejects the oversized value; an accepted field still evaluates on open.
     expect(() => readDxf(dxfWith('0', open))).toThrow(/string length limit/);
-    const accepted = `%<\\AcVar${' '.repeat(MAX_STRING - 20)}x`;
+    const nearStringCap = `%<\\AcVar${' '.repeat(MAX_STRING - 20)}x`;
+    // OPEN now validates the existing whole-drawing budget inside the reader. This value
+    // passes the parser string cap but exceeds the smaller text-work budget; refuse it fast.
+    const budgetRefusal = timed(() => expect(() => readDxf(dxfWith('0', nearStringCap))).toThrow(/Drawing expansion exceeds the safe geometry budget/));
+    expect(budgetRefusal.ms).toBeLessThan(10_000);
+    const accepted = `%<\\AcVar${' '.repeat(MAX_DRAWING_EXPANSION_WORK - 20)}x`;
     const imported = timed(() => readDxf(dxfWith('0', accepted)));
     expect(imported.ms).toBeLessThan(10_000);
     expect(imported.value.entities[0]).toMatchObject({ type: 'text', text: accepted });

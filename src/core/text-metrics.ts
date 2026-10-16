@@ -3,6 +3,8 @@ import { placedText, type TextPlacement } from './text-placement';
 
 /** Display-only font context; it never enters saved drawing data or undo history. */
 export interface TextMetricStyle {
+  /** Resolve glyph coverage for this run, including display-only Unicode substitutions. */
+  readonly text?: string;
   readonly style?: string;
   readonly widthFactor?: number;
   readonly oblique?: number;

@@ -5,7 +5,7 @@ import { dimensionGeometry, dimensionTextPoint, type DimensionEntity } from './d
 import { mtextLayoutFull, type MTextEntity, type MTextAttachment, type MTextColumns, type MTextBackground, type MTextStyle, type Measure, type InkMeasure } from './mtext';
 import { metricTextPlacement, type TextGeometryContext } from './text-metrics';
 import { interpolateFitPoints, isValidNurbs, nurbsPoints, type NurbsCurve } from './spline';
-import { findPattern, loopPolygon, patternSegments, pointInLoops, worldPatternLines, type HatchLoop, type WorldPatternLine } from './hatch';
+import { bulgeArcSteps, isHatchBulge, findPattern, loopPolygon, patternSegments, pointInLoops, worldPatternLines, type HatchLoop, type WorldPatternLine } from './hatch';
 import { tableGeometry, type TableEntity } from './table';
 import { isImmutableData } from './immutable-data';
 import { GeometryBudgetError } from './geometry-budget-error';
@@ -594,9 +594,9 @@ interface GeneratedParts {
 const dimCache = new WeakMap<DimensionEntity, GeneratedParts>();
 function dimensionMeasure(d: DimensionEntity, context?: TextGeometryContext) {
   // The dimension's style object is a DIMSTYLE; only DIMTXSTY names the emitted font.
-  const appearance = context?.resolve({ style: d.style.textStyle });
-  return context && (appearance?.kind === 'canvas' || appearance?.kind === 'stroke' && appearance.shxResourceId)
-    ? (text: string, height: number) => {
+  return context ? (text: string, height: number) => {
+      const appearance = context.resolve({ style: d.style.textStyle, text });
+      if (appearance.kind === 'stroke' && !appearance.shxResourceId) return textWidth(text, height);
       const metric = context.measure(text, height, appearance);
       // Native ordinate text placement uses the visible span; the font's trailing advance
       // would move the label away from its leader (notably for ordinary SHX numerals).
@@ -624,9 +624,10 @@ const mtextCache = new WeakMap<MTextEntity, MTextRendered>();
 function mtextRendered(m: MTextEntity, context?: TextGeometryContext): MTextRendered {
   const hit = mtextCache.get(m);
   if (hit && hit.contextKey === context?.cacheKey) return hit;
-  const runAppearance = (run?: MTextStyle) => {
+  const runAppearance = (run?: MTextStyle, text?: string) => {
     const runWidth = run?.widthFactor ?? 1;
     return context?.resolve({
+      text,
       ...(m.style ? { style: m.style } : {}),
       ...(run && Math.abs(runWidth - 1) > 1e-9 ? { widthFactor: runWidth } : {}),
       ...(run && (run.oblique || run.italic) ? { oblique: run.oblique || g.rad(15) } : {}),
@@ -634,16 +635,16 @@ function mtextRendered(m: MTextEntity, context?: TextGeometryContext): MTextRend
     });
   };
   const measure: Measure = context ? (text, height, run) => {
-    const runWidth = run?.widthFactor ?? 1, appearance = runAppearance(run)!;
+    const runWidth = run?.widthFactor ?? 1, appearance = runAppearance(run, text)!;
     if (appearance.kind === 'stroke' && !appearance.shxResourceId) return textWidth(text, height);
     // Layout applies the run's width factor outside the measurement callback. Return the
     // inherited/effective width divided by that factor so it is applied exactly once.
     return context.measure(text, height, appearance).advance * appearance.widthFactor / runWidth;
   } : textWidth;
-  const baseAppearance = runAppearance();
+  const baseAppearance = runAppearance(undefined, m.text.replace(/[\r\n\t]/g, ''));
   const ink: InkMeasure | undefined = context && (baseAppearance?.kind === 'canvas' || baseAppearance?.kind === 'stroke' && baseAppearance.shxResourceId) ? (text, height, run) => {
     if (!text.trim()) return null;
-    const appearance = runAppearance(run)!;
+    const appearance = runAppearance(run, text)!;
     if (appearance.kind === 'stroke' && !appearance.shxResourceId) return null;
     const metric = context.measure(text, height, appearance), slant = Math.tan(appearance.oblique);
     if (metric.left === 0 && metric.right === 0 && metric.ascent === 0 && metric.descent === 0) return null;
@@ -1182,7 +1183,14 @@ export function entityGeometryWork(entity: Entity): number {
       work += entity.controlPoints.length + entity.knots.length + (entity.weights?.length ?? 0) + (entity.fitPoints?.length ?? 0);
       break;
     case 'hatch':
-      for (const loop of entity.loops) work += loop.points.length * (loop.bulges?.some((value) => Math.abs(value) > 1e-12) ? 32 : 1);
+      // A loop costs the vertices loopPolygon tessellates it into: one per point, plus
+      // (steps - 1) extra vertices for each bulged segment. Charging every point of a
+      // loop the full 32-step arc cost when any one segment is bulged rejected
+      // legitimate curved filled signatures whose arcs are only a few segments.
+      for (const loop of entity.loops) {
+        work += loop.points.length;
+        for (const bulge of loop.bulges ?? []) if (isHatchBulge(bulge)) work += bulgeArcSteps(bulge) - 1;
+      }
       for (const line of entity.patternLines ?? []) work += 1 + line.dashes.length;
       if (entity.gradient) {
         const invalid = hatchGradientDataProblem(entity.gradient);

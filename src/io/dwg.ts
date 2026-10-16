@@ -42,6 +42,7 @@ import { paperFromSize, unitsOfHost, uniformMargins, newViewportId, type Layout,
 import { textStylesMeta, type TextStyle } from './encoding';
 import { fontImportWarning } from './font-warning';
 import { ImportReportBuilder, geometryProblem, reportBlockExpansion, withImportData, type ImportReport } from './import-report';
+import { recoverOversizedReferences } from './import-recovery';
 import { findPattern, LoopBuilder, edgeArc, fitPatternToLines } from '../core/hatch';
 import { isValidNurbs, nurbsPoints, interpolateFitPoints, splineWorkProblem, SplineWorkLimitError } from '../core/spline';
 import { evaluateFields, hasFields } from '../core/fields';
@@ -1028,6 +1029,7 @@ function convertLayouts(
   report: ImportReportBuilder,
   viewportHandles?: Map<string, string>,
   nativeProjected?: DrawingState,
+  standaloneDefinition?: (entity: DwgEntity, where: string) => void,
 ): Layout[] | undefined {
   const units = unitsOfHost(host);
   const out: Array<{ layout: Layout; tab: number }> = [];
@@ -1066,7 +1068,8 @@ function convertLayouts(
     const entities: Entity[] = [];
     const viewports: LayoutViewport[] = [];
     for (const e of block?.entities ?? []) {
-      if (e.type === 'ATTRIB' || e.type === 'ATTDEF') continue;
+      if (e.type === 'ATTDEF') { standaloneDefinition?.(e, where); continue; }
+      if (e.type === 'ATTRIB') continue;
       if (e.type === 'VIEWPORT') {
         const v = e as DwgEntity & { viewportId?: number; viewportCenter?: { x: number; y: number }; width?: number; height?: number; displayCenter?: { x: number; y: number }; viewHeight?: number; statusBitFlags?: number; clippingBoundaryId?: string; viewTwistAngle?: number; viewDirection?: { x: number; y: number; z?: number }; targetPoint?: { x: number; y: number; z?: number }; frozenLayerIds?: string[]; frozenLayers?: string[] };
         if (e === overall) continue; // the overall paper-space viewport
@@ -1445,10 +1448,12 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
   const unplacedTables: Entity[] = [];
 
   const entities: Entity[] = [];
+  const standaloneDefinitions: Array<{ entity: DwgEntity; where: string }> = [];
   const mx = extrasFor(payload.entities);
   for (const e of payload.entities) {
     if (e.isInPaperSpace || (e.handle && paperHandles.has(e.handle))) continue;
-    if (e.type === 'ATTDEF' || e.type === 'VIEWPORT' || e.type === 'ATTRIB') continue; // ATTRIBs are folded into their INSERTs
+    if (e.type === 'ATTDEF') { standaloneDefinitions.push({ entity: e, where: 'model space' }); continue; }
+    if (e.type === 'VIEWPORT' || e.type === 'ATTRIB') continue; // ATTRIBs are folded into their INSERTs
     if (mx.consumed.has(e)) continue; // a LEADER's MTEXT, merged into the leader
     if (e.type === 'HATCH') {
       const { parts, reason } = hatchOf(e, 'model space');
@@ -1574,6 +1579,7 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
     report,
     viewportHandles,
     nativeProjected,
+    (entity, where) => standaloneDefinitions.push({ entity, where }),
   );
   for (const l of layouts ?? []) {
     for (const e of l.entities) ensureEntityLayers(e);
@@ -1616,10 +1622,36 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
       nativeProjected = undefined;
     }
   }
+  // Recover only after exact source-identity joining, so the same graph-aware
+  // erase rules apply to checked Windows projections and fallback geometry.
+  base = withImportData(base, null, nativeProjected ? rawEntitiesOf(nativeProjected) : []);
+  const excludedDefinitions = new Set<string>();
+  base = recoverOversizedReferences(base, (item) => {
+    if (item.type === 'ATTDEF' && item.action === 'dropped' && item.handle) excludedDefinitions.add(canonicalCadHandle(item.handle));
+    const changed = item.action === 'dropped' && item.handle ? report.dropItems(
+      old => old.type === item.type && !!old.handle && /^[0-9A-Fa-f]{1,16}$/.test(old.handle.trim()) && /^[0-9A-Fa-f]{1,16}$/.test(item.handle!)
+        && canonicalCadHandle(old.handle.trim()) === canonicalCadHandle(item.handle!),
+      () => item.reason,
+      item,
+    ) : 0;
+    if (!changed) report.add(item);
+  }, (t) => report.note(t));
+  const retainedDefinitions = new Set<string>();
+  if (standaloneDefinitions.length) for (const node of base.cadGraph?.nodes ?? []) if (node.type === 'ATTDEF' && node.sourceHandle) retainedDefinitions.add(canonicalCadHandle(node.sourceHandle));
+  for (const { entity, where } of standaloneDefinitions) {
+    const handle = entity.handle ? String(entity.handle) : undefined;
+    const canonical = handle && /^[0-9A-Fa-f]{1,16}$/.test(handle) ? canonicalCadHandle(handle) : undefined;
+    if (canonical && excludedDefinitions.has(canonical)) continue;
+    const kept = !!canonical && retainedDefinitions.has(canonical);
+    report.add({ type: 'ATTDEF', action: kept ? 'kept' : 'dropped', ...(handle ? { handle } : {}), layer: entity.layer || '0', where,
+      reason: kept
+        ? 'standalone attribute-definition objects outside block definitions are not modeled or displayed; the original ATTDEF source record, including its tag, default value and visibility flags, is retained for export'
+        : `standalone attribute-definition objects outside block definitions are not modeled and no retained ATTDEF source record is available; this definition was excluded${typeof (entity as DwgAttdefEntity).text?.text !== 'string' ? '; the reader payload also omits its default value' : ''}` });
+  }
   if (!nativeProjected) {
     const clear = (list: readonly Entity[]) => list.map(entity => { const { cadIdentity: _sourceHandle, ...rest } = entity; return rest as Entity; });
     base = { ...base, entities: clear(base.entities), blocks: Object.fromEntries(Object.entries(base.blocks).map(([name, block]) => [name, { ...block, entities: clear(block.entities) }])), ...(base.layouts ? { layouts: base.layouts.map(layout => ({ ...layout, entities: clear(layout.entities) })) } : {}) };
   }
   const built = report.empty ? null : report.build('DWG', sourcePath);
-  return { state: withImportData(base, built, nativeProjected ? rawEntitiesOf(nativeProjected) : []), skipped, notes, report: built };
+  return { state: withImportData(base, built, rawEntitiesOf(base)), skipped, notes, report: built };
 }

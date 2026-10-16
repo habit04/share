@@ -14,7 +14,7 @@ import { convertDwg } from '../../io/dwg';
 import { isAbsolutePath, registerWindowsPathIdentity } from '../paths';
 import { saveSettings, pushRecent } from '../settings';
 import { describeFileError } from '../file-errors';
-import { readDxfForOpen, reportNeedsAttention, importReportLog, importReportOf } from '../import-open';
+import { readDxfForOpen, reportNeedsAttention, importReportLog, importReportOf, partialImportNotice } from '../import-open';
 import { hasDwgSave } from '../drawing-save';
 import type { Editor } from './editor';
 import { fallbackUi } from './internals';
@@ -169,6 +169,9 @@ export function readDxfText(ed: Editor, text: string, path: string | null): Prom
 
 /** The import report of a drawing just opened, also when it went to a background tab (see deliverOpened). */
 export function showOpenedReport(ed: Editor, where: OpenedWhere, state: DrawingState, path: string): void {
+  const report = importReportOf(state);
+  const notice = report ? partialImportNotice(report) : null;
+  if (notice) ed.log(notice);
   if (where === 'background' || where === 'new-background-tab') ed.showImportReport(false, state, path.split(/[\\/]/).pop() ?? path);
   else ed.showImportReport(false);
 }
