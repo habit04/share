@@ -58,10 +58,29 @@ adapter. They are **not** file identity and **not** authorization:
   whose spellings merely *look* alike (case-colliding Windows names)
   with distinct identities are read and kept separately.
 - If `identify` returns null or an unusable location, the node is
-  diagnosed `unresolved-location` **before** any read.
+  diagnosed `unresolved-location` **before** any read. If the adapter's
+  `identify` itself refuses with `ENOENT`/`ENOTDIR` or `EACCES`/`EPERM`,
+  the node keeps the authoritative classification (`missing` /
+  `denied`) — identification is part of the adapter's answer.
 - The same identity reporting two different versions inside one load is
   refused per-node as `inconsistent-version`: a snapshot never mixes
-  two contents of one file.
+  two contents of one file. The read is **bound to the identified
+  snapshot**: if a read result carries version evidence that disagrees
+  with the identification, the content is rejected as
+  `inconsistent-version` — never accepted and silently tagged with the
+  identified version.
+- One identity has **one stable owning location per load**. A second
+  alias reporting the same identity from a different owning location
+  is refused as `inconsistent-location`: the file record keeps the
+  first (stable) anchor, children are never resolved under two
+  anchors, and the rejected alias is not recorded as a use of the file.
+- **Host identification fails closed.** When the adapter offers
+  canonical identity and the host cannot be identified (null, an
+  error, or a non-absolute host path) and no `hostIdentity` was
+  supplied, canonical mode is never silently downgraded to lexical
+  identity: staging returns an explicit incomplete candidate in which
+  every root is `unresolved-location`, and nothing is read — so a SELF
+  edge can never reload the host as external geometry.
 - Ancestry is **seeded with the host identity** (from
   `input.hostIdentity`, or by identifying `hostPath` when the adapter
   offers it), and root references resolve against the host's owning
@@ -129,8 +148,12 @@ depth, DWG refusal):
 2. Path/anchor diagnosis, overlay suppression, depth and format checks.
 3. Adapter identification (before authorization and reading), cycle
    check by identity, version-consistency check.
-4. The distinct-file budget (`maxFiles`) is enforced before a read of a
-   new file — fatally.
+4. The distinct-source budget (`maxFiles`) counts **admitted** sources:
+   a source is admitted when the loader commits to reading it, and it
+   keeps its budget slot even if the read or the parse then fails —
+   otherwise failed parses would let unbounded distinct sources be
+   sampled under a small cap. The budget is enforced, fatally, before
+   the read of a new source is scheduled.
 5. Authorization gate (optional `authorize`); denial means no read.
    The reader may also refuse authoritatively: `EACCES`/`EPERM`
    rejections are classified `denied`, `ENOENT`/`ENOTDIR` as `missing`,
@@ -140,10 +163,16 @@ depth, DWG refusal):
    once the cumulative budget is spent, no further read is scheduled.
    **Delivered bytes are charged whether or not the content is then
    accepted** — rejected, oversize and unparseable deliveries all count.
-   A response whose declared byte length disagrees with the delivered
-   text is `inconsistent-response`. A per-file oversize is a per-node
-   `file-limit` failure (charged); pushing the cumulative total over
-   budget is fatal.
+   The cumulative budget is enforced on the actual delivered bytes
+   **before** any per-node response diagnostic: a delivery that breaks
+   the total budget aborts staging fatally even when it is also
+   inconsistent or per-file oversize, so no publication mode can commit
+   a graph staged past the budget. Only then are consistency checks
+   applied: a response whose declared byte length disagrees with the
+   delivered text is `inconsistent-response`, and a read whose version
+   evidence disagrees with its identification is
+   `inconsistent-version`. A per-file oversize is a per-node
+   `file-limit` failure (charged).
 7. Parsing uses the existing DXF reader with its allocation bounds
    **lowered from the caller's budgets** — the source-length cap is the
    per-file byte budget (characters never exceed UTF-8 bytes) — and
@@ -197,10 +226,12 @@ snapshot**, in any mode. An incomplete refresh returns its staged
 snapshot as an **inspection candidate** (`committed: false`,
 `preserved: true`, candidate in `staged`) and the last good graph stays
 published — in particular when an existing resolved dependency becomes
-missing or denied. The `partial` mode affects only the **initial
-load**, where no last-good graph exists yet: a partial load may publish
-its incomplete snapshot explicitly. Cancellation and fatal limits never
-publish in any mode.
+missing or denied. Partial publication is a **state condition**, not a
+method-name condition: the `partial` mode may publish an incomplete
+snapshot only while the store holds no committed graph (the initial
+load). Once a last-good graph exists, ANY incomplete attempt — refresh
+or a later `load` in partial mode — is candidate-only. Cancellation and
+fatal limits never publish in any mode.
 
 Immutability: staged snapshots returned by `stageXrefLoad` are sealed
 deep copies; publication seals a **further** copy, so the committed
@@ -213,7 +244,8 @@ frozen or mutated). Earlier publications are unaffected by later loads.
 Per node (with the attempted resolved path where one exists):
 `missing`, `denied`, `read-error`, `parse-error`,
 `unsupported-format` (DWG), `unresolved-path`, `unresolved-location`,
-`inconsistent-version`, `inconsistent-response`, `cycle`,
+`inconsistent-version`, `inconsistent-location`,
+`inconsistent-response`, `cycle`,
 `depth-limit`, `file-limit`, `not-carried-overlay` (informational, not
 a failure). Fatal to a whole staging: `cancelled`, `total-limit`
 (edge, distinct-file, cumulative byte and cumulative entity budgets).
@@ -226,7 +258,7 @@ the parent — see limitations.
 
 ## Tests (headless)
 
-`tests/xref-loading.test.ts` (53 tests) runs against authored fixtures
+`tests/xref-loading.test.ts` (63 tests) runs against authored fixtures
 in `tests/fixtures/xref/` (registered in `tests/fixtures/manifest.json`)
 through fake in-memory adapters mapped to a virtual project layout.
 Covered, in addition to the original milestone's cases: app/paths-based
@@ -246,7 +278,18 @@ publication; stale publication (out-of-order completion, a newer
 failed attempt, host replacement, host closure); partial refresh as
 candidate-only (missing and denied dependencies); and runtime
 immutability of staged and committed snapshots with earlier
-publications unchanged.
+publications unchanged. The independent-review round added: read /
+identify version binding with a store-preservation case; owning-
+location consistency for a shared identity; fail-closed host
+identification (null and throwing) with a SELF edge never read;
+cumulative-byte enforcement before response-consistency diagnostics
+(including through the store in partial mode); admitted-source
+accounting where a failed parse still consumes the `maxFiles` slot;
+initial-only partial publication as a state condition (a second
+partial `load` preserves the graph); missing/denied classification of
+identification refusals; and platform-pinned path-helper expectations
+(POSIX pinned for the file, with a dedicated win32-pinned contract
+test), so the suite is portable to Windows Node.
 
 These are Linux/Node headless unit checks against the **existing** DXF
 parser. They are not AutoCAD compatibility evidence.
