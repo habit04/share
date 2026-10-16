@@ -573,7 +573,7 @@ function fontRequest(request) {
   if (!request || typeof request !== 'object' || typeof request.font !== 'string' || !request.font || request.font.length > 160) fail('a bounded font filename or known Windows family is required');
   if (request.family !== undefined && (typeof request.family !== 'string' || !request.family.trim() || request.family.length > 256 || /[\u0000-\u001f\u007f]/.test(request.family))) fail('invalid requested font family');
   for (const flag of ['bold', 'italic']) if (request[flag] !== undefined && typeof request[flag] !== 'boolean') fail(`invalid requested ${flag} flag`);
-  if (request.usedCodepoints !== undefined && (!Array.isArray(request.usedCodepoints) || request.usedCodepoints.length > MAX_USED_CODEPOINTS || request.usedCodepoints.some((code) => !Number.isInteger(code) || code < 0 || code > 0x10ffff))) fail('invalid used codepoint set');
+  if (request.usedCodepoints !== undefined && (!Array.isArray(request.usedCodepoints) || request.usedCodepoints.length > MAX_USED_CODEPOINTS || Array.from(request.usedCodepoints).some((code) => !Number.isInteger(code) || code < 0 || code > 0x10ffff))) fail('invalid used codepoint set');
   const name = request.font;
   if (name.trim() !== name || /[<>:"/\\|?*\u0000-\u001f\u007f]/.test(name) || /[. ]$/.test(name) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) fail('font must be a safe literal basename');
   const known = FAMILIES.find((family) => familyKey(family[0]) === familyKey(name) || family.slice(1).some((filename) => filename && filename.toLowerCase() === name.toLowerCase()));

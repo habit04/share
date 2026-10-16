@@ -135,6 +135,16 @@ describe('bounded font metric descriptors', () => {
     }
     expect(f.factory).not.toHaveBeenCalled();
   });
+
+  it('rejects sparse used sets before allocating a worker', async () => {
+    const f = fixture();
+    for (const usedCodepoints of [Array<number>(1), [65, , 66]]) {
+      const request = { font: 'simsun.ttc', usedCodepoints };
+      expect(() => fontRequest(request)).toThrow('Invalid used codepoints');
+      await expect(f.host.readPdf(request)).rejects.toThrow('Invalid used codepoints');
+    }
+    expect(f.factory).not.toHaveBeenCalled();
+  });
 });
 
 describe('font metric worker scheduling and containment', () => {

@@ -11,7 +11,7 @@ function fontRequest(value) {
   if (value.family !== undefined && (typeof value.family !== 'string' || value.family.length > 256 || /[\u0000-\u001f]/.test(value.family))) throw new Error('Invalid font family.');
   for (const key of ['bold', 'italic']) if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new Error('Invalid font face.');
   if (value.usedCodepoints !== undefined && (!Array.isArray(value.usedCodepoints) || value.usedCodepoints.length > MAX_USED_CODEPOINTS
-    || value.usedCodepoints.some((code) => !Number.isInteger(code) || code < 0 || code > 0x10ffff))) throw new Error('Invalid used codepoints.');
+    || Array.from(value.usedCodepoints).some((code) => !Number.isInteger(code) || code < 0 || code > 0x10ffff))) throw new Error('Invalid used codepoints.');
   // Deduplicated and sorted host-side so the pending-request key distinguishes used sets exactly.
   const usedCodepoints = value.usedCodepoints === undefined ? undefined : [...new Set(value.usedCodepoints)].sort((a, b) => a - b);
   return { font: value.font, ...(value.family !== undefined ? { family: value.family } : {}),
