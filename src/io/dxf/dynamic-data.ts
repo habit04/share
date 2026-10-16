@@ -6,8 +6,16 @@
  * deviation from JCAD_TABLE / JCAD_MTEXT_COLUMNS, which carry no version):
  *   definition, on the BLOCK record: {"v":1,"kind":"definition","parameters":[…],"actions":[…]}
  *   instance,   on the INSERT:       {"v":1,"kind":"instance","block":"<name>","values":{…}}
- * Instance values are sparse and tagged ({kind:'distance',value} | {kind:'opaque',payload});
- * instance value keys are written sorted by parameter id so the encoding is canonical.
+ * Instance values are sparse and tagged ({kind:'distance',value} | {kind:'angle',value} |
+ * {kind:'flip',value} | {kind:'opaque',payload}); instance value keys are written sorted
+ * by parameter id so the encoding is canonical.
+ *
+ * Model version stays 1 for the 30.2 kinds (angle/flip parameters; move/rotate/scale/flip
+ * actions): they are additive union members, as the design planned (§1.3). A v1 payload
+ * written before 30.2 contains only linear-distance/stretch members and decodes
+ * identically; a payload using the new kinds, read by a pre-30.2 build, fails that
+ * build's structural decode and is retained verbatim — the designed fallback — instead
+ * of being half-modeled. The version only moves when a member's shape changes.
  *
  * Escaping decision (explicit, following the JCAD_TABLE variant in write-annotations.ts,
  * NOT the unescaped MTEXT-columns variant): the JSON text is escaped to 7-bit ASCII —
@@ -24,7 +32,7 @@
  * instance displays at its authored (static/default) state. Nothing is half-parsed,
  * clamped, snapped or repaired here.
  *
- * Entity references in stretch selections are the one place the payload does NOT carry
+ * Entity references in action selections are the one place the payload does NOT carry
  * the model value verbatim: DXF does not preserve EntityBase.id (the reader assigns
  * fresh ids), so a selection naming a block entity is serialized as `#<index>` — the
  * entity's ordinal in BlockDef.entities, which write/read order preserves — while a
@@ -38,12 +46,14 @@ import type { Pair } from './groups';
 import {
   DYNAMIC_MODEL_VERSION,
   validateDefinition,
+  type AngleConstraint,
   type DistanceConstraint,
   type DynamicAction,
   type DynamicBlockDefinition,
   type DynamicParameter,
-  type LinearDistanceParameter,
+  type ParameterGrip,
   type StretchAction,
+  type WholeSelection,
 } from '../../core/parametric/definitions';
 import {
   validateInstanceValues,
@@ -87,44 +97,107 @@ function encodeConstraint(c: DistanceConstraint): Record<string, unknown> {
   }
 }
 
+function encodeAngleConstraint(c: AngleConstraint): Record<string, unknown> {
+  return c.kind === 'unbounded'
+    ? { kind: 'unbounded' }
+    : { kind: 'range', ...(c.min !== undefined ? { min: c.min } : {}), ...(c.max !== undefined ? { max: c.max } : {}) };
+}
+
+/** An entity reference for serialization: `#<index>` when it names a block entity
+ *  (see header), the tag verbatim when it names an attribute definition. */
+function encodeEntityRef(entityId: string, entityIdsInOrder?: readonly string[]): string {
+  const index = entityIdsInOrder?.indexOf(entityId) ?? -1;
+  return index >= 0 ? `#${index}` : entityId;
+}
+
+function encodeWholeSelection(selection: readonly WholeSelection[], entityIdsInOrder?: readonly string[]): { entityId: string }[] {
+  return selection.map((sel) => ({ entityId: encodeEntityRef(sel.entityId, entityIdsInOrder) }));
+}
+
 function encodeParameter(p: DynamicParameter): Record<string, unknown> {
-  if (p.kind === 'opaque-parameter') {
-    return { kind: 'opaque-parameter', id: p.id, name: p.name, sourceKind: p.sourceKind, payload: p.payload };
+  switch (p.kind) {
+    case 'opaque-parameter':
+      return { kind: 'opaque-parameter', id: p.id, name: p.name, sourceKind: p.sourceKind, payload: p.payload };
+    case 'linear-distance':
+      return {
+        kind: 'linear-distance',
+        id: p.id,
+        name: p.name,
+        basePoint: { x: p.basePoint.x, y: p.basePoint.y },
+        direction: { x: p.direction.x, y: p.direction.y },
+        defaultValue: p.defaultValue,
+        constraint: encodeConstraint(p.constraint),
+        grips: p.grips.map((grip) => ({ role: grip.role, movesWithValue: grip.movesWithValue })),
+      };
+    case 'angle':
+      return {
+        kind: 'angle',
+        id: p.id,
+        name: p.name,
+        basePoint: { x: p.basePoint.x, y: p.basePoint.y },
+        defaultValue: p.defaultValue,
+        constraint: encodeAngleConstraint(p.constraint),
+        grips: p.grips.map((grip) => ({ role: grip.role, movesWithValue: grip.movesWithValue })),
+      };
+    case 'flip':
+      return {
+        kind: 'flip',
+        id: p.id,
+        name: p.name,
+        basePoint: { x: p.basePoint.x, y: p.basePoint.y },
+        defaultValue: p.defaultValue,
+      };
   }
-  return {
-    kind: 'linear-distance',
-    id: p.id,
-    name: p.name,
-    basePoint: { x: p.basePoint.x, y: p.basePoint.y },
-    direction: { x: p.direction.x, y: p.direction.y },
-    defaultValue: p.defaultValue,
-    constraint: encodeConstraint(p.constraint),
-    grips: p.grips.map((grip) => ({ role: grip.role, movesWithValue: grip.movesWithValue })),
-  };
 }
 
 function encodeAction(a: DynamicAction, entityIdsInOrder?: readonly string[]): Record<string, unknown> {
-  if (a.kind === 'opaque-action') {
-    return { kind: 'opaque-action', id: a.id, name: a.name, parameterId: a.parameterId, sourceKind: a.sourceKind, payload: a.payload };
-  }
-  return {
-    kind: 'stretch',
-    id: a.id,
-    name: a.name,
-    parameterId: a.parameterId,
-    frame: { kind: 'rectangle', min: { x: a.frame.min.x, y: a.frame.min.y }, max: { x: a.frame.max.x, y: a.frame.max.y } },
-    selection: a.selection.map((sel) => {
-      // A selection naming a block entity serializes as `#<index>` (see header);
-      // a selection naming an attribute definition keeps its tag verbatim.
-      const index = entityIdsInOrder?.indexOf(sel.entityId) ?? -1;
+  const base = { id: a.id, name: a.name, parameterId: a.parameterId };
+  switch (a.kind) {
+    case 'opaque-action':
+      return { kind: 'opaque-action', ...base, sourceKind: a.sourceKind, payload: a.payload };
+    case 'stretch':
       return {
-        entityId: index >= 0 ? `#${index}` : sel.entityId,
-        points: sel.points.kind === 'frame' ? { kind: 'frame' } : { kind: 'points', indices: [...sel.points.indices] },
+        kind: 'stretch',
+        ...base,
+        frame: { kind: 'rectangle', min: { x: a.frame.min.x, y: a.frame.min.y }, max: { x: a.frame.max.x, y: a.frame.max.y } },
+        selection: a.selection.map((sel) => ({
+          entityId: encodeEntityRef(sel.entityId, entityIdsInOrder),
+          points: sel.points.kind === 'frame' ? { kind: 'frame' } : { kind: 'points', indices: [...sel.points.indices] },
+        })),
+        ...(a.distanceMultiplier !== undefined ? { distanceMultiplier: a.distanceMultiplier } : {}),
+        ...(a.angleOffset !== undefined ? { angleOffset: a.angleOffset } : {}),
       };
-    }),
-    ...(a.distanceMultiplier !== undefined ? { distanceMultiplier: a.distanceMultiplier } : {}),
-    ...(a.angleOffset !== undefined ? { angleOffset: a.angleOffset } : {}),
-  };
+    case 'move':
+      return {
+        kind: 'move',
+        ...base,
+        selection: encodeWholeSelection(a.selection, entityIdsInOrder),
+        ...(a.distanceMultiplier !== undefined ? { distanceMultiplier: a.distanceMultiplier } : {}),
+        ...(a.angleOffset !== undefined ? { angleOffset: a.angleOffset } : {}),
+      };
+    case 'rotate':
+      return {
+        kind: 'rotate',
+        ...base,
+        center: { x: a.center.x, y: a.center.y },
+        selection: encodeWholeSelection(a.selection, entityIdsInOrder),
+      };
+    case 'scale':
+      return {
+        kind: 'scale',
+        ...base,
+        basePoint: { x: a.basePoint.x, y: a.basePoint.y },
+        selection: encodeWholeSelection(a.selection, entityIdsInOrder),
+      };
+    case 'flip':
+      return {
+        kind: 'flip',
+        ...base,
+        axisA: { x: a.axisA.x, y: a.axisA.y },
+        axisB: { x: a.axisB.x, y: a.axisB.y },
+        selection: encodeWholeSelection(a.selection, entityIdsInOrder),
+      };
+  }
 }
 
 /**
@@ -147,7 +220,8 @@ export function encodeDynamicInstance(state: DynamicInstanceState): string {
   const values: Record<string, unknown> = {};
   for (const id of Object.keys(state.values).sort()) {
     const value = state.values[id]!;
-    values[id] = value.kind === 'distance' ? { kind: 'distance', value: value.value } : { kind: 'opaque', payload: value.payload };
+    values[id] =
+      value.kind === 'opaque' ? { kind: 'opaque', payload: value.payload } : { kind: value.kind, value: value.value };
   }
   return escapeDynamicJson(JSON.stringify({ v: DYNAMIC_MODEL_VERSION, kind: 'instance', block: state.block, values }));
 }
@@ -194,6 +268,46 @@ function decodeConstraint(raw: unknown): DistanceConstraint | undefined {
   }
 }
 
+function decodeAngleConstraint(raw: unknown): AngleConstraint | undefined {
+  if (!isRecord(raw)) return undefined;
+  if (raw.kind === 'unbounded') return { kind: 'unbounded' };
+  if (raw.kind !== 'range') return undefined;
+  if (raw.min !== undefined && !isFiniteNumber(raw.min)) return undefined;
+  if (raw.max !== undefined && !isFiniteNumber(raw.max)) return undefined;
+  return { kind: 'range', ...(raw.min !== undefined ? { min: raw.min as number } : {}), ...(raw.max !== undefined ? { max: raw.max as number } : {}) };
+}
+
+function decodeGrips(raw: unknown): ParameterGrip[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const grips: ParameterGrip[] = [];
+  for (const grip of raw) {
+    if (!isRecord(grip) || (grip.role !== 'base' && grip.role !== 'value') || typeof grip.movesWithValue !== 'boolean') return undefined;
+    grips.push({ role: grip.role, movesWithValue: grip.movesWithValue });
+  }
+  return grips;
+}
+
+/** Map an ordinal entity reference (`#<index>`) back to the read entity's id;
+ *  any other reference (an attribute tag) passes through verbatim. */
+function resolveEntityRef(entityId: string, entityIdsInOrder?: readonly string[]): string | undefined {
+  if (!entityId.startsWith('#')) return entityId;
+  const index = Number(entityId.slice(1));
+  if (!entityIdsInOrder || !Number.isInteger(index) || index < 0 || index >= entityIdsInOrder.length) return undefined;
+  return entityIdsInOrder[index]!;
+}
+
+function decodeWholeSelection(raw: unknown, entityIdsInOrder?: readonly string[]): WholeSelection[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const selection: WholeSelection[] = [];
+  for (const sel of raw) {
+    if (!isRecord(sel) || typeof sel.entityId !== 'string') return undefined;
+    const entityId = resolveEntityRef(sel.entityId, entityIdsInOrder);
+    if (entityId === undefined) return undefined;
+    selection.push({ entityId });
+  }
+  return selection;
+}
+
 function decodeParameter(raw: unknown): DynamicParameter | undefined {
   if (!isRecord(raw) || typeof raw.id !== 'string' || typeof raw.name !== 'string') return undefined;
   if (raw.kind === 'opaque-parameter') {
@@ -201,16 +315,38 @@ function decodeParameter(raw: unknown): DynamicParameter | undefined {
       ? { kind: 'opaque-parameter', id: raw.id, name: raw.name, sourceKind: raw.sourceKind, payload: raw.payload }
       : undefined;
   }
+  if (raw.kind === 'flip') {
+    if (!isPoint(raw.basePoint) || typeof raw.defaultValue !== 'boolean') return undefined;
+    return {
+      kind: 'flip',
+      id: raw.id,
+      name: raw.name,
+      basePoint: { x: raw.basePoint.x, y: raw.basePoint.y },
+      defaultValue: raw.defaultValue,
+    };
+  }
+  if (raw.kind === 'angle') {
+    if (!isPoint(raw.basePoint) || !isFiniteNumber(raw.defaultValue)) return undefined;
+    const constraint = decodeAngleConstraint(raw.constraint);
+    if (!constraint) return undefined;
+    const grips = decodeGrips(raw.grips);
+    if (!grips) return undefined;
+    return {
+      kind: 'angle',
+      id: raw.id,
+      name: raw.name,
+      basePoint: { x: raw.basePoint.x, y: raw.basePoint.y },
+      defaultValue: raw.defaultValue,
+      constraint,
+      grips,
+    };
+  }
   if (raw.kind !== 'linear-distance') return undefined;
   if (!isPoint(raw.basePoint) || !isPoint(raw.direction) || !isFiniteNumber(raw.defaultValue)) return undefined;
   const constraint = decodeConstraint(raw.constraint);
   if (!constraint) return undefined;
-  if (!Array.isArray(raw.grips)) return undefined;
-  const grips: LinearDistanceParameter['grips'][number][] = [];
-  for (const grip of raw.grips) {
-    if (!isRecord(grip) || (grip.role !== 'base' && grip.role !== 'value') || typeof grip.movesWithValue !== 'boolean') return undefined;
-    grips.push({ role: grip.role, movesWithValue: grip.movesWithValue });
-  }
+  const grips = decodeGrips(raw.grips);
+  if (!grips) return undefined;
   return {
     kind: 'linear-distance',
     id: raw.id,
@@ -231,6 +367,43 @@ function decodeAction(raw: unknown, entityIdsInOrder?: readonly string[]): Dynam
       ? { kind: 'opaque-action', ...base, sourceKind: raw.sourceKind, payload: raw.payload }
       : undefined;
   }
+  if (raw.kind === 'move') {
+    if (raw.distanceMultiplier !== undefined && !isFiniteNumber(raw.distanceMultiplier)) return undefined;
+    if (raw.angleOffset !== undefined && !isFiniteNumber(raw.angleOffset)) return undefined;
+    const selection = decodeWholeSelection(raw.selection, entityIdsInOrder);
+    if (!selection) return undefined;
+    return {
+      kind: 'move',
+      ...base,
+      selection,
+      ...(raw.distanceMultiplier !== undefined ? { distanceMultiplier: raw.distanceMultiplier as number } : {}),
+      ...(raw.angleOffset !== undefined ? { angleOffset: raw.angleOffset as number } : {}),
+    };
+  }
+  if (raw.kind === 'rotate') {
+    if (!isPoint(raw.center)) return undefined;
+    const selection = decodeWholeSelection(raw.selection, entityIdsInOrder);
+    if (!selection) return undefined;
+    return { kind: 'rotate', ...base, center: { x: raw.center.x, y: raw.center.y }, selection };
+  }
+  if (raw.kind === 'scale') {
+    if (!isPoint(raw.basePoint)) return undefined;
+    const selection = decodeWholeSelection(raw.selection, entityIdsInOrder);
+    if (!selection) return undefined;
+    return { kind: 'scale', ...base, basePoint: { x: raw.basePoint.x, y: raw.basePoint.y }, selection };
+  }
+  if (raw.kind === 'flip') {
+    if (!isPoint(raw.axisA) || !isPoint(raw.axisB)) return undefined;
+    const selection = decodeWholeSelection(raw.selection, entityIdsInOrder);
+    if (!selection) return undefined;
+    return {
+      kind: 'flip',
+      ...base,
+      axisA: { x: raw.axisA.x, y: raw.axisA.y },
+      axisB: { x: raw.axisB.x, y: raw.axisB.y },
+      selection,
+    };
+  }
   if (raw.kind !== 'stretch') return undefined;
   if (!isRecord(raw.frame) || raw.frame.kind !== 'rectangle' || !isPoint(raw.frame.min) || !isPoint(raw.frame.max)) return undefined;
   if (!Array.isArray(raw.selection)) return undefined;
@@ -238,12 +411,8 @@ function decodeAction(raw: unknown, entityIdsInOrder?: readonly string[]): Dynam
   for (const sel of raw.selection) {
     if (!isRecord(sel) || typeof sel.entityId !== 'string' || !isRecord(sel.points)) return undefined;
     // Map an ordinal entity reference (`#<index>`) back to the read entity's id.
-    let entityId = sel.entityId;
-    if (entityId.startsWith('#')) {
-      const index = Number(entityId.slice(1));
-      if (!entityIdsInOrder || !Number.isInteger(index) || index < 0 || index >= entityIdsInOrder.length) return undefined;
-      entityId = entityIdsInOrder[index]!;
-    }
+    const entityId = resolveEntityRef(sel.entityId, entityIdsInOrder);
+    if (entityId === undefined) return undefined;
     if (sel.points.kind === 'frame') selection.push({ entityId, points: { kind: 'frame' } });
     else if (sel.points.kind === 'points' && Array.isArray(sel.points.indices) && sel.points.indices.every((i) => typeof i === 'number')) {
       selection.push({ entityId, points: { kind: 'points', indices: [...sel.points.indices] } });
@@ -327,6 +496,8 @@ export function decodeDynamicInstance(raw: string, definition?: DynamicBlockDefi
   for (const [id, value] of Object.entries(parsed.values)) {
     if (!isRecord(value)) return retained;
     if (value.kind === 'distance' && isFiniteNumber(value.value)) values[id] = { kind: 'distance', value: value.value };
+    else if (value.kind === 'angle' && isFiniteNumber(value.value)) values[id] = { kind: 'angle', value: value.value };
+    else if (value.kind === 'flip' && typeof value.value === 'boolean') values[id] = { kind: 'flip', value: value.value };
     else if (value.kind === 'opaque' && typeof value.payload === 'string') values[id] = { kind: 'opaque', payload: value.payload };
     else return retained;
   }
