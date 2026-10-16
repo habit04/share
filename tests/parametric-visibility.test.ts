@@ -9,7 +9,9 @@
  */
 import { describe, it, expect } from 'vitest';
 import { sealImmutableData } from '../src/core/immutable-data';
-import type { DrawingState } from '../src/core/document';
+import { Drawing, type DrawingState } from '../src/core/document';
+import { ExplodeTool } from '../src/tools/edit';
+import { fakeContext, drive } from './fake-context';
 import {
   expandInsert,
   explodeInsert,
@@ -366,11 +368,70 @@ describe('visibility at document level (30.2a)', () => {
     expect(open.entities.length - closed.entities.length).toBe(2);
   });
 
-  // Design §1.4(d): EXPLODE of a dynamic instance whose evaluation REFUSES
-  // must refuse rather than explode the fallback geometry and discard the
-  // parameter state. Specified in 30.2a; the evaluation-status probe beside
-  // insertExpansionLimited is 30.4 work, so the case is pinned, not faked.
-  it.todo('EXPLODE refuses a dynamic insert whose evaluation refuses (design §1.4(d), 30.4 hook)');
+  // Design §1.4(d), implemented in 30.4 slice B: EXPLODE of a dynamic
+  // instance whose evaluation REFUSES refuses the explode (naming the
+  // refusal) rather than exploding the fallback geometry and discarding
+  // the parameter state; EXPLODE of an evaluating instance yields exactly
+  // the current evaluated entities, visibility filter included. The probe
+  // is insertEvaluationRefusal (entities.ts, beside insertExpansionLimited).
+  it('EXPLODE yields exactly the evaluated entities of an evaluating dynamic insert (visibility filter included)', () => {
+    const doc = new Drawing({
+      entities: [cabInsert('I1', 'Open'), cabInsert('I2', 'Closed', 300)],
+      blocks: { CAB: cabBlock() },
+      currentLayer: '0',
+    });
+    const ctx = fakeContext(doc);
+    ctx.selection = new Set(['I1', 'I2']);
+    drive(new ExplodeTool(), ctx, []);
+    expect(ctx.logs.some((l) => l.includes('2 object(s) exploded.'))).toBe(true);
+    expect(doc.entities.filter((e) => e.type === 'insert')).toEqual([]);
+    const lines = doc.entities.filter((e): e is LineEntity => e.type === 'line');
+    const segments = lines.map((l) => [l.a, l.b]);
+    // Open (at 100,100): L1 bottom + L2 right. Closed (at 300,100): L1 bottom + L3 top.
+    // L2 is hidden in Closed, L3 and the circle are hidden in Open's complement sense:
+    // the exploded set is the evaluated set, not the authored set.
+    expect(segments).toContainEqual([{ x: 100, y: 100 }, { x: 110, y: 100 }]);
+    expect(segments).toContainEqual([{ x: 110, y: 100 }, { x: 110, y: 105 }]);
+    expect(segments).toContainEqual([{ x: 300, y: 100 }, { x: 310, y: 100 }]);
+    expect(segments).toContainEqual([{ x: 300, y: 105 }, { x: 310, y: 105 }]);
+    expect(lines).toHaveLength(4); // no L3 for Open, no L2 for Closed
+    const circles = doc.entities.filter((e): e is CircleEntity => e.type === 'circle');
+    expect(circles).toHaveLength(1); // C1, Open only
+    expect(circles[0]!.center).toEqual({ x: 105, y: 102.5 });
+    const texts = doc.entities.filter((e): e is TextEntity => e.type === 'text');
+    expect(texts.map((t) => t.text)).toEqual(['N7']); // NOTE text, Open only
+  });
+
+  it('EXPLODE refuses a dynamic insert whose evaluation refuses (design §1.4(d))', () => {
+    const bad: InsertEntity = {
+      ...cabInsert('I9', 'Open'),
+      // Width 25 is outside the [5, 20] range: the stored values are
+      // invalid, evaluation refuses with 'invalid-instance'.
+      dynamic: state({ vis: { kind: 'visibility', value: 'Open' }, width: { kind: 'distance', value: 25 } }),
+    };
+    const doc = new Drawing({ entities: [bad], blocks: { CAB: cabBlock() }, currentLayer: '0' });
+    const before = doc.snapshot;
+    const ctx = fakeContext(doc);
+    ctx.selection = new Set(['I9']);
+    drive(new ExplodeTool(), ctx, []);
+    expect(ctx.logs.some((l) => l.includes('not exploded: dynamic evaluation refused (invalid-instance)'))).toBe(true);
+    // Nothing transacted: the reference and its parameter state survive whole.
+    expect(doc.snapshot).toBe(before);
+    expect(doc.entities).toEqual([bad]);
+    expect(doc.canUndo()).toBe(false);
+    expect(doc.dirty).toBe(false);
+  });
+
+  it('EXPLODE refuses a dynamic insert whose values are retained unmodeled', () => {
+    const retained: InsertEntity = { ...cabInsert('I8', 'Open'), dynamic: undefined, dynamicRetained: '{"version":99}' };
+    const doc = new Drawing({ entities: [retained], blocks: { CAB: cabBlock() }, currentLayer: '0' });
+    const ctx = fakeContext(doc);
+    ctx.selection = new Set(['I8']);
+    drive(new ExplodeTool(), ctx, []);
+    expect(ctx.logs.some((l) => l.includes('not exploded: dynamic evaluation refused (instance-retained)'))).toBe(true);
+    expect(doc.entities).toEqual([retained]);
+    expect(doc.canUndo()).toBe(false);
+  });
 });
 
 // --- Serialization (design §1.5 + §6.2) --------------------------------------
