@@ -14,6 +14,8 @@ import { writeLeader, writeImage, writeTableInsert, writeMText, writeDimension }
 import type { AttributeDefExt } from '../../electrical/symbol-builder-core';
 import { attdefFlags } from '../../electrical/symbol-builder-core';
 import { insertArrayProblem } from '../../core/insert-array';
+import { DYNAMIC_APP } from './codes';
+import { chunkDynamicPayload, encodeDynamicInstance } from './dynamic-data';
 import { hatchGradientDataProblem, hatchGradientExportProblem } from '../../core/hatch-gradient';
 
 function writePolyline(w: Writer, e: PolylineEntity, owner: string): void {
@@ -307,6 +309,15 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
         w.pair(45, e.rowSpacing ?? 0);
       }
       if (e.annotative) writeAnnotativeXdata(w);
+      // Priority 30 instance carrier: at the annotative-XDATA position, strictly BEFORE
+      // the ATTRIB loop — anything emitted after ATTRIB/SEQEND would attach to those
+      // records instead of the INSERT. A modeled state is re-encoded canonically;
+      // a retained payload is re-emitted verbatim (chunked only).
+      if (e.dynamic || e.dynamicRetained) {
+        w.pair(1001, DYNAMIC_APP);
+        const payload = e.dynamic ? encodeDynamicInstance(e.dynamic) : e.dynamicRetained!;
+        for (const chunk of chunkDynamicPayload(payload)) w.pair(1000, chunk);
+      }
       if (hasAttribs && block) {
         for (const a of attribDefs) {
           const value = e.attributes[a.tag] ?? a.default;

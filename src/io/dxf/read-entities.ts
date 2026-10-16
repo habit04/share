@@ -6,9 +6,10 @@
  */
 import type { Obj } from './groups';
 import { commonProps, reportObj } from './read-core';
-import type { SplineEntity, HatchLoop, HatchEntity, HatchGradient, HatchGradientColor, WorldPatternLine, FieldLink, Entity } from '../../core/entities';
-import { afterSubclass, num, pointList, flt, Cursor, int, HatchReadError, pt, has, str, isIntegerText, shortText } from './groups';
-import { isRealText } from './codes';
+import type { SplineEntity, HatchLoop, HatchEntity, HatchGradient, HatchGradientColor, WorldPatternLine, FieldLink, Entity, InsertEntity } from '../../core/entities';
+import { afterSubclass, num, pointList, flt, Cursor, int, HatchReadError, pt, has, str, isIntegerText, shortText, xdata } from './groups';
+import { isRealText, DYNAMIC_APP } from './codes';
+import { decodeDynamicInstance, dynamicPayloadText } from './dynamic-data';
 import * as g from '../../core/geometry';
 import { splineWorkProblem, SplineWorkLimitError, isValidNurbs, nurbsPoints, interpolateFitPoints } from '../../core/spline';
 import { LoopBuilder, edgeArc, fitPatternToLines, findPattern } from '../../core/hatch';
@@ -472,15 +473,30 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       }
       const sx = num(o, 41, 1);
       const sy = num(o, 42, sx);
+      const blockName = str(o, 2);
+      // Priority 30 instance carrier: JCAD_DYNAMIC XDATA on the INSERT. Values are
+      // modeled only when the owning block has a modeled dynamic definition and the
+      // values validate against it; anything else (malformed, newer version, invalid
+      // values, or a block with no modeled definition) is retained raw on
+      // dynamicRetained and the instance displays at the authored state.
+      let dynamic: Partial<Pick<InsertEntity, 'dynamic' | 'dynamicRetained'>> = {};
+      const dynamicPairs = xdata(o, DYNAMIC_APP);
+      if (dynamicPairs) {
+        const raw = dynamicPayloadText(dynamicPairs);
+        const definition = ctx.blocks?.[blockName]?.dynamic;
+        const decoded = definition ? decodeDynamicInstance(raw, definition, blockName) : { ok: false as const, retained: raw };
+        dynamic = decoded.ok ? { dynamic: decoded.state } : { dynamicRetained: decoded.retained };
+      }
       return {
         ...base,
         type: 'insert',
-        block: str(o, 2),
+        block: blockName,
         position: { x: num(o, 10), y: num(o, 20) },
         rotation: g.rad(num(o, 50)) + insertScales(sx, sy).rotationOffset,
         attributes: {},
         ...insertScaleFields(sx, sy),
         ...insertArrayFields(has(o, 70) ? num(o, 70) : undefined, has(o, 71) ? num(o, 71) : undefined, has(o, 44) ? num(o, 44) : undefined, has(o, 45) ? num(o, 45) : undefined, insertScales(sx, sy).rotationOffset),
+        ...dynamic,
       };
     }
     default:

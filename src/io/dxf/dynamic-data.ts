@@ -23,6 +23,16 @@
  * raw payload as `retained`, so the caller stores it on dynamicRetained and the block /
  * instance displays at its authored (static/default) state. Nothing is half-parsed,
  * clamped, snapped or repaired here.
+ *
+ * Entity references in stretch selections are the one place the payload does NOT carry
+ * the model value verbatim: DXF does not preserve EntityBase.id (the reader assigns
+ * fresh ids), so a selection naming a block entity is serialized as `#<index>` — the
+ * entity's ordinal in BlockDef.entities, which write/read order preserves — while a
+ * selection naming an attribute definition is serialized as its tag (tags are stable
+ * names). Decode maps `#<index>` back to the freshly read entity's id, so the modeled
+ * definition after a round-trip is exactly the authored one. (The evaluator resolves
+ * an id as an entity first, then as an attribute tag; ordinal encoding preserves that
+ * precedence even if an entity id and a tag collide.)
  */
 import type { Pair } from './groups';
 import {
@@ -93,7 +103,7 @@ function encodeParameter(p: DynamicParameter): Record<string, unknown> {
   };
 }
 
-function encodeAction(a: DynamicAction): Record<string, unknown> {
+function encodeAction(a: DynamicAction, entityIdsInOrder?: readonly string[]): Record<string, unknown> {
   if (a.kind === 'opaque-action') {
     return { kind: 'opaque-action', id: a.id, name: a.name, parameterId: a.parameterId, sourceKind: a.sourceKind, payload: a.payload };
   }
@@ -103,22 +113,32 @@ function encodeAction(a: DynamicAction): Record<string, unknown> {
     name: a.name,
     parameterId: a.parameterId,
     frame: { kind: 'rectangle', min: { x: a.frame.min.x, y: a.frame.min.y }, max: { x: a.frame.max.x, y: a.frame.max.y } },
-    selection: a.selection.map((sel) => ({
-      entityId: sel.entityId,
-      points: sel.points.kind === 'frame' ? { kind: 'frame' } : { kind: 'points', indices: [...sel.points.indices] },
-    })),
+    selection: a.selection.map((sel) => {
+      // A selection naming a block entity serializes as `#<index>` (see header);
+      // a selection naming an attribute definition keeps its tag verbatim.
+      const index = entityIdsInOrder?.indexOf(sel.entityId) ?? -1;
+      return {
+        entityId: index >= 0 ? `#${index}` : sel.entityId,
+        points: sel.points.kind === 'frame' ? { kind: 'frame' } : { kind: 'points', indices: [...sel.points.indices] },
+      };
+    }),
     ...(a.distanceMultiplier !== undefined ? { distanceMultiplier: a.distanceMultiplier } : {}),
     ...(a.angleOffset !== undefined ? { angleOffset: a.angleOffset } : {}),
   };
 }
 
-/** Canonical escaped JSON text for a definition payload (chunk with chunkDynamicPayload). */
-export function encodeDynamicDefinition(definition: DynamicBlockDefinition): string {
+/**
+ * Canonical escaped JSON text for a definition payload (chunk with chunkDynamicPayload).
+ * `entityIdsInOrder` is the owning block's entity ids in BlockDef order, used to
+ * serialize entity selections by ordinal; without it selections are written verbatim
+ * (only correct for payloads that will be decoded without a block context).
+ */
+export function encodeDynamicDefinition(definition: DynamicBlockDefinition, entityIdsInOrder?: readonly string[]): string {
   return escapeDynamicJson(JSON.stringify({
     v: DYNAMIC_MODEL_VERSION,
     kind: 'definition',
     parameters: definition.parameters.map(encodeParameter),
-    actions: definition.actions.map(encodeAction),
+    actions: definition.actions.map((a) => encodeAction(a, entityIdsInOrder)),
   }));
 }
 
@@ -203,7 +223,7 @@ function decodeParameter(raw: unknown): DynamicParameter | undefined {
   };
 }
 
-function decodeAction(raw: unknown): DynamicAction | undefined {
+function decodeAction(raw: unknown, entityIdsInOrder?: readonly string[]): DynamicAction | undefined {
   if (!isRecord(raw) || typeof raw.id !== 'string' || typeof raw.name !== 'string' || typeof raw.parameterId !== 'string') return undefined;
   const base = { id: raw.id, name: raw.name, parameterId: raw.parameterId };
   if (raw.kind === 'opaque-action') {
@@ -217,9 +237,16 @@ function decodeAction(raw: unknown): DynamicAction | undefined {
   const selection: StretchAction['selection'][number][] = [];
   for (const sel of raw.selection) {
     if (!isRecord(sel) || typeof sel.entityId !== 'string' || !isRecord(sel.points)) return undefined;
-    if (sel.points.kind === 'frame') selection.push({ entityId: sel.entityId, points: { kind: 'frame' } });
+    // Map an ordinal entity reference (`#<index>`) back to the read entity's id.
+    let entityId = sel.entityId;
+    if (entityId.startsWith('#')) {
+      const index = Number(entityId.slice(1));
+      if (!entityIdsInOrder || !Number.isInteger(index) || index < 0 || index >= entityIdsInOrder.length) return undefined;
+      entityId = entityIdsInOrder[index]!;
+    }
+    if (sel.points.kind === 'frame') selection.push({ entityId, points: { kind: 'frame' } });
     else if (sel.points.kind === 'points' && Array.isArray(sel.points.indices) && sel.points.indices.every((i) => typeof i === 'number')) {
-      selection.push({ entityId: sel.entityId, points: { kind: 'points', indices: [...sel.points.indices] } });
+      selection.push({ entityId, points: { kind: 'points', indices: [...sel.points.indices] } });
     } else return undefined;
   }
   if (raw.distanceMultiplier !== undefined && !isFiniteNumber(raw.distanceMultiplier)) return undefined;
@@ -247,12 +274,20 @@ function parsePayload(raw: string, kind: 'definition' | 'instance'): Record<stri
   return parsed;
 }
 
+/** The owning block's identity space for decode: entity ids in BlockDef order
+ *  (ordinal references resolve against it) plus attribute tags (validation set). */
+export interface DynamicDefinitionBase {
+  readonly entityIdsInOrder: readonly string[];
+  readonly attributeTags?: ReadonlySet<string>;
+}
+
 /**
- * Decode a definition payload. When `baseEntityIds` is supplied (the ids of the owning
- * block's entities plus its attribute tags), the decoded definition must also pass
- * validateDefinition; any issue retains the payload instead of modeling it.
+ * Decode a definition payload. When `base` is supplied, ordinal selection references
+ * are resolved against it and the decoded definition must also pass
+ * validateDefinition (against entity ids + attribute tags); any issue retains the
+ * payload instead of modeling it.
  */
-export function decodeDynamicDefinition(raw: string, baseEntityIds?: ReadonlySet<string>): DynamicDefinitionDecode {
+export function decodeDynamicDefinition(raw: string, base?: DynamicDefinitionBase): DynamicDefinitionDecode {
   const retained: DynamicDefinitionDecode = { ok: false, retained: raw };
   const parsed = parsePayload(raw, 'definition');
   if (!parsed || !Array.isArray(parsed.parameters) || !Array.isArray(parsed.actions)) return retained;
@@ -264,12 +299,15 @@ export function decodeDynamicDefinition(raw: string, baseEntityIds?: ReadonlySet
   }
   const actions: DynamicAction[] = [];
   for (const a of parsed.actions) {
-    const decoded = decodeAction(a);
+    const decoded = decodeAction(a, base?.entityIdsInOrder);
     if (!decoded) return retained;
     actions.push(decoded);
   }
   const definition: DynamicBlockDefinition = { version: DYNAMIC_MODEL_VERSION, parameters, actions };
-  if (baseEntityIds && validateDefinition(definition, baseEntityIds).length > 0) return retained;
+  if (base) {
+    const baseIds = new Set<string>([...base.entityIdsInOrder, ...(base.attributeTags ?? [])]);
+    if (validateDefinition(definition, baseIds).length > 0) return retained;
+  }
   return { ok: true, definition };
 }
 

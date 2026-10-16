@@ -12,7 +12,8 @@ import { str, num, isIntegerText, shortText, invalidPrecision, precisionRequirem
 import type { Entity, TextEntity, AttributeAppearance } from '../../core/entities';
 import type { ReadContext } from './read-core';
 import * as g from '../../core/geometry';
-import { reportObj, commonProps, commonAppearanceObject } from './read-core';
+import { reportObj, commonProps, commonAppearanceObject, reportDynamicDefinition } from './read-core';
+import { DYNAMIC_INSTANCE_REPORT, DYNAMIC_INSTANCE_RETAINED_REPORT } from './dynamic-data';
 import { transparencyFromDxf, validColorName } from '../../core/appearance';
 import { geometryProblem } from '../import-report';
 import { dstylePairs, hasUnconsumedAcadXdata } from './read-annotations';
@@ -156,6 +157,14 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
       else if (gradientProblem) reportObj(ctx, o, 'kept', `gradient hatch definition is retained for DXF saving; solid/pattern fallback is drawn: ${gradientProblem}`);
     }
     if (e.type === 'mtext' && e.columns) reportObj(ctx, o, 'simplified', `column definitions are kept in JCAD_MTEXT_COLUMNS on AutoCAD 2000 export; other CAD programs show one column${e.columns.type === 2 || !formattedSource(e)?.includes('\\N') ? '; automatic column flow is approximated in JCad' : ''}`);
+    if (e.type === 'insert' && (e.dynamic || e.dynamicRetained)) {
+      // Priority 30 carriers: instance values here; the owning block's definition
+      // entry is emitted once per block (shared dedup with read-sections).
+      reportObj(ctx, o, 'simplified', e.dynamic ? DYNAMIC_INSTANCE_REPORT : DYNAMIC_INSTANCE_RETAINED_REPORT);
+      const blockDef = ctx.blocks?.[e.block];
+      if (blockDef?.dynamic) reportDynamicDefinition(ctx, e.block, false);
+      else if (blockDef?.dynamicRetained) reportDynamicDefinition(ctx, e.block, true);
+    }
     if (has(o, 39) && num(o, 39) !== 0) reportObj(ctx, o, 'simplified', 'nonzero thickness is not kept in the 2D drawing');
     const appearance = commonAppearanceObject(o);
     if (has(appearance, 440) && transparencyFromDxf(Number(str(appearance, 440))) === undefined) reportObj(ctx, o, 'simplified', 'invalid transparency method/alpha is not kept; ByLayer transparency is used');

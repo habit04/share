@@ -7,7 +7,7 @@
  */
 import type { Pair, Obj } from './groups';
 import type { ReadContext } from './read-core';
-import { isRealCode, isRealText, isIntCode, PRECISION_NAMES, SUPPORTED_DIM_NAMES, PRECISION_CODES, isQuietXdataApp, UNSUPPORTED_DIM_CODES } from './codes';
+import { isRealCode, isRealText, isIntCode, PRECISION_NAMES, SUPPORTED_DIM_NAMES, PRECISION_CODES, isQuietXdataApp, UNSUPPORTED_DIM_CODES, DYNAMIC_APP } from './codes';
 import { isIntegerText, DxfReadError, shortText, invalidPrecision, precisionRequirement, str, num, has, pt, xdata } from './groups';
 import { LAYER_TRANSPARENCY_APP, transparencyFromDxf, validColorName } from '../../core/appearance';
 import { dimStyleFromHeader, readDimStyleRecord } from './dimstyles';
@@ -32,7 +32,8 @@ import { isScaleName } from '../../core/layouts';
 import type { TextStyle } from '../encoding';
 import { readTextPlacement } from './read-text';
 import { geometryProblem } from '../import-report';
-import { commonProps } from './read-core';
+import { commonProps, reportDynamicDefinition } from './read-core';
+import { decodeDynamicDefinition, dynamicPayloadText } from './dynamic-data';
 import { namedCameraCenter, planarNamedCamera, type NativeViewCamera } from '../../core/named-view';
 
 export function readHeaderSection(pairs: Pair[], from: number, to: number, headerVars: Map<string, Pair[]>, ctx: ReadContext): string {
@@ -190,15 +191,31 @@ export function readBlocksSection(objs: Obj[], blocks: Record<string, BlockDef>,
     const dimensionPicture = /^\*D\d*$/i.test(bname);
     if (bname && !anonymousLayout && !dimensionPicture) {
       ctx.where = `block "${bname}"`;
+      const entities = readEntities(
+        inner.filter((x) => x.kind !== 'ATTDEF'),
+        ctx,
+      );
+      // Priority 30 definition carrier: JCAD_DYNAMIC XDATA on the BLOCK record. A payload
+      // that fails to decode or validate is retained raw on dynamicRetained — never
+      // half-parsed, never thrown; the block then displays and edits as a static block.
+      const dynamicPairs = xdata(o, DYNAMIC_APP);
+      let dynamic: Partial<Pick<BlockDef, 'dynamic' | 'dynamicRetained'>> = {};
+      if (dynamicPairs) {
+        const raw = dynamicPayloadText(dynamicPairs);
+        const decoded = decodeDynamicDefinition(raw, {
+          entityIdsInOrder: entities.map((e) => e.id),
+          attributeTags: new Set(attributes.map((a) => a.tag)),
+        });
+        dynamic = decoded.ok ? { dynamic: decoded.definition } : { dynamicRetained: decoded.retained };
+        reportDynamicDefinition(ctx, bname, !decoded.ok);
+      }
       blocks[bname] = {
         name: bname,
         basePoint: { x: num(o, 10), y: num(o, 20) },
-        entities: readEntities(
-          inner.filter((x) => x.kind !== 'ATTDEF'),
-          ctx,
-        ),
+        entities,
         attributes,
         description: str(o, 4) || undefined,
+        ...dynamic,
         ...((Math.trunc(num(o, 70)) & 4) === 4 ? { xref: { path: str(o, 1), ...((Math.trunc(num(o, 70)) & 8) === 8 ? { overlay: true } : {}) } } : {}),
       };
     }
