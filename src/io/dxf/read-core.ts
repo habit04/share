@@ -76,6 +76,11 @@ export interface ReadContext {
   /** Block names whose JCAD_DYNAMIC definition report entry was already emitted
    *  (the definition entry is reported once per block, not once per insert). */
   dynamicDefinitionReports?: Set<string>;
+  /** Raw JCAD_CONSTRAINTS payload text captured from the *Model_Space BLOCK
+   *  record. Decoding is deferred to reader.ts: entity refs are `#<index>`
+   *  ordinals into the model-space entity list, which only exists after the
+   *  ENTITIES section has been read. */
+  constraintsRaw?: string;
 }
 
 /**

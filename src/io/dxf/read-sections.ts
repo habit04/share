@@ -7,7 +7,7 @@
  */
 import type { Pair, Obj } from './groups';
 import type { ReadContext } from './read-core';
-import { isRealCode, isRealText, isIntCode, PRECISION_NAMES, SUPPORTED_DIM_NAMES, PRECISION_CODES, isQuietXdataApp, UNSUPPORTED_DIM_CODES, DYNAMIC_APP } from './codes';
+import { isRealCode, isRealText, isIntCode, PRECISION_NAMES, SUPPORTED_DIM_NAMES, PRECISION_CODES, isQuietXdataApp, UNSUPPORTED_DIM_CODES, DYNAMIC_APP, CONSTRAINTS_APP } from './codes';
 import { isIntegerText, DxfReadError, shortText, invalidPrecision, precisionRequirement, str, num, has, pt, xdata } from './groups';
 import { LAYER_TRANSPARENCY_APP, transparencyFromDxf, validColorName } from '../../core/appearance';
 import { dimStyleFromHeader, readDimStyleRecord } from './dimstyles';
@@ -219,7 +219,18 @@ export function readBlocksSection(objs: Obj[], blocks: Record<string, BlockDef>,
         ...((Math.trunc(num(o, 70)) & 4) === 4 ? { xref: { path: str(o, 1), ...((Math.trunc(num(o, 70)) & 8) === 8 ? { overlay: true } : {}) } } : {}),
       };
     }
-    else if (anonymousLayout) layoutReader.layoutBlock(bname, inner);
+    else if (anonymousLayout) {
+      // Priority 30.4 drawing-level carrier: JCAD_CONSTRAINTS XDATA on the
+      // *Model_Space BLOCK record. Only the raw text is captured here —
+      // its refs are `#<index>` ordinals into the model-space entities,
+      // which are read later; reader.ts decodes (or retains) it once they
+      // exist. Paper-space BLOCK records never carry it.
+      if (/^\*MODEL_SPACE$/i.test(bname) && ctx.constraintsRaw === undefined) {
+        const constraintPairs = xdata(o, CONSTRAINTS_APP);
+        if (constraintPairs) ctx.constraintsRaw = dynamicPayloadText(constraintPairs);
+      }
+      layoutReader.layoutBlock(bname, inner);
+    }
     ctx.where = undefined;
     k = m + 1;
   }

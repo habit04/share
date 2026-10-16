@@ -19,6 +19,8 @@ import type { ReadContext } from './read-core';
 import { LayoutReader } from '../dxf-layouts';
 import { readTableStyle, type TableStyleData } from './read-annotations';
 import { readHeaderSection, readObjectsSection, readTablesSection, readBlocksSection, readEntitiesSection, drawingHeader } from './read-sections';
+import { decodeConstraints, CONSTRAINTS_REPORT, CONSTRAINTS_RETAINED_REPORT } from './constraints-data';
+import type { ConstraintSet } from '../../core/constraints/model';
 import { DEFAULT_LAYERS } from '../../core/document';
 import { readEntities } from './read-pass';
 import { attachDxfCadGraph } from '../cad-graph-dxf';
@@ -241,6 +243,22 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     for (const e of l.entities) ensureEntityLayers(e);
     for (const v of l.viewports) ensure(v.layer);
   }
+  // Priority 30.4: the JCAD_CONSTRAINTS payload captured from the *Model_Space
+  // BLOCK record decodes now that the model-space entities (its `#<index>`
+  // ordinal space) are final. A payload that fails to decode or validate is
+  // retained raw on the state — never half-modeled, never thrown.
+  let constraints: ConstraintSet | undefined;
+  let constraintsRetained: string | undefined;
+  if (ctx.constraintsRaw !== undefined) {
+    const decoded = decodeConstraints(ctx.constraintsRaw, entities);
+    if (decoded.ok) {
+      constraints = decoded.set;
+      report.add({ type: 'BLOCK', action: 'simplified', reason: CONSTRAINTS_REPORT, where: 'model space' });
+    } else {
+      constraintsRetained = decoded.retained;
+      report.add({ type: 'BLOCK', action: 'simplified', reason: CONSTRAINTS_RETAINED_REPORT, where: 'model space' });
+    }
+  }
   const takenIds = new Set([...entities, ...Object.values(blocks).flatMap(block => block.entities), ...(layouts ?? []).flatMap(layout => [...layout.entities, ...layout.viewports.flatMap(viewport => viewport.clipBoundary ? [viewport.clipBoundary] : [])])].map(entity => entity.id));
   for (const layout of layouts ?? []) for (const viewport of layout.viewports) takenIds.add(viewport.id);
   const solids = ctx.solids!.build(takenIds);
@@ -256,7 +274,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
   }
   const textMeta = textStylesMeta(textStyles), shapeMeta = shapeStylesMeta(shapeStyles);
   const styleMeta = textMeta || shapeMeta ? { ...textMeta, ...shapeMeta } : undefined;
-  const base = withDimStylesMeta({ entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}), ...(layouts ? { layouts } : {}), ...(solids.length || dims3d.length ? { model3d: { ...EMPTY_MODEL3D, solids, ...(dims3d.length ? { dimensions: dims3d } : {}) } } : {}) }, dimStyles);
+  const base = withDimStylesMeta({ entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}), ...(layouts ? { layouts } : {}), ...(constraints ? { constraints } : {}), ...(constraintsRetained !== undefined ? { constraintsRetained } : {}), ...(solids.length || dims3d.length ? { model3d: { ...EMPTY_MODEL3D, solids, ...(dims3d.length ? { dimensions: dims3d } : {}) } } : {}) }, dimStyles);
   return attachDxfCadGraph(base, retainedPairs, { fields: ctx.fields, viewportHandles: layoutReader.viewportHandles,
     model3dHandles: ctx.solids!.carrierAnchors,
     model3dLines: ctx.solids!.carrierLines,

@@ -19,8 +19,9 @@ import * as g from '../../core/geometry';
 import { dimHeaderVars, dimStylesToWrite, dimStyleXdata } from './dimstyles';
 import { textStylesForWrite, textStyleOf, STANDARD_TEXT_STYLE, textStyleGroups, encodeDxfText, shapeStylesOf, shapeStyleGroups } from '../encoding';
 import { writeComplexLinetypeElements } from './complex-linetypes';
-import { DIMSTYLE_APP, TABLE_APP, DYNAMIC_APP, ANNO_APP, MTEXT_COLUMNS_APP, MTEXT_BACKGROUND_APP, MODEL3D_APP } from './codes';
+import { DIMSTYLE_APP, TABLE_APP, DYNAMIC_APP, CONSTRAINTS_APP, ANNO_APP, MTEXT_COLUMNS_APP, MTEXT_BACKGROUND_APP, MODEL3D_APP } from './codes';
 import { chunkDynamicPayload, encodeDynamicDefinition } from './dynamic-data';
+import { encodeConstraints } from './constraints-data';
 import { writeSolid } from './mesh3d-write';
 import { writeDimension3D, writeDimension3DPicture } from './dim3d-write';
 import { dimension3dTo2d } from '../../model3d/dimension3d';
@@ -337,17 +338,20 @@ export function writeDxf(state: DrawingState): string {
   const annotative = allEntities.some((e) => e.annotative);
   // Priority 30: JCAD_DYNAMIC is registered only when a definition or instance payload exists.
   const dynamicApp = blockList.some((b) => b.dynamic || b.dynamicRetained) || allEntities.some((e) => e.type === 'insert' && (e.dynamic || e.dynamicRetained));
+  // Priority 30.4: JCAD_CONSTRAINTS likewise, only when a set (or its retained payload) exists.
+  const constraintsApp = state.constraints !== undefined || state.constraintsRetained !== undefined;
   const columnMtext = allEntities.some((e) => e.type === 'mtext' ? e.columns : e.type === 'leader' && e.textColumns);
   const layerTransparency = state.layers.some((l) => l.transparency !== undefined);
   const inactiveMtext = allEntities.some((e) => entityMTextBackground(e)?.flags === 0);
   // Experimental 3D solids (polyface meshes with JCAD_3D data); a 2D drawing writes none of this.
   const solids = state.model3d?.solids ?? [];
   const model3dApp = solids.length > 0 || dims3d.length > 0;
-  table('APPID', '9', (tableList.length ? 3 : 2) + (annotative ? 1 : 0) + (columnMtext ? 1 : 0) + (layerTransparency ? 1 : 0) + (inactiveMtext ? 1 : 0) + (model3dApp ? 1 : 0) + (dynamicApp ? 1 : 0), () => {
+  table('APPID', '9', (tableList.length ? 3 : 2) + (annotative ? 1 : 0) + (columnMtext ? 1 : 0) + (layerTransparency ? 1 : 0) + (inactiveMtext ? 1 : 0) + (model3dApp ? 1 : 0) + (dynamicApp ? 1 : 0) + (constraintsApp ? 1 : 0), () => {
     record('APPID', '9', 'AcDbRegAppTableRecord', 'ACAD');
     record('APPID', '9', 'AcDbRegAppTableRecord', DIMSTYLE_APP);
     if (tableList.length) record('APPID', '9', 'AcDbRegAppTableRecord', TABLE_APP);
     if (dynamicApp) record('APPID', '9', 'AcDbRegAppTableRecord', DYNAMIC_APP);
+    if (constraintsApp) record('APPID', '9', 'AcDbRegAppTableRecord', CONSTRAINTS_APP);
     if (annotative) record('APPID', '9', 'AcDbRegAppTableRecord', ANNO_APP);
     if (columnMtext) record('APPID', '9', 'AcDbRegAppTableRecord', MTEXT_COLUMNS_APP);
     if (layerTransparency) record('APPID', '9', 'AcDbRegAppTableRecord', LAYER_TRANSPARENCY_APP);
@@ -428,7 +432,19 @@ export function writeDxf(state: DrawingState): string {
     w.pair(8, '0');
     w.pair(100, 'AcDbBlockEnd');
   };
-  blockShell(MODEL_SPACE, '*Model_Space', { x: 0, y: 0 }, 0, undefined, () => {});
+  blockShell(MODEL_SPACE, '*Model_Space', { x: 0, y: 0 }, 0, undefined, () => {}, '', () => {
+    // Priority 30.4 drawing-level carrier: the constraint set rides the
+    // *Model_Space BLOCK record (the drawing's one always-present record),
+    // the same attachment JCAD_DYNAMIC uses on named BLOCK records. A
+    // modeled set is re-encoded canonically against the entities being
+    // written; a retained payload is re-emitted verbatim (chunked only),
+    // never re-escaped or re-shaped. A constraints-free drawing emits
+    // nothing here (and registers no APPID above): the fixed point holds.
+    const payload = state.constraints ? encodeConstraints(state.constraints, state.entities.map((e) => e.id)) : state.constraintsRetained;
+    if (payload === undefined) return;
+    w.pair(1001, CONSTRAINTS_APP);
+    for (const chunk of chunkDynamicPayload(payload)) w.pair(1000, chunk);
+  });
   blockShell(PAPER_SPACE, '*Paper_Space', { x: 0, y: 0 }, 0, undefined, () => {});
   // Layouts after the first keep their paper space in *Paper_Space0, *Paper_Space1 ...
   const writePaperEntity = (e: Entity, owner: string) => writeEntityAnno(w, e, owner, state.blocks, dimBlocks, extras);
