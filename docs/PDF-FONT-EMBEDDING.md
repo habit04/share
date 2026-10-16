@@ -245,3 +245,26 @@ files (375 passed, one skipped) in 317 seconds, with every deadline and assertio
 unchanged. This establishes serial acceptance, not the cause of the concurrent
 failure or a green two-worker gate. No remote CI,
 packaged installer, new AutoCAD run or release is certified by this review.
+
+### Variable-font handoff review, 2026-10-15
+
+The 12.6a delivery is not admitted to production. Both validators accept an
+illegal intermediate `fvar` instance-record size, and the default-coordinate
+selection policy does not prove agreement with Windows Canvas. Its authored
+`gvar` header is malformed; declaring named coordinates without meaningful
+variation deltas does not test instance selection. Private executed probes
+reproduce these admissions and the fixture defect. Installed Bahnschrift,
+Segoe UI Variable and Sitka files are inventory only, not compatible-font claims.
+
+An independent 12.3 integration guard now prevents glyf subsetting whenever the
+actual table directory contains `fvar`, `gvar`, `avar`, `cvar`, `HVAR`, `VVAR` or
+`MVAR`. Emptying unused outlines while retaining point deltas can invalidate
+their topology; the fallback preserves the exact original object and bytes.
+Eight regressions fail before the guard and pass afterward, including a correctly
+headed `gvar` record with a real point delta on an unused glyph. All 193 targeted
+font tests pass with native Windows junction support; three typecheck projects,
+full lint and fixture checks pass. Variable-font admission remains refused.
+These are boundary tests, not variable-font rendering or viewer acceptance.
+
+See [priority-12 review status](PRIORITY-12-REVIEW-STATUS.md) for delivery,
+ownership and the remaining integration gates.

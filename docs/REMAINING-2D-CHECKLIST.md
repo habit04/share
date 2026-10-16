@@ -11,6 +11,12 @@ concurrent gate remains unresolved. Packaged checks, remote CI and release integ
 separate. See [PDF source-review evidence](PDF-FONT-EMBEDDING.md). The rest of the
 long roadmap stays paused and GPU/DWG ownership is unchanged.
 
+Delivery review continues: [priority-12 status](PRIORITY-12-REVIEW-STATUS.md)
+distinguishes reviewed code from acceptance. 12.6a admission is held for confirmed
+record/instance-selection defects and invalid fixtures; the 12.3 subsetter now
+keeps variation-table programs whole. 12.2 is delivered and under review. 12.4
+shipping dependency admission and 12.5 runtime shaping remain gated.
+
 Current source-only continuation: [PR #18/#19 integration checkpoint](WINDOWS-SOURCE-INTEGRATION.md)
 records the accepted heads, demonstrated seams, validation and remaining gates. It uses the same
 owned worktree on `integration/windows-pr18-pr19-source`; both accepted branches are preserved.

@@ -9,7 +9,8 @@
  * preserved byte-for-byte). Only `glyf`/`loca` are rebuilt and the glyph-derived
  * `maxp` maxima recomputed; directory checksums and the head checkSumAdjustment
  * follow the same pattern as electron/ttc-extract.cjs. A stale DSIG is dropped.
- * Glyph renumbering/compaction and cmap trimming are deliberately out of scope.
+ * Variation tables require their original point topology, so variable programs
+ * keep the whole source. Glyph renumbering and cmap trimming are out of scope.
  */
 
 export const FS_TYPE_NO_SUBSETTING = 0x0100;
@@ -85,6 +86,12 @@ function checksum(data: DataView, start: number, length: number): number {
 export function subsetGlyfProgram(bytes: Uint8Array, usedGlyphs: ReadonlySet<number>): Uint8Array {
   const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const tables = directory(bytes);
+  // Emptying an unused outline without rebuilding its variation data can leave
+  // point deltas referring to removed points. Keep the actual program whole;
+  // font admission and selected-instance validation remain the caller's job.
+  for (const tag of ['fvar', 'gvar', 'avar', 'cvar', 'HVAR', 'VVAR', 'MVAR']) {
+    if (tables.has(tag)) fail('variable font subsetting is unsupported');
+  }
   const head = table(tables, 'head', 54), maxp = table(tables, 'maxp', 32);
   const glyf = table(tables, 'glyf', 0), locaTable = table(tables, 'loca', 4);
   if (data.getUint32(maxp.start) !== 0x00010000) fail('unsupported maxp table format');
