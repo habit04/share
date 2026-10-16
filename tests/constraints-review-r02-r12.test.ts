@@ -451,3 +451,35 @@ describe('R12 — skipped rank work reports unknown DOF, not an invented verdict
     expect(result.dof.perEntity.filter((p) => p.entityId.startsWith('B')).every((p) => p.remaining === -1)).toBe(true);
   });
 });
+
+describe('R03 residual — H/V construction must not collapse a segment (review case A)', () => {
+  it('vertical line + fixed start + horizontal rotates the free end, preserving length; re-solve ok', () => {
+    const entities = [line('L', 0, 0, 0, 10)];
+    const cs = set(
+      { id: 'fx', kind: 'fixed', role: 'driving', refs: [ref('L', 'start')] },
+      { id: 'h', kind: 'horizontal', role: 'driving', refs: [ref('L', 'whole')] },
+    );
+    const r = solveConstraints(entities, cs);
+    expect(r.ok).toBe(true);
+    const out = r.entities![0] as LineEntity;
+    // Length preserved (10), horizontal, non-degenerate.
+    expect(Math.hypot(out.b.x - out.a.x, out.b.y - out.a.y)).toBeCloseTo(10, 9);
+    expect(out.b.y).toBeCloseTo(out.a.y, 9);
+    // The installed result is itself solvable (no degenerate refusal).
+    expect(solveConstraints(r.entities!, cs).ok).toBe(true);
+  });
+
+  it('the healthy coordinate copy is unchanged when the copy does not degenerate the segment', () => {
+    // Slightly off-vertical line: the copy sets b.y := a.y and keeps b.x.
+    const entities = [line('L', 0, 0, 3, 10)];
+    const cs = set(
+      { id: 'fx', kind: 'fixed', role: 'driving', refs: [ref('L', 'start')] },
+      { id: 'h', kind: 'horizontal', role: 'driving', refs: [ref('L', 'whole')] },
+    );
+    const r = solveConstraints(entities, cs);
+    expect(r.ok).toBe(true);
+    const out = r.entities![0] as LineEntity;
+    expect(out.b.x).toBeCloseTo(3, 9);
+    expect(out.b.y).toBeCloseTo(0, 9);
+  });
+});

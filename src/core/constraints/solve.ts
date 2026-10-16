@@ -1626,6 +1626,48 @@ function stage2(comp: Comp, work: Work, poll: Poll): { vals: Float64Array; det: 
       if (shape.form !== 'hv-segment' && shape.form !== 'hv-points') continue;
       const [p, q] =
         shape.form === 'hv-segment' ? segmentExprs(shape.seg, comp.layout) : [pointExpr(shape.a, comp.layout), pointExpr(shape.b, comp.layout)];
+      // Rotation adoption (review R03 residual): for a segment whose one
+      // endpoint is fully determined and the other fully free, the
+      // coordinate copy below sets only the free endpoint's axis
+      // coordinate — and when its other coordinate already coincides
+      // with the determined endpoint's, the copy lands it exactly ON
+      // that endpoint, collapsing the segment through the degenerate
+      // band so the R03 result gate refuses a system that has a good
+      // solution (a vertical line under a horizontal constraint). Where
+      // — and only where — the copy would degenerate the segment, the
+      // free endpoint is instead rotated about the determined one onto
+      // the target axis, preserving the current length; the branch
+      // closer to the current position wins, ties to the positive axis
+      // direction. Every other configuration keeps the coordinate copy.
+      if (shape.form === 'hv-segment') {
+        let rotated = false;
+        for (const [dE, fE] of [
+          [p, q],
+          [q, p],
+        ] as const) {
+          if (rotated) break;
+          if (!fullyDetermined(dE, det) || fE.varPair === null) continue;
+          if (det[fE.varPair] || det[fE.varPair + 1]) continue;
+          const d = dE.eval(vals);
+          const fv = fE.eval(vals);
+          const otherGap = c.kind === 'horizontal' ? Math.abs(fv.x - d.x) : Math.abs(fv.y - d.y);
+          if (otherGap >= DEGENERATE_REL * comp.S) continue;
+          const L = Math.hypot(fv.x - d.x, fv.y - d.y);
+          if (L < DEGENERATE_REL * comp.S) continue;
+          const plus = c.kind === 'horizontal' ? { x: d.x + L, y: d.y } : { x: d.x, y: d.y + L };
+          const minus = c.kind === 'horizontal' ? { x: d.x - L, y: d.y } : { x: d.x, y: d.y - L };
+          const dPlus = Math.hypot(plus.x - fv.x, plus.y - fv.y);
+          const dMinus = Math.hypot(minus.x - fv.x, minus.y - fv.y);
+          const chosen = dMinus < dPlus ? minus : plus;
+          vals[fE.varPair] = chosen.x;
+          vals[fE.varPair + 1] = chosen.y;
+          det[fE.varPair] = 1;
+          det[fE.varPair + 1] = 1;
+          fire();
+          rotated = true;
+        }
+        if (rotated) continue;
+      }
       const axis = c.kind === 'horizontal' ? 'y' : 'x';
       for (const [src, dst] of [
         [p, q],
