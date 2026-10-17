@@ -22,6 +22,7 @@
  * data and are not edited through here.
  */
 import type { DrawingState } from '../document';
+import { attributePlacementsForDef, expansionBlock } from '../entities';
 import type { BlockDef, Entity, InsertEntity } from '../entities';
 import { applyPaperEntities, layoutsOf, paperEntities, paperSpaceLayout, withLayout } from '../layouts';
 import { validateDefinition, type DefinitionIssueCode, type DynamicParameter, type LookupParameter } from './definitions';
@@ -328,6 +329,37 @@ function setDynamicParameterInList(
       evaluation.refusal.code,
       `Evaluating block '${ins.block}' with the proposed value fails (${evaluation.refusal.code}): ${evaluation.refusal.message}`,
     );
+  }
+
+  // The dry run validates the candidate VALUES, but the insert's
+  // stored placements are points the evaluator never receives, and a
+  // placement whose true image under the candidate state's transform
+  // lies outside the finite range would otherwise commit here and
+  // only fail at the next expansion — a renderer error after the edit
+  // was accepted is not an atomic refusal (round 7, R6-01). So when
+  // the insert carries placements, compose them once against the
+  // candidate state's evaluated definition — exactly the composition
+  // the display path performs — and refuse with the evaluator's
+  // 'degenerate-transform' code, the input state untouched, when that
+  // composition raises its explicit non-finite refusal. Any other
+  // error is not this refusal and propagates unchanged.
+  if (ins.attributePlacements) {
+    const candidateInsert: InsertEntity = { ...ins, dynamic: candidate };
+    const effective = expansionBlock(block, candidateInsert);
+    if (effective !== block) {
+      try {
+        attributePlacementsForDef(candidateInsert, block, effective);
+      } catch (error) {
+        if (error instanceof Error && /non-finite|finite range/i.test(error.message)) {
+          return refuse(
+            state,
+            'degenerate-transform',
+            `Evaluating block '${ins.block}' with the proposed value places an attribute outside the finite range (degenerate-transform): ${error.message}`,
+          );
+        }
+        throw error;
+      }
+    }
   }
 
   const nextInsert: InsertEntity = { ...ins, dynamic: candidate };

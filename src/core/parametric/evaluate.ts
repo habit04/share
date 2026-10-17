@@ -380,15 +380,24 @@ type FiniteWalkOutcome = 'finite' | 'non-finite' | 'over-budget';
  *      produced key is ever held unconsumed (the frame's pending
  *      key), so a refused charge stops the walk's consumption at
  *      that slot: the walk requests no further keys and collects
- *      none. (What the walk controls is its own consumption.
- *      Entering the generator — the first `next()` and each
- *      lookahead — precedes the corresponding slot charge and
- *      enters native `for…in` enumeration, whose engine-internal
- *      setup the walk cannot subdivide or charge; for a Proxy
- *      record the `ownKeys` trap may return the full key list
- *      inside that one step. The bound claimed here is on
- *      application-owned scheduling, stack and pending state, not
- *      on native enumeration setup.)
+ *      none. The guarantee claimed is exactly this and no more
+ *      (round 6, R5-02, accepted narrowed form): the walk bounds
+ *      VALUE ACCESS, SUBTREE SCHEDULING AND APPLICATION
+ *      CONSUMPTION — its own key requests, stack and pending
+ *      state — at FINITE_WALK_NODE_WEIGHT per scheduled slot. It
+ *      does NOT bound native enumeration: entering the generator
+ *      — the first `next()` and each lookahead — precedes the
+ *      corresponding slot charge and enters native `for…in`
+ *      enumeration, whose engine-internal setup and any
+ *      materialization it performs the walk cannot subdivide,
+ *      charge or prevent (for a Proxy record the `ownKeys` trap
+ *      may return the full key list inside that one step); the
+ *      documented one-key lookahead and the own-enumerable
+ *      filtering are part of the walk's own consumption, not
+ *      exceptions to it. Nor is the walked graph a closed
+ *      schema: caller-attached extra fields on derived objects
+ *      remain reachable and are walked as ordinary data; no claim
+ *      is made that they cannot exist.
  *      The per-slot charge is unchanged — FINITE_WALK_NODE_WEIGHT
  *      once per child — so every total the round-4 accounting pinned
  *      is preserved; only the moment and granularity of the record
@@ -418,8 +427,11 @@ function* ownEnumerableKeys(value: object): Generator<string> {
  *  visit, or the resumable expansion of a record — the record's key
  *  generator plus the one key it has produced but not yet scheduled.
  *  Keeping the generator on the stack (instead of collecting the
- *  record's children up front) is what bounds record enumeration:
- *  the frame advances by exactly one key per scheduled child. */
+ *  record's children up front) is what bounds the walk's OWN
+ *  consumption of the record — its value access, subtree scheduling
+ *  and application-side key requests, at one key per scheduled
+ *  child. Native `for…in` setup inside the generator is outside
+ *  that bound (see the walk comment above). */
 type FiniteWalkTask =
   | { kind: 'visit'; value: unknown; depth: number }
   | {
@@ -447,8 +459,11 @@ function walkNumbersFinite(
     const task = stack.pop()!;
     if (task.kind === 'record') {
       // Schedule exactly one pending child of the record: charge its
-      // slot BEFORE reading its value; a refused charge ends the walk
-      // with the rest of the record's keys never produced. Then
+      // slot BEFORE reading its value; a refused charge ends the
+      // walk's consumption there — the walk requests no further
+      // keys (what native enumeration may already have produced
+      // internally is outside the walk's bound, per the walk
+      // comment above). Then
       // advance the generator by one key (the single permitted
       // lookahead) and re-push the frame BELOW the child, so the
       // child's subtree is visited before the next sibling — the
@@ -541,6 +556,28 @@ function walkNumbersFinite(
  * image, is out of range), recording fails and the evaluation refuses
  * 'degenerate-transform' rather than returning a successful result
  * carrying a record that expands to Infinity/NaN.
+ *
+ * Finite FIELDS still do not prove finite APPLICATION (round 7,
+ * R6-01): a record can be finite in every field yet overflow when a
+ * consumer applies it — image + L·(q − anchor) forms the product
+ * before the image can cancel it (two scales, ×0.5 then ×4 about a
+ * far base point, compose to L = 2 with anchor 0 and image −1.2e308;
+ * applying it to the authored position 1e308 forms 2·1e308). Two
+ * mechanisms close that gap. At consumption, the one application
+ * expression (core/entities transformPlacement) is gated: a plain
+ * result that comes out non-finite is recomputed in power-of-two
+ * scaled space, which is finite exactly when the true point is, for
+ * ANY point a genuine or saved placement carries. And before success
+ * is returned, step 7.6 below probes the FINAL record's plain
+ * application at the attribute's own authored anchors: a record the
+ * plain form cannot apply even there is re-anchored at the authored
+ * position (image = the stepwise evaluated position, already proven
+ * finite by step 7.5), and the evaluation refuses
+ * 'degenerate-transform' only when even the scaled application —
+ * the same arithmetic the consumers use — cannot apply the
+ * re-anchored record at those anchors. Because setDynamicParameter
+ * dry-runs this evaluator, that refusal reaches the edit path before
+ * any state is committed.
  */
 export interface AttributeActionTransform {
   readonly a: number;
@@ -566,13 +603,99 @@ function attributeTransformIsFinite(t: AttributeActionTransform): boolean {
   );
 }
 
-/** Apply an anchored transform to one point, in its own anchored form:
- *  the image of the anchor plus the linear part times the relative
- *  vector — the same centre-relative order the evaluator applies. */
-function applyAnchoredAttributePoint(t: AttributeActionTransform, q: Point): Point {
+/** The plain anchored application of a transform to one point: the
+ *  image of the anchor plus the linear part times the relative vector
+ *  — the same centre-relative order the evaluator applies. Kept as
+ *  the exact historical expression: the final-record probe (step 7.6)
+ *  tests records against it, and the gated applyAnchoredAttributePoint
+ *  below returns it untouched whenever it is finite. */
+function anchoredPointExpression(t: AttributeActionTransform, q: Point): Point {
   return {
     x: t.ix + t.a * (q.x - t.ax) + t.b * (q.y - t.ay),
     y: t.iy + t.c * (q.x - t.ax) + t.d * (q.y - t.ay),
+  };
+}
+
+/** Exact binary exponent decomposition: returns [m, e] with value =
+ *  m · 2^e and m in [0.5, 1) (m = value and e = 0 for zero and for
+ *  non-finite inputs). JavaScript has no Math.frexp; the exponent bits
+ *  are read through a DataView. Scaling by a power of two is exact, so
+ *  decomposition never rounds. Subnormals are first scaled up by 2^64
+ *  (exact) into the normal range. (The same helper exists in
+ *  core/entities.ts for placement composition; the two modules cannot
+ *  share it without an import cycle.) */
+const frexpView = new DataView(new ArrayBuffer(8));
+function frexpPair(value: number): readonly [number, number] {
+  if (value === 0 || !Number.isFinite(value)) return [value, 0];
+  frexpView.setFloat64(0, value);
+  const hi = frexpView.getUint32(0);
+  const expBits = (hi >>> 20) & 0x7ff;
+  if (expBits === 0) {
+    const [m, e] = frexpPair(value * 2 ** 64);
+    return [m, e - 64];
+  }
+  frexpView.setUint32(0, (hi & 0x800fffff) | (1022 << 20));
+  return [frexpView.getFloat64(0), expBits - 1022];
+}
+
+/** One component of an anchored application, image + a·(qx − ax) +
+ *  b·(qy − ay), computed in power-of-two scaled space (round 7,
+ *  R6-01): the subtractions are split into separate product terms
+ *  (a·qx, −a·ax, b·qy, −b·ay) beside the image, every factor is
+ *  decomposed exactly, and the mantissas are summed at a common
+ *  exponent, so no intermediate overflows unless the TRUE component
+ *  is out of range. Mirrors scaledTransformComponent in
+ *  core/entities.ts — the arithmetic the record's consumers apply —
+ *  so the production-side probe and the consumption-side application
+ *  can never disagree about whether a record applies finitely. */
+function scaledAnchoredComponent(
+  image: number, a: number, qx: number, ax: number, b: number, qy: number, ay: number,
+): number {
+  const terms: Array<readonly [number, number]> = [];
+  const pushValue = (v: number): void => {
+    const [m, e] = frexpPair(v);
+    if (m !== 0) terms.push([m, e]);
+  };
+  const pushProduct = (u: number, v: number, sign: 1 | -1): void => {
+    const [mu, eu] = frexpPair(u);
+    const [mv, ev] = frexpPair(v);
+    const m = sign * mu * mv;
+    if (m !== 0) terms.push([m, eu + ev]);
+  };
+  pushValue(image);
+  pushProduct(a, qx, 1);
+  pushProduct(a, ax, -1);
+  pushProduct(b, qy, 1);
+  pushProduct(b, ay, -1);
+  if (terms.length === 0) return 0;
+  if (terms.some(([m]) => !Number.isFinite(m))) return NaN;
+  let eMax = terms[0]![1];
+  for (const [, e] of terms) if (e > eMax) eMax = e;
+  let sum = 0;
+  for (const [m, e] of terms) sum += m * Math.pow(2, e - eMax);
+  if (sum === 0) return 0;
+  const [sm, se] = frexpPair(sum);
+  const e = eMax + se;
+  const e1 = Math.trunc(e / 2);
+  return sm * Math.pow(2, e1) * Math.pow(2, e - e1);
+}
+
+/** Apply an anchored transform to one point, GATED (round 7, R6-01):
+ *  the plain expression is returned untouched whenever it is finite —
+ *  bit-identical for every ordinary value — and only a non-finite
+ *  component is recomputed in scaled space. A component that is still
+ *  non-finite in scaled space is genuinely out of range and is
+ *  returned as-is; callers check finiteness and refuse. This is the
+ *  application composition itself uses (the composed image and the
+ *  re-anchored image below), so composition can no longer overflow
+ *  into a refusal that the consumers' scaled application would have
+ *  completed. */
+function applyAnchoredAttributePoint(t: AttributeActionTransform, q: Point): Point {
+  const plain = anchoredPointExpression(t, q);
+  if (Number.isFinite(plain.x) && Number.isFinite(plain.y)) return plain;
+  return {
+    x: Number.isFinite(plain.x) ? plain.x : scaledAnchoredComponent(t.ix, t.a, q.x, t.ax, t.b, q.y, t.ay),
+    y: Number.isFinite(plain.y) ? plain.y : scaledAnchoredComponent(t.iy, t.c, q.x, t.ax, t.d, q.y, t.ay),
   };
 }
 
@@ -599,14 +722,19 @@ function composeAttributeTransforms(
   const d = next.c * prev.b + next.d * prev.d;
   const heightRatio = prev.heightRatio * next.heightRatio;
   const rotationDelta = prev.rotationDelta + next.rotationDelta;
-  const rx = prev.ix - next.ax;
-  const ry = prev.iy - next.ay;
+  // The composed image is `next` applied to `prev`'s image through
+  // next's own anchored form — the gated applyAnchoredAttributePoint,
+  // whose plain path is exactly this expression, so composition is
+  // bit-identical whenever the plain image is finite, and a plain
+  // overflow into the re-anchor fallback below now happens only when
+  // the scaled computation also leaves the finite range.
+  const composedImage = applyAnchoredAttributePoint(next, { x: prev.ix, y: prev.iy });
   const composed: AttributeActionTransform = {
     a, b, c, d,
     ax: prev.ax,
     ay: prev.ay,
-    ix: next.ix + next.a * rx + next.b * ry,
-    iy: next.iy + next.c * rx + next.d * ry,
+    ix: composedImage.x,
+    iy: composedImage.y,
     heightRatio,
     rotationDelta,
   };
@@ -1565,6 +1693,65 @@ export function evaluateDynamicBlock(
         message: `Evaluation derived a non-finite placement for attribute definition '${attribute.tag}'; finite parameter values overflowed the derived coordinates, so the result is refused rather than returned with Infinity/NaN values.`,
       });
     }
+  }
+
+  // 7.6 Final-record application probe (round 7, R6-01). Step 7.5
+  //    proved the stepwise RESULTS finite and recordAttributeTransform
+  //    proved every record's FIELDS finite, but neither proves the
+  //    record's APPLICATION finite: a finite record anchored far from
+  //    the attribute (two scales composing to L = 2, anchor 0, image
+  //    −1.2e308) overflows when a consumer applies it to the authored
+  //    anchors, before the image can cancel the product — and the
+  //    same overflow defeats the inverse rebase in the other
+  //    direction. So each attribute's FINAL record (never an
+  //    intermediate: a later action may re-centre the map) is probed
+  //    here, at the attribute's own authored anchors, with the PLAIN
+  //    anchored expression. A record the plain form applies finitely
+  //    at every anchor is returned untouched — bit-identical, exactly
+  //    as every previously passing case produced it. Otherwise the
+  //    SAME map is re-anchored at the authored position, its image
+  //    the stepwise evaluated position (finite by step 7.5), and
+  //    probed again; the re-anchored record is kept when the plain
+  //    form applies it, and also when only the consumers' scaled
+  //    arithmetic (applyAnchoredAttributePoint, the same gated
+  //    arithmetic) applies it — the probe refuses only what that
+  //    arithmetic cannot complete, so production and consumption
+  //    never disagree about the same record. Refusal is
+  //    'degenerate-transform' and atomic by purity, and because
+  //    setDynamicParameter dry-runs this evaluator it lands before
+  //    any edit commits.
+  for (let i = 0; i < attributeTx.length; i += 1) {
+    const tx = attributeTx[i];
+    if (!tx) continue;
+    const base = baseAttributes[i]!;
+    const out = outAttributes[i]!;
+    const authoredAnchors: Point[] = [base.position];
+    if (base.alignmentPoint) authoredAnchors.push(base.alignmentPoint);
+    if (base.firstAlignmentPoint) authoredAnchors.push(base.firstAlignmentPoint);
+    const appliesAtAnchors = (rec: AttributeActionTransform, apply: (t: AttributeActionTransform, q: Point) => Point): boolean =>
+      authoredAnchors.every((q) => {
+        const r = apply(rec, q);
+        return Number.isFinite(r.x) && Number.isFinite(r.y);
+      });
+    if (appliesAtAnchors(tx, anchoredPointExpression)) continue;
+    const reanchored: AttributeActionTransform = {
+      ...tx,
+      ax: base.position.x,
+      ay: base.position.y,
+      ix: out.position.x,
+      iy: out.position.y,
+    };
+    if (
+      attributeTransformIsFinite(reanchored) &&
+      (appliesAtAnchors(reanchored, anchoredPointExpression) || appliesAtAnchors(reanchored, applyAnchoredAttributePoint))
+    ) {
+      attributeTx[i] = reanchored;
+      continue;
+    }
+    return refuse({
+      code: 'degenerate-transform',
+      message: `The composed transform for attribute '${base.tag}' cannot be applied to the attribute's own authored anchors within the finite range — neither in plain nor in scaled arithmetic, even re-anchored at the authored position — so the evaluation is refused rather than returning a record that expands to Infinity/NaN.`,
+    });
   }
 
   // 8. Visibility post-pass filter (design §1.4 step 8). Actions have been
