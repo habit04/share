@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Drawing } from '../src/core/document';
 import type { TextEntity, Entity } from '../src/core/entities';
-import { capturedPdfLookup, pdfFontKey, shapedPdfLine, type PdfFontReader } from '../src/app/pdf-fonts';
+import { capturedPdfLookup, pdfFontKey, setPdfShapingFactory, shapedPdfLine, type PdfFontReader } from '../src/app/pdf-fonts';
+import { PdfFontRegistry } from '../src/io/pdf-fonts';
+import type { TextAppearance } from '../src/core/text-metrics';
 import { vectorPdf, drawingContext, type PdfDrawingContext, type PdfPageSpec } from '../src/io/pdf-vector';
 import type { TextGeometryContext } from '../src/core/text-metrics';
 import { sha256BytesHex } from '../src/core/sha256';
@@ -139,6 +141,59 @@ describe('shaped PDF line emission', () => {
     if (pdftotext.status === 0 || pdftotext.stderr?.includes('pdftotext')) {
       const out = spawnSync('pdftotext', [file, '-'], { encoding: 'utf8' });
       if (out.status === 0) expect(scalarsOf(out.stdout)).toBe('اب');
+    }
+  });
+
+  it('reports plan-layer fallback reasons instead of returning a silent null (step 4)', () => {
+    const face = { key: 'face', ...pdfFontFixture({ family: 'Arial' }) };
+    const appearance: TextAppearance = { kind: 'canvas', family: 'Arial', bold: false, italic: false, widthFactor: 1, oblique: 0 };
+    face.key = pdfFontKey(appearance);
+    const registry = new PdfFontRegistry([face]);
+    // (a) Subitems shaped by a different program than the captured
+    // face: measurement would serve this line as ready, so without
+    // a plan-layer report the fallback would be silent.
+    const reasons: string[] = [];
+    const plan = shapedPdfLine(stubGeometry('ff'.repeat(32)), registry, 'اب', appearance, (reason) => reasons.push(reason));
+    expect(plan).toBeNull();
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).toContain('does not match the captured face');
+    // (b) Shaped code budget exceeded for the face.
+    const manyGlyphs = Array.from({ length: 65535 }, () => ({ glyph: 2, clusterStart: 0, clusterEnd: 1, xAdvance: 500, yAdvance: 0, xOffset: 0, yOffset: 0 }));
+    const budgetGeometry = {
+      cacheKey: {},
+      shapedGlyphs: () => ({ state: 'ready', subitems: [{ start: 0, end: 2, programSha256: sha256BytesHex(face.bytes), glyphs: manyGlyphs }] }),
+    } as unknown as TextGeometryContext;
+    const budgetReasons: string[] = [];
+    expect(shapedPdfLine(budgetGeometry, registry, 'اب', appearance, (reason) => budgetReasons.push(reason))).toBeNull();
+    expect(budgetReasons).toHaveLength(1);
+    expect(budgetReasons[0]).toContain('refused the shaped assignment');
+  });
+
+  it('surfaces plan reasons through the captured geometry fontIssues (the plot log channel)', async () => {
+    setPdfShapingFactory(() => ({
+      prepare: async () => {},
+      shaped: () => ({ state: 'missing' }),
+      shapedGlyphs: () => ({
+        state: 'ready',
+        subitems: [{
+          start: 0, end: 2, programSha256: 'ff'.repeat(32),
+          glyphs: [
+            { glyph: 2, clusterStart: 0, clusterEnd: 1, xAdvance: 500, yAdvance: 0, xOffset: 0, yOffset: 0 },
+            { glyph: 3, clusterStart: 1, clusterEnd: 2, xAdvance: 450, yAdvance: 0, xOffset: 0, yOffset: 0 },
+          ],
+        }],
+      }),
+    }));
+    try {
+      const doc = new Drawing({ entities: [textEntity()], meta: { textStyles: { FACE: style() } } });
+      const result = await capturedPdfLookup(doc.snapshot, reader, page([textEntity()]).groups);
+      const appearance = result.geometry!.resolve(textEntity());
+      expect(result.shapedText).toBeDefined();
+      expect(result.shapedText!('اب', appearance)).toBeNull();
+      const issues = [...(result.geometry!.fontIssues ?? [])];
+      expect(issues.some((issue) => issue.includes('does not match the captured face'))).toBe(true);
+    } finally {
+      setPdfShapingFactory(undefined);
     }
   });
 

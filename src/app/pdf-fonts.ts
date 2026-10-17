@@ -132,6 +132,7 @@ export async function capturedPdfLookup(state: DrawingState, reader?: PdfFontRea
     const entry = wanted.get(key);
     return entry ? [{ key, request: entry.request }] : [];
   }) : [];
+  const planIssues = new Set<string>();
   let oldNative: object | undefined, oldStroke: object | undefined, geometryKey = {};
   const geometry: TextGeometryContext | undefined = faces.length || strokeGeometry ? {
     get cacheKey() {
@@ -158,10 +159,10 @@ export async function capturedPdfLookup(state: DrawingState, reader?: PdfFontRea
     advances: (text, height, face) => native.advances!(text, height, face),
     baselineDescent: (height, face) => face.kind === 'stroke' && strokeGeometry ? strokeGeometry.baselineDescent!(height, face) : native.baselineDescent!(height, face),
     shxRun: strokeGeometry?.shxRun,
-    get fontIssues() { return new Set([...(strokeGeometry?.fontIssues ?? []), ...(native.fontIssues ?? [])]); },
+    get fontIssues() { return new Set([...(strokeGeometry?.fontIssues ?? []), ...(native.fontIssues ?? []), ...planIssues]); },
   } : undefined;
   const lookup: BlockLookup = Object.assign((name: string) => state.blocks[name], { textGeometry: geometry });
-  const shapedText = geometry ? (text: string, face: TextAppearance) => shapedPdfLine(geometry, fonts, text, face) : undefined;
+  const shapedText = geometry ? (text: string, face: TextAppearance) => shapedPdfLine(geometry, fonts, text, face, (reason) => planIssues.add(reason)) : undefined;
   return { lookup, fonts, geometry, issues, restrictedFaces, shapedText };
 }
 
@@ -207,6 +208,7 @@ export function shapedPdfLine(
   fonts: PdfFontRegistry,
   text: string,
   appearance: TextAppearance,
+  report?: (reason: string) => void,
 ): PdfShapedLine | null {
   if (appearance.kind !== 'canvas' || !geometry.shapedGlyphs) return null;
   const plain = expandControlCodes(text.replace(/%%[uUoOkK]/g, ''));
@@ -239,10 +241,18 @@ export function shapedPdfLine(
     let advance = 0;
     let resourceName = '';
     for (const subitem of state.subitems) {
-      if (subitem.programSha256 !== programHash) return null;
+      if (subitem.programSha256 !== programHash) {
+        // Measurement serves this line as ready, so without a
+        // plan-layer report this fallback would be silent (step 4).
+        report?.('shaping-pdf-fallback: a shaped subitem program does not match the captured face; line uses the unshaped plot path');
+        return null;
+      }
       const identity = `${subitem.programSha256}:${sha256Hex(plain)}:${start}:${end}:${subitem.start}:${subitem.end}`;
       const assigned = fonts.encodeShaped(faceKey, identity, subitem.glyphs, (cs, ce) => plain.slice(subitem.start + cs, subitem.start + ce));
-      if (!assigned) return null;
+      if (!assigned) {
+        report?.('shaping-pdf-fallback: the registry refused the shaped assignment (code budget or unusable glyph); line uses the unshaped plot path');
+        return null;
+      }
       resourceName = assigned.resourceName;
       subitem.glyphs.forEach((glyph, index) => {
         glyphs.push({
