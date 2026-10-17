@@ -357,20 +357,68 @@ type FiniteWalkOutcome = 'finite' | 'non-finite' | 'over-budget';
  *    WIDTH — a container's children were previously all materialized
  *    by Object.values and pushed before any charge beyond the
  *    container's own 1, so an 8-wide and a 16-wide record cost the
- *    walk the same). Every node is now charged FINITE_WALK_NODE_WEIGHT
+ *    walk the same). Every node is charged FINITE_WALK_NODE_WEIGHT
  *    exactly once, when it is scheduled: the root up front, and every
- *    child as part of its parent's fan-out charge, levied as ONE
- *    charge BEFORE the children are enumerated — the child count
- *    comes from the array length, or from Object.keys for a record,
- *    never from materializing the values first. If the budget refuses
- *    the fan-out, the children are not enumerated at all. Doubling a
+ *    child by its parent as the child is scheduled. Doubling a
  *    container's width doubles its fan-out charge. Charges go through
  *    `chargeNode`, the evaluation's existing work-budget charge, so
  *    the walk refuses under the same discipline as the rest of the
  *    evaluation instead of scanning without limit.
+ *    How each container kind schedules its children:
+ *    - ARRAYS admit as ONE charge from `length` before any child is
+ *      pushed. The length is O(1) metadata and the elements already
+ *      exist as the caller's array — nothing is materialized first.
+ *    - RECORDS enumerate their keys INCREMENTALLY (round-5 static
+ *      note: the round-4 code took the count from Object.keys, which
+ *      itself ALLOCATES the full key array — every key was
+ *      materialized before the charge could refuse). A record now
+ *      expands through a resumable stack frame driven by
+ *      `ownEnumerableKeys`: keys are produced one at a time, in
+ *      exactly Object.keys order and with exactly Object.keys'
+ *      membership (own enumerable string keys), and each key's slot
+ *      is charged BEFORE its value is read or scheduled. At most ONE
+ *      produced key is ever held unconsumed (the frame's pending
+ *      key), so a refused charge stops the enumeration at that slot:
+ *      the remaining keys are never produced, let alone collected.
+ *      The per-slot charge is unchanged — FINITE_WALK_NODE_WEIGHT
+ *      once per child — so every total the round-4 accounting pinned
+ *      is preserved; only the moment and granularity of the record
+ *      charge moved (per slot as scheduled, not one aggregate taken
+ *      from a pre-materialized key list).
  *  Visitation follows the old recursive walk's order (children in
- *  Object.values order, depth-first), so the first non-finite number
+ *  Object.keys order, depth-first), so the first non-finite number
  *  found — and therefore the refusal step 7.5 reports — is unchanged. */
+
+/** The own enumerable string keys of a record, produced one at a
+ *  time in Object.keys order (integer-like keys ascending, then
+ *  string keys in insertion order) with Object.keys membership:
+ *  `for…in` also visits INHERITED enumerable keys, so each produced
+ *  key is filtered to own-enumerable before it is yielded — the
+ *  yielded set is exactly Object.keys' set, but no key array is ever
+ *  materialized: a consumer that stops early has produced only the
+ *  keys it actually consumed (plus at most one lookahead). */
+function* ownEnumerableKeys(value: object): Generator<string> {
+  for (const key in value) {
+    if (Object.prototype.propertyIsEnumerable.call(value, key)) yield key;
+  }
+}
+
+/** One stack entry of the finiteness walk: either a node awaiting its
+ *  visit, or the resumable expansion of a record — the record's key
+ *  generator plus the one key it has produced but not yet scheduled.
+ *  Keeping the generator on the stack (instead of collecting the
+ *  record's children up front) is what bounds record enumeration:
+ *  the frame advances by exactly one key per scheduled child. */
+type FiniteWalkTask =
+  | { kind: 'visit'; value: unknown; depth: number }
+  | {
+      kind: 'record';
+      source: Record<string, unknown>;
+      keys: Iterator<string>;
+      pending: string;
+      depth: number;
+    };
+
 function walkNumbersFinite(
   root: unknown,
   seen: Set<object>,
@@ -383,9 +431,28 @@ function walkNumbersFinite(
     if (seen.has(root)) return 'finite';
     if (!chargeNode(FINITE_WALK_NODE_WEIGHT)) return 'over-budget';
   }
-  const stack: { value: unknown; depth: number }[] = [{ value: root, depth: 0 }];
+  const stack: FiniteWalkTask[] = [{ kind: 'visit', value: root, depth: 0 }];
   while (stack.length > 0) {
-    const { value, depth } = stack.pop()!;
+    const task = stack.pop()!;
+    if (task.kind === 'record') {
+      // Schedule exactly one pending child of the record: charge its
+      // slot BEFORE reading its value; a refused charge ends the walk
+      // with the rest of the record's keys never produced. Then
+      // advance the generator by one key (the single permitted
+      // lookahead) and re-push the frame BELOW the child, so the
+      // child's subtree is visited before the next sibling — the
+      // depth-first Object.keys order is preserved.
+      if (!chargeNode(FINITE_WALK_NODE_WEIGHT)) return 'over-budget';
+      const child = task.source[task.pending];
+      const next = task.keys.next();
+      if (!next.done) {
+        task.pending = next.value;
+        stack.push(task);
+      }
+      stack.push({ kind: 'visit', value: child, depth: task.depth + 1 });
+      continue;
+    }
+    const { value, depth } = task;
     if (typeof value === 'number') {
       if (!Number.isFinite(value)) return 'non-finite';
       continue;
@@ -394,17 +461,30 @@ function walkNumbersFinite(
     if (seen.has(value)) continue;
     if (depth > MAX_FINITE_WALK_DEPTH) return 'over-budget';
     seen.add(value);
-    // Fan-out admission: charge every child slot (FINITE_WALK_NODE_WEIGHT
-    // each) BEFORE enumerating the children. The count is the array
-    // length, or the record's key count — Object.keys allocates the
-    // key list only, never the values. A refused charge means the
-    // children are not enumerated at all.
-    const childCount = Array.isArray(value) ? value.length : Object.keys(value).length;
-    if (!chargeNode(childCount * FINITE_WALK_NODE_WEIGHT)) return 'over-budget';
-    const children: readonly unknown[] = Array.isArray(value) ? value : Object.values(value);
-    for (let i = children.length - 1; i >= 0; i -= 1) {
-      stack.push({ value: children[i], depth: depth + 1 });
+    if (Array.isArray(value)) {
+      // Fan-out admission for arrays: charge every child slot
+      // (FINITE_WALK_NODE_WEIGHT each) as one charge from the length,
+      // before any child is pushed.
+      if (!chargeNode(value.length * FINITE_WALK_NODE_WEIGHT)) return 'over-budget';
+      for (let i = value.length - 1; i >= 0; i -= 1) {
+        stack.push({ kind: 'visit', value: value[i], depth: depth + 1 });
+      }
+      continue;
     }
+    // Records: produce the first key (the one permitted lookahead)
+    // and hand the rest of the enumeration to a resumable frame. An
+    // empty record schedules nothing and charges nothing, exactly as
+    // a zero fan-out charge behaved before.
+    const keys = ownEnumerableKeys(value);
+    const first = keys.next();
+    if (first.done) continue;
+    stack.push({
+      kind: 'record',
+      source: value as Record<string, unknown>,
+      keys,
+      pending: first.value,
+      depth,
+    });
   }
   return 'finite';
 }
