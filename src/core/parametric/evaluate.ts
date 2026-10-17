@@ -512,9 +512,24 @@ function walkNumbersFinite(
  * proves the transform itself is representable. Each action therefore
  * records as its anchor a point the action fixes exactly (a rotate
  * centre, a flip axis point, a scale base point — each is its own
- * image), and composition keeps the first action's anchor, so every
- * quantity ever formed is a difference of finite points or a product
- * with one: a representable transform always has a finite record.
+ * image).
+ *
+ * Composition needs one more step (round 6, R5-01): keeping the first
+ * action's anchor is not by itself enough, because that anchor is not
+ * an attribute point and a LATER action can carry its image out of
+ * range — a π rotation's centre at (1e308, 0) followed by a scale of 2
+ * about the origin puts the anchor image at 2·1e308 = Infinity while
+ * the attribute's own image stays finite (its delta from the centre
+ * is halved by the rotation before the scale ever sees it). So when
+ * the composed record comes out non-finite, composition re-anchors
+ * it at the attribute's AUTHORED position, whose image is computed
+ * stepwise through both anchored forms — the same stepwise order the
+ * evaluator itself applies to that point. The composed map is
+ * identical; only its anchor changes. If no finite record exists even
+ * then (the linear part itself, or the attribute's own stepwise
+ * image, is out of range), recording fails and the evaluation refuses
+ * 'degenerate-transform' rather than returning a successful result
+ * carrying a record that expands to Infinity/NaN.
  */
 export interface AttributeActionTransform {
   readonly a: number;
@@ -529,26 +544,64 @@ export interface AttributeActionTransform {
   readonly rotationDelta: number;
 }
 
+/** Every numeric field of a recorded transform must be finite: the
+ *  record is consumed by anchored expansion, and a single Infinity/NaN
+ *  field turns a genuine placement override into non-finite geometry. */
+function attributeTransformIsFinite(t: AttributeActionTransform): boolean {
+  return (
+    Number.isFinite(t.a) && Number.isFinite(t.b) && Number.isFinite(t.c) && Number.isFinite(t.d) &&
+    Number.isFinite(t.ax) && Number.isFinite(t.ay) && Number.isFinite(t.ix) && Number.isFinite(t.iy) &&
+    Number.isFinite(t.heightRatio) && Number.isFinite(t.rotationDelta)
+  );
+}
+
+/** Apply an anchored transform to one point, in its own anchored form:
+ *  the image of the anchor plus the linear part times the relative
+ *  vector — the same centre-relative order the evaluator applies. */
+function applyAnchoredAttributePoint(t: AttributeActionTransform, q: Point): Point {
+  return {
+    x: t.ix + t.a * (q.x - t.ax) + t.b * (q.y - t.ay),
+    y: t.iy + t.c * (q.x - t.ax) + t.d * (q.y - t.ay),
+  };
+}
+
 /** Compose two attribute transforms: the result applies `prev` first,
  *  then `next` (pipeline order). The composed transform keeps `prev`'s
  *  anchor; its image is `next` applied to `prev`'s image, computed
  *  through `next`'s own anchored form so the linear part only ever
- *  multiplies a relative vector (the difference of two finite points). */
-function composeAttributeTransforms(next: AttributeActionTransform, prev: AttributeActionTransform): AttributeActionTransform {
+ *  multiplies a relative vector (the difference of two finite points).
+ *  If that record is non-finite — the kept anchor's image overflowed
+ *  under `next` although the attribute's own points stay finite
+ *  (round 6, R5-01) — the SAME composed map is re-anchored at
+ *  `reanchor` (the attribute's authored position) with its image
+ *  computed stepwise through both anchored forms. The result may still
+ *  be non-finite (an out-of-range linear part or stepwise image);
+ *  callers treat that as an unrepresentable record and refuse. */
+function composeAttributeTransforms(
+  next: AttributeActionTransform,
+  prev: AttributeActionTransform,
+  reanchor?: Point,
+): AttributeActionTransform {
+  const a = next.a * prev.a + next.b * prev.c;
+  const b = next.a * prev.b + next.b * prev.d;
+  const c = next.c * prev.a + next.d * prev.c;
+  const d = next.c * prev.b + next.d * prev.d;
+  const heightRatio = prev.heightRatio * next.heightRatio;
+  const rotationDelta = prev.rotationDelta + next.rotationDelta;
   const rx = prev.ix - next.ax;
   const ry = prev.iy - next.ay;
-  return {
-    a: next.a * prev.a + next.b * prev.c,
-    b: next.a * prev.b + next.b * prev.d,
-    c: next.c * prev.a + next.d * prev.c,
-    d: next.c * prev.b + next.d * prev.d,
+  const composed: AttributeActionTransform = {
+    a, b, c, d,
     ax: prev.ax,
     ay: prev.ay,
     ix: next.ix + next.a * rx + next.b * ry,
     iy: next.iy + next.c * rx + next.d * ry,
-    heightRatio: prev.heightRatio * next.heightRatio,
-    rotationDelta: prev.rotationDelta + next.rotationDelta,
+    heightRatio,
+    rotationDelta,
   };
+  if (!reanchor || attributeTransformIsFinite(composed)) return composed;
+  const image = applyAnchoredAttributePoint(next, applyAnchoredAttributePoint(prev, reanchor));
+  return { a, b, c, d, ax: reanchor.x, ay: reanchor.y, ix: image.x, iy: image.y, heightRatio, rotationDelta };
 }
 
 const translationTransform = (delta: Point): AttributeActionTransform => ({
@@ -998,9 +1051,23 @@ export function evaluateDynamicBlock(
   // application — it rides the pipeline's existing work charges and
   // adds no pass of its own.
   const attributeTx: (AttributeActionTransform | undefined)[] = baseAttributes.map(() => undefined);
-  const recordAttributeTransform = (index: number, next: AttributeActionTransform): void => {
+  // Records the composed transform for one attribute and validates its
+  // finiteness where it is produced (round 6, R5-01): returns false when
+  // no finite record exists — composition already re-anchored at the
+  // attribute's authored position as a fallback — and the caller then
+  // refuses 'degenerate-transform', so a successful evaluation never
+  // carries a record that expands to Infinity/NaN downstream.
+  const recordAttributeTransform = (index: number, next: AttributeActionTransform): boolean => {
     const prev = attributeTx[index];
-    attributeTx[index] = prev ? composeAttributeTransforms(next, prev) : next;
+    if (!prev) {
+      if (!attributeTransformIsFinite(next)) return false;
+      attributeTx[index] = next;
+      return true;
+    }
+    const composed = composeAttributeTransforms(next, prev, baseAttributes[index]!.position);
+    if (!attributeTransformIsFinite(composed)) return false;
+    attributeTx[index] = composed;
+    return true;
   };
   const buildAttributeTransforms = (): ReadonlyMap<string, AttributeActionTransform> => {
     const map = new Map<string, AttributeActionTransform>();
@@ -1096,7 +1163,14 @@ export function evaluateDynamicBlock(
         if (movedTo) {
           const delta = sub(movedTo, target.attribute.position);
           outAttributes[target.index] = transformAttributePlacement(target.attribute, (p) => add(p, delta));
-          recordAttributeTransform(target.index, translationTransform(delta));
+          if (!recordAttributeTransform(target.index, translationTransform(delta))) {
+            return refuse({
+              code: 'degenerate-transform',
+              message: `Action '${action.id}' composed a transform for attribute '${target.attribute.tag}' that has no finite record: the composed anchor image and the attribute's own stepwise image both leave the finite range, so the evaluation is refused rather than returning a record that expands to Infinity/NaN.`,
+              actionId: action.id,
+              parameterId: param.id,
+            });
+          }
         }
       }
     }
@@ -1259,7 +1333,11 @@ export function evaluateDynamicBlock(
         outEntities[baseSlot[target.index]!] = transformEntity(target.entity);
       } else if (transformAttr) {
         outAttributes[target.index] = transformAttr(target.attribute);
-        if (actionTx) recordAttributeTransform(target.index, actionTx);
+        if (actionTx && !recordAttributeTransform(target.index, actionTx)) {
+          return degenerate(
+            `Action '${action.id}' composed a transform for attribute '${target.attribute.tag}' that has no finite record: the composed anchor image and the attribute's own stepwise image both leave the finite range, so the evaluation is refused rather than returning a record that expands to Infinity/NaN.`,
+          );
+        }
       }
     }
     return undefined;
