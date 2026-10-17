@@ -51,6 +51,8 @@ import { bridgeImageLoader } from './render/images';
 import { installOpenProgress, type OpenProgressBridge } from './ui/open-progress';
 import { registerDwgExportCommand } from './app/export-dwg';
 import { fontMetrics } from './render/font-metrics';
+import { createShapingHooks } from './app/shape-preparation';
+import { setPdfShapingFactory } from './app/pdf-fonts';
 import { installExperimental3d } from './app/experimental-3d';
 
 declare global {
@@ -60,6 +62,7 @@ declare global {
     jcad?: {
       openShxFont?(): Promise<import('./render/shx-fonts').ShxResource | null>;
       fontMetrics?(request: import('./core/text-metrics').FontMetricsRequest): Promise<import('./core/text-metrics').NativeFontMetrics | null>;
+      shapeFont?(request: import('./core/text-metrics').ShapeBridgeRequest): Promise<import('./core/text-metrics').ShapeBridgeResult>;
       pdfFont?(request: import('./core/text-metrics').FontMetricsRequest): Promise<import('./app/pdf-fonts').PdfFontResult>;
       openDxf(): Promise<{ path: string; identityPath?: string; openedSourceProof?: string; text: string } | null>;
       releaseOpenedSourceProof?(proof: string): Promise<void>;
@@ -354,6 +357,11 @@ function boot(): void {
   const canvas = document.getElementById('drawing') as HTMLCanvasElement;
   const canvasWrap = canvas.parentElement as HTMLElement;
   if (window.jcad?.platform === 'win32' && window.jcad.fontMetrics) fontMetrics.setReader((request) => window.jcad!.fontMetrics!(request));
+  if (window.jcad?.platform === 'win32' && window.jcad.shapeFont) {
+    const shapeFont = window.jcad.shapeFont.bind(window.jcad);
+    fontMetrics.setShapingFactory((init) => createShapingHooks({ bridge: (request) => shapeFont(request), ...init }));
+    setPdfShapingFactory((init) => createShapingHooks({ bridge: (request) => shapeFont(request), ...init }));
+  }
   document.fonts?.addEventListener('loadingdone', () => fontMetrics.invalidateFallbacks());
   const editor = new Editor(canvas);
   editor.fileBridge = window.jcad ?? browserFileBridge();

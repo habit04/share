@@ -1,7 +1,8 @@
 import { expandControlCodes, strokeTextWidth, textRenderer, unicodeStrokeFallback, UNICODE_FALLBACK_FONT, UNICODE_STROKE_FALLBACK_NOTICE, type TextRenderer } from './hershey';
+import { itemizeParagraph } from '../core/text-pipeline';
 import { findTextStyle, isTrueTypeStyle, fontWeight } from './hershey';
 import type { TextStyle } from '../io/encoding';
-import type { FontMetricsRequest, NativeFontMetrics, TextAppearance, TextGeometryContext, TextMetricResult, TextMetricStyle } from '../core/text-metrics';
+import type { FontMetricsRequest, NativeFontMetrics, ShapeFaceCandidate, ShapedItemState, TextAppearance, TextGeometryContext, TextMetricResult, TextMetricStyle, TextShapingHooks } from '../core/text-metrics';
 import { supportsNativeTextRun } from '../core/text-metrics';
 
 type Styles = Readonly<Record<string, TextStyle>>;
@@ -70,6 +71,7 @@ export class FontMetricsRegistry {
   private tried = new Set<string>();
   private listeners = new Set<() => void>();
   private reader: FontMetricsReader | undefined;
+  private shapingFactory: import('../core/text-metrics').ShapingHooksFactory | undefined;
   private probe: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null | undefined;
   private ratios = new Map<string, number>();
   private epoch: object = {};
@@ -77,6 +79,41 @@ export class FontMetricsRegistry {
   get cacheKey(): object { return this.epoch; }
   subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   private changed(): void { this.epoch = {}; for (const listener of this.listeners) listener(); }
+  /**
+   * Attach the shaping-session factory (app bootstrap, Windows
+   * bridge only). Contexts created afterwards can prepare and
+   * serve shaped measurement; without a factory, contexts behave
+   * exactly as before and shaped items report as unprepared.
+   */
+  setShapingFactory(factory: FontMetricsRegistry['shapingFactory']): void {
+    this.shapingFactory = factory;
+  }
+  /** Build shaping hooks for one context through the factory. */
+  shapingHooksFor(init: Parameters<import('../core/text-metrics').ShapingHooksFactory>[0]): TextShapingHooks | null {
+    return this.shapingFactory ? this.shapingFactory(init) : null;
+  }
+  /** The loaded font for an appearance, if the host supplied one. */
+  loadedFont(appearance: TextAppearance): NativeFontMetrics | undefined {
+    return appearance.kind === 'canvas' ? this.fonts.get(faceKey(appearance)) : undefined;
+  }
+  /** Shaping candidates from this registry's loaded fonts: the
+      appearance's own face (the metrics path's selected face). */
+  shapeCandidates(appearance: TextAppearance): readonly ShapeFaceCandidate[] {
+    const font = this.loadedFont(appearance);
+    if (!font) return [];
+    return [{
+      descriptor: { family: font.family, subfamily: font.subfamily, bold: font.bold, italic: font.italic },
+      faceIndex: 0,
+      cmap: font.cmap,
+      metrics: {
+        advances: font.advances,
+        glyphBounds: font.glyphBounds,
+        ...(font.glyphBoundsKnown ? { glyphBoundsKnown: font.glyphBoundsKnown } : {}),
+        unitsPerEm: font.unitsPerEm,
+      },
+      capitalHeight: font.capitalHeight,
+    }];
+  }
   setReader(reader: FontMetricsReader | undefined): void {
     if (this.reader === reader) return;
     this.reader = reader; this.readerEpoch = {}; this.tried.clear(); this.fonts.clear(); this.changed();
@@ -192,7 +229,8 @@ export const EMPTY_TEXT_STYLES: Styles = Object.freeze({});
 export function createTextGeometryContext(styles: Styles, registry: FontMetricsRegistry = fontMetrics): TextGeometryContext {
   let epoch = registry.cacheKey, cacheKey: object = {};
   const issues = new Set<string>();
-  return {
+  let hooks: TextShapingHooks | null | undefined;
+  const context: TextGeometryContext = {
     get cacheKey() { if (epoch !== registry.cacheKey) { epoch = registry.cacheKey; cacheKey = {}; } return cacheKey; },
     resolve(input: TextMetricStyle): TextAppearance {
       const base = textRenderer(input.style, styles, input.text);
@@ -204,13 +242,127 @@ export function createTextGeometryContext(styles: Styles, registry: FontMetricsR
       }
       return face;
     },
-    measure: (text, height, appearance) => registry.measure(text, height, appearance),
+    measure: (text, height, appearance) => {
+      const active = shapingHooks();
+      if (active && appearance.kind === 'canvas') {
+        const shaped = measureShaped(active, text, height, appearance, issues, (slice, h, face) => registry.measure(slice, h, face));
+        if (shaped) return shaped;
+      }
+      return registry.measure(text, height, appearance);
+    },
     fontSize: (height, appearance) => appearance.kind === 'canvas' ? registry.fontSize(height, appearance) : height,
-    advances: (text, height, appearance) => registry.advances(text, height, appearance),
+    advances: (text, height, appearance) => {
+      const active = shapingHooks();
+      if (active && appearance.kind === 'canvas') {
+        const itemized = itemizeParagraph(plainText(text));
+        const shapedItems = itemized.items.filter((item) => item.route === 'shaped');
+        if (shapedItems.length > 0) {
+          let allReady = true;
+          for (const item of shapedItems) {
+            if (item.route !== 'shaped') continue;
+            const state = active.shaped(plainText(text), appearance, item.derivation.itemStart, item.derivation.itemEnd);
+            if (state.state !== 'ready') { allReady = false; noteShapingFallback(issues, state); }
+          }
+          // Ready shaped runs carry their own placement: per-char
+          // cmap advances would contradict them, so the run goes
+          // back as a whole (the draw layer's whole-run branch).
+          if (allReady) return null;
+        }
+      }
+      return registry.advances(text, height, appearance);
+    },
     baselineDescent: (height, appearance) => registry.baselineDescent(height, appearance),
+    prepareShaping: async (text, appearance) => {
+      const active = shapingHooks();
+      if (active) await active.prepare(plainText(text), appearance);
+    },
+    shaped: (text, appearance, itemStart, itemEnd) => {
+      const active = shapingHooks();
+      if (!active) return { state: 'missing' };
+      return active.shaped(plainText(text), appearance, itemStart, itemEnd);
+    },
     fontIssues: issues,
   };
+  function shapingHooks(): TextShapingHooks | null {
+    if (hooks !== undefined) return hooks;
+    hooks = registry.shapingHooksFor({
+      contextId: () => context.cacheKey,
+      candidatesFor: (appearance) => registry.shapeCandidates(appearance),
+    });
+    return hooks;
+  }
+  return context;
 }
+
+/** Record why a shaped item is not serving, once per distinct
+    problem (the set dedupes): fallback is reported, never silent. */
+function noteShapingFallback(issues: Set<string>, state: ShapedItemState): void {
+  if (state.state === 'pending') issues.add('shaping-pending: text measured without engine shaping (preparation in progress)');
+  else if (state.state === 'missing') issues.add('shaping-missing: text measured without engine shaping (not prepared)');
+  else if (state.state === 'refused') issues.add(`shaping-refused: ${state.problem}`);
+}
+
+/**
+ * Itemwise-exact shaped measurement: direct items are measured by
+ * the existing native path on their slice; ready shaped items
+ * contribute their runs' advances and signed ink, each scaled by
+ * its own face's capital height, accumulated on a logical-order
+ * pen. Any shaped item that is not ready returns null — the
+ * caller falls back to today's whole-string measurement with the
+ * reason recorded. Mixed numbers are never returned.
+ */
+function measureShaped(
+  hooks: TextShapingHooks,
+  text: string,
+  height: number,
+  appearance: TextAppearance,
+  issues: Set<string>,
+  measureSlice: (slice: string, height: number, appearance: TextAppearance) => TextMetricResult,
+): TextMetricResult | null {
+  const plain = plainText(text);
+  const itemized = itemizeParagraph(plain);
+  if (!itemized.items.some((item) => item.route === 'shaped' || item.route === 'refused')) return null;
+  let advance = 0, left = Infinity, right = -Infinity, ascent = -Infinity, descent = -Infinity;
+  for (const item of itemized.items) {
+    if (item.route === 'refused') {
+      issues.add(`shaping-refused: ${item.problem}`);
+      return null;
+    }
+    if (item.route === 'direct') {
+      const slice = measureSlice(plain.slice(item.itemStart, item.itemEnd), height, appearance);
+      left = Math.min(left, advance + slice.left);
+      right = Math.max(right, advance + slice.right);
+      ascent = Math.max(ascent, slice.ascent);
+      descent = Math.max(descent, slice.descent);
+      advance += slice.advance;
+      continue;
+    }
+    const state = hooks.shaped(plain, appearance, item.derivation.itemStart, item.derivation.itemEnd);
+    if (state.state !== 'ready') {
+      noteShapingFallback(issues, state);
+      return null;
+    }
+    for (const subitem of state.subitems) {
+      const scale = height / subitem.capitalHeight;
+      const ink = subitem.run.ink;
+      if (ink.xMin !== ink.xMax || ink.yMin !== ink.yMax) {
+        left = Math.min(left, advance + ink.xMin * scale);
+        right = Math.max(right, advance + ink.xMax * scale);
+        ascent = Math.max(ascent, ink.yMax * scale);
+        descent = Math.max(descent, -ink.yMin * scale);
+      }
+      advance += subitem.run.advanceX * scale;
+    }
+  }
+  return {
+    advance,
+    left: left === Infinity ? 0 : left,
+    right: right === -Infinity ? 0 : right,
+    ascent: ascent === -Infinity ? 0 : ascent,
+    descent: descent === -Infinity ? 0 : descent,
+  };
+}
+
 export function textGeometryForStyles(styles: Styles): TextGeometryContext {
   let context = contexts.get(styles);
   if (!context) { context = createTextGeometryContext(styles); contexts.set(styles, context); }

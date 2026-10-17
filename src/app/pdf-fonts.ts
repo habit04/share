@@ -11,6 +11,15 @@ import { createTextGeometryContext, FontMetricsRegistry } from '../render/font-m
 import { capturedPlotLookup } from './plot-fonts';
 
 export type PdfFontResult = { readonly font: Omit<PdfFontFace, 'key'> | null; readonly problem?: string };
+/** Shaping hooks factory for captured-plot geometry contexts,
+    set by app bootstrap when the Windows shape bridge exists.
+    Kept as an injected factory so this module never imports the
+    session implementation directly. */
+let pdfShapingFactory: import('../core/text-metrics').ShapingHooksFactory | undefined;
+export function setPdfShapingFactory(factory: import('../core/text-metrics').ShapingHooksFactory | undefined): void {
+  pdfShapingFactory = factory;
+}
+
 export type PdfFontReader = (request: FontMetricsRequest) => Promise<PdfFontResult>;
 export const pdfFontKey = textFontKey;
 const familyName = (face: Extract<TextAppearance, { kind: 'canvas' }>) => face.family.split(',')[0]!.trim().replace(/^"|"$/g, '');
@@ -22,7 +31,9 @@ export async function capturedPdfLookup(state: DrawingState, reader?: PdfFontRea
   const strokeGeometry = initialLookup.textGeometry?.shxRun ? initialLookup.textGeometry : undefined;
   if (!reader) return { lookup: initialLookup, fonts: undefined, geometry: strokeGeometry, issues: [] as string[], restrictedFaces: [] as { key: string; request: FontMetricsRequest }[] };
   const read: PdfFontReader = restricted ? (request) => reader({ ...request, restricted: true }) : reader;
-  const styles = textStylesOf(state), metrics = new FontMetricsRegistry(), native = createTextGeometryContext(styles, metrics);
+  const styles = textStylesOf(state), metrics = new FontMetricsRegistry();
+  if (pdfShapingFactory) metrics.setShapingFactory(pdfShapingFactory);
+  const native = createTextGeometryContext(styles, metrics);
   const wanted = new Map<string, { face: Extract<TextAppearance, { kind: 'canvas' }>; request: FontMetricsRequest }>();
   const usedByKey = new Map<string, Set<number>>();
   const discover = (input: Parameters<TextGeometryContext['resolve']>[0]) => {

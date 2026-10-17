@@ -187,6 +187,10 @@ async function readWindowsShapedFont(request) {
     unitsPerEm: metrics.unitsPerEm,
     faceGlyphCount: metrics.advances.length,
     programSha256,
+    /** Program size for the session's transport-ledger charge
+        (2x program + per-item cap, §9.4): the byte count of the
+        exact program shaped, reported — never the bytes. */
+    programBytes: bytes.length,
   };
 }
 
