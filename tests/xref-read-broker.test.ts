@@ -21,10 +21,10 @@ interface Broker {
   beginContext(owner: string, info: { docId: string; contentGeneration: number; hostAnchor: string }): { token: string };
   identify(owner: string, token: string, path: string): Promise<{ ticket: string; identity: Identity }>;
   read(owner: string, token: string, ticket: string, maxBytes: number): Promise<{ text: string; byteLength: number; version: string; rawBytes: number; rawSha256: string; encoding?: string }>;
-  cancel(owner: string, token: string): boolean;
-  closeContext(owner: string, token: string): boolean;
+  cancel(owner: string, token: string): Promise<boolean>;
+  closeContext(owner: string, token: string): Promise<boolean>;
   retireOwner(owner: string): number;
-  closeAll(): void;
+  closeAll(): Promise<void>;
   stats(): { contexts: number; tickets: number; disposed: boolean };
 }
 
@@ -317,10 +317,12 @@ describe('xref read broker — cancellation and lifecycle', () => {
     fs.gateRead = () => new Promise<void>((resolve) => { release = resolve; });
     const pending = broker.read('wc:1', token, leaf.ticket, 1 << 20);
     await new Promise((r) => setImmediate(r));
-    expect(broker.cancel('wc:1', token)).toBe(true);
-    expect(broker.cancel('wc:1', token)).toBe(true); // repeated cancel is safe
+    const drain1 = broker.cancel('wc:1', token);
+    const drain2 = broker.cancel('wc:1', token); // repeated cancel is safe
     release();
     await expect(pending).rejects.toMatchObject({ code: 'ERR_XREF_CANCELLED' });
+    await expect(drain1).resolves.toBe(true);
+    await expect(drain2).resolves.toBe(true);
     expect(fs.openHandles).toBe(0);
   });
 
@@ -332,10 +334,11 @@ describe('xref read broker — cancellation and lifecycle', () => {
     fs.gateRealpath = () => new Promise<void>((resolve) => { release = resolve; });
     const pending = broker.identify('wc:1', token, LEAF);
     await new Promise((r) => setImmediate(r));
-    expect(broker.closeContext('wc:1', token)).toBe(true);
-    expect(broker.closeContext('wc:1', token)).toBe(false); // idempotent
+    const drained = broker.closeContext('wc:1', token);
+    await expect(broker.closeContext('wc:1', token)).resolves.toBe(false); // idempotent
     release();
     await expect(pending).rejects.toMatchObject({ code: 'ERR_XREF_CANCELLED' });
+    await expect(drained).resolves.toBe(true);
     expect(broker.stats()).toMatchObject({ contexts: 0, tickets: 0 });
     await expect(broker.identify('wc:1', token, LEAF)).rejects.toMatchObject({ code: 'ERR_XREF_CONTEXT' });
   });

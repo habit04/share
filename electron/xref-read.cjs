@@ -52,7 +52,27 @@
  * adapter maps its signal to explicit cancel/close calls and this
  * broker owns the real AbortControllers. Cancel is idempotent and
  * joins cleanup; a completion that arrives after cancel/close is
- * discarded, never accepted.
+ * discarded, never accepted. `cancel` and `closeContext` report that
+ * join honestly: they revoke immediately (in-flight operations abort
+ * at once) but the promise they return resolves only after the
+ * context's in-flight operations have fully drained — their finally
+ * blocks ran and their descriptors are closed.
+ *
+ * Live work is bounded BEFORE I/O by an operation/reservation ledger
+ * (correction R1). Identify and read operations are counted against
+ * fixed active-operation ceilings — 1 per context, 4 per owner, 8
+ * globally — with zero waiting queue: excess work refuses with
+ * ERR_XREF_RESOURCE_BUSY before any native I/O. A read additionally
+ * reserves against a global 64 MiB raw-allocation ceiling, charged as
+ * the identified raw size plus the read helper's one-byte EOF
+ * sentinel, checked from the identified native size BEFORE the helper
+ * is invoked (the helper re-verifies that exact size through its
+ * before-read hook before allocating). Reservations are taken only
+ * after owner/context/ticket authority succeeds, and are released on
+ * every outcome. Retiring a context or owner revokes its capabilities
+ * immediately, but its in-flight operations and reservations stay in
+ * a separate retired ledger until their finally/descriptor cleanup
+ * completes — resource credits never disappear early.
  */
 'use strict';
 
@@ -67,6 +87,13 @@ const MAX_PATH_LENGTH = 4096;
 const MAX_CONTEXTS = 128;
 const MAX_CONTEXTS_PER_OWNER = 32;
 const MAX_TICKETS_PER_CONTEXT = 256;
+/** Correction R1: fixed active-operation ceilings (zero waiting queue). */
+const MAX_ACTIVE_OPS_PER_CONTEXT = 1;
+const MAX_ACTIVE_OPS_PER_OWNER = 4;
+const MAX_ACTIVE_OPS_GLOBAL = 8;
+/** Correction R1: global raw-read allocation reservation ceiling (64 MiB). */
+const MAX_RESERVED_RAW_BYTES = 64 * 1024 * 1024;
+const MAX_RESERVED_RAW_BYTES_BIG = BigInt(MAX_RESERVED_RAW_BYTES);
 const READ_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
 
 const fail = (code, message) => Object.assign(new Error(`${code}: ${message}`), { code });
@@ -83,6 +110,7 @@ const ERR = {
   identity: (m) => fail('ERR_XREF_IDENTITY', m),
   type: (m) => fail('ERR_XREF_TYPE', m),
   decode: (m) => fail('ERR_XREF_DECODE', m),
+  busy: (m) => fail('ERR_XREF_RESOURCE_BUSY', m),
   cancelled: () => fail('ERR_XREF_CANCELLED', 'the xref operation was cancelled'),
   disposed: () => fail('ERR_XREF_CONTEXT', 'the xref broker is disposed'),
 };
@@ -172,7 +200,81 @@ function createXrefReadBroker(deps) {
   const contexts = new Map();
   let disposed = false;
 
+  /**
+   * Operation/reservation ledger (correction R1). Counters are charged
+   * at admission — after authority, before any asynchronous I/O — and
+   * released in the operation's finally, on every outcome. Records of
+   * operations whose context was retired move to `retiredOps`; their
+   * credits stay charged until their cleanup actually completes.
+   */
+  let activeGlobal = 0;
+  /** @type {Map<string, number>} owner key -> in-flight operations (live + retired contexts) */
+  const activeByOwner = new Map();
+  /** @type {bigint} raw-read allocation bytes currently reserved */
+  let reservedRawBytes = 0n;
+  /** @type {Set<{ ctx: any, reservation: bigint }>} operations on live contexts */
+  const liveOps = new Set();
+  /** @type {Set<{ ctx: any, reservation: bigint }>} operations whose context retired mid-flight */
+  const retiredOps = new Set();
+
   const throwIfAborted = (signal) => { if (signal?.aborted) throw ERR.cancelled(); };
+
+  /**
+   * Charge one operation against the ceilings, or refuse with
+   * ERR_XREF_RESOURCE_BUSY before any I/O. `reservation` is the raw
+   * allocation charge (reads only; 0n for identify).
+   * @param {any} ctx
+   * @param {bigint} reservation
+   */
+  function admitOp(ctx, reservation) {
+    if (ctx.activeOps >= MAX_ACTIVE_OPS_PER_CONTEXT) throw ERR.busy(`one active xref operation per context is already running`);
+    const ownerActive = activeByOwner.get(ctx.ownerKey) ?? 0;
+    if (ownerActive >= MAX_ACTIVE_OPS_PER_OWNER) throw ERR.busy(`the owner already has ${MAX_ACTIVE_OPS_PER_OWNER} active xref operations`);
+    if (activeGlobal >= MAX_ACTIVE_OPS_GLOBAL) throw ERR.busy(`the broker already has ${MAX_ACTIVE_OPS_GLOBAL} active xref operations`);
+    if (reservation > 0n && reservedRawBytes + reservation > MAX_RESERVED_RAW_BYTES_BIG) {
+      throw ERR.busy(`the global raw-read reservation ceiling (${MAX_RESERVED_RAW_BYTES} bytes) would be exceeded`);
+    }
+    ctx.activeOps += 1;
+    activeGlobal += 1;
+    activeByOwner.set(ctx.ownerKey, ownerActive + 1);
+    reservedRawBytes += reservation;
+    const record = { ctx, reservation };
+    liveOps.add(record);
+    return record;
+  }
+
+  /** Release one settled operation's credits (its finally has run). */
+  function releaseOp(record) {
+    const { ctx } = record;
+    ctx.activeOps -= 1;
+    activeGlobal -= 1;
+    const remaining = (activeByOwner.get(ctx.ownerKey) ?? 1) - 1;
+    if (remaining > 0) activeByOwner.set(ctx.ownerKey, remaining); else activeByOwner.delete(ctx.ownerKey);
+    reservedRawBytes -= record.reservation;
+    liveOps.delete(record);
+    retiredOps.delete(record);
+  }
+
+  /** Move a retiring context's in-flight operations into the retired ledger. */
+  function retireOpRecords(ctx) {
+    for (const record of [...liveOps]) {
+      if (record.ctx === ctx) {
+        liveOps.delete(record);
+        retiredOps.add(record);
+      }
+    }
+  }
+
+  /**
+   * A promise that resolves once the operations in flight on `ctx` at
+   * call time have fully settled (their finally blocks — including
+   * descriptor cleanup — have run). Never rejects.
+   * @param {any} ctx
+   * @returns {Promise<void>}
+   */
+  function drainContext(ctx) {
+    return Promise.allSettled([...ctx.pending]).then(() => undefined);
+  }
 
   /** One context lookup for every operation: unknown, closed and foreign-owned tokens are indistinguishable. */
   function lookup(ownerKey, token) {
@@ -183,14 +285,28 @@ function createXrefReadBroker(deps) {
     return ctx;
   }
 
-  /** Run fn under a main-owned AbortController registered on the context (cancel/close abort it). */
-  async function runOp(ctx, fn) {
+  /**
+   * Run fn as one ledger-counted operation under a main-owned
+   * AbortController registered on the context (cancel/close abort it).
+   * Admission (and any ERR_XREF_RESOURCE_BUSY refusal) happens before
+   * the controller exists and before fn's first asynchronous I/O; the
+   * operation's credits and its drain marker are released only in the
+   * finally, after fn's own cleanup has completed.
+   */
+  async function runOp(ctx, reservation, fn) {
+    const record = admitOp(ctx, reservation);
     const controller = new AbortController();
     ctx.controllers.add(controller);
+    let settle = () => {};
+    const drained = new Promise((resolve) => { settle = () => resolve(undefined); });
+    ctx.pending.add(drained);
     try {
       return await fn(controller.signal);
     } finally {
       ctx.controllers.delete(controller);
+      releaseOp(record);
+      ctx.pending.delete(drained);
+      settle();
     }
   }
 
@@ -224,6 +340,10 @@ function createXrefReadBroker(deps) {
       token, ownerKey, docId, contentGeneration: generation, hostAnchor,
       /** @type {Map<string, any>} */ tickets: new Map(),
       /** @type {Set<AbortController>} */ controllers: new Set(),
+      /** In-flight ledger operations on this context. */
+      activeOps: 0,
+      /** @type {Set<Promise<void>>} settle markers of in-flight operations, for drain joins */
+      pending: new Set(),
       closed: false,
     });
     return Object.freeze({ token, docId, contentGeneration: generation, hostAnchor });
@@ -237,9 +357,11 @@ function createXrefReadBroker(deps) {
   async function identify(ownerKey, token, rawPath) {
     const ctx = lookup(ownerKey, token);
     const path = validateReferencePath(rawPath);
-    return runOp(ctx, async (signal) => {
-      throwIfAborted(signal);
-      if (!isKnownPath(path)) throw ERR.denied(`the path is not readable by name under the existing file policy: ${path}`);
+    // Authority completes before the operation is admitted to the
+    // ledger: an ungranted path is DENIED (never busy, never missing)
+    // and still costs zero filesystem contact.
+    if (!isKnownPath(path)) throw ERR.denied(`the path is not readable by name under the existing file policy: ${path}`);
+    return runOp(ctx, 0n, async (signal) => {
       throwIfAborted(signal);
       let canonicalPath;
       try {
@@ -304,9 +426,18 @@ function createXrefReadBroker(deps) {
     if (!ticket) throw ERR.ticket('an unknown xref ticket');
     if (!Number.isSafeInteger(maxBytes) || /** @type {number} */ (maxBytes) < 1) throw ERR.argument('a positive byte allowance is required');
     const allowance = Math.min(/** @type {number} */ (maxBytes), maxRawBytes);
-    return runOp(ctx, async (signal) => {
+    // Authority completes before admission: the ticket names the file
+    // and the policy must still make it readable by name.
+    if (!isKnownPath(ticket.path)) throw ERR.denied(`the path is no longer readable by name under the existing file policy: ${ticket.path}`);
+    // The reservation is charged from the IDENTIFIED native size plus
+    // the read helper's one-byte EOF sentinel (its allocation is
+    // size + 1), checked here — before the helper is invoked — so a
+    // size that changed after identification can never be allocated
+    // against a stale charge: the helper's before-read hook
+    // re-verifies this exact version before it allocates.
+    const reservation = BigInt(ticket.version.size) + 1n;
+    return runOp(ctx, reservation, async (signal) => {
       throwIfAborted(signal);
-      if (!isKnownPath(ticket.path)) throw ERR.denied(`the path is no longer readable by name under the existing file policy: ${ticket.path}`);
       const key = ticket.versionKey;
       /** @type {Buffer} */
       let bytes;
@@ -368,34 +499,53 @@ function createXrefReadBroker(deps) {
     });
   }
 
-  /** Abort the context's in-flight operations. Idempotent; the context stays open. */
+  /**
+   * Abort the context's in-flight operations. Idempotent; the context
+   * stays open. Revocation is immediate; the returned promise resolves
+   * true only after the operations in flight at call time have fully
+   * drained (cleanup joined — correction R2). Unknown, closed and
+   * foreign-owned contexts resolve false.
+   * @returns {Promise<boolean>}
+   */
   function cancel(ownerKey, token) {
     let ctx;
     try {
       ctx = lookup(ownerKey, token);
     } catch {
-      return false;
+      return Promise.resolve(false);
     }
     abortContext(ctx);
-    return true;
+    return drainContext(ctx).then(() => true);
   }
 
-  /** Cancel and retire one context and all its tickets. Idempotent. */
+  /**
+   * Cancel and retire one context and all its tickets. Idempotent.
+   * Retirement is immediate; the returned promise resolves true only
+   * after the context's in-flight operations have fully drained
+   * (correction R2).
+   * @returns {Promise<boolean>}
+   */
   function closeContext(ownerKey, token) {
     let ctx;
     try {
       ctx = lookup(ownerKey, token);
     } catch {
-      return false;
+      return Promise.resolve(false);
     }
     ctx.closed = true;
     abortContext(ctx);
     ctx.tickets.clear();
     contexts.delete(ctx.token);
-    return true;
+    retireOpRecords(ctx);
+    return drainContext(ctx).then(() => true);
   }
 
-  /** Retire every context of one owner (window navigation/destruction/quit). */
+  /**
+   * Retire every context of one owner (window navigation/destruction/
+   * quit). Revocation is synchronous; in-flight operations keep their
+   * ledger credits in the retired ledger until their cleanup completes
+   * (correction R1) — the count returned here never drops them early.
+   */
   function retireOwner(ownerKey) {
     let retired = 0;
     for (const ctx of [...contexts.values()]) {
@@ -404,21 +554,32 @@ function createXrefReadBroker(deps) {
         abortContext(ctx);
         ctx.tickets.clear();
         contexts.delete(ctx.token);
+        retireOpRecords(ctx);
         retired += 1;
       }
     }
     return retired;
   }
 
-  /** Dispose the whole broker (main-process shutdown). */
+  /**
+   * Dispose the whole broker (main-process shutdown). Revocation is
+   * synchronous; the returned promise resolves once every context's
+   * in-flight operations have drained, for callers that can await it.
+   * Synchronous callers keep working: nothing here delays revocation.
+   * @returns {Promise<void>}
+   */
   function closeAll() {
     disposed = true;
+    const drains = [];
     for (const ctx of [...contexts.values()]) {
       ctx.closed = true;
       abortContext(ctx);
       ctx.tickets.clear();
+      retireOpRecords(ctx);
+      drains.push(drainContext(ctx));
     }
     contexts.clear();
+    return Promise.allSettled(drains).then(() => undefined);
   }
 
   return Object.freeze({
@@ -427,7 +588,12 @@ function createXrefReadBroker(deps) {
     stats: () => {
       let tickets = 0;
       for (const ctx of contexts.values()) tickets += ctx.tickets.size;
-      return { contexts: contexts.size, tickets, disposed };
+      return {
+        contexts: contexts.size, tickets, disposed,
+        /** Ledger diagnostics (correction R1): in-flight operations and reserved raw bytes. */
+        activeOps: activeGlobal, retiredActiveOps: retiredOps.size,
+        reservedRawBytes: Number(reservedRawBytes),
+      };
     },
   });
 }
@@ -435,5 +601,7 @@ function createXrefReadBroker(deps) {
 module.exports = {
   createXrefReadBroker,
   MAX_RAW_BYTES, MAX_CONTEXTS, MAX_CONTEXTS_PER_OWNER, MAX_TICKETS_PER_CONTEXT,
+  MAX_ACTIVE_OPS_PER_CONTEXT, MAX_ACTIVE_OPS_PER_OWNER, MAX_ACTIVE_OPS_GLOBAL,
+  MAX_RESERVED_RAW_BYTES,
   validateReferencePath, validateAnchor,
 };
