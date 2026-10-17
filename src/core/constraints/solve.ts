@@ -144,10 +144,16 @@ export interface AnalysisResult {
   /** Null when validation problems exist. 'unsolved' here means "not
    *  satisfied at current geometry" — analysis never claims a conflict,
    *  which requires a stationary point (design §5.6). 'rank-unknown'
-   *  means every constraint is satisfied but the rank work was
-   *  admission-skipped, so no DOF verdict exists (round 3, R2-02). */
+   *  means the rank work was admission-skipped, so no DOF verdict
+   *  exists (round 3, R2-02): either every constraint is satisfied but
+   *  the dense rank steps did not fit, or the variable layout itself
+   *  exceeded the work discipline and was refused before allocation
+   *  (round 4, R3-02) — in that case satisfaction was not evaluated
+   *  either and the diagnostics carry no residual magnitudes. */
   readonly status: SolveStatus | null;
-  /** Charged rank work, on the same accounting as SolveResult.workUsed:
+  /** Charged analysis work, on the same accounting as
+   *  SolveResult.workUsed: the variable layout's linear state is
+   *  charged one unit per variable at admission (round 4, R3-02) and
    *  every dense step is checked against SOLVE_WORK_LIMIT BEFORE it
    *  executes, so this never exceeds the limit. */
   readonly workUsed: number;
@@ -1082,14 +1088,13 @@ function shapeSupported(shape: ConstraintShape): boolean {
  *  the round-1 budget skip of the second Jacobian. */
 function manifoldRankProbe(args: {
   readonly residuals: readonly ResidualSet[];
-  readonly rowOffset: ReadonlyMap<string, number>;
   readonly totalRows: number;
   readonly vars: Float64Array;
   readonly S: number;
   readonly work: Work;
   readonly budgeted: boolean;
 }): { J: Float64Array<ArrayBuffer>; rank: number } | null {
-  const { residuals, rowOffset, totalRows, vars, S, work, budgeted } = args;
+  const { residuals, totalRows, vars, S, work, budgeted } = args;
   const n = vars.length;
   const others = residuals.filter((rs) => rs.constraint.kind !== 'tangent');
   if (others.length === 0 || others.length === residuals.length) return null;
@@ -1097,38 +1102,36 @@ function manifoldRankProbe(args: {
   const afford = (units: number): boolean => sink.used + units <= sink.limit;
   const mO = others.reduce((m, rs) => m + rs.rowCount, 0);
 
+  // Dense helpers allocate exactly what their step is charged
+  // (round 4, R3-02): a Jacobian over a row subset is built directly
+  // at compact row offsets — its buffer is rows·n, the charged size —
+  // never as a full totalRows·n scratch that was charged only mO·n
+  // and then compacted through a second, uncharged copy; the residual
+  // vector likewise allocates exactly mO, not a totalRows scratch.
+  // `rows` always arrives in residual order, so the compact offsets
+  // are the cumulative row counts (for the full set they equal the
+  // caller's rowOffset values themselves).
   const jacRows = (rows: readonly ResidualSet[], at: Float64Array): Float64Array<ArrayBuffer> => {
-    const J = new Float64Array(totalRows * n);
-    for (const rs of rows) rs.jac(at, J, rowOffset.get(rs.constraint.id)!, n);
-    return J;
-  };
-  const compact = (J: Float64Array, rows: readonly ResidualSet[]): Float64Array => {
-    const out = new Float64Array(rows.reduce((m, rs) => m + rs.rowCount, 0) * n);
-    let w = 0;
+    const J = new Float64Array(rows.reduce((m, rs) => m + rs.rowCount, 0) * n);
+    let at0 = 0;
     for (const rs of rows) {
-      const at = rowOffset.get(rs.constraint.id)!;
-      for (let r = 0; r < rs.rowCount; r += 1) {
-        out.set(J.subarray((at + r) * n, (at + r + 1) * n), w * n);
-        w += 1;
-      }
+      rs.jac(at, J, at0, n);
+      at0 += rs.rowCount;
     }
-    return out;
+    return J;
   };
   /** Compact non-tangent residual vector at `at`, plus its max |·|. */
   const evalOthers = (at: Float64Array): { vec: Float64Array; max: number } => {
-    const full = new Float64Array(totalRows);
-    for (const rs of others) rs.eval(at, full, rowOffset.get(rs.constraint.id)!);
     const vec = new Float64Array(mO);
-    let w = 0;
+    let at0 = 0;
     let max = 0;
     for (const rs of others) {
-      const at0 = rowOffset.get(rs.constraint.id)!;
+      rs.eval(at, vec, at0);
       for (let r = 0; r < rs.rowCount; r += 1) {
-        const v = full[at0 + r]!;
-        vec[w] = v;
-        w += 1;
+        const v = vec[at0 + r]!;
         if (Math.abs(v) > max) max = Math.abs(v);
       }
+      at0 += rs.rowCount;
     }
     return { vec, max };
   };
@@ -1144,7 +1147,7 @@ function manifoldRankProbe(args: {
 
   if (!afford(mO * n)) return null;
   sink.used += mO * n;
-  const JoC = compact(jacRows(others, vars), others);
+  const JoC = jacRows(others, vars);
   if (!afford(mO)) return null;
   sink.used += mO;
   const baseMax = evalOthers(vars).max;
@@ -1199,7 +1202,7 @@ function manifoldRankProbe(args: {
       if (k === 4) break;
       if (!afford(mO * n)) return null;
       sink.used += mO * n;
-      const JkC = compact(jacRows(others, x1), others);
+      const JkC = jacRows(others, x1);
       if (!afford((mO + n) * n)) return null;
       sink.used += (mO + n) * n;
       const step = qrLeastSquaresStep(JkC, mO, n, cur.vec, Math.sqrt(1e-3 * kappaOf(JkC, mO)));
@@ -3118,7 +3121,6 @@ export function solveConstraints(entities: readonly Entity[], set: ConstraintSet
         if (work.used + comp.totalRows * comp.vars0.length <= work.limit) {
           const probe = manifoldRankProbe({
             residuals: comp.residuals,
-            rowOffset: comp.rowOffset,
             totalRows: comp.totalRows,
             vars: outcome.vars,
             S: comp.S,
@@ -3245,21 +3247,66 @@ export function analyzeConstraints(entities: readonly Entity[], set: ConstraintS
       workUsed: 0,
     };
   }
-  const inputIndex = new Map<string, number>(entities.map((e, i) => [e.id, i] as const));
-  const { layout, vars0 } = makeLayout(prep.participating, inputIndex);
-  let S = 1;
-  for (const v of vars0) if (Math.abs(v) > S) S = Math.abs(v);
-  for (const { c } of prep.active) if (c.value !== undefined && Math.abs(c.value) > S) S = Math.abs(c.value);
-
   const work: Work = { used: 0, limit: SOLVE_WORK_LIMIT };
+  const supportedActive = prep.active.filter(({ shape }) => shapeSupported(shape));
+  // Layout admission (round 4, R3-02): the variable layout and its
+  // linear Float64Array(totalVars) are admitted BEFORE they are
+  // allocated, on the same work discipline as every dense step —
+  // one work unit per variable of linear state, the element-count
+  // convention used throughout (the per-entity layout records are
+  // bounded by it: every participating entity contributes ≥ 2
+  // variables). Round 3 admitted only the rank machinery, so a
+  // participating polyline entered the layout whole — all of its
+  // vertices read into vars0 — even when the active constraints
+  // reference only its first segment, and the allocation preceded
+  // any budget object. prep.totalVars is a pure count (prepare
+  // allocates nothing vars-sized), so the check costs nothing. When
+  // the linear state itself cannot fit, no layout is built and no
+  // residual is evaluated: the report is the honest unknown — DOF
+  // totals and nominal consumption are counts and stay exact, the
+  // effective figures are the R12 stated unknown (-1), diagnostics
+  // carry no magnitudes (so nothing can report 'satisfied' from work
+  // that did not run — an absent magnitude never satisfies,
+  // diagSatisfied), and the status mirrors the normal precedence:
+  // unsupported constraints still report 'unsolved', everything else
+  // 'rank-unknown'. With no supported active constraint there is no
+  // residual or rank work at all — the layout would be dead weight —
+  // so it is not built either, and the report below is exact.
+  let layout: ReadonlyMap<string, EntVars> | null = null;
+  let vars0: Float64Array | null = null;
+  let S = 1;
+  if (supportedActive.length > 0) {
+    if (prep.totalVars > work.limit) {
+      const status: SolveStatus = prep.unsupported.length > 0 ? 'unsolved' : 'rank-unknown';
+      return {
+        problems: [],
+        dof: {
+          total,
+          nominalConsumed: prep.nominalConsumed,
+          effectiveConsumed: -1,
+          remaining: -1,
+          perEntity: prep.participating.map((e) => ({ entityId: e.id, dof: entityDof(e), remaining: -1 })),
+        },
+        diagnostics: buildDiagnostics(set, { magById: new Map(), redundant: new Set(), mode: status === 'unsolved' ? 'failed' : 'solved', geometry: entities, shapes }),
+        status,
+        workUsed: 0,
+      };
+    }
+    work.used += prep.totalVars;
+    const inputIndex = new Map<string, number>(entities.map((e, i) => [e.id, i] as const));
+    const built = makeLayout(prep.participating, inputIndex);
+    layout = built.layout;
+    vars0 = built.vars0;
+    for (const v of vars0) if (Math.abs(v) > S) S = Math.abs(v);
+    for (const { c } of prep.active) if (c.value !== undefined && Math.abs(c.value) > S) S = Math.abs(c.value);
+  }
   const magById = new Map<string, number>();
   const branchById = new Map<string, 'external' | 'internal'>();
   let effectiveConsumed = 0;
   let rankUnknown = false;
   const perEntityRemaining = new Map<string, number>();
-  const supportedActive = prep.active.filter(({ shape }) => shapeSupported(shape));
   if (supportedActive.length > 0) {
-    const residuals = supportedActive.map(({ c, shape }) => buildResidual(c, shape, layout, S, vars0)!);
+    const residuals = supportedActive.map(({ c, shape }) => buildResidual(c, shape, layout!, S, vars0!)!);
     for (const r of residuals) if (r.branch) branchById.set(r.constraint.id, r.branch);
     let totalRows = 0;
     const offsets = new Map<string, number>();
@@ -3268,14 +3315,14 @@ export function analyzeConstraints(entities: readonly Entity[], set: ConstraintS
       totalRows += r.rowCount;
     }
     const r0 = new Float64Array(totalRows);
-    for (const rs of residuals) rs.eval(vars0, r0, offsets.get(rs.constraint.id)!);
+    for (const rs of residuals) rs.eval(vars0!, r0, offsets.get(rs.constraint.id)!);
     for (const rs of residuals) {
       const at = offsets.get(rs.constraint.id)!;
       let m = 0;
       for (let i = 0; i < rs.rowCount; i += 1) m = Math.max(m, Math.abs(r0[at + i]!));
       magById.set(rs.constraint.id, m);
     }
-    const nVars = vars0.length;
+    const nVars = vars0!.length;
     // Rank admission (round 3, R2-02): analysis mirrors the solver's
     // budget discipline — every dense step is checked and charged
     // BEFORE it executes. The pointwise Jacobian costs rows·vars and
@@ -3292,7 +3339,7 @@ export function analyzeConstraints(entities: readonly Entity[], set: ConstraintS
       rankUnknown = true;
     } else {
       let J = new Float64Array(totalRows * nVars);
-      for (const rs of residuals) rs.jac(vars0, J, offsets.get(rs.constraint.id)!, nVars);
+      for (const rs of residuals) rs.jac(vars0!, J, offsets.get(rs.constraint.id)!, nVars);
       work.used += totalRows * nVars;
       effectiveConsumed = denseRank(J, totalRows, nVars);
       // Generic rank (F-3034-2 / round-2 C02, as in solveConstraints):
@@ -3306,7 +3353,7 @@ export function analyzeConstraints(entities: readonly Entity[], set: ConstraintS
       // not run, and the pointwise reading stands.
       if (effectiveConsumed < Math.min(totalRows, nVars) && residuals.some((rs) => rs.constraint.kind === 'tangent')) {
         if (work.used + totalRows * nVars <= work.limit) {
-          const probe = manifoldRankProbe({ residuals, rowOffset: offsets, totalRows, vars: vars0, S, work, budgeted: true });
+          const probe = manifoldRankProbe({ residuals, totalRows, vars: vars0!, S, work, budgeted: true });
           if (probe && probe.rank > effectiveConsumed) {
             J = probe.J;
             effectiveConsumed = probe.rank;
@@ -3317,7 +3364,7 @@ export function analyzeConstraints(entities: readonly Entity[], set: ConstraintS
       const colsSoFar: number[] = [];
       let budgetOut = false;
       for (const e of prep.participating) {
-        const ev = layout.get(e.id)!;
+        const ev = layout!.get(e.id)!;
         for (let vI = 0; vI < ev.count; vI += 1) colsSoFar.push(ev.offset + vI);
         if (budgetOut || work.used + totalRows * colsSoFar.length > work.limit) {
           budgetOut = true;
