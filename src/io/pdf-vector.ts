@@ -38,8 +38,8 @@ import { polylineWidthGeometry, strokeOutlinePolygons } from '../core/polyline-w
 import { aciToCss } from '../render/palette';
 import { strokeText, strokeTextWidth, expandControlCodes, textRenderer, CAP_HEIGHT_EM } from '../render/hershey';
 import { placedText } from '../core/text-placement';
-import { metricTextPlacement, textFontKey, type TextGeometryContext } from '../core/text-metrics';
-import { PdfFontRegistry, writePdfFontResources } from './pdf-fonts';
+import { metricTextPlacement, textFontKey, type TextAppearance, type TextGeometryContext } from '../core/text-metrics';
+import { PdfFontRegistry, utf16Hex, writePdfFontResources, type PdfFontFace, type PdfShapedLine } from './pdf-fonts';
 import { hasMTextFill, hasMTextFrame } from '../core/mtext-background';
 import { findLinetype, effectiveLinetype, isByBlock, type Linetype } from '../core/linetypes';
 import type { TextStyle } from './encoding';
@@ -152,6 +152,9 @@ export interface PdfDrawingContext {
   readonly textStyles?: Readonly<Record<string, TextStyle>>;
   /** Licensed programs and matching metrics local to this captured vector plot. */
   readonly embeddedFonts?: PdfFontRegistry;
+  /** Shaped-line plans for captured text (12.5 step 3), built by
+   * the capture layer from prepared shaping state. */
+  readonly shapedText?: (text: string, appearance: TextAppearance) => PdfShapedLine | null;
   readonly textGeometry?: TextGeometryContext;
   readonly fontFallbacks?: Set<string>;
   /** Bitmap of an IMAGE entity's file (null: the frame and file name are plotted instead). */
@@ -836,12 +839,67 @@ class PageWriter {
     this.ops.push(`q ${clip} ${n(ux)} ${n(uy)} ${n(vx)} ${n(vy)} ${n(o.x)} ${n(o.y)} cm /${name} Do Q`);
   }
 
+  /**
+   * Emit one prepared shaped line (12.5 step 3): a single
+   * marked-content span whose ActualText is the line's complete
+   * logical text (§5.4), holding per-segment text ops in visual
+   * order. Shaped glyphs are placed individually — their own Tm
+   * per glyph, computed in text-direction space and mirrored for
+   * RTL items — because GPOS offsets have no Tj/TJ equivalent.
+   * Direct segments keep their direct codes as one Tj at their
+   * visual position.
+   */
+  private shapedLine(e: TextEntity, plan: PdfShapedLine, face: PdfFontFace): void {
+    const placed = metricTextPlacement(e, this.ctx.textGeometry!);
+    const t = placed.text, wf = t.widthFactor ?? 1, slant = Math.tan(t.oblique ?? 0);
+    const size = t.height * this.tf.k * face.metrics.unitsPerEm / face.metrics.capitalHeight;
+    const c = Math.cos(t.rotation + this.tf.rotation), s = Math.sin(t.rotation + this.tf.rotation);
+    const p = this.pt(t.position), off = placed.offset * wf * this.tf.k;
+    const a = wf * c, b = wf * s, cc = slant * c - s, d = slant * s + c;
+    const ox = p.x + off * c, oy = p.y + off * s;
+    const fmt = (value: number): string => {
+      if (!Number.isFinite(value) || Math.abs(value) >= 1e21) throw new Error('PDF text transform exceeds the supported numeric range.');
+      const result = value.toFixed(6).replace(/\.?0+$/, '');
+      return result === '-0' || !result ? '0' : result;
+    };
+    const code4 = (code: number): string => code.toString(16).toUpperCase().padStart(4, '0');
+    const upem = face.metrics.unitsPerEm;
+    const totalEm = plan.segments.reduce((sum, segment) => sum + segment.advance / upem, 0);
+    let visualPen = 0;
+    const ops: string[] = [];
+    for (const segment of plan.segments) {
+      const segmentEm = segment.advance / upem;
+      const segmentLeft = plan.baseDirection === 'rtl' ? totalEm - visualPen - segmentEm : visualPen;
+      visualPen += segmentEm;
+      this.fonts.add(segment.resourceName);
+      ops.push(`/${segment.resourceName} ${fmt(size)} Tf`);
+      if (segment.kind === 'direct') {
+        // Tm translations are user-space units: an em offset is
+        // size user units along the text direction.
+        ops.push(`${fmt(a)} ${fmt(b)} ${fmt(cc)} ${fmt(d)} ${fmt(ox + size * a * segmentLeft)} ${fmt(oy + size * b * segmentLeft)} Tm <${segment.hex}> Tj`);
+        continue;
+      }
+      let pen = 0, penY = 0;
+      for (const glyph of segment.glyphs) {
+        const posTd = pen + glyph.xOffset;
+        const u = segment.direction === 'ltr'
+          ? segmentLeft + posTd / upem
+          : segmentLeft + segmentEm - (posTd + glyph.xAdvance) / upem;
+        const v = (penY + glyph.yOffset) / upem;
+        ops.push(`${fmt(a)} ${fmt(b)} ${fmt(cc)} ${fmt(d)} ${fmt(ox + size * (a * u + cc * v))} ${fmt(oy + size * (b * u + d * v))} Tm <${code4(glyph.code)}> Tj`);
+        pen += glyph.xAdvance;
+        penY += glyph.yAdvance;
+      }
+    }
+    this.ops.push(`/Span <</ActualText <FEFF${utf16Hex(plan.logicalText)}>>> BDC BT ${ops.join(' ')} ET EMC`);
+  }
+
   private text(e: TextEntity): void {
     const raw = e.text.includes('%%') ? e.text.replace(/%%[uUoOkK]/g, '') : e.text;
     const text = expandControlCodes(raw);
     if (!text.trim()) return;
-    const r = textRenderer(textStyleOf(e), this.ctx.textStyles);
     const appearance = this.ctx.textGeometry?.resolve(e);
+    const r = appearance ?? textRenderer(textStyleOf(e), this.ctx.textStyles, text);
     const shx = appearance && this.ctx.textGeometry?.shxRun?.(raw, e.height, appearance);
     if (shx?.ok) {
       const placed = metricTextPlacement(e, this.ctx.textGeometry!);
@@ -863,6 +921,13 @@ class PageWriter {
     }
     if (appearance?.kind === 'canvas' && this.ctx.embeddedFonts) {
       const key = textFontKey(appearance), face = this.ctx.embeddedFonts.face(key);
+      if (face && this.ctx.shapedText) {
+        const plan = this.ctx.shapedText(text, appearance);
+        if (plan) {
+          this.shapedLine(e, plan, face);
+          return;
+        }
+      }
       const run = this.ctx.embeddedFonts.encode(key, text);
       if (face && run) {
         const placed = metricTextPlacement(e, this.ctx.textGeometry!);
@@ -879,6 +944,9 @@ class PageWriter {
         this.ops.push(`BT /${run.resourceName} ${numbers[0]} Tf ${numbers.slice(1).join(' ')} Tm <${run.hex}> Tj ET`);
         return;
       }
+    }
+    if (r.kind === 'canvas' && !isWinAnsi(text) && (r.strokeFallback || /\p{Script=Han}/u.test(text))) {
+      throw new Error(`Unicode text cannot be plotted with the available embedded font (${r.family.split(',')[0]}). Choose Raster image output to use the installed Unicode font substitute.`);
     }
     if (r.kind === 'canvas' && this.ctx.fontFallbacks) this.ctx.fontFallbacks.add(r.family.split(',')[0]!);
     const initialWidthFactor = e.widthFactor !== undefined && Number.isFinite(e.widthFactor) && e.widthFactor > 0 ? e.widthFactor : r.widthFactor;
@@ -1012,6 +1080,12 @@ export function assembleVectorPdf(rendered: readonly RenderedPage[], title = 'Dr
   set(f2, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
   const fontObjects = new Map<PdfFontRegistry, ReadonlyMap<string, number>>();
   for (const pg of rendered) if (pg.embeddedFonts && !fontObjects.has(pg.embeddedFonts)) fontObjects.set(pg.embeddedFonts, writePdfFontResources(pg.embeddedFonts, { reserve, set }));
+  // Only resources actually emitted can raise the ordinary PDF 1.4 baseline.
+  let version: readonly [number, number] = [1, 4];
+  for (const registry of fontObjects.keys()) {
+    const required = registry.requiredVersion;
+    if (required[0] > version[0] || required[0] === version[0] && required[1] > version[1]) version = required;
+  }
   const kids: number[] = [];
   rendered.forEach((pg, i) => {
     const pageNum = reserve();
@@ -1060,7 +1134,7 @@ export function assembleVectorPdf(rendered: readonly RenderedPage[], title = 'Dr
   const info = reserve();
   set(info, `<< /Title ${pdfString(title)} /Producer (JCad Electrical) /Creator (JCad Electrical vector plot) >>`);
 
-  const head = enc.encode('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n');
+  const head = enc.encode(`%PDF-${version[0]}.${version[1]}\n%\xE2\xE3\xCF\xD3\n`);
   const parts: Uint8Array[] = [head];
   let offset = head.length;
   const offsets: number[] = [];

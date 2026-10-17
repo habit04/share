@@ -1,0 +1,174 @@
+{
+ "plaintext": "fixtures/plaintext.pdf",
+ "encrypted": "fixtures/restricted.enc-known.pdf",
+ "owner_password_checked": true,
+ "checks": [
+  {
+   "name": "empty password authenticates as USER password",
+   "ok": true,
+   "detail": "decrypt('') -> 1"
+  },
+  {
+   "name": "owner password authenticates as OWNER password",
+   "ok": true,
+   "detail": "decrypt(owner) -> 2"
+  },
+  {
+   "name": "wrong password is refused",
+   "ok": true,
+   "detail": "decrypt(wrong) -> 0"
+  },
+  {
+   "name": "plaintext fixture is not itself encrypted",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "name": "header is exactly %PDF-1.7",
+   "ok": true,
+   "detail": "b'%PDF-1.7'"
+  },
+  {
+   "name": "plaintext header is %PDF-1.4 (writer output unchanged)",
+   "ok": true,
+   "detail": "b'%PDF-1.4'"
+  },
+  {
+   "name": "catalog declares ExtensionLevel 8",
+   "ok": true,
+   "detail": "{'/BaseVersion': '/1.7', '/ExtensionLevel': 8}"
+  },
+  {
+   "name": "catalog declares BaseVersion /1.7",
+   "ok": true,
+   "detail": "/1.7"
+  },
+  {
+   "name": "/V is 5",
+   "ok": true,
+   "detail": "5"
+  },
+  {
+   "name": "/R is 6",
+   "ok": true,
+   "detail": "6"
+  },
+  {
+   "name": "/P is exactly -1324 (P2 profile)",
+   "ok": true,
+   "detail": "-1324"
+  },
+  {
+   "name": "/Filter is /Standard",
+   "ok": true,
+   "detail": "/Standard"
+  },
+  {
+   "name": "/Length is 256 bits",
+   "ok": true,
+   "detail": "256"
+  },
+  {
+   "name": "StdCF /CFM is /AESV3",
+   "ok": true,
+   "detail": "/AESV3"
+  },
+  {
+   "name": "StdCF /AuthEvent is /DocOpen",
+   "ok": true,
+   "detail": "/DocOpen"
+  },
+  {
+   "name": "/StmF is /StdCF",
+   "ok": true,
+   "detail": "/StdCF"
+  },
+  {
+   "name": "/StrF is /StdCF",
+   "ok": true,
+   "detail": "/StdCF"
+  },
+  {
+   "name": "/EncryptMetadata resolves to true (metadata encrypted)",
+   "ok": true,
+   "detail": "absent: PDF default is true"
+  },
+  {
+   "name": "/O is 48 bytes",
+   "ok": true,
+   "detail": "len=48"
+  },
+  {
+   "name": "/U is 48 bytes",
+   "ok": true,
+   "detail": "len=48"
+  },
+  {
+   "name": "/OE is 32 bytes",
+   "ok": true,
+   "detail": "len=32"
+  },
+  {
+   "name": "/UE is 32 bytes",
+   "ok": true,
+   "detail": "len=32"
+  },
+  {
+   "name": "/Perms is 16 bytes",
+   "ok": true,
+   "detail": "len=16"
+  },
+  {
+   "name": "/ID is a well-formed pair of 16-byte strings",
+   "ok": true,
+   "detail": "len=[16, 16]"
+  },
+  {
+   "name": "page counts match",
+   "ok": true,
+   "detail": "1 vs 1"
+  },
+  {
+   "name": "page 0 content stream bytes identical (stored streams preserved)",
+   "ok": true,
+   "detail": "len 100 vs 100"
+  },
+  {
+   "name": "extracted text identical",
+   "ok": true,
+   "detail": "'ABBA'"
+  },
+  {
+   "name": "font BaseFont sets match by role",
+   "ok": true,
+   "detail": "[('page0:/JCF1', '/JCadArialRegular')] vs [('page0:/JCF1', '/JCadArialRegular')]"
+  },
+  {
+   "name": "font /JCadArialRegular fontfile bytes identical",
+   "ok": true,
+   "detail": "len 812 vs 812"
+  },
+  {
+   "name": "font /JCadArialRegular tounicode bytes identical",
+   "ok": true,
+   "detail": "len 346 vs 346"
+  },
+  {
+   "name": "document Info metadata identical",
+   "ok": true,
+   "detail": "{'/Creator': 'JCad Electrical vector plot', '/Producer': 'JCad Electrical', '/Title': 'Restricted Fixture'} vs {'/Title': 'Restricted Fixture', '/Producer': 'JCad Electrical', '/Creator': 'JCad Electrical vector plot'}"
+  },
+  {
+   "name": "role census matches",
+   "ok": true,
+   "detail": "census {'pages': 1, 'content_streams': 1, 'fonts': 1, 'font_files': 1, 'tounicode': 1, 'total_streams': 4} vs {'pages': 1, 'content_streams': 1, 'fonts': 1, 'font_files': 1, 'tounicode': 1, 'total_streams': 4}; differing roles: []; plaintext roles that failed extraction: []"
+  },
+  {
+   "name": "all stream /Length values (incl. indirect) match the stored bytes",
+   "ok": true,
+   "detail": "audited=11 problems=[]"
+  }
+ ],
+ "passed": 33,
+ "total": 33
+}

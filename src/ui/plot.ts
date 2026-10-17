@@ -1,7 +1,7 @@
 /** Plot / Print dialog: paper size, orientation, scale and margins (remembered in settings). */
 import type { Editor } from '../app/editor';
 import { modal, button, dlgRow, dlgGroup, dlgCheck, numberInput, selectInput } from './dialogkit';
-import { PAPER_SIZES, PLOT_SCALES, layoutPage, type PlotOptions } from '../app/plot';
+import { PAPER_SIZES, PLOT_SCALES, layoutPage, restrictedPdfOffered, type PlotOptions } from '../app/plot';
 import { saveSettings } from '../app/settings';
 // Track E: layouts plot their page setup; vector PDF output and plot styles.
 import { activeLayout, layoutsOf, paperLabel, sheetInches } from '../core/layouts';
@@ -101,15 +101,44 @@ export function plotDialog(editor: Editor, mode: 'pdf' | 'print'): Promise<PlotC
       screenRow.style.display = !selection && opts.style === 'screening' ? '' : 'none';
     }, (busy) => { styleLoading = busy; pdf.disabled = print.disabled = !b || busy; });
     m.onClose(() => picker.dispose());
+    // Milestone 12.4: opt-in per plot, never remembered in settings. The
+    // wording is deliberate: the output CARRIES editing restrictions (a
+    // request recorded in the file); some viewers ignore permission
+    // flags, so it is not a guarantee that the file cannot be edited.
+    // Corrections round: the option is offered ONLY where it can complete
+    // — the Windows desktop host's vector route (restrictedPdfOffered).
+    // On any other bridge it is not shown at all, and switching the output
+    // to Raster image clears a chosen restriction HERE, in the dialog,
+    // with guidance — before any destination is chosen or anything is
+    // written, never as a silent ordinary raster write at save time.
+    const restrictedRow = mode === 'pdf' && restrictedPdfOffered(editor.fileBridge)
+      ? dlgCheck('PDF with editing restrictions (for preview/print fonts)', false, (v) => (opts.security = v ? 'restricted-p2' : 'none'))
+      : null;
+    const restrictedInput = restrictedRow?.querySelector('input') ?? null;
+    const restrictedNote = document.createElement('div');
+    restrictedNote.className = 'dlg-note';
+    const syncRestricted = () => {
+      if (!restrictedInput) return;
+      const vectorOutput = opts.output !== 'raster';
+      restrictedInput.disabled = !vectorOutput;
+      if (!vectorOutput && opts.security === 'restricted-p2') {
+        opts.security = 'none';
+        restrictedInput.checked = false;
+        restrictedNote.textContent = 'Editing restrictions need Vector PDF output, so the restriction was turned off. Nothing has been written.';
+      } else {
+        restrictedNote.textContent = '';
+      }
+    };
     m.body.append(
       dlgGroup('Output', [
-        dlgRow('PDF output', selectInput([['vector', 'Vector (recommended)'], ['raster', 'Raster image']], opts.output!, (v) => (opts.output = v as PlotOptions['output']))),
+        dlgRow('PDF output', selectInput([['vector', 'Vector (recommended)'], ['raster', 'Raster image']], opts.output!, (v) => { opts.output = v as PlotOptions['output']; syncRestricted(); })),
         dlgRow('What to plot', selectInput([['current', layout ? `Current layout (${layout.name})` : 'Model tab'], ['layouts', 'All layouts (one page each)']], opts.what!, (v) => ((opts.what = v as PlotOptions['what']), refresh()))),
         dlgRow('Built-in plot mode', builtInStyle),
         picker.element,
         screenRow,
         dlgCheck('Plot object lineweights', opts.lineweights !== false, (v) => (opts.lineweights = v)),
         dlgCheck('Plot with plot styles', opts.usePlotStyles !== false, (v) => (opts.usePlotStyles = v)),
+        ...(restrictedRow ? [restrictedRow, restrictedNote] : []),
       ]),
       preview,
     );

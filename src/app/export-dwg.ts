@@ -4,7 +4,7 @@
  */
 import { withoutUnusedLibraryBlocks } from '../electrical/library';
 import { writeDxf } from '../io/dxf';
-import { countOf, importReportOf, saveOverwriteWarning } from '../io/import-report';
+import { countOf, importReportOf, isPartialImport, partialImportSaveBlock, saveOverwriteWarning } from '../io/import-report';
 import { samePath } from './paths';
 import { captureRevision, saveQueue } from './savequeue';
 import { describeFileError } from './file-errors';
@@ -70,6 +70,8 @@ export async function exportDwgCopy(ed: Editor): Promise<boolean> {
     return false;
   };
   let target: string | null = null;
+  const partialRefusal = (unverified = false): string | null => partialImportSaveBlock(state, target)
+    ?? (unverified && isPartialImport(state) && admission.destinationExists !== false ? 'This partial import cannot replace an existing file while its original source identity is unverified. Choose a new file to preserve the original.' : null);
   // A DWG copy cannot hold the experimental 3D solids (the portable writer would drop them), so
   // the export is refused, never written without them: same policy as a DWG Save.
   const refusal = model3dDwgRefusal(state);
@@ -90,8 +92,19 @@ export async function exportDwgCopy(ed: Editor): Promise<boolean> {
       target = await bridge.chooseDwgPath(suggest);
       if (!target) return false;
       if (!unchanged()) return changed();
+      // A partial import must never overwrite its source file (see io/import-report.ts):
+      // a hard block here, not the confirm-over warning below.
+      const block = partialImportSaveBlock(state, target);
+      if (block) {
+        ed.lastFileError = block;
+        ed.log(`Not saved: ${block}`);
+        return false;
+      }
       await admission.bind(target);
-      const warning = await unverifiedImportSource(bridge, state) ? UNVERIFIED_SOURCE_WARNING : overwriteWarning(state, target);
+      const unverified = await unverifiedImportSource(bridge, state);
+      const warning = unverified ? UNVERIFIED_SOURCE_WARNING : overwriteWarning(state, target);
+      const resolvedBlock = partialRefusal(unverified);
+      if (resolvedBlock) { ed.lastFileError = resolvedBlock; ed.log(`Not saved: ${resolvedBlock}`); return false; }
       if (!warning) break;
       // Ask every time the original is selected; no previous SAVE acknowledgment authorizes
       // a DWG export to replace a source file with content the importer could not keep.
@@ -104,10 +117,15 @@ export async function exportDwgCopy(ed: Editor): Promise<boolean> {
       if (approved) break;
       await admission.close(); admission = new SaveAdmission(bridge, 'export-copy'); await admission.ready;
     }
+    const unverified = await unverifiedImportSource(bridge, state);
+    const sourceOverwrite = unverified || !!overwriteWarning(state, target);
+    const resolvedBlock = partialRefusal(unverified);
+    if (resolvedBlock) { ed.lastFileError = resolvedBlock; ed.log(`Not saved: ${resolvedBlock}`); return false; }
     const text = writeDxf(withoutUnusedLibraryBlocks(state));
-    const sourceOverwrite = await unverifiedImportSource(bridge, state) || !!overwriteWarning(state, target);
     const result = await saveQueue.run(target, revision, async () => {
       if (!sessionExists() || (sourceOverwrite && !unchanged())) return Promise.resolve(null);
+      const block = partialRefusal(unverified);
+      if (block) { ed.lastFileError = block; ed.log(`Not saved: ${block}`); return null; }
       ed.log('Exporting a DWG copy. Save the working drawing separately to keep edits and recovery records current.');
       const saved = admission.ticket ? await bridge.exportDwg(target!, text, admission.ticket) : await bridge.exportDwg(target!, text);
       await admission.confirmSaved(saved); return saved;

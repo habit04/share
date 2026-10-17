@@ -15,7 +15,7 @@
  *   updates.cjs       app info, external links, update checks and status
  *   handover.cjs      files handed over by the OS and by a second launch
  */
-const { app, BrowserWindow, session, ipcMain: rawIpcMain, protocol, net } = require('electron');
+const { app, BrowserWindow, session, ipcMain: rawIpcMain, protocol, net, dialog } = require('electron');
 const { createGPUCollector } = require('./gpu-diagnostics.cjs');
 const gpuCollector = createGPUCollector(app, { versions: {
   jcad: app.getVersion(), electron: process.versions.electron, chromium: process.versions.chrome,
@@ -48,6 +48,8 @@ const { registerShxIpc } = require('./main/ipc-shx.cjs');
 const { registerUpdatesIpc } = require('./main/updates.cjs');
 const { createHandover } = require('./main/handover.cjs');
 const { createFontMetricsHost } = require('./font-metrics-host.cjs');
+const { createRestrictedPdfHost } = require('./restricted-pdf/host.cjs');
+const { createRestrictedPdfRegistry } = require('./restricted-pdf/registry.cjs');
 const { runShippingProbe, shippingProbePhase } = require('./main/shipping-probe.cjs');
 let probePhase = null;
 try { probePhase = shippingProbePhase(process.argv); }
@@ -99,13 +101,20 @@ function senderWindow(/** @type {Electron.IpcMainInvokeEvent} */ ev) {
   return win;
 }
 
+const fontMetricsHost = process.platform === 'win32' ? createFontMetricsHost() : null;
+/**
+ * Restricted PDF services (milestone 12.4): the qpdf transform host and the
+ * job registration registry, both Windows-only like the font host they bind
+ * to (the registry's mode proof reads the font host's admission records).
+ */
+const restrictedPdf = fontMetricsHost ? { host: createRestrictedPdfHost(), registry: createRestrictedPdfRegistry({ fontHost: fontMetricsHost }) } : null;
 /**
  * What the modules under electron/main/ share (electron/main/context.cjs): the guarded ipcMain
  * and the path registry and policy above - the only way they register handlers and grant or
  * check paths - and the main window.
  * @type {import('./main/context.cjs').MainContext}
  */
-const ctx = { ipcMain, rejections, registry, pathPolicy, senderWindow, mainWindow: null, openFilesReady: false, handedOverProjects: new Set() };
+const ctx = { ipcMain, rejections, registry, pathPolicy, senderWindow, mainWindow: null, openFilesReady: false, handedOverProjects: new Set(), restrictedPdf };
 ipcMain.handle('gpu-diagnostics', () => gpuCollector.get());
 
 function loadPersistedPaths() {
@@ -126,13 +135,16 @@ registerStoreIpc(ctx);
 registerShxIpc(ctx);
 registerMenuIpc(ctx);
 registerUpdatesIpc(ctx);
-const fontMetricsHost = process.platform === 'win32' ? createFontMetricsHost() : null;
 if (fontMetricsHost) ipcMain.handle('font-metrics', (_event, request) => fontMetricsHost.read(request).catch(() => null));
 if (fontMetricsHost) ipcMain.handle('pdf-font', async (_event, request) => {
   try { return { font: await fontMetricsHost.readPdf(request) }; }
   catch (error) { return { font: null, problem: String(error?.message || 'Installed font embedding unavailable.') }; }
 });
-app.on('will-quit', () => { void fontMetricsHost?.dispose(); });
+if (fontMetricsHost) ipcMain.handle('shape-font', async (_event, request) => {
+  try { return { shaped: await fontMetricsHost.readShape(request) }; }
+  catch (error) { return { shaped: null, problem: String(error?.message || 'Text shaping unavailable.') }; }
+});
+app.on('will-quit', () => { void fontMetricsHost?.dispose(); void restrictedPdf?.host.dispose(); restrictedPdf?.registry.retireAll(); });
 
 // Headless probe used by packaging smoke tests:  jcad --probe-dwg <file.dwg>
 const probeIndex = process.argv.indexOf('--probe-dwg');
@@ -187,11 +199,19 @@ app.whenReady().then(async () => {
       if (checkpoint !== null) rendererStorage = { values: checkpoint, source: 'checkpoint' };
       else if (!fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated'))) {
         const values = fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')) ? await legacyStorage({ BrowserWindow, protocol, indexFile: path.join(__dirname, '..', 'dist', 'index.html') }) : {};
-        rendererStorage = values === null ? null : { values, source: 'legacy' };
+        if (values === null) throw new Error('Legacy settings could not be read completely');
+        rendererStorage = { values, source: 'legacy' };
       }
     } catch (error) {
       // An unreadable/corrupt checkpoint must not fall back to stale legacy values.
       logMainError('renderer preference migration', error);
+      // Opening an empty origin here would let its preload commit an empty
+      // checkpoint and permanent marker over settings we never read successfully.
+      try {
+        dialog.showErrorBox('JCad Electrical could not read its saved settings',
+          'Startup stopped to preserve your existing settings. No settings were reset. Restart JCad Electrical to retry. If the problem continues, contact support before resetting settings.');
+      } finally { app.quit(); }
+      return;
     }
   }
   loadPersistedPaths();

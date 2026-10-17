@@ -5,12 +5,13 @@ import { constants, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fontCollection, fontCollectionV2, fontTable, nativeFontFixture } from './helpers/native-font-fixture';
+import { cffFontFixture } from './helpers/cff-font-fixture';
 import type { NativeFontMetrics } from '../src/core/text-metrics';
 
 type Request = { font: string; family?: string; bold?: boolean; italic?: boolean };
 type Options = { fontsDirectory?: string };
 type Data = { bytes: Uint8Array; metrics: NativeFontMetrics & { resolvedFilename: string } };
-type Face = Data & { postscriptName: string; ascender: number; descender: number; italicAngle: number; weight: number; isFixedPitch: boolean; os2Version: number };
+type Face = Data & { outline: 'glyf' | 'cff'; postscriptName: string; ascender: number; descender: number; italicAngle: number; weight: number; isFixedPitch: boolean; os2Version: number };
 const require = createRequire(import.meta.url);
 const { readWindowsPdfFont, pdfFontEmbeddingProblem } = require('../electron/pdf-font.cjs') as {
   readWindowsPdfFont(request: Request, options?: Options): Promise<Face>;
@@ -202,9 +203,19 @@ describe('PDF source font descriptors from exact validated bytes', () => {
     const bytes = pdfFixture(); bytes.write(tag, fontTable(bytes, 'post').record, 'ascii');
     await expect(readFixture(bytes)).rejects.toThrow(/unsupported/);
   });
-  it('refuses CFF outlines', async () => {
+  it('refuses a mismatched CFF signature over TrueType tables', async () => {
     const bytes = pdfFixture(); bytes.write('OTTO', 0, 'ascii');
     await expect(readFixture(bytes)).rejects.toThrow('CFF');
+  });
+  it('reads an actual standalone CFF program through the confined reader', async () => {
+    const bytes = cffFontFixture({ family: 'JCad Fixture', fsType: 8 });
+    const font = await readFixture(bytes);
+    expect(font.outline).toBe('cff'); expect(font.bytes).toEqual(bytes);
+    expect(font.postscriptName).toBe('JCadCFFFixture-Regular');
+    expect(font.metrics.faceIndex).toBe(0); expect(font.metrics.capitalHeight).toBe(730);
+  });
+  it.each([2, 4, 0x208])('retains CFF program permission refusal %i', async (fsType) => {
+    await expect(readFixture(cffFontFixture({ family: 'JCad Fixture', fsType }))).rejects.toThrow(/restricted|read-only|bitmap-only/);
   });
 });
 

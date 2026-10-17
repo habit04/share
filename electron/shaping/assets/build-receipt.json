@@ -1,0 +1,25 @@
+{
+ "artifact": "harfbuzz shaping engine, capped self-build (contract v4 section 9.2)",
+ "declaredMaximumMemoryBytes": 268435456,
+ "engineIdentity": "harfbuzz 14.6.0 via harfbuzzjs 1.6.3 (self-build cap-256MiB)",
+ "files": {
+  "harfbuzz.js": {
+   "bytes": 42873,
+   "sha256": "244ce4998115b44ea98a2288ddd6aefd981257797f206763ddd325e632de76ac"
+  },
+  "harfbuzz.wasm": {
+   "bytes": 445284,
+   "sha256": "49ee0c0de1d0ee1b6d69dd0305e1317f001cfa12e55543c7287a3f61bb590acb"
+  },
+  "index.mjs": {
+   "bytes": 82693,
+   "sha256": "04ece1914c8720ad96257728119c1bf24088ee4ef3ab2a2ca688c9a4895d4e7e"
+  }
+ },
+ "provenance": "Built and binary-inspected in the 12.5 spike (declared maximum 4,096 pages = 256 MiB, parsed from the wasm memory section, not a runtime promise). The stock 1.6.3 wasm (declares 2 GiB) is NOT adoptable. Any rebuild (toolchain, flag, or version change) re-runs the binary inspection and the abuse matrix before adoption (contract section 9.2).",
+ "recipe": "upstream harfbuzzjs `make harfbuzz` (em++ -Oz) under Emscripten 3.1.74, stock flags plus exactly one added linker flag: -s MAXIMUM_MEMORY=268435456",
+ "upstream": "HarfBuzz 14.6.0",
+ "wrapper": "harfbuzzjs 1.6.3 (npm, MIT)",
+ "shapingDataVersion": "unicode-18.0.0",
+ "shapingDataVersionEvidence": "The harfbuzzjs 1.6.3 build source's generated classification table header (src/hb-ucd-table.hh, produced by gen-ucd-table.py) records 'Unicode 18.0.0'. The renderer's own pipeline pins UCD 15.1.0; both versions are carried in every ShapeKey."
+}

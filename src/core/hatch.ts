@@ -86,18 +86,32 @@ export interface HatchLoop {
   readonly bulges?: readonly number[];
 }
 
+/**
+ * Tessellation steps loopPolygon inserts for one bulged segment: one step per 11.25 degrees
+ * of arc sweep (bulge = tan(sweep / 4)), at least 2 and at most 32 (a near-full circle).
+ * The geometry work model (entityGeometryWork) charges by this same count, so the renderer
+ * and the budget agree vertex for vertex.
+ */
+export function bulgeArcSteps(bulge: number): number {
+  const sweep = 4 * Math.atan(bulge);
+  return Math.max(2, Math.ceil(Math.abs(sweep) / (Math.PI / 16)));
+}
+
+/** Shared numerical admission rule for hatch tessellation and its work budget. */
+export const isHatchBulge = (bulge: number): boolean => Math.abs(bulge) > 1e-12;
+
 /** Tessellate a bulged closed loop into polygon vertices (no repeated start point). */
 export function loopPolygon(loop: HatchLoop): Point[] {
   const pts = loop.points;
   const n = pts.length;
-  if (!loop.bulges || !loop.bulges.some((b) => Math.abs(b) > 1e-12)) return [...pts];
+  if (!loop.bulges || !loop.bulges.some(isHatchBulge)) return [...pts];
   const out: Point[] = [];
   for (let i = 0; i < n; i += 1) {
     const a = pts[i]!;
     const b = pts[(i + 1) % n]!;
     out.push(a);
     const bulge = loop.bulges[i] ?? 0;
-    if (Math.abs(bulge) < 1e-12 || g.eq(a, b)) continue;
+    if (!isHatchBulge(bulge) || g.eq(a, b)) continue;
     const sweep = 4 * Math.atan(bulge);
     const chord = g.dist(a, b);
     const r = chord / (2 * Math.sin(Math.abs(sweep) / 2));
@@ -107,7 +121,7 @@ export function loopPolygon(loop: HatchLoop): Point[] {
     const side = Math.abs(sweep) <= Math.PI ? Math.sign(sweep) : -Math.sign(sweep);
     const c = { x: m.x + nrm.x * dd * side, y: m.y + nrm.y * dd * side };
     const a0 = g.angleOf(c, a);
-    const steps = Math.max(2, Math.ceil(Math.abs(sweep) / (Math.PI / 16)));
+    const steps = bulgeArcSteps(bulge);
     for (let k = 1; k < steps; k += 1) out.push(g.polar(c, a0 + (sweep * k) / steps, r));
   }
   return out;

@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { _electron as electron } from 'playwright';
 import { applicationWindow } from './electron-window.mjs';
+import { originFailureDiagnostics } from './origin-failure-diagnostics.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
 const packagedArg = process.argv.indexOf('--packaged');
@@ -45,6 +46,8 @@ try {
 
   for (let launch = 0; launch < 3; launch++) {
     const app = await electron.launch({ ...(executable ? { executablePath: executable } : {}), args: [...(executable ? [] : ['.']), `--user-data-dir=${profile}`, ...linuxTestArgs], cwd: repo, env, timeout: 60_000 });
+    const diagnostic = originFailureDiagnostics(app, { profile, output: process.env.JCAD_E2E_OUT, launch });
+    let failed = false;
     try {
       const page = await applicationWindow(app);
       const errors = [];
@@ -90,7 +93,16 @@ try {
         localStorage.setItem('jcad-origin-test', 'newest preference');
       });
       console.log(`Secure renderer origin and preference migration: launch ${launch + 1} passed.`);
-    } finally { await app.close(); }
+    } catch (error) {
+      failed = true;
+      await diagnostic.capture(error);
+      throw error;
+    } finally {
+      diagnostic.stop();
+      // Keep the actual assertion/launch failure if owned cleanup also reports an error.
+      if (failed) { try { await app.close(); } catch (error) { console.error(`Origin cleanup after failure: ${String(error).slice(0, 2048)}`); } }
+      else await app.close();
+    }
     if (launch === 1) {
       // Emulate lost Chromium DOM storage after a completed quit. Keep the durable private
       // checkpoint and migration marker; the next immediate launch must recover the latest state.

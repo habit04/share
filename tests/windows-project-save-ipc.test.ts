@@ -26,11 +26,52 @@ const { createPathPolicy, guardIpc } = require('../ipc-guard.cjs') as {
   createPathPolicy(deps: unknown): unknown; guardIpc(raw: unknown, options: unknown): unknown;
 };
 const nativeFixture = readFileSync(new URL('./fixtures/interchange/r2018-shx-text.dxf', import.meta.url), 'utf8');
-let dir: string;
-beforeEach(async () => { dir = await fs.mkdtemp(path.join(tmpdir(), 'jcad-native-project-save-')); });
-afterEach(async () => { vi.restoreAllMocks(); await fs.rm(dir, { recursive: true, force: true }); });
+type NativeTestOwner = {
+  directory: string;
+  signal: AbortSignal;
+  abort(): void;
+  tasks: Set<Promise<unknown>>;
+  fixtures: Set<{ close(): Promise<void> }>;
+};
+const privateTempRoot = path.resolve(tmpdir());
+let dir: string, owner: NativeTestOwner;
+function track<T>(scope: NativeTestOwner, promise: Promise<T>) {
+  scope.tasks.add(promise);
+  void promise.then(() => scope.tasks.delete(promise), () => scope.tasks.delete(promise));
+  return promise;
+}
+beforeEach(async ({ signal, onTestFinished }) => {
+  dir = await fs.mkdtemp(path.join(privateTempRoot, 'jcad-native-project-save-'));
+  const controller = new AbortController();
+  const scope: NativeTestOwner = {
+    directory: dir, signal: controller.signal, tasks: new Set(), fixtures: new Set(),
+    abort() {
+      controller.abort();
+      for (const fixture of scope.fixtures) void fixture.close().catch(() => {});
+    },
+  };
+  owner = scope;
+  const abort = () => scope.abort();
+  signal.addEventListener('abort', abort, { once: true });
+  if (signal.aborted) abort();
+  onTestFinished(() => signal.removeEventListener('abort', abort));
+});
+afterEach(async () => {
+  const scope = owner;
+  // Stop producers first; batch cancellation keeps native work owned until joined.
+  scope.abort();
+  const shutdown = Promise.all([...scope.fixtures].map(fixture => fixture.close()));
+  void shutdown.catch(() => {});
+  try {
+    await Promise.allSettled([...scope.tasks]);
+    await shutdown;
+  } finally { vi.restoreAllMocks(); }
+  if (path.dirname(scope.directory) !== privateTempRoot || !path.basename(scope.directory).startsWith('jcad-native-project-save-')) throw new Error('Unsafe native project test cleanup');
+  await fs.rm(scope.directory, { recursive: true, force: true });
+});
 
 function setup() {
+  const scope = owner, directory = scope.directory;
   const registry = createPathRegistry(), handlers = new Map<string, Handler>(), log = { reject: vi.fn() };
   const frame = { processId: 1, routingId: 1, parent: null, url: 'jcad://app/index.html' };
   const contents = Object.assign(new EventEmitter(), { isDestroyed: () => false, mainFrame: frame });
@@ -50,18 +91,55 @@ function setup() {
     return require(name);
   }, module);
   module.exports.registerDrawingIpc({ ipcMain, rejections: log, registry, pathPolicy, senderWindow: () => win }, { takeHandedOverProject: () => false });
-  const invoke = async (channel: string, ...args: unknown[]) => handlers.get(channel)!(ev, ...args);
+  const pending = new Set<Promise<unknown>>(), batches = new Set<string>();
+  let shutdown: Promise<void> | undefined;
+  const rawInvoke = (channel: string, ...args: unknown[]) => handlers.get(channel)!(ev, ...args);
+  const invoke = (channel: string, ...args: unknown[]) => {
+    const task = (async () => {
+      scope.signal.throwIfAborted();
+      const result = rawInvoke(channel, ...args);
+      // Issuance is synchronous in production. Retain its ticket before the await
+      // so timeout cancellation cannot miss an issued-but-not-yet-returned batch.
+      if (channel === 'issue-project-save-batch' && typeof result === 'string') batches.add(result);
+      const value = await result;
+      if (channel === 'cancel-project-save-batch') batches.delete(args[0] as string);
+      scope.signal.throwIfAborted();
+      return value;
+    })();
+    pending.add(task);
+    void task.then(() => pending.delete(task), () => pending.delete(task));
+    return track(scope, task);
+  };
+  const close = () => {
+    if (shutdown) return shutdown;
+    // Start the joined channel while its original main-frame owner is live.
+    const joined = [...batches].map(ticket => {
+      try { return Promise.resolve(rawInvoke('cancel-project-save-batch', ticket)); }
+      catch (error) { return Promise.reject(error); }
+    });
+    win.emit('closed');
+    shutdown = (async () => {
+      const results = await Promise.allSettled(joined);
+      await Promise.allSettled([...pending]);
+      for (const result of results) if (result.status === 'rejected' && (result.reason as { code?: string })?.code !== 'ERR_SAVE_TICKET') throw result.reason;
+    })();
+    void shutdown.catch(() => {});
+    return shutdown;
+  };
+  scope.fixtures.add({ close });
   const reserve = async (file: string) => {
     const ticket = await invoke('issue-save-admission', 'drawing') as string;
     await invoke('bind-save-admission', ticket, 'drawing', file); return ticket;
   };
-  const files = async (count: number) => {
+  const files = (count: number) => track(scope, (async () => {
     const paths: string[] = [];
     for (let i = 0; i < count; i++) {
-      const file = path.join(dir, `Sheet-${i}.dxf`); await fs.writeFile(file, nativeFixture); registry.grant(file); paths.push(file);
+      scope.signal.throwIfAborted();
+      const file = path.join(directory, `Sheet-${i}.dxf`); await fs.writeFile(file, nativeFixture);
+      scope.signal.throwIfAborted(); registry.grant(file); paths.push(file);
     }
     return paths;
-  };
+  })());
   const bind = async (paths: string[]) => {
     const batch = await invoke('issue-project-save-batch') as string;
     const manifest = await invoke('bind-project-save-batch', batch, paths) as Binding[];
@@ -126,29 +204,46 @@ describe.runIf(process.platform === 'win32')('bounded project saves through prod
     expect(f.decode).toHaveBeenCalledOnce(); expect(await fs.readFile(file, 'utf8')).toBe(external);
   });
 
-  it('reads, edits, backs up and freshly reopens 33 files under one inherited project order', async () => {
-    const f = setup(), paths = await f.files(33), { batch, manifest } = await f.bind(paths);
-    expect(manifest).toHaveLength(33);
-    const outputs: string[] = [];
-    for (const [i, entry] of manifest.entries()) {
-      const b = child(entry), input = await f.invoke('open-project-save-batch-drawing', batch, b.childTicket) as Opened;
-      expect(input.path).toBe(paths[i]); expect(input.identityPath).toBe(b.identityPath);
-      outputs.push(edited(input.text, i));
-    }
-    const children = manifest.map(entry => child(entry).childTicket);
-    await f.invoke('seal-project-save-batch', batch, children);
-    for (const entry of manifest) expect(await f.invoke('backup-file', entry.path, { admission: child(entry).childTicket })).toEqual({ ok: true, path: `${entry.path}.bak` });
-    await f.invoke('begin-project-save-batch-commit', batch);
-    for (const [i, entry] of manifest.entries()) {
-      const b = child(entry);
-      expect(await f.invoke('save-dxf', entry.path, outputs[i], 'Sheet', { backup: false, admission: b.childTicket })).toBe(entry.path);
-      expect(await f.invoke('save-admission-result', b.childTicket)).toEqual({ path: entry.path, identityPath: b.identityPath });
-      expect(await fs.readFile(`${entry.path}.bak`, 'utf8')).toBe(nativeFixture);
-      const reopened = readDxf(await fs.readFile(entry.path, 'utf8'));
-      expect(reopened.entities.filter(e => e.type === 'point').map(e => e.position.x)).toEqual([i]);
-    }
-    await f.invoke('cancel-project-save-batch', batch);
-    expect((await fs.readdir(dir)).filter(name => name.includes('.tmp-'))).toEqual([]);
+  it('reads, edits, backs up and freshly reopens 33 files under one inherited project order', ({ onTestFailed }) => {
+    const scope = owner, started = performance.now();
+    const stages: Array<{ stage: string; index?: number; elapsedMs: number }> = [];
+    const mark = (stage: string, index?: number) => {
+      scope.signal.throwIfAborted();
+      stages.push({ stage, ...(index === undefined ? {} : { index }), elapsedMs: Math.round(performance.now() - started) });
+    };
+    onTestFailed(() => { console.error('Native 33-file project stages', JSON.stringify({ stages, aborted: scope.signal.aborted })); });
+    return track(scope, (async () => {
+      const f = setup(); mark('files-start');
+      const paths = await f.files(33); mark('files-complete'); mark('bind-start');
+      const { batch, manifest } = await f.bind(paths); mark('bind-complete');
+      expect(manifest).toHaveLength(33);
+      const outputs: string[] = [];
+      for (const [i, entry] of manifest.entries()) {
+        const b = child(entry); mark('open-start', i);
+        const input = await f.invoke('open-project-save-batch-drawing', batch, b.childTicket) as Opened; mark('open-complete', i);
+        expect(input.path).toBe(paths[i]); expect(input.identityPath).toBe(b.identityPath);
+        mark('edit-start', i); outputs.push(edited(input.text, i)); mark('edit-complete', i);
+      }
+      const children = manifest.map(entry => child(entry).childTicket);
+      mark('seal-start'); await f.invoke('seal-project-save-batch', batch, children); mark('seal-complete');
+      for (const [i, entry] of manifest.entries()) {
+        mark('backup-start', i);
+        expect(await f.invoke('backup-file', entry.path, { admission: child(entry).childTicket })).toEqual({ ok: true, path: `${entry.path}.bak` });
+        mark('backup-complete', i);
+      }
+      mark('begin-commit-start'); await f.invoke('begin-project-save-batch-commit', batch); mark('begin-commit-complete');
+      for (const [i, entry] of manifest.entries()) {
+        const b = child(entry); mark('save-start', i);
+        expect(await f.invoke('save-dxf', entry.path, outputs[i], 'Sheet', { backup: false, admission: b.childTicket })).toBe(entry.path); mark('save-complete', i);
+        mark('receipt-start', i);
+        expect(await f.invoke('save-admission-result', b.childTicket)).toEqual({ path: entry.path, identityPath: b.identityPath }); mark('receipt-complete', i);
+        mark('backup-read-start', i); expect(await fs.readFile(`${entry.path}.bak`, 'utf8')).toBe(nativeFixture); mark('backup-read-complete', i);
+        mark('reopen-start', i); const reopened = readDxf(await fs.readFile(entry.path, 'utf8'));
+        expect(reopened.entities.filter(e => e.type === 'point').map(e => e.position.x)).toEqual([i]); mark('reopen-complete', i);
+      }
+      mark('cancel-start'); await f.invoke('cancel-project-save-batch', batch); mark('cancel-complete');
+      mark('readdir-start'); expect((await fs.readdir(scope.directory)).filter(name => name.includes('.tmp-'))).toEqual([]); mark('readdir-complete');
+    })());
   }, 30000);
 
   it.each([65, 512])('binds %i native files and changes only the two selected coherent inputs', async count => {

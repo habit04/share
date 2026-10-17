@@ -57,7 +57,13 @@ export function textPlacementProblem(t: TextPlacement): string | null {
   if (t.widthFactor !== undefined && !(t.widthFactor > 0)) return 'TEXT width factor must be positive';
   const j = t.justification;
   if (!j) return null;
-  if (!Number.isInteger(j.horizontal) || j.horizontal < 0 || j.horizontal > 5 || !Number.isInteger(j.vertical) || j.vertical < 0 || j.vertical > 3 || (j.horizontal > 2 && j.vertical !== 0)) return 'invalid TEXT justification modes';
+  if (!Number.isInteger(j.horizontal) || j.horizontal < 0 || j.horizontal > 5 || !Number.isInteger(j.vertical) || j.vertical < 0 || j.vertical > 3) return 'invalid TEXT justification modes';
+  // Aligned (3) and Fit (5) are defined by their two alignment points, so any vertical mode
+  // contradicts them. Middle (4) already centres the text vertically on its anchor: vertical 2
+  // (middle) merely restates that centring and is what AutoCAD-compatible writers emit for
+  // middle-centred text, while vertical 1 (bottom) or 3 (top) would contradict the mode.
+  if ((j.horizontal === 3 || j.horizontal === 5) && j.vertical !== 0) return 'invalid TEXT justification modes';
+  if (j.horizontal === 4 && j.vertical !== 0 && j.vertical !== 2) return 'invalid TEXT justification modes';
   if (j.horizontal === 3 || j.horizontal === 5) {
     if (!t.alignmentPoint) return 'aligned/fit TEXT is missing its second alignment point';
     const span = Math.hypot(t.alignmentPoint.x - t.position.x, t.alignmentPoint.y - t.position.y);

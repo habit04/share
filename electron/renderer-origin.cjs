@@ -2,7 +2,10 @@
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { fileURLToPath, pathToFileURL } = require('node:url');
+const { preferenceDictionary } = require('./renderer-preferences.cjs');
 const APP_URL = 'jcad://app/index.html';
+const LEGACY_LOAD_TIMEOUT_MS = 15_000;
+const LEGACY_READ_TIMEOUT_MS = 5_000;
 
 /**
  * Content-Security-Policy sent with worker scripts (docs/SECURITY-REVIEW.md E-19). The renderer
@@ -109,6 +112,46 @@ async function legacyStorage({ BrowserWindow, protocol, indexFile }) {
   window.webContents.on('will-navigate', (event) => event.preventDefault());
   window.webContents.on('will-frame-navigate', (event) => event.preventDefault());
   let handling = false;
+  const contents = window.webContents, cleanup = [];
+  let phase = 'load', stopError, result, cleanupError;
+  let rejectStopped;
+  const stopped = new Promise((_, reject) => { rejectStopped = reject; });
+  // Handler installation can fail before the first phase starts waiting.
+  void stopped.catch(() => {});
+  const fail = (error) => {
+    if (stopError) return;
+    stopError = error;
+    rejectStopped(error);
+  };
+  const listen = (name, callback) => {
+    contents.on(name, callback);
+    cleanup.push(() => contents.removeListener(name, callback));
+  };
+  const gone = () => fail(new Error(`Legacy preference migration ${phase}: renderer stopped`));
+  listen('destroyed', gone);
+  listen('render-process-gone', gone);
+  const failedLoad = (_event, _code, _description, _url, isMainFrame) => {
+    if (isMainFrame) fail(new Error(`Legacy preference migration ${phase}: page failed to load`));
+  };
+  listen('did-fail-load', failedLoad);
+  listen('did-fail-provisional-load', failedLoad);
+  const within = async (operation, deadline, stage) => {
+    phase = stage;
+    let timer;
+    try {
+      return await Promise.race([
+        Promise.resolve().then(() => { if (stopError) throw stopError; return operation(); }),
+        stopped,
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Legacy preference migration ${stage} timed out`)), Math.max(0, deadline - Date.now())); }),
+      ]);
+    } finally { clearTimeout(timer); }
+  };
+  const ready = () => {
+    if (contents.isDestroyed() || contents.isCrashed()) throw new Error('Legacy preference migration readiness: renderer stopped');
+    if (path.resolve(fileURLToPath(contents.getURL())) !== path.resolve(indexFile)) throw new Error('Legacy preference migration readiness: unexpected page');
+    return !contents.isLoadingMainFrame();
+  };
+  let removeReady = () => {};
   try {
     protocol.handle('file', (request) => {
       try {
@@ -117,8 +160,30 @@ async function legacyStorage({ BrowserWindow, protocol, indexFile }) {
       } catch { return new Response('', { status: 403 }); }
     });
     handling = true;
-    await window.loadFile(indexFile);
-    return await window.webContents.executeJavaScript(`(() => {
+    // Keep navigation and execution independently bounded; an unresolved native
+    // Promise must not leave the only application window hidden indefinitely.
+    const loadDeadline = Date.now() + LEGACY_LOAD_TIMEOUT_MS;
+    await within(() => window.loadFile(indexFile), loadDeadline, 'load');
+    await within(() => {
+      if (ready()) return;
+      return new Promise((resolve, reject) => {
+        const onReady = () => {
+          try { if (ready()) { removeReady(); resolve(undefined); } }
+          catch (error) { removeReady(); reject(error); }
+        };
+        removeReady = () => {
+          contents.removeListener('did-finish-load', onReady);
+          contents.removeListener('did-stop-loading', onReady);
+        };
+        contents.on('did-finish-load', onReady);
+        contents.on('did-stop-loading', onReady);
+        // Match Electron's execution predicate and close the registration race.
+        onReady();
+      });
+    }, loadDeadline, 'readiness');
+    const values = await within(() => {
+      if (!ready()) throw new Error('Legacy preference migration execute: page resumed loading');
+      return contents.executeJavaScript(`(() => {
       const result = Object.create(null); const encoder = new TextEncoder(); let size = 2;
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i), value = key === null ? null : localStorage.getItem(key);
@@ -130,10 +195,19 @@ async function legacyStorage({ BrowserWindow, protocol, indexFile }) {
       }
       return result;
     })()`);
+    }, Date.now() + LEGACY_READ_TIMEOUT_MS, 'execute');
+    if (values === null) throw new Error('Legacy preferences exceed 8 MiB');
+    result = preferenceDictionary(values);
   } finally {
-    window.destroy();
-    if (handling) protocol.unhandle('file');
+    removeReady();
+    for (const remove of cleanup) remove();
+    try { if (!window.isDestroyed()) window.destroy(); } catch (error) { cleanupError = error; }
+    try { if (handling) protocol.unhandle('file'); } catch (error) { cleanupError ??= error; }
   }
+  // A primary error propagates through finally. Only a successful read reaches
+  // this point, where incomplete cleanup must still prevent acknowledgement.
+  if (cleanupError) throw cleanupError;
+  return result;
 }
 
 module.exports = { APP_URL, WORKER_CSP, assetPath, assetResponseHeaders, installAssetHandler, legacyStorage, rendererStartUrl, servedPath, withAssetHeaders };

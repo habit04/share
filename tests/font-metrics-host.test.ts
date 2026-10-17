@@ -104,6 +104,48 @@ describe('bounded font metric descriptors', () => {
     expect(fontRequest({ font: 'ariali.ttf', bold: undefined, italic: undefined })).toEqual({ font: 'ariali.ttf' });
     expect(fontRequest({ font: 'Arial', bold: false, italic: true })).toEqual({ font: 'Arial', bold: false, italic: true });
   });
+
+  it('normalizes used codepoints for PDF reads only and never forwards them to metrics reads', async () => {
+    const f = fixture();
+    expect(fontRequest({ font: 'simsun.ttc', usedCodepoints: [0x42, 0x41, 0x42] })).toEqual({ font: 'simsun.ttc', usedCodepoints: [0x41, 0x42] });
+    const pdf = f.host.readPdf({ font: 'simsun.ttc', usedCodepoints: [0x42, 0x41, 0x42] });
+    void pdf.catch(() => {});
+    expect(f.created[0]!.request).toEqual({ font: 'simsun.ttc', usedCodepoints: [0x41, 0x42], usage: 'pdf' });
+    f.created[0]!.emit('message', { metrics: metrics('Simsun') }); f.created[0]!.acknowledgeStop();
+    await expect(pdf).resolves.toEqual(metrics('Simsun'));
+    const plain = read(f.host, { font: 'simsun.ttc', usedCodepoints: [0x41] });
+    expect(f.created[1]!.request).toEqual({ font: 'simsun.ttc' });
+    f.created[1]!.emit('message', { metrics: metrics('Simsun') }); f.created[1]!.acknowledgeStop();
+    await expect(plain).resolves.toEqual(metrics('Simsun'));
+  });
+
+  it('rejects malformed used codepoint sets before launch', async () => {
+    const f = fixture();
+    const invalid = [
+      { font: 'X', usedCodepoints: 'AB' },
+      { font: 'X', usedCodepoints: [65.5] },
+      { font: 'X', usedCodepoints: [-1] },
+      { font: 'X', usedCodepoints: [0x110000] },
+      { font: 'X', usedCodepoints: [Number.NaN] },
+      { font: 'X', usedCodepoints: Array.from({ length: 65535 }, () => 0x41) },
+    ];
+    for (const value of invalid) {
+      expect(() => fontRequest(value)).toThrow(/Invalid used codepoints/);
+      await expect(f.host.readPdf(value)).rejects.toThrow(/Invalid used codepoints/);
+    }
+    expect(f.factory).not.toHaveBeenCalled();
+  });
+
+  it('rejects sparse used sets before allocating a worker', async () => {
+    const f = fixture();
+    const partial = Array<number>(3); partial[0] = 65; partial[2] = 66;
+    for (const usedCodepoints of [Array<number>(1), partial]) {
+      const request = { font: 'simsun.ttc', usedCodepoints };
+      expect(() => fontRequest(request)).toThrow('Invalid used codepoints');
+      await expect(f.host.readPdf(request)).rejects.toThrow('Invalid used codepoints');
+    }
+    expect(f.factory).not.toHaveBeenCalled();
+  });
 });
 
 describe('font metric worker scheduling and containment', () => {

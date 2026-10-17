@@ -116,7 +116,16 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pe
   try {
   const opts = { ...choice.options };
   const vector = choice.action === 'pdf' && opts.output !== 'raster';
-  const captured = pending?.captured ?? capturePlot(ed, bridge), snapshot = captured.state, base = captured.base;
+  const captured = pending?.captured ?? capturePlot(ed, bridge, opts.security === 'restricted-p2' ? 'restricted-p2' : 'none'), snapshot = captured.state, base = captured.base;
+  // The mode is the captured plot's frozen decision, not the live options.
+  const restrictedMode = vector && captured.security === 'restricted-p2';
+  // A restricted request on a non-vector route must never degrade into a
+  // silent ordinary write (12.4 corrections): refuse here, before any
+  // destination is chosen or anything is produced, with the way out named.
+  if (captured.security === 'restricted-p2' && !vector) {
+    ed.log('Editing restrictions require Vector PDF output, so this plot was not written. Re-plot with PDF output set to "Vector (recommended)" to use the restricted mode.');
+    return true;
+  }
   const targetHint = vector || !snapshot.space ? plotTarget(snapshot, opts) : snapshot.space.layout;
   const hiddenLayers = new Set(snapshot.layers.filter(layer => !layer.visible).map(layer => layer.name));
   if (choice.action === 'pdf' && targetHint === 'model' && snapshot.entities.every(entity => hiddenLayers.has(entity.layer))) {
@@ -138,7 +147,7 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pe
   const state = plottableState(snapshot, initialLookup);
   const target = vector || !snapshot.space ? plotTarget(state, opts) : snapshot.space.layout;
   const initialPages = vector ? plotPages(state, initialLookup, target, opts) : [];
-  const prepared = vector ? await capturedPdfLookup(state, captured.pdfFont, initialPages.flatMap((page) => page.groups), initialLookup) : null;
+  const prepared = vector ? await capturedPdfLookup(state, captured.pdfFont, initialPages.flatMap((page) => page.groups), initialLookup, { restricted: restrictedMode }) : null;
   const lookup = prepared?.lookup ?? initialLookup;
   const pages = plotPages(state, lookup, target, opts);
   if (pages.length === 0 || pages.every((p) => p.groups.every((grp) => grp.entities.length === 0 && !(grp.frames?.length)))) {
@@ -157,13 +166,27 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pe
     const images = await collectImages(pages, lookup, captured.imageLoader);
     const ctx = drawingContext(state, lookup, (p) => images.get(p) ?? null);
     const fontFallbacks = new Set<string>();
-    Object.assign(ctx, { embeddedFonts: prepared?.fonts, textGeometry: prepared?.geometry, fontFallbacks });
+    Object.assign(ctx, { embeddedFonts: prepared?.fonts, textGeometry: prepared?.geometry, fontFallbacks, ...(prepared?.shapedText ? { shapedText: prepared.shapedText } : {}) });
     const title = target === 'model' ? base : target === 'layouts' ? `${base} - layouts` : `${base} - ${target}`;
     const bytes = await vectorPdfCompressed(pages, ctx, style, title, deflate);
     reportPlotStyles();
     if (fontFallbacks.size) ed.log(`PDF used substitute fonts for ${[...fontFallbacks].join(', ')}. ${prepared?.issues.join(' ') || 'Some glyphs or font formats are unsupported.'}`);
-    const out = await admission.savePdf(bytes, name);
+    if (!restrictedMode && prepared?.issues.some((issue) => issue.includes('preview/print embedding requires a read-only PDF'))) {
+      ed.log('Fonts that allow preview/print embedding only were not embedded. Re-plot with "PDF with editing restrictions (for preview/print fonts)" enabled to embed them in a PDF that carries editing restrictions.');
+    }
+    // Restricted save (12.4): only preview/print faces the writer actually
+    // used are claimed. With none, nothing in the file needs the mode, so the
+    // export stays byte-identical to an ordinary one — and says so.
+    let restrictedClaim: { faces: readonly import('../core/text-metrics').FontMetricsRequest[] } | undefined;
+    if (restrictedMode) {
+      const usedKeys = new Set((prepared?.fonts?.resources() ?? []).map((used) => used.face.key));
+      const faces = (prepared?.restrictedFaces ?? []).filter((entry) => usedKeys.has(entry.key)).map((entry) => entry.request);
+      if (faces.length) restrictedClaim = { faces };
+      else ed.log('Editing restrictions were requested, but no preview/print font was used in this plot; the PDF was exported without restrictions.');
+    }
+    const out = await admission.savePdf(bytes, name, restrictedClaim);
     if (!out) return true;
+    if (restrictedClaim) ed.log('The exported PDF carries editing restrictions (printing, copying and accessibility extraction allowed; editing, comments, form filling and page assembly denied). Some viewers ignore PDF permission flags; the restrictions are a request recorded in the file, not a guarantee.');
     const first = pages[0]!;
     if (pages.length === 1) ed.log(`Plotted to ${out} (${inches(first.width)} x ${inches(first.height)} in).`);
     else ed.log(`Plotted ${pages.length} pages to ${out} (${pages.map((p) => `${p.label} ${inches(p.width)} x ${inches(p.height)} in`).join(', ')}).`);

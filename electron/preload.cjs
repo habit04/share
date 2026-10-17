@@ -45,6 +45,9 @@ contextBridge.exposeInMainWorld('jcad', {
   printDrawing: (dataUrl, title, landscape, sheet) => ipcRenderer.invoke('print-drawing', dataUrl, title, landscape, sheet),
   // Vector PLOT: the renderer's PDF bytes, saved through a Save dialog in the main process.
   savePdf: (bytes, suggestName, opts) => ipcRenderer.invoke('save-pdf', bytes, suggestName, opts),
+  // Restricted PDF (12.4): register the frozen buffer digest + preview/print
+  // face claims against the bound admission ticket before savePdf runs.
+  registerRestrictedPdf: (admission, claim) => ipcRenderer.invoke('register-restricted-pdf', admission, claim),
   // opts.backup === false: no <name>.bak copy (a project-wide command made its own, or the user declined one)
   saveDxf: (path, text, suggestName, opts) => ipcRenderer.invoke('save-dxf', path, text, suggestName, opts && typeof opts === 'object' ? { ...(opts.backup === false ? { backup: false } : {}), ...(opts.admission !== undefined ? { admission: opts.admission } : {}) } : undefined),
   // Drawing Save As: pick the format and destination before writing in save-queue order.
@@ -65,6 +68,7 @@ contextBridge.exposeInMainWorld('jcad', {
     cancelProjectSaveBatch: (batch) => ipcRenderer.invoke('cancel-project-save-batch', batch),
     fontMetrics: (request) => ipcRenderer.invoke('font-metrics', request),
     pdfFont: (request) => ipcRenderer.invoke('pdf-font', request),
+    shapeFont: (request) => ipcRenderer.invoke('shape-font', request),
     openShxFont: () => ipcRenderer.invoke('open-shx-font'),
     dwgExportStatus: () => ipcRenderer.invoke('dwg-export-status'),
     saveDwg: (path, text, admission) => ipcRenderer.invoke('save-dwg', path, text, admission),

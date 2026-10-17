@@ -46,8 +46,8 @@ function setup() {
   vi.spyOn(dxf, 'writeDxf').mockImplementation((...args) => { events.push('serialize:dxf'); return serializer(...args); });
   return { editor, bridge, root, original, destination, events, active, aliases, disk, saved, edit };
 }
-function imported(f: ReturnType<typeof setup>, source: string) {
-  const report: ImportReport = { format: 'DWG', sourcePath: source, counts: { CUSTOM: { dropped: 1 } }, items: [{ type: 'CUSTOM', action: 'dropped', reason: 'unreadable source object' }], omitted: 0, notes: [] };
+function imported(f: ReturnType<typeof setup>, source: string, action: 'dropped' | 'unsupported' = 'dropped') {
+  const report: ImportReport = { format: 'DWG', sourcePath: source, counts: { CUSTOM: { [action]: 1 } }, items: [{ type: 'CUSTOM', action, reason: 'unreadable source object' }], omitted: 0, notes: [] };
   f.editor.doc.load(withImportData(new Drawing().snapshot, report), source); f.edit();
 }
 
@@ -120,7 +120,7 @@ describe('drawing/project/export admission lifetimes', () => {
     expect(readDxf(f.disk.get(f.destination)!).entities).toHaveLength(2);
   });
   it('binds/resolves native aliases before asking about import losses', async () => {
-    const f = setup(), original = `${f.root}\\\u1f88.dxf`, alias = `${f.root}\\\u1f80.dxf`; imported(f, original);
+    const f = setup(), original = `${f.root}\\\u1f88.dxf`, alias = `${f.root}\\\u1f80.dxf`; imported(f, original, 'unsupported');
     f.disk.set(original, 'original'); f.disk.set(alias, 'original'); f.aliases.set(alias, original); f.bridge.chooseDrawingPath = async () => alias;
     expect(await f.editor.saveFile(true)).toBe(true); expect(f.editor.ui!.confirm).toHaveBeenCalledOnce();
     expect(f.events.indexOf('bind:drawing:ticket-1')).toBeLessThan(f.events.indexOf('confirm')); expect(f.events.indexOf('confirm')).toBeLessThan(f.events.indexOf('serialize:dxf'));

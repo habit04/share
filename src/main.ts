@@ -51,6 +51,8 @@ import { bridgeImageLoader } from './render/images';
 import { installOpenProgress, type OpenProgressBridge } from './ui/open-progress';
 import { registerDwgExportCommand } from './app/export-dwg';
 import { fontMetrics } from './render/font-metrics';
+import { createShapingHooks } from './app/shape-preparation';
+import { setPdfShapingFactory } from './app/pdf-fonts';
 import { installExperimental3d } from './app/experimental-3d';
 
 declare global {
@@ -60,6 +62,7 @@ declare global {
     jcad?: {
       openShxFont?(): Promise<import('./render/shx-fonts').ShxResource | null>;
       fontMetrics?(request: import('./core/text-metrics').FontMetricsRequest): Promise<import('./core/text-metrics').NativeFontMetrics | null>;
+      shapeFont?(request: import('./core/text-metrics').ShapeBridgeRequest): Promise<import('./core/text-metrics').ShapeBridgeResult>;
       pdfFont?(request: import('./core/text-metrics').FontMetricsRequest): Promise<import('./app/pdf-fonts').PdfFontResult>;
       openDxf(): Promise<{ path: string; identityPath?: string; openedSourceProof?: string; text: string } | null>;
       releaseOpenedSourceProof?(proof: string): Promise<void>;
@@ -71,7 +74,9 @@ declare global {
       plotPdf(dataUrl: string, suggestName: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }, opts?: { path?: string; admission?: string }): Promise<string | null>;
       printDrawing?(dataUrl: string, title: string, landscape: boolean, sheet?: { width: number; height: number; electron?: string }): Promise<boolean>;
       /** Track E: write vector PDF bytes (save-pdf IPC). */
-      savePdf?(bytes: Uint8Array, suggestName: string, opts?: { path?: string; admission?: string }): Promise<string | null>;
+      savePdf?(bytes: Uint8Array, suggestName: string, opts?: { path?: string; admission?: string; restricted?: { sha256: string; byteLength: number } }): Promise<string | null>;
+      /** Restricted PDF (12.4): register the frozen digest + preview/print face claims before savePdf. */
+      registerRestrictedPdf?(admission: string, claim: { path: string; sha256: string; byteLength: number; faces: readonly import('./core/text-metrics').FontMetricsRequest[] }): Promise<boolean>;
       saveDxf(path: string | null, text: string, suggestName: string, opts?: { backup?: boolean }): Promise<string | null>;
       chooseDrawingPath?(suggestName: string): Promise<string | null>;
       dwgExportStatus?(): Promise<{ available: boolean; reason?: string }>;
@@ -220,6 +225,7 @@ function browserFileBridge(): FileBridge {
       }
       return { path: f.name, kind: 'dxf', text: decodeDxfBytes(new Uint8Array(await drawingBytes(f))).text };
     },
+    saveDxfCreatesCopy: true,
     saveDxf: async (path, text, suggestName) => {
       const name = path ?? suggestName;
       const blob = new Blob([text], { type: 'application/dxf' });
@@ -351,6 +357,11 @@ function boot(): void {
   const canvas = document.getElementById('drawing') as HTMLCanvasElement;
   const canvasWrap = canvas.parentElement as HTMLElement;
   if (window.jcad?.platform === 'win32' && window.jcad.fontMetrics) fontMetrics.setReader((request) => window.jcad!.fontMetrics!(request));
+  if (window.jcad?.platform === 'win32' && window.jcad.shapeFont) {
+    const shapeFont = window.jcad.shapeFont.bind(window.jcad);
+    fontMetrics.setShapingFactory((init) => createShapingHooks({ bridge: (request) => shapeFont(request), ...init }));
+    setPdfShapingFactory((init) => createShapingHooks({ bridge: (request) => shapeFont(request), ...init }));
+  }
   document.fonts?.addEventListener('loadingdone', () => fontMetrics.invalidateFallbacks());
   const editor = new Editor(canvas);
   editor.fileBridge = window.jcad ?? browserFileBridge();

@@ -6,7 +6,7 @@
  */
 import type { DrawingState } from '../core/document';
 import { readDxf, DxfReadError } from '../io/dxf';
-import { importReportOf, lossCount, countOf, countLines, saveOverwriteWarning, type ImportReport } from '../io/import-report';
+import { importReportOf, lossCount, countOf, countLines, fontSubstitutionCount, saveOverwriteWarning, type ImportReport } from '../io/import-report';
 
 export type Confirm = (title: string, message: string) => Promise<boolean>;
 
@@ -31,6 +31,27 @@ export async function readDxfForOpen(text: string, path: string | null, confirm:
 /** Show the report dialog after open? Only when something was lost, recovered or is not supported (kept-only content is just logged). */
 export function reportNeedsAttention(r: ImportReport | undefined): r is ImportReport {
   return !!r && (lossCount(r) > 0 || !!r.recovered || countOf(r, 'unsupported') > 0);
+}
+
+/**
+ * One-line notice for a partial import, e.g. "Drawing opened with issues: 2 objects excluded;
+ * 3 approximated; 1 font substituted. View details." Null for a clean import (nothing dropped,
+ * simplified or substituted, no recovery). Font substitutions are counted before capping STYLE details
+ * that record one — the font-import warnings (a stroke-font substitute or TrueType fallbacks
+ * render the style) and undefined styles kept with a substitute; the report itself (IMPORTREPORT)
+ * holds the exact list.
+ */
+export function partialImportNotice(r: ImportReport): string | null {
+  const parts: string[] = [];
+  if (r.recovered) parts.push('recovered from a damaged file');
+  const excluded = countOf(r, 'dropped');
+  const approximated = countOf(r, 'simplified');
+  const fonts = fontSubstitutionCount(r);
+  if (excluded) parts.push(`${excluded} object(s) excluded`);
+  if (approximated) parts.push(`${approximated} object(s) approximated`);
+  if (fonts) parts.push(`${fonts} font(s) substituted`);
+  if (!parts.length) return null;
+  return `Drawing opened with issues: ${parts.join('; ')}. View details.`;
 }
 
 /** Command-line lines summarising a report (after open). */

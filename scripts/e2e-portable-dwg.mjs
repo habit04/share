@@ -25,7 +25,7 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
       layoutsKept: report.counts.LAYOUT?.kept ?? 0, counts: report.counts };
   });
   // This fixed control's foreign polyface is retained raw with foreign 3D import off.
-  // All original pairs stay exact. Compare raw source data before No, then check
+  // All original pairs stay exact. Compare raw source data after refusal, then check
   // only the proven model-owner rebind and absent structural follower owners on reopen.
   const lossPolyface = (requireOwners = false) => page.evaluate(requireOwners => {
     const ed = window.editor, graph = ed.doc.snapshot.cadGraph;
@@ -193,7 +193,7 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
     assert.deepEqual(readFileSync(working), sourceDwg, 'Explicit DXF Save As preserves the prior DWG');
     assert.deepEqual(readFileSync(working + '.bak'), sourceBackup, 'Explicit DXF Save As preserves the prior DWG backup');
     check(true, 'Normal DWG Save As and loss-free in-place Save preserve semantics and exact backups, retained page settings are kept, and explicit DXF preserves AC1032 through a fresh semantic reopen');
-    // A real unsupported-data import still requires consent. The native dialog is
+    // A real partial import must never overwrite its source. The native dialog is
     // the existing E2E picker double; reader, source proof, save admission and
     // atomic DXF write remain the actual production paths on private fixture bytes.
     const lossSource = join(directory, 'loss-consent-control.dxf');
@@ -213,38 +213,49 @@ export async function runPortableDwgChecks({ app, page, repo, outDir, check, cur
     await page.evaluate(() => {
       const ed = window.editor;
       ed.doc.addEntities([{ id: 'loss-consent-control-marker', type: 'line', layer: '0', color: 'ByLayer', a: { x: -43, y: -44 }, b: { x: -42, y: -41 } }]);
-      /** @type {any} */ (window).__portableLossBefore = { state: ed.doc.snapshot, session: ed.sessions.activeId, history: ed.doc.history() };
+      /** @type {any} */ (window).__portableLossBefore = { state: ed.doc.snapshot, path: ed.doc.filePath, session: ed.sessions.activeId, history: ed.doc.history() };
     });
-    assert.equal(await app.evaluate(() => globalThis.__e2e.savePaths.length), 0, 'No queued destination can accidentally accept the declined source overwrite');
-    const refusedOverwrite = page.evaluate(() => window.editor.saveFile(false));
-    const warning = page.locator('.modal', { hasText: 'Save over the original file?' });
-    await warning.waitFor({ timeout: 10000 });
-    assert.match(await warning.innerText(), /6 object\(s\) JCad cannot keep.*Save As to keep the original/s);
+    assert.equal(await app.evaluate(() => globalThis.__e2e.savePaths.length), 0, 'No queued destination can accidentally accept a partial-source overwrite');
+    const assertLossUnchanged = async () => {
+      assert.deepEqual(readFileSync(lossSource), originalLossSource);assert.equal(existsSync(lossSource + '.bak'), false);
+      assert.equal(await page.locator('.modal').count(), 0, 'No destructive overwrite consent is offered for a partial import');
+      assert.equal(await page.evaluate(() => {
+        const ed = window.editor, saved = /** @type {any} */ (window).__portableLossBefore, history = ed.doc.history();
+        return ed.doc.snapshot === saved.state && ed.doc.dirty && ed.doc.filePath === saved.path && ed.sessions.activeId === saved.session
+          && ['undo', 'redo'].every(key => history[key].length === saved.history[key].length && history[key].every((state, index) => state === saved.history[key][index]));
+      }), true, 'Refused or canceled partial-source save leaves the edited document and undo history untouched');
+      assert.deepEqual((await lossPolyface()).raw, originalPolyface.raw, 'Every raw polyface parent/follower pair remains exact');
+    };
+    assert.equal(await page.evaluate(() => window.editor.saveFile(false)), false, 'Normal Save refuses the partial-import source');
+    assert.match(await page.evaluate(() => window.editor.lastFileError), /partial import.*5 object\(s\) dropped.*1 object\(s\) simplified.*cannot be saved over its source.*Use Save As/);
+    await assertLossUnchanged();
+    await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), lossSource);
+    assert.equal(await page.evaluate(() => window.editor.saveFile(true)), false, 'Save As also refuses the original partial-import source');
+    assert.match(await page.evaluate(() => window.editor.lastFileError), /partial import.*cannot be saved over its source/);
+    await assertLossUnchanged();
+    assert.equal(await page.evaluate(() => window.editor.saveFile(true)), false, 'Canceling Save As leaves the partial import unsaved');
+    await assertLossUnchanged();
+    const lossCopy = join(directory, 'loss-preserved-copy.dxf');
+    const previousLossCopy = Buffer.from(validDxf);writeFileSync(lossCopy, previousLossCopy);
+    const expectedLossCopy = await signature();
+    const lossSourceIds = await page.evaluate(() => window.editor.doc.entities.map(entity => entity.id));
+    await app.evaluate((_e, p) => globalThis.__e2e.savePaths.push(p), lossCopy);
+    assert.equal(await page.evaluate(() => window.editor.saveFile(true)), true, 'Save As writes a separate copy of the partial import');
+    assert.deepEqual(readFileSync(lossCopy + '.bak'), previousLossCopy, 'Separate copy keeps the exact prior destination in its backup');
     assert.deepEqual(readFileSync(lossSource), originalLossSource);assert.equal(existsSync(lossSource + '.bak'), false);
-    await warning.locator('button', { hasText: /^No$/ }).click();
-    assert.equal(await refusedOverwrite, false, 'No uses the canceled Save As picker, without granting source-loss consent');
-    assert.deepEqual(readFileSync(lossSource), originalLossSource);assert.equal(existsSync(lossSource + '.bak'), false);
-    assert.equal(await page.evaluate(() => {
-      const ed = window.editor, saved = /** @type {any} */ (window).__portableLossBefore, history = ed.doc.history();
-      return ed.doc.snapshot === saved.state && ed.doc.dirty && ed.doc.filePath.endsWith('loss-consent-control.dxf') && ed.sessions.activeId === saved.session
-        && ['undo', 'redo'].every(key => history[key].length === saved.history[key].length && history[key].every((state, index) => state === saved.history[key][index]));
-    }), true, 'Declined source overwrite leaves the edited document and undo history untouched');
-    assert.deepEqual((await lossPolyface()).raw, originalPolyface.raw, 'Declined source overwrite keeps every raw polyface parent/follower pair exact');
-    const allowedOverwrite = page.evaluate(() => window.editor.saveFile(false));
-    await warning.waitFor({ timeout: 10000 });
-    assert.match(await warning.innerText(), /6 object\(s\) JCad cannot keep.*Save As to keep the original/s);
-    await warning.locator('button', { hasText: /^Yes$/ }).click();
-    assert.equal(await allowedOverwrite, true, 'Yes explicitly acknowledges the actual unsupported-data source loss');
-    assert.deepEqual(readFileSync(lossSource + '.bak'), originalLossSource, 'Consented write keeps the exact unsupported original in its backup');
-    assert.match(readFileSync(lossSource, 'utf8'), /mnnmi mi ofoo jl ofoo jl/, 'Safe opaque solid payload remains written back');
+    assert.match(readFileSync(lossCopy, 'utf8'), /mnnmi mi ofoo jl ofoo jl/, 'Safe opaque solid payload remains written back');
     assert.equal(await page.evaluate(() => window.editor.doc.dirty), false);
-    assert.equal(await page.evaluate(p => window.editor.openFile(p), lossSource), true);await closeReports();
+    assert.equal(await page.evaluate(() => window.editor.doc.filePath), lossCopy);
+    assert.equal(await page.evaluate(p => window.editor.openFile(p), lossCopy), true);await closeReports();
     const controlReopened = await importSummary();assert.ok(controlReopened);
-    assert.equal(controlReopened.dropped + controlReopened.simplified, 0, 'Actual consented DXF reopens with its remaining content retained');
+    assert.equal(controlReopened.dropped + controlReopened.simplified, 0, 'Actual separate DXF copy reopens with its remaining content retained');
     assert.equal(controlReopened.counts['3DSOLID'].kept, 1);
     assert.equal(controlReopened.counts.POLYLINE.kept, 1);
-    assert.deepEqual((await lossPolyface(true)).comparable, originalPolyface.comparable, 'Consented save and actual fresh reopen retain all original polyface fields/order with proven model and structural parent owners');
-    check(true, 'Actual six-loss source still requires No/Yes consent; No preserves source/history and Yes preserves exact backup, raw polyface records and safe retained content');
+    assert.ok(await page.evaluate(ids => window.editor.doc.entities.every(entity => !ids.includes(entity.id)), lossSourceIds), 'Separate-copy reopen parses fresh entities');
+    approximate(await signature(), expectedLossCopy, 'Partial-import separate-copy semantic round trip');
+    assert.deepEqual((await lossPolyface(true)).comparable, originalPolyface.comparable, 'Separate Save As and actual fresh reopen retain all original polyface fields/order with proven model and structural parent owners');
+    assert.deepEqual(readFileSync(lossSource), originalLossSource);assert.equal(existsSync(lossSource + '.bak'), false);
+    check(true, 'Actual six-loss source refuses Save and same-source Save As atomically; separate copy preserves the source, exact destination backup, raw polyface records and safe retained content through fresh reopen');
     const prior = readFileSync(selectedTarget), backup = readFileSync(selectedTarget + '.bak');
     for (const [label, text] of [['malformed', 'not DXF'], ['unsupported 3D', '0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\n3DSOLID\n5\n101\n100\nAcDbEntity\n8\n0\n100\nAcDbModelerGeometry\n70\n1\n1\nunsupported ACIS\n0\nENDSEC\n0\nEOF\n']]) {
       const refused = await page.evaluate(([p, text]) => window.jcad.exportDwg(p, text).then(() => false, () => true), [selectedTarget, text]);

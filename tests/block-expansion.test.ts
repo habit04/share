@@ -147,9 +147,9 @@ describe('readers report the expansion and keep the blocks (E-13)', () => {
     return g.join('\n');
   }
 
-  it('readDxf opens it, reports the blocks as kept, and the file saves back unchanged in content', () => {
+  it('an internal source-inventory read keeps the complete bomb for interchange checks; ordinary Open refuses its cycle', () => {
     const t = performance.now();
-    const s = readDxf(bombDxf(), { filePath: '/jobs/bomb.dxf' });
+    const s = readDxf(bombDxf(), { filePath: '/jobs/bomb.dxf', recordInventory: () => {} });
     expect(performance.now() - t).toBeLessThan(5000);
     const report = importReportOf(s)!;
     const reasons = report.items.map((i) => `${i.type} ${i.action}: ${i.reason}`);
@@ -159,11 +159,12 @@ describe('readers report the expansion and keep the blocks (E-13)', () => {
     // Kept: neither the report dialog nor the "save over the original" question.
     expect(reportNeedsAttention(report)).toBe(false);
     expect(saveOverwriteWarning(s, '/jobs/bomb.dxf')).toBeNull();
-    const back = readDxf(writeDxf(s));
+    const back = readDxf(writeDxf(s), { recordInventory: () => {} });
     expect(Object.keys(back.blocks).sort()).toEqual(['B0', 'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'SELF']);
     expect(back.blocks.B8!.entities).toHaveLength(10);
     expect(back.blocks.SELF!.entities.map((e) => e.type)).toEqual(['line', 'insert']);
     expect(() => new Drawing(s)).toThrow(/geometry budget/);
+    expect(() => readDxf(bombDxf())).toThrow(/Cyclic block reference "SELF"/);
   });
 
   it('a DXF whose 20,000 blocks each insert the next opens, reports nothing and saves (the report used to overflow the stack)', () => {

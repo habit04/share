@@ -284,6 +284,19 @@ for (const [file, id] of [['ci.yml', 'e2e-electron'], ['release.yml', 'test-buil
   if (JSON.stringify(job?.strategy?.matrix) !== JSON.stringify({ os: ['windows-latest'] }) || job?.['runs-on'] !== '${{ matrix.os }}' || job?.if !== undefined)
     problems.push(`${file}: ${id} must run exactly the Windows desktop target unconditionally`);
 }
+// Broad packaged behavior belongs in ordinary Windows CI, without entering the
+// installer/signing/publication workflow or silently skipping the packaged gate.
+const asarSteps = parsed['ci.yml']?.jobs?.['e2e-electron']?.steps ?? [];
+const asarGates = asarSteps.filter(step => String(step.run ?? '').trim() === 'node scripts/check-ci-test-asar.mjs');
+const asarGate = asarGates[0], asarIndex = asarSteps.indexOf(asarGate);
+const sourceOriginIndex = asarSteps.findIndex(step => String(step.run ?? '').trim() === 'npm run e2e:origin');
+if (asarGates.length !== 1 || asarGate.if !== undefined || asarGate['continue-on-error'] || asarGate['timeout-minutes'] !== 15 ||
+    asarGate.env?.JCAD_TEST_ASAR_EXPECTED_SHA !== '${{ github.sha }}' || sourceOriginIndex < 0 || asarIndex <= sourceOriginIndex)
+  problems.push('ci.yml: unpublished test-ASAR gate must follow source Windows flows, bind the checked SHA and fail without bypasses');
+const asarUploads = asarSteps.filter(step => String(step.uses ?? '').startsWith('actions/upload-artifact') && step.with?.name === 'ci-test-asar-${{ matrix.os }}');
+if (asarUploads.length !== 1 || asarUploads[0].if !== 'always()' || asarUploads[0]['continue-on-error'] ||
+    asarUploads[0].with?.path !== 'test-build-output/ci-test-asar/' || asarUploads[0].with?.['if-no-files-found'] !== 'error' || asarSteps.indexOf(asarUploads[0]) <= asarIndex)
+  problems.push('ci.yml: unpublished test-ASAR checks must retain actual receipts and logs');
 const manualSmoke = parsed['packaged-smoke.yml']?.jobs?.smoke;
 if (JSON.stringify(manualSmoke?.strategy?.matrix?.include) !== JSON.stringify([{ os:'windows-latest', patterns:'*.exe' }])) problems.push('packaged-smoke.yml: existing-release checks must target only Windows installers');
 

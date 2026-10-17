@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { nativeFontFixture, fontTable, fontCollection } from './helpers/native-font-fixture';
 import type { NativeFontMetrics } from '../src/core/text-metrics';
 import { PdfFontRegistry, pdfFontEmbeddingProblem, writePdfFontResources, type PdfFontFace, type PdfFontObjectWriter } from '../src/io/pdf-fonts';
+import { embeddableFontProgram } from '../src/io/pdf-font-subset';
 
 const require = createRequire(import.meta.url);
 const { parseFontMetrics } = require('../electron/font-metrics.cjs') as { parseFontMetrics(bytes: Uint8Array): NativeFontMetrics };
@@ -78,19 +79,21 @@ function manyCidFace(): PdfFontFace {
 }
 
 describe('per-plot PDF TrueType font resources', () => {
-  it('writes full TTF, native widths and connected Type0/CID/descriptor resources', () => {
+  it('writes a used-glyph subset TTF, native widths and connected Type0/CID/descriptor resources', () => {
     const font = face(), original = new Uint8Array(font.bytes), registry = new PdfFontRegistry([font]);
     const run = registry.encode(font.key, 'AB A')!;
     expect(run).toEqual({ resourceName: 'JCF1', hex: '0001000200030001', advance: 2250, glyphs: [2, 3, 1, 2] });
     const out = objects(), names = writePdfFontResources(registry, out.writer);
     expect(names).toEqual(new Map([['JCF1', 1]]));
     expect(out.entries.size).toBe(6);
-    expect(out.text(1)).toContain('/Subtype /Type0 /BaseFont /JCadFixture /Encoding /Identity-H /DescendantFonts [2 0 R] /ToUnicode 6 0 R');
+    expect(out.text(1)).toContain('/Subtype /Type0 /BaseFont /AAAAAA+JCadFixture /Encoding /Identity-H /DescendantFonts [2 0 R] /ToUnicode 6 0 R');
     expect(out.text(2)).toContain('/FontDescriptor 3 0 R /CIDToGIDMap 5 0 R /DW 500 /W [1 [650 650 300]]');
     expect(out.text(3)).toContain('/FontBBox [-50 -200 900 1000] /ItalicAngle 0 /Ascent 1000 /Descent -200 /CapHeight 730');
     expect(out.text(3)).toContain('/FontFile2 4 0 R');
-    expect(out.text(4)).toContain(`/Length1 ${original.length}`);
-    expect(out.stream(4)).toEqual(original);
+    const embeddedProgram = embeddableFontProgram(original, new Set([1, 2, 3]));
+    expect(embeddedProgram.byteLength).toBeLessThan(original.length);
+    expect(out.text(4)).toContain(`/Length1 ${embeddedProgram.byteLength}`);
+    expect(out.stream(4)).toEqual(embeddedProgram);
     expect(out.stream(5)).toEqual(new Uint8Array([0, 0, 0, 2, 0, 3, 0, 1]));
     const unicode = new TextDecoder().decode(out.stream(6));
     expect(unicode).toContain('3 beginbfchar\n<0001> <0041>\n<0002> <0042>\n<0003> <0020>');
@@ -133,7 +136,7 @@ describe('per-plot PDF TrueType font resources', () => {
       expect(registry.encode('bold', 'AB')!.hex).toBe('00020001');
       const out = objects(), refs = writePdfFontResources(registry, out.writer);
       expect(refs).toEqual(new Map([['JCF1', 1], ['JCF2', 7]]));
-      expect(out.text(1)).toContain('/JCadFixture-Bold'); expect(out.text(7)).toContain('/JCadFixture ');
+      expect(out.text(1)).toContain('/AAAAAA+JCadFixture-Bold'); expect(out.text(7)).toContain('/AAAAAB+JCadFixture ');
       expect(registry.usedFaces).toBe(2);
       return [...out.entries];
     };
@@ -147,7 +150,7 @@ describe('per-plot PDF TrueType font resources', () => {
     (font.metrics.cmap as number[])[65] = 0;
     expect(registry.encode(font.key, 'A')!.advance).toBe(650);
     const out = objects(); writePdfFontResources(registry, out.writer);
-    expect(out.stream(4)).toEqual(original);
+    expect(out.stream(4)).toEqual(embeddableFontProgram(original, new Set([2])));
   });
 
   it('keeps unsupported shaping, missing glyphs, bad UTF16 and unknown origins on fallback without allocating resources', () => {
@@ -165,13 +168,13 @@ describe('per-plot PDF TrueType font resources', () => {
     expect(out.entries.size).toBe(0);
   });
 
-  it('escapes PDF-name hash syntax without applying a subset prefix', () => {
+  it('escapes PDF-name hash syntax after applying the subset prefix', () => {
     const registry = new PdfFontRegistry([face({ postscriptName: 'JCad#Fixture' })]);
     registry.encode('fixture', 'A');
     const out = objects(); writePdfFontResources(registry, out.writer);
-    expect(out.text(1)).toContain('/BaseFont /JCad#23Fixture');
-    expect(out.text(3)).toContain('/FontName /JCad#23Fixture');
-    expect(out.text(1)).not.toMatch(/[A-Z]{6}\+/);
+    expect(out.text(1)).toContain('/BaseFont /AAAAAA+JCad#23Fixture');
+    expect(out.text(3)).toContain('/FontName /AAAAAA+JCad#23Fixture');
+    expect(out.text(1)).toMatch(/\/AAAAAA\+JCad#23Fixture/);
   });
 
   it('bounds CIDs atomically and writes ToUnicode mappings in blocks of at most 100', () => {
@@ -225,11 +228,14 @@ describe('font embedding eligibility and bounds', () => {
     expect(() => new PdfFontRegistry([{ ...face(), os2Version: 5 }])).toThrow('permissions do not match');
   });
 
-  it('reports collection/CFF/variable formats without pretending the program is standalone TTF', () => {
+  it('refuses collections and forged CFF/variable programs without trusting their format labels', () => {
     const font = face();
     expect(new PdfFontRegistry([{ ...font, bytes: fontCollection(font.bytes as Buffer) }]).rejections.get(font.key)).toContain('collections');
     const cff = new Uint8Array(font.bytes); new DataView(cff.buffer).setUint32(0, 0x4f54544f);
-    expect(new PdfFontRegistry([{ ...font, bytes: cff }]).rejections.get(font.key)).toContain('glyf');
+    expect(() => new PdfFontRegistry([{ ...font, bytes: cff }])).toThrow('outline format does not match');
+    const forgedCff = new PdfFontRegistry([{ ...font, outline: 'cff', bytes: cff }]);
+    expect(forgedCff.rejections.get(font.key)).toContain('CFF');
+    expect(forgedCff.encode(font.key, 'A')).toBeNull();
     const variable = Buffer.from(font.bytes); variable.write('fvar', fontTable(variable, 'post').record, 'ascii');
     expect(new PdfFontRegistry([{ ...font, bytes: variable }]).rejections.get(font.key)).toContain('variable');
   });

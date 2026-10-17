@@ -1,22 +1,28 @@
 /**
- * Read-only Windows TrueType metrics. No font programs or glyph instructions are executed.
+ * Read-only Windows metrics for TrueType glyf and standalone CFF outlines.
+ * Font hinting programs are not executed; bounded CFF charstrings yield control hulls.
  * Layout uses the native glyph A's yMax, rather than OS/2.sCapHeight or rasterized pixels.
  * Table layouts: https://learn.microsoft.com/en-us/typography/opentype/spec/otff
  */
 const fs = require('node:fs/promises');
 const { constants } = require('node:fs');
 const path = require('node:path');
+const { cffGlyphBounds } = require('./cff-metrics.cjs');
 
 const MAX_FONT_BYTES = 64 * 1024 * 1024;
 const MAX_FACES = 64;
 const MAX_TABLES = 128;
 const MAX_GLYPH_POINTS = 2_000_000;
+/** Matches the captured-PDF per-face CID cap in src/io/pdf-fonts.ts. */
+const MAX_USED_CODEPOINTS = 65534;
 const MAX_BITMAP_STRIKES = 128;
+const MAX_VARIATION_AXES = 32;
+const MAX_VARIATION_INSTANCES = 512;
 
 /** @typedef {[number, number, number, number]} FontBounds */
 /** @typedef {[number, number, number]} CmapGroup */
-/** @typedef {{ family: string, subfamily: string, unitsPerEm: number, capitalHeight: number, winDescent: number, fontBounds: FontBounds, advances: number[], glyphBounds: FontBounds[], glyphBoundsKnown: boolean[], cmap: number[], groups: CmapGroup[], fsType: number, bold: boolean, italic: boolean }} NativeFontMetrics */
-/** @typedef {{ font: string, family?: string, bold?: boolean, italic?: boolean }} FontMetricsRequest */
+/** @typedef {{ family: string, subfamily: string, unitsPerEm: number, capitalHeight: number, winDescent: number, fontBounds: FontBounds, advances: number[], glyphBounds: FontBounds[], glyphBoundsKnown: boolean[], cmap: number[], groups: CmapGroup[], fsType: number, bold: boolean, italic: boolean, variable?: boolean }} NativeFontMetrics */
+/** @typedef {{ font: string, family?: string, bold?: boolean, italic?: boolean, usedCodepoints?: number[], restricted?: boolean }} FontMetricsRequest */
 
 /** @returns {never} */
 function fail(message) { throw new Error(`Font metrics: ${message}`); }
@@ -32,11 +38,138 @@ function bounds(data, offset, what) {
   return value;
 }
 
+/**
+ * Validate an fvar table far enough to trust that the face's static tables describe a
+ * real default instance. Variation data itself (gvar/HVAR/avar/…) is never applied:
+ * the base glyf/hmtx tables of a variable font ARE its default instance, which is the
+ * only instance the request model can name and the only one PDF consumers render.
+ * Named-instance selection and variation coordinates are unsupported.
+ * Every name ID the fvar records reference (axis names, instance subfamily names and
+ * declared instance PostScript names) must resolve to a record in the font's own name
+ * table; a dangling reference leaves the named design space unverifiable.
+ * https://learn.microsoft.com/en-us/typography/opentype/spec/fvar
+ * @param {Buffer} data @param {Buffer | undefined} nameData
+ * @returns {{ axes: { tag: string, min: number, value: number, max: number }[], instances: { nameId: number, psNameId: number | null, coordinates: number[] }[] }}
+ */
+function validateVariableFont(data, nameData) {
+  need(data, 0, 16, 'fvar table');
+  if (data.readUInt32BE(0) !== 0x00010000) fail('unsupported variable font (fvar) version');
+  const axesOffset = data.readUInt16BE(4), axisCount = data.readUInt16BE(8), axisSize = data.readUInt16BE(10);
+  const instanceCount = data.readUInt16BE(12), instanceSize = data.readUInt16BE(14);
+  if (data.readUInt16BE(6) !== 2) fail('invalid variable font (fvar) reserved field');
+  if (!axisCount || axisCount > MAX_VARIATION_AXES) fail('invalid variable font axis count');
+  if (axisSize !== 20) fail('invalid variable font axis record size');
+  if (instanceCount > MAX_VARIATION_INSTANCES) fail('invalid variable font instance count');
+  if (axesOffset < 16) fail('invalid variable font axes offset');
+  const coordinates = axisCount * 4;
+  // For fvar 1.0 an instance record is exactly the subfamily name ID, the reserved
+  // flags word and one Fixed per axis (axisCount*4 + 4), optionally followed by the
+  // PostScript name ID (+6). Every other size — including axisCount*4 + 5 — is illegal.
+  if (instanceSize !== 4 + coordinates && instanceSize !== 6 + coordinates) fail('invalid variable font instance record size');
+  need(data, axesOffset, axisCount * axisSize + instanceCount * instanceSize, 'fvar axes and instances');
+  /** @type {{ tag: string, min: number, value: number, max: number, nameId: number }[]} */
+  const axes = [];
+  for (let i = 0; i < axisCount; i++) {
+    const at = axesOffset + i * axisSize, tag = data.toString('latin1', at, at + 4);
+    const min = data.readInt32BE(at + 4), value = data.readInt32BE(at + 8), max = data.readInt32BE(at + 12);
+    if (!/^[\x20-\x7e]{4}$/.test(tag) || axes.some((axis) => axis.tag === tag)) fail('invalid or duplicate variable font axis tag');
+    if (min > value || value > max) fail('variable font axis default is outside its range');
+    if (data.readUInt16BE(at + 16) & ~1) fail('invalid variable font axis flags');
+    axes.push({ tag, min, value, max, nameId: data.readUInt16BE(at + 18) });
+  }
+  const instancesAt = axesOffset + axisCount * axisSize;
+  /** @type {{ nameId: number, psNameId: number | null, coordinates: number[] }[]} */
+  const instances = [];
+  for (let i = 0; i < instanceCount; i++) {
+    const at = instancesAt + i * instanceSize;
+    if (!data.readUInt16BE(at) || data.readUInt16BE(at + 2)) fail('invalid variable font instance record');
+    /** @type {number[]} */
+    const values = [];
+    for (let axis = 0; axis < axisCount; axis++) {
+      const coordinate = data.readInt32BE(at + 4 + axis * 4), range = /** @type {{ min: number, max: number }} */ (axes[axis]);
+      if (coordinate < range.min || coordinate > range.max) fail('variable font instance coordinate is outside its axis range');
+      values.push(coordinate);
+    }
+    instances.push({ nameId: data.readUInt16BE(at), psNameId: instanceSize === 6 + coordinates ? data.readUInt16BE(at + 4 + coordinates) : null, coordinates: values });
+  }
+  const nameIds = variableNameIndex(nameData).ids;
+  const customNameId = (id) => id >= 256 && id <= 32767;
+  for (const axis of axes) {
+    if (!customNameId(axis.nameId)) fail(`invalid variable font axis name ID ${axis.nameId}`);
+    if (!nameIds.has(axis.nameId)) fail(`variable font axis name ID ${axis.nameId} has no name table record`);
+  }
+  for (const instance of instances) {
+    if (instance.nameId !== 2 && instance.nameId !== 17 && !customNameId(instance.nameId)) fail(`invalid variable font instance subfamily name ID ${instance.nameId}`);
+    if (instance.psNameId !== null && instance.psNameId !== 0xffff && instance.psNameId !== 6 && !customNameId(instance.psNameId)) fail(`invalid variable font instance PostScript name ID ${instance.psNameId}`);
+    if (!nameIds.has(instance.nameId)) fail(`variable font instance subfamily name ID ${instance.nameId} has no name table record`);
+    if (instance.psNameId !== null && instance.psNameId !== 0xffff && !nameIds.has(instance.psNameId)) fail(`variable font instance PostScript name ID ${instance.psNameId} has no name table record`);
+  }
+  return { axes, instances };
+}
+
+/**
+ * The default-coordinate identity policy (12.6a). A variable face is admitted only
+ * when its default instance is PROVABLY the instance the face's own style claim names
+ * (the OS/2 selection bits are the claim; PDF/Canvas consumers receive no variation
+ * coordinates, so anything less than provable identity would silently substitute one
+ * instance for another):
+ * - weight: the OS/2 weight class must be exactly 400 (regular claim) or 700 (bold
+ *   claim), and a wght axis default must equal it. A wght-500 default is a Medium
+ *   instance; a regular request does not name it, however consistent the font is.
+ * - width: a wdth axis default must be exactly 100 (normal width).
+ * - optical size: an opsz axis must be degenerate (min = max); renderers auto-vary a
+ *   real opsz axis by point size, so no fixed instance is the requested one.
+ * - ital/slnt: an ital axis default must equal the claim (1 italic, 0 upright); an
+ *   slnt axis default must be 0 (an oblique default is not provably the named style).
+ * - named instances: an instance sitting exactly at the default coordinates is a
+ *   second name for the default instance; its resolved subfamily name must name the
+ *   face's own subfamily (name ID 2 or 17), and a declared PostScript name must equal
+ *   the face's name ID 6 when the face carries one. A contradiction — or a name that
+ *   cannot be resolved at all — makes the default instance's identity ambiguous.
+ * Axes with no counterpart in the request model (e.g. a custom design axis) are
+ * unconstrained: their default IS the face's base design, as in a static font.
+ * @param {{ axes: { tag: string, min: number, value: number, max: number }[], instances: { nameId: number, psNameId: number | null, coordinates: number[] }[] }} model
+ * @param {Buffer} os2 @param {{ resolve: (id: number) => string | undefined }} nameIndex
+ * @param {{ bold: boolean, italic: boolean }} claim
+ * @returns {string | null}
+ */
+function variableDefaultIdentityProblem(model, os2, nameIndex, claim) {
+  const fixed = (value) => value / 65536;
+  const weight = os2.readUInt16BE(4), expectedWeight = claim.bold ? 700 : 400;
+  if (weight !== expectedWeight) return `variable font default weight ${weight} is not the ${claim.bold ? 'bold (700)' : 'regular (400)'} default instance this face claims to be; a variable font is admitted only when its default instance is provably the requested instance`;
+  const axis = (tag) => model.axes.find((candidate) => candidate.tag === tag);
+  const wght = axis('wght');
+  if (wght && wght.value !== weight * 65536) return `variable font wght axis default ${fixed(wght.value)} disagrees with OS/2 weight class ${weight}`;
+  const wdth = axis('wdth');
+  if (wdth && wdth.value !== 100 * 65536) return `variable font default width ${fixed(wdth.value)} is not the normal width (100) this face claims to be`;
+  const opsz = axis('opsz');
+  if (opsz && opsz.min !== opsz.max) return `variable font optical-size axis varies (min ${fixed(opsz.min)}, default ${fixed(opsz.value)}, max ${fixed(opsz.max)}); no request can name an optical size, so its default instance is not provably the requested instance`;
+  const ital = axis('ital');
+  if (ital && ital.value !== (claim.italic ? 65536 : 0)) return `variable font ital axis default ${fixed(ital.value)} does not match the ${claim.italic ? 'italic' : 'upright'} face claimed`;
+  const slnt = axis('slnt');
+  if (slnt && slnt.value !== 0) return `variable font slnt axis default ${fixed(slnt.value)} is an oblique default that is not provably the ${claim.italic ? 'italic' : 'upright'} face claimed`;
+  const subfamilies = [nameIndex.resolve(2), nameIndex.resolve(17)].filter((value) => value !== undefined);
+  const facePostScript = nameIndex.resolve(6);
+  for (const instance of model.instances) {
+    if (!instance.coordinates.every((coordinate, index) => coordinate === model.axes[index]?.value)) continue;
+    const name = nameIndex.resolve(instance.nameId);
+    if (name === undefined) return `variable font named instance at the default coordinates has unresolvable name ID ${instance.nameId}; the default instance identity is ambiguous`;
+    if (!subfamilies.some((subfamily) => familyKey(subfamily) === familyKey(name))) return `variable font named instance "${name}" sits at the default coordinates but does not name the face subfamily; the default instance identity is ambiguous`;
+    if (instance.psNameId !== null && instance.psNameId !== 0xffff && facePostScript !== undefined) {
+      const declared = nameIndex.resolve(instance.psNameId);
+      if (declared === undefined) return `variable font named instance at the default coordinates has unresolvable PostScript name ID ${instance.psNameId}; the default instance identity is ambiguous`;
+      if (declared !== facePostScript) return `variable font named instance at the default coordinates declares PostScript name "${declared}" but the face PostScript name is "${facePostScript}"; the default instance identity is ambiguous`;
+    }
+  }
+  return null;
+}
+
 /** @param {Buffer} data @param {number} faceIndex */
 function directory(data, faceIndex) {
   need(data, 0, 12, 'SFNT header');
   let offset = 0;
-  if (data.toString('latin1', 0, 4) === 'ttcf') {
+  const collection = data.toString('latin1', 0, 4) === 'ttcf';
+  if (collection) {
     const version = data.readUInt32BE(4), count = data.readUInt32BE(8);
     if (version !== 0x00010000 && version !== 0x00020000) fail('unsupported TrueType collection version');
     if (!count || count > MAX_FACES) fail('invalid TrueType collection face count');
@@ -58,8 +191,9 @@ function directory(data, faceIndex) {
     offset = data.readUInt32BE(12 + faceIndex * 4);
   } else if (faceIndex !== 0) fail('a standalone font has only face index 0');
   const signature = data.readUInt32BE(offset);
-  if (signature === 0x4f54544f) fail('CFF outlines are unsupported; a TrueType glyf font is required');
-  if (signature !== 0x00010000 && signature !== 0x74727565) fail('unsupported SFNT outline format');
+  const outline = signature === 0x4f54544f ? 'cff' : 'glyf';
+  if (outline === 'cff' && collection) fail('CFF outlines in collections are unsupported; a standalone CFF face is required');
+  if (outline === 'glyf' && signature !== 0x00010000 && signature !== 0x74727565) fail('unsupported SFNT outline format');
   const count = data.readUInt16BE(offset + 4);
   if (!count || count > MAX_TABLES) fail('invalid SFNT table count');
   need(data, offset + 12, count * 16, 'SFNT table directory');
@@ -77,14 +211,20 @@ function directory(data, faceIndex) {
   }
   ranges.sort((a, b) => a.offset - b.offset);
   for (let i = 1; i < ranges.length; i++) if (ranges[i].offset < ranges[i - 1].offset + ranges[i - 1].length) fail('overlapping SFNT tables');
-  if (tables.has('CFF ') || tables.has('CFF2')) fail('CFF outlines are unsupported');
-  if (tables.has('fvar')) fail('variable font instances are unsupported');
-  // Color layers, SVG and color strikes are not represented by the monochrome glyf box.
+  if (tables.has('CFF2')) fail('CFF2 outlines are unsupported');
+  if (outline === 'glyf' && tables.has('CFF ')) fail('CFF outlines require the OpenType CFF signature');
+  if (outline === 'cff' && !tables.has('CFF ')) fail('a CFF-outline font must contain a CFF table');
+  if (outline === 'cff' && (tables.has('glyf') || tables.has('loca'))) fail('mixed CFF and TrueType outlines are unsupported');
+  if (tables.has('fvar')) {
+    if (outline !== 'glyf') fail('variable CFF font instances are unsupported');
+    validateVariableFont(/** @type {Buffer} */ (tables.get('fvar')), tables.get('name'));
+  }
+  // Color layers, SVG and color strikes are not represented by monochrome outline bounds.
   for (const tag of ['sbix', 'COLR', 'CPAL', 'CBDT', 'CBLC', 'SVG ']) {
     if (tables.has(tag)) fail(`bitmap/color glyph tables are unsupported (${tag.trim()}); use Canvas fallback`);
   }
   if (tables.has('EBSC')) fail('embedded bitmap scaling is unsupported; use Canvas fallback');
-  return tables;
+  return { tables, outline };
 }
 
 /** @param {Map<string, Buffer>} tables @param {string} tag @param {number} length */
@@ -211,8 +351,12 @@ function characterMap(data, glyphCount) {
   return { cmap, groups };
 }
 
-/** @param {Buffer} data */
-function fontNames(data) {
+/**
+ * Structurally validate and scan the name records once; consumers select and decode.
+ * @param {Buffer} data
+ * @returns {{ platform: number, encoding: number, language: number, id: number, bytes: Buffer, unicode: boolean }[]}
+ */
+function scanNameRecords(data) {
   const version = data.readUInt16BE(0), count = data.readUInt16BE(2), storage = data.readUInt16BE(4);
   if (version !== 0 && version !== 1) fail('unsupported name table version');
   if (!count || count > 4096 || storage < 6 + count * 12) fail('invalid name table count/storage');
@@ -228,18 +372,57 @@ function fontNames(data) {
     }
   }
   const keys = new Set();
-  /** @type {Map<number, { bytes: Buffer, unicode: boolean, rank: number }>} */
-  const selected = new Map();
+  const records = [];
   for (let i = 0; i < count; i++) {
     const at = 6 + i * 12, platform = data.readUInt16BE(at), encoding = data.readUInt16BE(at + 2), language = data.readUInt16BE(at + 4), id = data.readUInt16BE(at + 6), length = data.readUInt16BE(at + 8), offset = data.readUInt16BE(at + 10), key = `${platform}:${encoding}:${language}:${id}`;
     if (keys.has(key)) fail('duplicate name record');
     keys.add(key);
     need(data, storage + offset, length, 'name string');
     const unicode = platform === 0 || platform === 3 && (encoding === 1 || encoding === 10);
-    if (![1, 2, 16, 17].includes(id) || !unicode && !(platform === 1 && encoding === 0)) continue;
-    const rank = platform === 3 ? language === 0x0409 ? 100 : 80 : platform === 0 ? 60 : 20;
-    const prior = selected.get(id);
-    if (!prior || rank > prior.rank) selected.set(id, { bytes: data.subarray(storage + offset, storage + offset + length), unicode, rank });
+    records.push({ platform, encoding, language, id, bytes: data.subarray(storage + offset, storage + offset + length), unicode });
+  }
+  return records;
+}
+
+/**
+ * The set of name IDs a name table actually carries, plus a best-effort resolver the
+ * variable-font identity policy uses for axis/instance names. Resolution considers
+ * Unicode records only (the same records the writer layer can resolve), and an ID
+ * whose string cannot be decoded resolves to undefined: present, but unprovable.
+ * @param {Buffer | undefined} data
+ */
+function variableNameIndex(data) {
+  if (!data) return { ids: new Set(), resolve: () => undefined };
+  const records = scanNameRecords(data);
+  const ids = new Set(records.map((record) => record.id));
+  const resolve = (id) => {
+    /** @type {{ rank: number, value: string } | undefined} */
+    let best;
+    for (const record of records) {
+      if (record.id !== id || !record.unicode) continue;
+      const rank = record.platform === 3 ? record.language === 0x0409 ? 100 : 80 : 60;
+      if (best && best.rank >= rank) continue;
+      let value;
+      try { value = new TextDecoder('utf-16be', { fatal: true }).decode(record.bytes); } catch { continue; }
+      value = value.trim();
+      if (!value || value.length > 256 || /[\u0000-\u001f\u007f]/.test(value)) continue;
+      best = { rank, value };
+    }
+    return best?.value;
+  };
+  return { ids, resolve };
+}
+
+/** @param {Buffer} data */
+function fontNames(data) {
+  const records = scanNameRecords(data);
+  /** @type {Map<number, { bytes: Buffer, unicode: boolean, rank: number }>} */
+  const selected = new Map();
+  for (const record of records) {
+    if (![1, 2, 16, 17].includes(record.id) || !record.unicode && !(record.platform === 1 && record.encoding === 0)) continue;
+    const rank = record.platform === 3 ? record.language === 0x0409 ? 100 : 80 : record.platform === 0 ? 60 : 20;
+    const prior = selected.get(record.id);
+    if (!prior || rank > prior.rank) selected.set(record.id, { bytes: record.bytes, unicode: record.unicode, rank });
   }
   const decode = (id) => {
     const record = selected.get(id);
@@ -257,18 +440,27 @@ function fontNames(data) {
   return { family, subfamily };
 }
 
-/** Validate glyph records and resolve the supported unhinted horizontal phantom origins. */
-function glyphMetrics(glyf, offsets, glyphCount, bearings) {
+/**
+ * Validate glyph records and resolve the supported unhinted horizontal phantom origins.
+ * When `validatedSeeds` is given (a captured-PDF used set), the point decode below runs
+ * only for those glyphs and their composite closure; every other simple glyph keeps its
+ * header box and is marked unknown, the state consumers already fall back on. Without a
+ * seed set every glyph is decoded, exactly as before, under the same point cap.
+ * @param {Set<number> | undefined} validatedSeeds
+ */
+function glyphMetrics(glyf, offsets, glyphCount, bearings, validatedSeeds) {
   /** @type {FontBounds[]} */
   const boxes = [];
   /** @type {number[][]} */
   const children = [];
+  /** @type {({ points: number, contours: number } | null)[]} */
+  const simple = [];
   const metricOwners = new Int32Array(glyphCount).fill(-1);
   const known = new Array(glyphCount).fill(true);
-  let pointWork = 0, componentWork = 0;
+  let componentWork = 0;
   for (let glyph = 0; glyph < glyphCount; glyph++) {
     const start = offsets[glyph], end = offsets[glyph + 1], length = end - start;
-    if (!length) { boxes.push([0, 0, 0, 0]); children.push([]); continue; }
+    if (!length) { boxes.push([0, 0, 0, 0]); children.push([]); simple.push(null); continue; }
     const data = glyf.subarray(start, end);
     need(data, 0, 10, 'glyph header');
     const contours = data.readInt16BE(0);
@@ -276,7 +468,7 @@ function glyphMetrics(glyf, offsets, glyphCount, bearings) {
     /** @type {number[]} */
     const components = [];
     if (contours >= 0) {
-      if (!contours) { boxes[boxes.length - 1] = [0, 0, 0, 0]; children.push(components); continue; }
+      if (!contours) { boxes[boxes.length - 1] = [0, 0, 0, 0]; children.push(components); simple.push(null); continue; }
       need(data, 10, contours * 2 + 2, 'glyph contour endpoints');
       let last = -1;
       for (let i = 0; i < contours; i++) {
@@ -284,35 +476,8 @@ function glyphMetrics(glyf, offsets, glyphCount, bearings) {
         if (endpoint <= last) fail('invalid glyph contour endpoint order');
         last = endpoint;
       }
-      const points = last + 1;
-      pointWork += points;
-      if (pointWork > MAX_GLYPH_POINTS) fail('glyph point work exceeds the safe limit');
-      const instructionsAt = 10 + contours * 2, instructions = data.readUInt16BE(instructionsAt);
-      let position = instructionsAt + 2 + instructions, seen = 0, coordinateBytes = 0;
-      const flags = new Uint8Array(points);
-      need(data, instructionsAt + 2, instructions, 'glyph instructions');
-      while (seen < points) {
-        need(data, position, 1, 'glyph flags');
-        const flag = data[position++];
-        if (flag & 0x80) fail('unsupported reserved glyph flag');
-        let run = 1;
-        if (flag & 8) { need(data, position, 1, 'glyph flag repeat'); run += data[position++]; }
-        if (run > points - seen) fail('glyph flag repeat exceeds point count');
-        flags.fill(flag, seen, seen + run);
-        coordinateBytes += run * ((flag & 2 ? 1 : flag & 16 ? 0 : 2) + (flag & 4 ? 1 : flag & 32 ? 0 : 2));
-        seen += run;
-      }
-      need(data, position, coordinateBytes, 'glyph coordinates');
-      const box = boxes[boxes.length - 1];
-      for (let axis = 0; axis < 2; axis++) {
-        let coordinate = 0;
-        for (const flag of flags) {
-          const short = !!(flag & (axis ? 4 : 2)), sameOrPositive = !!(flag & (axis ? 32 : 16));
-          if (short) coordinate += (sameOrPositive ? 1 : -1) * data[position++];
-          else if (!sameOrPositive) { coordinate += data.readInt16BE(position); position += 2; }
-          if (coordinate < box[axis] || coordinate > box[axis + 2]) fail('glyph coordinates exceed their stored bounding box');
-        }
-      }
+      // The point decode itself is deferred to the validated second pass below.
+      simple.push({ points: last + 1, contours });
     } else {
       let position = 10, flags, hasInstructions = false;
       do {
@@ -342,8 +507,58 @@ function glyphMetrics(glyf, offsets, glyphCount, bearings) {
         position += 4 + payload;
       } while (flags & 32);
       if (hasInstructions) { need(data, position, 2, 'composite glyph instruction count'); need(data, position + 2, data.readUInt16BE(position), 'composite glyph instructions'); }
+      simple.push(null);
     }
     children.push(components);
+  }
+  // Second pass: the point decode-and-validate work, charged against the unchanged
+  // cap. With a seed set the validated set is its composite closure; glyphs outside
+  // it are never decoded and are marked unknown above their (untrusted) header box.
+  /** @type {Set<number> | null} */
+  let validated = null;
+  if (validatedSeeds) {
+    validated = new Set(validatedSeeds);
+    const pending = [...validated];
+    while (pending.length) {
+      const parent = /** @type {number} */ (pending.pop());
+      for (const child of children[parent] ?? []) if (!validated.has(child)) { validated.add(child); pending.push(child); }
+    }
+  }
+  let pointWork = 0;
+  for (let glyph = 0; glyph < glyphCount; glyph++) {
+    const info = simple[glyph];
+    if (!info) continue;
+    if (validated && !validated.has(glyph)) { known[glyph] = false; continue; }
+    const points = info.points;
+    pointWork += points;
+    if (pointWork > MAX_GLYPH_POINTS) fail('glyph point work exceeds the safe limit');
+    const data = glyf.subarray(offsets[glyph], offsets[glyph + 1]);
+    const instructionsAt = 10 + info.contours * 2, instructions = data.readUInt16BE(instructionsAt);
+    let position = instructionsAt + 2 + instructions, seen = 0, coordinateBytes = 0;
+    const flags = new Uint8Array(points);
+    need(data, instructionsAt + 2, instructions, 'glyph instructions');
+    while (seen < points) {
+      need(data, position, 1, 'glyph flags');
+      const flag = data[position++];
+      if (flag & 0x80) fail('unsupported reserved glyph flag');
+      let run = 1;
+      if (flag & 8) { need(data, position, 1, 'glyph flag repeat'); run += data[position++]; }
+      if (run > points - seen) fail('glyph flag repeat exceeds point count');
+      flags.fill(flag, seen, seen + run);
+      coordinateBytes += run * ((flag & 2 ? 1 : flag & 16 ? 0 : 2) + (flag & 4 ? 1 : flag & 32 ? 0 : 2));
+      seen += run;
+    }
+    need(data, position, coordinateBytes, 'glyph coordinates');
+    const box = boxes[glyph];
+    for (let axis = 0; axis < 2; axis++) {
+      let coordinate = 0;
+      for (const flag of flags) {
+        const short = !!(flag & (axis ? 4 : 2)), sameOrPositive = !!(flag & (axis ? 32 : 16));
+        if (short) coordinate += (sameOrPositive ? 1 : -1) * data[position++];
+        else if (!sameOrPositive) { coordinate += data.readInt16BE(position); position += 2; }
+        if (coordinate < box[axis] || coordinate > box[axis + 2]) fail('glyph coordinates exceed their stored bounding box');
+      }
+    }
   }
   const status = new Uint8Array(glyphCount);
   const depths = new Uint16Array(glyphCount);
@@ -382,38 +597,153 @@ function glyphMetrics(glyf, offsets, glyphCount, bearings) {
   };
 }
 
-/** @param {Buffer | Uint8Array} bytes @param {{ faceIndex?: number }} [options] @returns {NativeFontMetrics} */
-function parseFontMetrics(bytes, { faceIndex = 0 } = {}) {
+/**
+ * Lightweight per-face identity probe for a TrueType collection: family name and
+ * OS/2 selection bold/italic flags. Only table directories, the name table and the
+ * OS/2 header are read — the full glyph/cmap parse runs on the selected face alone.
+ * Faces that cannot be probed (unsupported structures) are skipped by selection; the
+ * full parse of the fallback face reports the original error for such a face.
+ * The collection header validation mirrors directory(), bounded by MAX_FACES.
+ * @param {Buffer} data @returns {Array<{ family: string, bold: boolean, italic: boolean } | null> | null} null when not a collection
+ */
+function collectionFaceIdentities(data) {
+  if (data.toString('latin1', 0, 4) !== 'ttcf') return null;
+  const version = data.readUInt32BE(4), count = data.readUInt32BE(8);
+  if (version !== 0x00010000 && version !== 0x00020000 || !count || count > MAX_FACES) return null;
+  /** @type {Array<{ family: string, bold: boolean, italic: boolean } | null>} */
+  const identities = [];
+  for (let faceIndex = 0; faceIndex < count; faceIndex++) {
+    try {
+      const { tables } = directory(data, faceIndex), { family } = fontNames(table(tables, 'name', 6)), os2 = table(tables, 'OS/2', 78), selection = os2.readUInt16BE(62);
+      identities.push({ family, bold: !!(selection & 32), italic: !!(selection & (1 | 512)) });
+    } catch { identities.push(null); }
+  }
+  return identities;
+}
+
+/**
+ * Deterministic collection-face selection for one metrics request, derived only
+ * from the existing font/family/bold/italic request fields (no request-shape change):
+ * - Candidates are the collection's probed faces. When an expected family is known,
+ *   only faces of that family are candidates; when none matches, face 0 is kept so
+ *   the existing family-mismatch failure is reported unchanged.
+ * - A requested bold/italic must match the face flags exactly. When no face of the
+ *   family has the requested style, the family's regular face (else its first face)
+ *   is parsed so the existing explicit style-mismatch failure is reported.
+ * - When style is unspecified, the regular face of the requested family is
+ *   preferred; a request naming neither family nor style keeps face 0, as before.
+ * @param {Buffer} data @param {string | undefined} expectedFamily @param {FontMetricsRequest} request @returns {number}
+ */
+function selectCollectionFace(data, expectedFamily, request) {
+  const identities = collectionFaceIdentities(data);
+  if (!identities) return 0;
+  /** @type {{ identity: { family: string, bold: boolean, italic: boolean }, index: number }[]} */
+  const pool = [];
+  identities.forEach((identity, index) => {
+    if (identity !== null && (expectedFamily === undefined || familyKey(identity.family) === familyKey(expectedFamily))) pool.push({ identity, index });
+  });
+  if (!pool.length) return 0;
+  const { bold, italic } = request;
+  const matches = pool.filter((entry) => (bold === undefined || entry.identity.bold === bold) && (italic === undefined || entry.identity.italic === italic));
+  if (expectedFamily === undefined && bold === undefined && italic === undefined) return 0;
+  if (matches.length) {
+    // Prefer the unstyled value of each unspecified flag, independently of face
+    // order. Explicit flags still match exactly; a wholly unspecified request
+    // without a family has already retained face 0 above.
+    return (matches.find((entry) => (bold !== undefined || !entry.identity.bold) && (italic !== undefined || !entry.identity.italic)) ?? matches[0]).index;
+  }
+  return (pool.find((entry) => !entry.identity.bold && !entry.identity.italic) ?? pool[0]).index;
+}
+
+/** Binary-search the supplementary cmap groups, which are stored sorted by range start. @param {CmapGroup[]} groups @param {number} code */
+function groupGlyph(groups, code) {
+  let lo = 0, hi = groups.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1, group = /** @type {CmapGroup} */ (groups[mid]);
+    if (code < group[0]) hi = mid - 1;
+    else if (code > group[1]) lo = mid + 1;
+    else return group[2] + code - group[0];
+  }
+  return 0;
+}
+
+/**
+ * Resolve a bounded captured-PDF used-codepoint set to this face's glyph ids.
+ * Capital A is always seeded: the native capital-height gate below must keep a
+ * validated glyph whether or not a plotted run used it. Unmapped codepoints name
+ * no glyph and are ignored; the set never widens any other validation or budget.
+ * @param {{ cmap: number[], groups: CmapGroup[] }} mapping @param {Iterable<number> | undefined} usedCodepoints
+ * @returns {Set<number> | undefined}
+ */
+function usedGlyphSeeds(mapping, usedCodepoints) {
+  if (usedCodepoints === undefined) return undefined;
+  if (!usedCodepoints || typeof usedCodepoints[Symbol.iterator] !== 'function') fail('invalid used codepoint set');
+  const glyphs = new Set();
+  let count = 0;
+  for (const code of usedCodepoints) {
+    if (++count > MAX_USED_CODEPOINTS) fail('used codepoint set exceeds the safe limit');
+    if (!Number.isInteger(code) || code < 0 || code > 0x10ffff) fail('invalid used codepoint');
+    const glyph = code <= 0xffff ? mapping.cmap[code] : groupGlyph(mapping.groups, code);
+    if (glyph) glyphs.add(glyph);
+  }
+  const glyphA = mapping.cmap[0x41];
+  if (glyphA) glyphs.add(glyphA);
+  return glyphs;
+}
+
+/** @param {Buffer | Uint8Array} bytes @param {{ faceIndex?: number, usedCodepoints?: Iterable<number> }} [options] @returns {NativeFontMetrics} */
+function parseFontMetrics(bytes, { faceIndex = 0, usedCodepoints } = {}) {
   if (!(bytes instanceof Uint8Array) || bytes.byteLength > MAX_FONT_BYTES || bytes.byteLength < 12) fail('font must contain 12 bytes to 64 MiB');
   if (!Number.isInteger(faceIndex) || faceIndex < 0 || faceIndex >= MAX_FACES) fail('invalid font face index');
-  const data = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength), tables = directory(data, faceIndex);
-  const head = table(tables, 'head', 54), maxp = table(tables, 'maxp', 32), hhea = table(tables, 'hhea', 36), os2 = table(tables, 'OS/2', 78);
+  const data = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength), { tables, outline } = directory(data, faceIndex);
+  const head = table(tables, 'head', 54), maxp = table(tables, 'maxp', outline === 'cff' ? 6 : 32), hhea = table(tables, 'hhea', 36), os2 = table(tables, 'OS/2', 78);
   if (head.readUInt32BE(0) !== 0x00010000 || head.readUInt32BE(12) !== 0x5f0f3cf5 || head.readInt16BE(52) !== 0) fail('unsupported or invalid head table');
-  if (maxp.readUInt32BE(0) !== 0x00010000 || hhea.readUInt32BE(0) !== 0x00010000 || hhea.readInt16BE(32) !== 0) fail('unsupported maxp/hhea table format');
+  // CFF uses maxp 0.5, whose only required metric is the glyph count.
+  if (maxp.readUInt32BE(0) !== (outline === 'cff' ? 0x00005000 : 0x00010000) || hhea.readUInt32BE(0) !== 0x00010000 || hhea.readInt16BE(32) !== 0) fail('unsupported maxp/hhea table format');
   const unitsPerEm = head.readUInt16BE(18), glyphCount = maxp.readUInt16BE(4), metricsCount = hhea.readUInt16BE(34), locationFormat = head.readInt16BE(50), os2Version = os2.readUInt16BE(0);
   if (unitsPerEm < 16 || unitsPerEm > 16384 || !glyphCount || !metricsCount || metricsCount > glyphCount || locationFormat !== 0 && locationFormat !== 1) fail('invalid font units, glyph/metric count or location format');
   if (os2Version > 5) fail('unsupported OS/2 version');
   need(os2, 0, os2Version === 0 ? 78 : os2Version === 1 ? 86 : os2Version === 5 ? 100 : 96, 'OS/2 version data');
-  const hmtx = table(tables, 'hmtx', metricsCount * 4 + (glyphCount - metricsCount) * 2), loca = table(tables, 'loca', (glyphCount + 1) * (locationFormat === 0 ? 2 : 4)), glyf = table(tables, 'glyf', 0);
+  const hmtx = table(tables, 'hmtx', metricsCount * 4 + (glyphCount - metricsCount) * 2);
   const advances = new Array(glyphCount), bearings = new Array(glyphCount);
   for (let i = 0; i < glyphCount; i++) {
     advances[i] = hmtx.readUInt16BE(Math.min(i, metricsCount - 1) * 4);
     bearings[i] = hmtx.readInt16BE(i < metricsCount ? i * 4 + 2 : metricsCount * 4 + (i - metricsCount) * 2);
   }
-  const offsets = new Array(glyphCount + 1);
-  for (let i = 0; i <= glyphCount; i++) {
-    const offset = locationFormat === 0 ? loca.readUInt16BE(i * 2) * 2 : loca.readUInt32BE(i * 4);
-    if (offset > glyf.length || i && offset < offsets[i - 1]) fail('invalid loca glyph offset');
-    offsets[i] = offset;
+  // The cmap is resolved before glyph validation so a captured-PDF used set can
+  // name the glyphs it needs; it depends only on the cmap table and glyph count.
+  const mapping = characterMap(table(tables, 'cmap', 4), glyphCount);
+  const validatedSeeds = usedGlyphSeeds(mapping, usedCodepoints);
+  let glyphBounds, glyphBoundsKnown;
+  if (outline === 'cff') {
+    // CFF remains eager even for captured used sets: all CharStrings share the
+    // parser's work cap. Its control hull starts at the glyph origin.
+    ({ glyphBounds, glyphBoundsKnown } = cffGlyphBounds(table(tables, 'CFF ', 0), glyphCount, unitsPerEm));
+  } else {
+    const loca = table(tables, 'loca', (glyphCount + 1) * (locationFormat === 0 ? 2 : 4)), glyf = table(tables, 'glyf', 0);
+    const offsets = new Array(glyphCount + 1);
+    for (let i = 0; i <= glyphCount; i++) {
+      const offset = locationFormat === 0 ? loca.readUInt16BE(i * 2) * 2 : loca.readUInt32BE(i * 4);
+      if (offset > glyf.length || i && offset < offsets[i - 1]) fail('invalid loca glyph offset');
+      offsets[i] = offset;
+    }
+    // Origin-adjusted unhinted control bounds retain visible Y overflow. Windows TEXTBOX
+    // clipping and device hinting differ; neither is used to crop rendered/selected ink.
+    ({ glyphBounds, glyphBoundsKnown } = glyphMetrics(glyf, offsets, glyphCount, bearings, validatedSeeds));
   }
-  // Origin-adjusted unhinted control bounds retain visible Y overflow. Windows TEXTBOX
-  // clipping and device hinting differ; neither is used to crop rendered/selected ink.
-  const { glyphBounds, glyphBoundsKnown } = glyphMetrics(glyf, offsets, glyphCount, bearings);
   maskBitmapGlyphs(tables, glyphCount, glyphBoundsKnown);
-  const mapping = characterMap(table(tables, 'cmap', 4), glyphCount), names = fontNames(table(tables, 'name', 6));
+  const names = fontNames(table(tables, 'name', 6));
   const glyphA = mapping.cmap[0x41], capitalHeight = glyphBounds[glyphA][3], selection = os2.readUInt16BE(62);
   if (!glyphA || capitalHeight <= 0 || !glyphBoundsKnown[glyphA]) fail('the native capital A glyph must have a known origin and positive yMax');
-  return { ...names, unitsPerEm, capitalHeight, winDescent: os2.readUInt16BE(76), fontBounds: bounds(head, 36, 'font bounding box'), advances, glyphBounds, glyphBoundsKnown, ...mapping, fsType: os2.readUInt16BE(8), bold: !!(selection & 32), italic: !!(selection & (1 | 512)) };
+  const bold = !!(selection & 32), italic = !!(selection & (1 | 512));
+  if (tables.has('fvar')) {
+    // The fvar was structurally validated in directory(); re-derive its model and hold
+    // the face to the default-coordinate identity policy before any metrics are trusted.
+    const model = validateVariableFont(/** @type {Buffer} */ (tables.get('fvar')), tables.get('name'));
+    const problem = variableDefaultIdentityProblem(model, os2, variableNameIndex(tables.get('name')), { bold, italic });
+    if (problem) fail(problem);
+  }
+  return { ...names, unitsPerEm, capitalHeight, winDescent: os2.readUInt16BE(76), fontBounds: bounds(head, 36, 'font bounding box'), advances, glyphBounds, glyphBoundsKnown, ...mapping, fsType: os2.readUInt16BE(8), bold, italic, ...(tables.has('fvar') ? { variable: true } : {}) };
 }
 
 /** Common Windows family variants, regular/bold/italic/bold-italic. No guessed font substitutions. */
@@ -441,6 +771,7 @@ function fontRequest(request) {
   if (!request || typeof request !== 'object' || typeof request.font !== 'string' || !request.font || request.font.length > 160) fail('a bounded font filename or known Windows family is required');
   if (request.family !== undefined && (typeof request.family !== 'string' || !request.family.trim() || request.family.length > 256 || /[\u0000-\u001f\u007f]/.test(request.family))) fail('invalid requested font family');
   for (const flag of ['bold', 'italic']) if (request[flag] !== undefined && typeof request[flag] !== 'boolean') fail(`invalid requested ${flag} flag`);
+  if (request.usedCodepoints !== undefined && (!Array.isArray(request.usedCodepoints) || request.usedCodepoints.length > MAX_USED_CODEPOINTS || Array.from(request.usedCodepoints).some((code) => !Number.isInteger(code) || code < 0 || code > 0x10ffff))) fail('invalid used codepoint set');
   const name = request.font;
   if (name.trim() !== name || /[<>:"/\\|?*\u0000-\u001f\u007f]/.test(name) || /[. ]$/.test(name) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) fail('font must be a safe literal basename');
   const known = FAMILIES.find((family) => familyKey(family[0]) === familyKey(name) || family.slice(1).some((filename) => filename && filename.toLowerCase() === name.toLowerCase()));
@@ -453,7 +784,7 @@ function fontRequest(request) {
     filename = known[1 + (bold ? 1 : 0) + (italic ? 2 : 0)];
     if (!filename) fail('the requested family has no known installed variant for these style flags');
   }
-  return { filename, expectedFamily: request.family ?? known?.[0] };
+  return { filename, expectedFamily: request.family ?? known?.[0], usedCodepoints: request.usedCodepoints };
 }
 
 /** @param {string} root @param {string} child */
@@ -470,10 +801,10 @@ function unchanged(a, b) { return sameFile(a, b) && a.size === b.size && a.mtime
  * for private tests/main-process configuration; it must never be accepted from renderer IPC.
  * @param {FontMetricsRequest} request
  * @param {{ fontsDirectory?: string }} [options]
- * @returns {Promise<{ metrics: NativeFontMetrics & { resolvedFilename: string }, bytes: Uint8Array }>}
+ * @returns {Promise<{ metrics: NativeFontMetrics & { resolvedFilename: string, faceIndex: number }, bytes: Uint8Array }>}
  */
 async function readWindowsFontData(request, { fontsDirectory } = {}) {
-  const { filename, expectedFamily } = fontRequest(request);
+  const { filename, expectedFamily, usedCodepoints } = fontRequest(request);
   if (fontsDirectory === undefined) {
     if (process.platform !== 'win32') fail('installed Windows font metrics are unavailable on this platform');
     fontsDirectory = path.join(process.env.WINDIR || process.env.SystemRoot || 'C:\\Windows', 'Fonts');
@@ -495,18 +826,27 @@ async function readWindowsFontData(request, { fontsDirectory } = {}) {
       offset += read.bytesRead;
     }
     if (!unchanged(before, await handle.stat({ bigint: true })) || !samePath(root, await fs.realpath(fontsDirectory)) || !samePath(resolved, await fs.realpath(candidate)) || !unchanged(before, await fs.stat(resolved, { bigint: true }))) fail('font file or path changed while reading');
-    const metrics = parseFontMetrics(data);
+    // A collection contributes the face selected for this family/style request;
+    // metrics, cmap and permissions all come from that one face.
+    const faceIndex = selectCollectionFace(data, expectedFamily, request);
+    const metrics = parseFontMetrics(data, { faceIndex, usedCodepoints });
     if (expectedFamily && familyKey(metrics.family) !== familyKey(expectedFamily)) fail('installed font family does not match the requested family');
     if (request.bold !== undefined && metrics.bold !== request.bold || request.italic !== undefined && metrics.italic !== request.italic) fail('installed font style does not match the requested style flags');
-    return { metrics: { ...metrics, resolvedFilename: path.basename(resolved) }, bytes: data };
+    return { metrics: { ...metrics, resolvedFilename: path.basename(resolved), faceIndex }, bytes: data };
   } finally { await handle.close(); }
 }
 
 /**
- * Metadata-only callers never receive the installed font program.
+ * Metadata-only callers never receive the installed font program, and never a
+ * used set: screen metrics keep the eager whole-face validation, so an over-cap
+ * face keeps falling back to Canvas there exactly as before. Used sets exist
+ * only on the captured-PDF read (readWindowsPdfFont via readWindowsFontData).
  * @param {FontMetricsRequest} request @param {{ fontsDirectory?: string }} [options]
- * @returns {Promise<NativeFontMetrics & { resolvedFilename: string }>}
+ * @returns {Promise<NativeFontMetrics & { resolvedFilename: string, faceIndex: number }>}
  */
-async function readWindowsFontMetrics(request, options) { return (await readWindowsFontData(request, options)).metrics; }
+async function readWindowsFontMetrics(request, options) {
+  const stripped = request && typeof request === 'object' ? { ...request, usedCodepoints: undefined } : request;
+  return (await readWindowsFontData(/** @type {FontMetricsRequest} */ (stripped), options)).metrics;
+}
 
-module.exports = { parseFontMetrics, readWindowsFontMetrics, readWindowsFontData, MAX_FONT_BYTES };
+module.exports = { parseFontMetrics, readWindowsFontMetrics, readWindowsFontData, MAX_FONT_BYTES, MAX_USED_CODEPOINTS };
