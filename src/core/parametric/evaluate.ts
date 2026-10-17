@@ -115,13 +115,29 @@ export type EvaluationResult =
       /** Action ids in the order they were applied (topological). */
       readonly appliedActions: readonly string[];
       readonly diagnostics: readonly EvaluationDiagnostic[];
+      /** The composed transform this evaluation ACTUALLY applied to each
+       *  attribute definition it moved, keyed by tag (round 4, R3-01).
+       *  Recorded from the action pipeline itself — never inferred from
+       *  authored/effective snapshots, which cannot distinguish a flip
+       *  whose axis fixes every anchor from the identity. An attribute
+       *  no action transformed has no entry. Consumers that re-express
+       *  per-instance placements against the evaluated definition (core
+       *  expansion, the DXF writer and reader) compose with this record
+       *  and its exact inverse. */
+      readonly attributeTransforms: ReadonlyMap<string, AttributeActionTransform>;
       /** Declared (always undefined) so union access typechecks under
        *  tsconfig.scripts.json, which compiles with strictNullChecks off and
        *  therefore does not narrow this union by the `ok` discriminant
        *  (review finding R01). */
       readonly refusal?: undefined;
     }
-  | { readonly ok: false; readonly refusal: EvaluationRefusal };
+  | {
+      readonly ok: false;
+      readonly refusal: EvaluationRefusal;
+      /** Mirror of the ok variant's field, for the same union-access
+       *  reason documented there (review finding R01). */
+      readonly attributeTransforms?: undefined;
+    };
 
 export interface EvaluationRefusal {
   readonly code: EvaluationRefusalCode;
@@ -392,6 +408,50 @@ function walkNumbersFinite(
   }
   return 'finite';
 }
+
+/**
+ * The composed transform one evaluation applied to one attribute
+ * definition, as an absolute affine point map plus the scalar parts of
+ * the placement transform: a point q of the authored placement maps to
+ * (a·q.x + b·q.y + ox, c·q.x + d·q.y + oy), the height composes by
+ * `heightRatio` and the rotation by `rotationDelta` — exactly the
+ * operations transformAttributePlacement performed on the definition
+ * while the pipeline ran (round 4, R3-01). Recorded per attribute in
+ * pipeline order by evaluateDynamicBlock and returned in the result,
+ * so placement composition consumes the ACTUAL action transforms:
+ * a flip contributes its true reflection even when the axis fixes
+ * every authored anchor and the evaluated definition is field-for-field
+ * identical to the authored one.
+ */
+export interface AttributeActionTransform {
+  readonly a: number;
+  readonly b: number;
+  readonly c: number;
+  readonly d: number;
+  readonly ox: number;
+  readonly oy: number;
+  readonly heightRatio: number;
+  readonly rotationDelta: number;
+}
+
+/** Compose two attribute transforms: the result applies `prev` first,
+ *  then `next` (pipeline order). */
+function composeAttributeTransforms(next: AttributeActionTransform, prev: AttributeActionTransform): AttributeActionTransform {
+  return {
+    a: next.a * prev.a + next.b * prev.c,
+    b: next.a * prev.b + next.b * prev.d,
+    c: next.c * prev.a + next.d * prev.c,
+    d: next.c * prev.b + next.d * prev.d,
+    ox: next.a * prev.ox + next.b * prev.oy + next.ox,
+    oy: next.c * prev.ox + next.d * prev.oy + next.oy,
+    heightRatio: prev.heightRatio * next.heightRatio,
+    rotationDelta: prev.rotationDelta + next.rotationDelta,
+  };
+}
+
+const translationTransform = (delta: Point): AttributeActionTransform => ({
+  a: 1, b: 0, c: 0, d: 1, ox: delta.x, oy: delta.y, heightRatio: 1, rotationDelta: 0,
+});
 
 /** Reflect a point across the line a-b. The point-level half of
  *  mirrorEntityAcross (core/entities), used for attribute placements, whose
@@ -828,6 +888,28 @@ export function evaluateDynamicBlock(
   const baseSlot: number[] = baseEntities.map((_, i) => i);
   const sourceIds: string[] = baseEntities.map((e) => e.id);
 
+  // The composed transform actually applied to each attribute, parallel
+  // to outAttributes (round 4, R3-01). Every applier that transforms an
+  // attribute records the same transform here, in pipeline order, so
+  // the result can report the ACTUAL per-attribute motion instead of
+  // leaving consumers to infer it from snapshots. Recording is O(1) per
+  // application — it rides the pipeline's existing work charges and
+  // adds no pass of its own.
+  const attributeTx: (AttributeActionTransform | undefined)[] = baseAttributes.map(() => undefined);
+  const recordAttributeTransform = (index: number, next: AttributeActionTransform): void => {
+    const prev = attributeTx[index];
+    attributeTx[index] = prev ? composeAttributeTransforms(next, prev) : next;
+  };
+  const buildAttributeTransforms = (): ReadonlyMap<string, AttributeActionTransform> => {
+    const map = new Map<string, AttributeActionTransform>();
+    outAttributes.forEach((attribute, i) => {
+      const tx = attributeTx[i];
+      // First tag wins, matching the find-by-tag lookups consumers use.
+      if (tx && !map.has(attribute.tag)) map.set(attribute.tag, tx);
+    });
+    return map;
+  };
+
   /** Apply one stretch action to the working copies. Returns a refusal, or
    *  undefined on success (including a zero-delta no-op). */
   const applyStretchAction = (action: StretchAction, param: LinearDistanceParameter): EvaluationResult | undefined => {
@@ -909,9 +991,11 @@ export function evaluateDynamicBlock(
         // anchor rides, so a justified attribute's anchor moves exactly
         // as far as its position does.
         const movedTo = moves.get(0);
-        outAttributes[target.index] = movedTo
-          ? transformAttributePlacement(target.attribute, (p) => add(p, sub(movedTo, target.attribute.position)))
-          : target.attribute;
+        if (movedTo) {
+          const delta = sub(movedTo, target.attribute.position);
+          outAttributes[target.index] = transformAttributePlacement(target.attribute, (p) => add(p, delta));
+          recordAttributeTransform(target.index, translationTransform(delta));
+        }
       }
     }
     if (!zeroDelta && !anyMoved) {
@@ -947,6 +1031,11 @@ export function evaluateDynamicBlock(
     // the entity transform does to a text entity — not just a moved
     // position point.
     let transformAttr: ((attribute: AttributeDef) => AttributeDef) | undefined;
+    // The same transform in AttributeActionTransform form, recorded for
+    // every attribute the action moves (round 4, R3-01). Built in exactly
+    // the branches that set transformAttr, from the same constants, so
+    // the record cannot diverge from the applied transform.
+    let actionTx: AttributeActionTransform | undefined;
     switch (action.kind) {
       case 'move': {
         const p = param as LinearDistanceParameter;
@@ -962,6 +1051,7 @@ export function evaluateDynamicBlock(
           transformEntity = (entity) => translateEntity(entity, delta);
           transformPoint = (point) => add(point, delta);
           transformAttr = (attribute) => transformAttributePlacement(attribute, (p) => add(p, delta));
+          actionTx = translationTransform(delta);
         }
         break;
       }
@@ -978,6 +1068,14 @@ export function evaluateDynamicBlock(
           transformEntity = (entity) => rotateEntity(entity, center, deltaAngle);
           transformPoint = (point) => rotate(point, deltaAngle, center);
           transformAttr = (attribute) => transformAttributePlacement(attribute, (p) => rotate(p, deltaAngle, center), deltaAngle);
+          const cos = Math.cos(deltaAngle);
+          const sin = Math.sin(deltaAngle);
+          actionTx = {
+            a: cos, b: -sin, c: sin, d: cos,
+            ox: center.x - (cos * center.x - sin * center.y),
+            oy: center.y - (sin * center.x + cos * center.y),
+            heightRatio: 1, rotationDelta: deltaAngle,
+          };
         }
         break;
       }
@@ -997,6 +1095,11 @@ export function evaluateDynamicBlock(
           transformEntity = (entity) => scaleEntityBy(entity, basePoint, factor);
           transformPoint = (point) => add(basePoint, scalePoint(sub(point, basePoint), factor));
           transformAttr = (attribute) => transformAttributePlacement(attribute, (p) => add(basePoint, scalePoint(sub(p, basePoint), factor)), 0, factor);
+          actionTx = {
+            a: factor, b: 0, c: 0, d: factor,
+            ox: basePoint.x * (1 - factor), oy: basePoint.y * (1 - factor),
+            heightRatio: factor, rotationDelta: 0,
+          };
         }
         break;
       }
@@ -1009,6 +1112,21 @@ export function evaluateDynamicBlock(
           transformEntity = (entity) => mirrorEntityAcross(entity, axisA, axisB);
           transformPoint = (point) => reflectPoint(point, axisA, axisB);
           transformAttr = (attribute) => transformAttributePlacement(attribute, (p) => reflectPoint(p, axisA, axisB));
+          // The reflection's matrix form (2·ûûᵀ − I about the axis line,
+          // û the unit axis direction — the same normalisation
+          // reflectPoint applies), recorded even when the axis fixes
+          // every authored anchor: the record, not the snapshot, is
+          // what proves a flip happened (round 4, R3-01).
+          const u = normalize(sub(axisB, axisA));
+          const ra = 2 * u.x * u.x - 1;
+          const rb = 2 * u.x * u.y;
+          const rd = 2 * u.y * u.y - 1;
+          actionTx = {
+            a: ra, b: rb, c: rb, d: rd,
+            ox: axisA.x - (ra * axisA.x + rb * axisA.y),
+            oy: axisA.y - (rb * axisA.x + rd * axisA.y),
+            heightRatio: 1, rotationDelta: 0,
+          };
         }
         break;
       }
@@ -1036,8 +1154,9 @@ export function evaluateDynamicBlock(
       if (!charge(1 + (points ? points.length : 1))) return workRefusal();
       if (target.kind === 'entity') {
         outEntities[baseSlot[target.index]!] = transformEntity(target.entity);
-      } else {
-        outAttributes[target.index] = transformAttr ? transformAttr(target.attribute) : target.attribute;
+      } else if (transformAttr) {
+        outAttributes[target.index] = transformAttr(target.attribute);
+        if (actionTx) recordAttributeTransform(target.index, actionTx);
       }
     }
     return undefined;
@@ -1272,7 +1391,7 @@ export function evaluateDynamicBlock(
     (p): p is VisibilityParameter => p.kind === 'visibility',
   );
   if (!visibility) {
-    return { ok: true, entities: outEntities, attributes: outAttributes, appliedActions, diagnostics };
+    return { ok: true, entities: outEntities, attributes: outAttributes, appliedActions, diagnostics, attributeTransforms: buildAttributeTransforms() };
   }
   const stateEntry = finalEffective[visibility.id];
   const stateName = stateEntry && stateEntry.kind === 'visibility' ? stateEntry.value : visibility.defaultState;
@@ -1291,5 +1410,10 @@ export function evaluateDynamicBlock(
     attributes: outAttributes.filter((a) => visible.has(a.tag)),
     appliedActions,
     diagnostics,
+    // Built from the UNfiltered working list: a state-hidden attribute's
+    // record is inert (consumers look transforms up only for attributes
+    // present in the returned definition), and the record stays truthful
+    // about the motion the pipeline applied before the filter ran.
+    attributeTransforms: buildAttributeTransforms(),
   };
 }
