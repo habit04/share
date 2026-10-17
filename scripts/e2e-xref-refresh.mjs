@@ -34,12 +34,15 @@
 // Nothing is deleted: profiles, outputs and fixtures stay as residue
 // evidence and are recorded in results.json.
 //
-// G2 placeholders: broker-stats assertions and the in-flight quit
-// witness depend on the reviewed G2 observation mechanism, which does
-// not exist yet. Those criteria are recorded as BLOCKED (never passed
-// by sleep) and make the exit code nonzero. Clean process exit is
-// recorded as exit evidence only - it is NOT a completed-drain proof
-// (the IPC dispose ignores the closeAll promise).
+// G2 observer: broker-stats assertions and the in-flight quit witness
+// evaluate only from samples of the pinned test-only observer
+// (scripts/xref-test-observer.cjs, preloaded via the Electron CLI
+// --require route under the G2 ruling) when this run is launched with
+// --observer. Without a valid observer baseline/witness those criteria
+// are BLOCKED (never passed by sleep) and make the exit code nonzero.
+// Clean process exit is recorded as exit evidence only - it is NOT a
+// completed-drain proof (the IPC dispose ignores the closeAll promise).
+// Executing the observer is a separately admitted native step.
 //
 //   npm run build
 //   node scripts/xref-native-fixtures.mjs <work-root>/fixtures
@@ -92,6 +95,25 @@ const sections = sectionsArg ? sectionsArg.split(',').map((s) => s.trim()).filte
 function setupFail(message) {
   console.error(`e2e-xref-refresh: invalid setup: ${message}`);
   process.exit(2);
+}
+// G2 observer (lead ruling, implementation for review): when --observer
+// names the pinned test-only observer file, launches preload it through
+// the Electron CLI --require route (default_app) and the harness records
+// read-only stats samples. Stats criteria evaluate ONLY from valid
+// samples; otherwise they stay BLOCKED. Execution of the observer is a
+// separately admitted native step - this delivery does not run it.
+const observerArg = argOf('--observer');
+const observerTargetSha = argOf('--observer-target-sha');
+const observerMode = observerArg !== '';
+let observerPath = '';
+let observerSha256 = '';
+if (observerMode) {
+  observerPath = resolve(observerArg);
+  if (!existsSync(observerPath)) setupFail('--observer file does not exist');
+  if (!/^[0-9a-f]{64}$/.test(observerTargetSha)) setupFail('--observer-target-sha must be the pinned 64-hex sha256 of electron/xref-read.cjs from the delivery manifest');
+  const actualTarget = fileSha(join(repo, 'electron', 'xref-read.cjs'));
+  if (actualTarget !== observerTargetSha) setupFail(`--observer-target-sha (${observerTargetSha}) does not match electron/xref-read.cjs (${actualTarget}) - refusing to launch`);
+  observerSha256 = fileSha(observerPath);
 }
 if (!workRootArg) setupFail('--work-root is required (fixtures, out, profiles and TEMP are confined under it)');
 if (!fixtureArg) setupFail('--fixtures is required');
@@ -156,7 +178,7 @@ function failHalt(name, detail = '') {
   halted = true;
   haltReason = `stopped at the first failed PASS criterion: [${currentSection}] ${name}`;
 }
-const results = { header: {}, checks, residue: { workRoot, fixtureDir, outDir, tempDir, profiles: [], childExits: [], watchdogFired: false, deleted: 'nothing (residue preserved by design)' } };
+const results = { header: {}, checks, observer: { mode: observerMode ? 'cli-require via default_app' : 'off', path: observerPath || null, sha256: observerSha256 || null, targetSha256: observerTargetSha || null }, observerSamples: [], observerBaseline: null, residue: { workRoot, fixtureDir, outDir, tempDir, profiles: [], childExits: [], watchdogFired: false, deleted: 'nothing (residue preserved by design)' } };
 function writeResults() {
   try {
     writeFileSync(join(outDir, 'harness.log'), logLines.join('\n') + '\n');
@@ -207,6 +229,12 @@ function childEnv() {
   env.TEMP = tempDir;
   env.TMP = tempDir;
   env.ELECTRON_DISABLE_SECURITY_WARNINGS = '1';
+  if (observerMode) {
+    // The reviewed runner supplies the observer's fail-closed opt-in and
+    // the pinned target identity - and nothing else extra.
+    env.JCAD_XREF_TEST_OBSERVER = '1';
+    env.JCAD_XREF_OBSERVER_TARGET_SHA256 = observerTargetSha;
+  }
   // Non-Windows only: a headless X server is the launch mechanism itself.
   if (process.platform !== 'win32') {
     if (process.env.DISPLAY) env.DISPLAY = process.env.DISPLAY;
@@ -251,7 +279,9 @@ async function launchApp(label) {
   const profile = join(workRoot, `profile-${label}`);
   mkdirSync(profile, { recursive: true });
   results.residue.profiles.push(profile);
-  const args = ['.', `--user-data-dir=${profile}`];
+  const args = observerMode
+    ? ['--require', observerPath, '.', `--user-data-dir=${profile}`]
+    : ['.', `--user-data-dir=${profile}`];
   if (process.platform === 'linux') args.push('--no-sandbox');
   const app = await electron.launch({ args, cwd: repo, env: childEnv(), timeout: 60_000 });
   trackChild(label, app.process());
@@ -268,6 +298,42 @@ async function launchApp(label) {
     };
   });
   return { app, win, pageErrors, profile };
+}
+
+// ------------------------------------------------------------ G2 observer sampling
+let observerBaseline = null;
+let observerBaselineUsable = false;
+async function sampleObserver(appInstance, tag) {
+  if (!observerMode) return null;
+  try {
+    const s = await appInstance.evaluate(() => {
+      const f = globalThis.__xrefTestObserver;
+      return f ? f.sample() : null;
+    });
+    results.observerSamples.push({ tag, sample: s });
+    return s;
+  } catch {
+    return null;
+  }
+}
+function observerUsable(s) {
+  return Boolean(observerBaselineUsable && s && s.captured && s.factoryCalls === 1 && !s.invalidated && s.stats);
+}
+function observerBlockReason(s) {
+  if (!observerMode) return 'observer not enabled for this run (no --observer): stats criteria stay BLOCKED under the G2 ruling';
+  if (!observerBaselineUsable) return 'observer baseline was not a clean zero capture: stats coverage invalid for this run';
+  if (!s) return 'observer facade absent or sampling failed: stats coverage invalid for this run';
+  if (s.invalidated) return `observer coverage invalidated: ${s.invalidated}`;
+  if (!s.captured || s.factoryCalls !== 1) return `observer one-instance proof failed (captured=${s.captured}, factoryCalls=${s.factoryCalls})`;
+  return 'observer sample unusable';
+}
+async function statsZeroCheck(appInstance, name) {
+  const s = await sampleObserver(appInstance, name);
+  if (!observerUsable(s)) { blocked(name, observerBlockReason(s)); return; }
+  const st = s.stats;
+  const b = observerBaseline.stats;
+  check(st.activeOps === 0 && st.reservedRawBytes === 0 && st.contexts === b.contexts && st.tickets === b.tickets,
+    name, `sample=${JSON.stringify(st)} baseline=${JSON.stringify(b)}`);
 }
 
 async function openProjectAndHost(app, win) {
@@ -473,6 +539,7 @@ try {
     suppliedLabelsNote: '--head/--tree are caller-supplied labels; the computed source identity below is what this run actually used',
     sourceIdentity: { ...sourceIdentity, bundle: bundleInfo ?? { error: bundleError } },
     fixtureManifestSha256: manifestSha, fixtureDir, workRoot,
+    observer: results.observer,
     evidenceClass: process.platform === 'win32' ? 'windows-stage1' : 'mechanics-only-non-win32',
   };
   log(`header: electron ${versions.electron} / chromium ${versions.chrome} / node ${versions.node}`);
@@ -491,6 +558,15 @@ try {
   const bridgeOk = await win.evaluate(() => ['beginXrefContext', 'identifyXref', 'readXref', 'cancelXref', 'closeXrefContext'].every((k) => typeof window.jcad[k] === 'function'));
   check(bridgeOk, 'window.jcad exposes the five xref bridge methods (Windows-only in the preload by design)');
   if (!bridgeOk) failHalt('xref bridge unavailable on this platform/build - this gate requires the Windows app');
+  if (observerMode) {
+    observerBaseline = await sampleObserver(app, 'baseline');
+    results.observerBaseline = observerBaseline;
+    const bs = observerBaseline?.stats;
+    observerBaselineUsable = Boolean(observerBaseline && observerBaseline.captured && observerBaseline.factoryCalls === 1 && !observerBaseline.invalidated && bs
+      && bs.contexts === 0 && bs.tickets === 0 && bs.activeOps === 0 && bs.retiredActiveOps === 0 && bs.reservedRawBytes === 0 && bs.disposed === false);
+    log(`observer: baseline ${JSON.stringify(observerBaseline)} usable=${observerBaselineUsable}`);
+    if (!observerBaselineUsable) log('observer: WARNING - baseline not a clean zero capture; stats-derived criteria will be BLOCKED for this run');
+  }
 
   const begin = (docId) => win.evaluate((d) => window.__xref.begin(d), docId);
   const identify = (token, p) => win.evaluate(([t, q]) => window.__xref.identify(t, q), [token, p]);
@@ -555,8 +631,8 @@ try {
       const fine = await read(ctx.token, leaf.ticket, MIB);
       check(fine.ok && typeof fine.text === 'string' && sha256(Buffer.from(fine.text, 'utf8')) === fixtureMeta.files[leafRel].sha256,
         'a normal read still succeeds after the refusals and returns the pinned leaf content', JSON.stringify(fine.ok ? { byteLength: fine.byteLength } : fine));
-      blocked('broker stats return to zero after the LIMIT refusals (activeOps / reservedRawBytes / contexts)');
       await closeCtx(ctx.token);
+      await statsZeroCheck(app, 'broker stats return to baseline after the LIMIT refusals and the explicit context close (activeOps / reservedRawBytes zero; contexts / tickets back to baseline)');
       if (sectionFailed(mark)) { halted = true; haltReason = 'stopped at the first failed PASS criterion in section 3.2'; }
     }
   }
@@ -571,7 +647,8 @@ try {
       const slow = await identify(ctxA.token, fx('slow.dxf'));
       const leafA = await identify(ctxA.token, fx(leafRel));
       check(slow.ok && leafA.ok, 'context A identifies slow.dxf and leaf.dxf');
-      const burst = await win.evaluate(async ([tokA, slowTicket, leafTicketA, leafPath]) => {
+      let burstSettled = false;
+      const burstPromise = win.evaluate(async ([tokA, slowTicket, leafTicketA, leafPath]) => {
         const x = window.__xref;
         const held = x.read(tokA, slowTicket, 16 * 1024 * 1024);
         const competing = x.read(tokA, leafTicketA, 1024 * 1024);
@@ -582,12 +659,33 @@ try {
         const competingResult = await competing;
         if (beginB.ok) await x.close(beginB.token);
         return { held: heldResult, competing: competingResult, readB };
-      }, [ctxA.token, slow.ticket, leafA.ticket, fx(leafRel)]);
+      }, [ctxA.token, slow.ticket, leafA.ticket, fx(leafRel)]).then((r) => { burstSettled = true; return r; });
+      // Main-side observer samples taken WHILE the burst is in flight:
+      // the witness is the samples' content (same main clock/sequence as
+      // the broker), never a sleep. Sampling cadence only paces evaluate.
+      const windowSamples = [];
+      while (!burstSettled && windowSamples.length < 60) {
+        const s = await sampleObserver(app, 'burst-window');
+        if (s) windowSamples.push(s);
+        if (!burstSettled) await new Promise((r) => setTimeout(r, 10));
+      }
+      const burst = await burstPromise;
       check(burst.competing && !burst.competing.ok && burst.competing.code === 'ERR_XREF_RESOURCE_BUSY', 'second read in the same context refuses BUSY - the refusal itself witnesses an active operation (zero queue)', JSON.stringify(burst.competing));
       check(burst.readB && burst.readB.ok, 'a read in a second context proceeds meanwhile', JSON.stringify(burst.readB));
       check(burst.held && burst.held.ok && burst.held.rawBytes === fixtureMeta.files['slow.dxf'].bytes, 'the held read completes with the full file', JSON.stringify(burst.held));
-      blocked('broker stats return to zero after the burst drains (activeOps / reservedRawBytes / contexts)');
+      {
+        const slowBytes = fixtureMeta.files['slow.dxf'].bytes;
+        const witnessName = 'observer witnessed the held read genuinely active during the burst (activeOps >= 1 with reservedRawBytes = slow size + sentinel, main-clock samples)';
+        if (!observerMode) blocked(witnessName);
+        else if (!windowSamples.length || !observerUsable(windowSamples[windowSamples.length - 1])) blocked(witnessName, observerBlockReason(windowSamples[windowSamples.length - 1] ?? null));
+        else {
+          const witnessing = windowSamples.filter((s) => s.stats.activeOps >= 1 && s.stats.reservedRawBytes === slowBytes + 1);
+          if (witnessing.length >= 1) check(true, witnessName, `${witnessing.length} witnessing sample(s), seq ${witnessing[0].seq}..${witnessing[witnessing.length - 1].seq}`);
+          else blocked(witnessName, 'insufficient witness: no in-window sample caught the held read active (never passed by default)');
+        }
+      }
       await closeCtx(ctxA.token);
+      await statsZeroCheck(app, 'broker stats return to baseline after the burst drains and context A closes (activeOps / reservedRawBytes zero; contexts / tickets back to baseline)');
       // G1: the REAL loader + adapter, in the renderer, over this bridge.
       if (!bundleText) {
         blocked('real loader+adapter load (G1): the esbuild bundle of the accepted sources failed to build', bundleError ?? 'unknown bundle error');
@@ -737,7 +835,49 @@ if (sections.includes('3.5')) {
       try { await closeBounded(qapp); } catch { /* bounded already */ }
     }
   }
-  blocked('app quits cleanly from the inflight state (quit with a slow.dxf read in flight): no reviewed witness exists that the read is still active at quit time - never passed by sleep');
+  // Inflight quit (Amendment 1): the witness is a main-side observer
+  // sample taken in the SAME main callback that invokes the genuine
+  // app.quit() - no intervening await, never a sleep. Without a valid
+  // witness the criterion is BLOCKED (insufficient witness), not passed.
+  const inflightName = 'app quits cleanly from the inflight state with a proven active read (sample+quit in one main callback; exit is exit evidence, not drain proof)';
+  if (!observerMode) {
+    blocked(inflightName);
+  } else {
+    let qapp; let qwin;
+    try {
+      ({ app: qapp, win: qwin } = await launchApp('quit-inflight'));
+      await openProjectAndHost(qapp, qwin);
+      await qwin.evaluate((p) => { window.__xrefHostPath = p; }, hostPath);
+      await installBridge(qwin);
+      const started = await qwin.evaluate(async (p) => {
+        const b = await window.__xref.begin('native-quit-inflight');
+        if (!b.ok) return b;
+        window.__xrefToken = b.token;
+        const idn = await window.__xref.identify(b.token, p);
+        if (!idn.ok) return idn;
+        window.__xrefHeldRead = window.__xref.read(b.token, idn.ticket, 16 * 1024 * 1024);
+        return { ok: true };
+      }, fx('slow.dxf'));
+      if (!started.ok) throw new Error(`inflight setup failed: ${JSON.stringify(started)}`);
+      const child = qapp.process();
+      const sample = await qapp.evaluate(({ app: a }) => {
+        const f = globalThis.__xrefTestObserver;
+        const s = f ? f.sample() : null;
+        a.quit();
+        return s;
+      });
+      results.observerSamples.push({ tag: 'quit-inflight', sample });
+      const code = await waitForExit(child, 30_000);
+      const slowBytes = fixtureMeta.files['slow.dxf'].bytes;
+      const witnessed = Boolean(sample && sample.captured && sample.factoryCalls === 1 && !sample.invalidated && sample.stats
+        && sample.stats.activeOps >= 1 && sample.stats.reservedRawBytes === slowBytes + 1);
+      if (!witnessed) blocked(inflightName, `insufficient witness at quit initiation: ${JSON.stringify(sample)}`);
+      else check(code === 0, inflightName, `exit code ${code}, sample=${JSON.stringify(sample.stats)} seq=${sample.seq}`);
+    } catch (error) {
+      check(false, 'quit scenario inflight', String(error && error.message || error));
+      try { await closeBounded(qapp); } catch { /* bounded already */ }
+    }
+  }
 }
 
 clearTimeout(watchdog);
