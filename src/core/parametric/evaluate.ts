@@ -291,6 +291,25 @@ const inFrame = (p: Point, frame: StretchAction['frame']): boolean =>
  *  (the walk reports 'over-budget'), never walked without limit. */
 export const MAX_FINITE_WALK_DEPTH = 32;
 
+/** Per-node work weight of the derived-output finiteness walk
+ *  (step 7.5), charged through the evaluation's existing work budget.
+ *  A node is charged exactly once, when it is SCHEDULED: the root by
+ *  the walk itself, every other node by its parent's fan-out charge
+ *  (below). The weight is calibrated against step 7, which pays 1 per
+ *  entity examined plus 1 per movable point transformed; the walk's
+ *  per-node operation (one stack slot plus a type/finiteness test) is
+ *  the lightest examination in the evaluation, and 1/2 is the largest
+ *  simple weight under which a maximal evaluation still fits the
+ *  default budget: at the output cap of 10,000 derived lines (9,999
+ *  walked — copy 0 is the base entity), each line is 11 nodes (entity,
+ *  4 string fields, 2 points, 4 coordinates), so the walk charges
+ *  9,999 × 11 × 1/2 = 54,994.5 alongside step 7's 29,997, a total of
+ *  84,991.5 of the 100,000 default budget (pinned by the output-cap
+ *  regression in parametric-review-c06-bounded-walk). A weight of 1
+ *  would charge 109,989 for the walk alone and refuse the maximal
+ *  evaluation the output cap explicitly admits. */
+export const FINITE_WALK_NODE_WEIGHT = 0.5;
+
 /** Outcome of one bounded finiteness walk: every reachable number is
  *  finite, a reachable number is not finite, or the walk could not
  *  complete within its bounds (work budget exhausted, or the depth
@@ -311,18 +330,28 @@ type FiniteWalkOutcome = 'finite' | 'non-finite' | 'over-budget';
  *  - SHARING-AWARE: `seen` is keyed by object identity and shared by
  *    every root of the step-7.5 pass, so a sub-object referenced from
  *    many derived entries — a nested insert's dynamic state, shared by
- *    reference by every array copy of that insert — is walked and
- *    charged exactly once, not once per copy.
- *  - BUDGETED: each unique container (object/array) node is charged 1
- *    through `chargeNode`, the evaluation's existing work-budget
- *    charge, so the walk refuses under the same discipline as the
- *    rest of the evaluation instead of scanning without limit. Scalar
- *    leaves ride along with their container. The per-node charge
- *    tracks the step-7 convention (1 + movable points per entity), so
- *    a maximal evaluation stays within budget: at the output cap of
- *    10,000 derived lines, step 7 charges 29,997 and this walk charges
- *    another 29,997 of the 100,000 default budget (pinned by the
- *    output-cap regression in parametric-review-c06-bounded-walk).
+ *    reference by every array copy of that insert — is EXPANDED
+ *    exactly once, not once per copy: its subtree is walked and
+ *    charged at its single expansion. (Each referencing slot still
+ *    pays the per-node weight as part of its own parent's fan-out —
+ *    the slot is real enumeration work — but the shared subtree
+ *    behind it is never rescanned.)
+ *  - BUDGETED, WITH FAN-OUT ADMITTED BEFORE ENUMERATION (round-4
+ *    static note: depth and unique-container counts do not bound
+ *    WIDTH — a container's children were previously all materialized
+ *    by Object.values and pushed before any charge beyond the
+ *    container's own 1, so an 8-wide and a 16-wide record cost the
+ *    walk the same). Every node is now charged FINITE_WALK_NODE_WEIGHT
+ *    exactly once, when it is scheduled: the root up front, and every
+ *    child as part of its parent's fan-out charge, levied as ONE
+ *    charge BEFORE the children are enumerated — the child count
+ *    comes from the array length, or from Object.keys for a record,
+ *    never from materializing the values first. If the budget refuses
+ *    the fan-out, the children are not enumerated at all. Doubling a
+ *    container's width doubles its fan-out charge. Charges go through
+ *    `chargeNode`, the evaluation's existing work-budget charge, so
+ *    the walk refuses under the same discipline as the rest of the
+ *    evaluation instead of scanning without limit.
  *  Visitation follows the old recursive walk's order (children in
  *  Object.values order, depth-first), so the first non-finite number
  *  found — and therefore the refusal step 7.5 reports — is unchanged. */
@@ -331,6 +360,13 @@ function walkNumbersFinite(
   seen: Set<object>,
   chargeNode: (n: number) => boolean,
 ): FiniteWalkOutcome {
+  // The root is scheduled by the caller: charge its per-node weight up
+  // front. A root already in `seen` is a no-op walk, exactly as the
+  // pop-time skip behaved before (no charge, no checks).
+  if (root !== null && typeof root === 'object') {
+    if (seen.has(root)) return 'finite';
+    if (!chargeNode(FINITE_WALK_NODE_WEIGHT)) return 'over-budget';
+  }
   const stack: { value: unknown; depth: number }[] = [{ value: root, depth: 0 }];
   while (stack.length > 0) {
     const { value, depth } = stack.pop()!;
@@ -341,8 +377,14 @@ function walkNumbersFinite(
     if (value === null || typeof value !== 'object') continue;
     if (seen.has(value)) continue;
     if (depth > MAX_FINITE_WALK_DEPTH) return 'over-budget';
-    if (!chargeNode(1)) return 'over-budget';
     seen.add(value);
+    // Fan-out admission: charge every child slot (FINITE_WALK_NODE_WEIGHT
+    // each) BEFORE enumerating the children. The count is the array
+    // length, or the record's key count — Object.keys allocates the
+    // key list only, never the values. A refused charge means the
+    // children are not enumerated at all.
+    const childCount = Array.isArray(value) ? value.length : Object.keys(value).length;
+    if (!chargeNode(childCount * FINITE_WALK_NODE_WEIGHT)) return 'over-budget';
     const children: readonly unknown[] = Array.isArray(value) ? value : Object.values(value);
     for (let i = children.length - 1; i >= 0; i -= 1) {
       stack.push({ value: children[i], depth: depth + 1 });
@@ -1178,9 +1220,10 @@ export function evaluateDynamicBlock(
   //    every number in it must be finite. The traversal is the bounded
   //    walkNumbersFinite above: iterative, sharing-aware (one identity
   //    set across both loops, so sub-objects shared between derived
-  //    entries are walked once), depth-bounded by MAX_FINITE_WALK_DEPTH
-  //    and charged into this evaluation's existing work budget at 1 per
-  //    unique container node. If the walk cannot complete within those
+  //    entries are expanded once), depth-bounded by MAX_FINITE_WALK_DEPTH
+  //    and charged into this evaluation's existing work budget per node
+  //    at FINITE_WALK_NODE_WEIGHT, each container's fan-out admitted as
+  //    one charge before its children are enumerated. If the walk cannot complete within those
   //    bounds it refuses 'work-limit-exceeded' like any other budget
   //    exhaustion, rather than scanning without limit. Otherwise the
   //    first offender in working order refuses the whole evaluation
