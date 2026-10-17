@@ -499,7 +499,7 @@ function createXrefReadBroker(deps) {
         }));
       } catch (error) {
         if (error && typeof error === 'object' && typeof (/** @type {{code?: unknown}} */ (error).code) === 'string' && (/** @type {{code: string}} */ (error).code).startsWith('ERR_XREF')) throw error;
-        if (error instanceof Error && /larger than/.test(error.message)) throw ERR.limit(`the file exceeds the byte allowance of ${allowance}: ${ticket.path}`);
+        if (error instanceof Error && /larger than/.test(error.message)) throw ERR.changed(`the file changed after identification: ${ticket.path}`);
         if (error instanceof Error && /changed while it was read/.test(error.message)) throw ERR.changed(`the file changed while it was read: ${ticket.path}`);
         throw mapFsError(error, ticket.path);
       }
