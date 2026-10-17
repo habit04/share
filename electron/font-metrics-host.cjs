@@ -1,6 +1,20 @@
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
-const { shapeFields } = require('./shaping/shape-font.cjs');
+
+/** The shaping validator loads lazily on the first shape request, so
+    the main-process startup module graph carries no engine-related
+    modules at all (correction 3: the eager require pulled six modules
+    — shaping/shape-font, shaping/verify-assets, pdf-font,
+    font-metrics, cff-metrics, ttc-extract — into every startup for
+    ~+8 ms of parsing, measured against the pre-engine base). Asset
+    verification and engine loading were already lazy (first shape
+    job, in the worker); this defers the validator the same way. */
+/** @type {null | ((value: unknown) => { text: string, itemStart: number, itemEnd: number, script: string, direction: string, features: string[] })} */
+let shapeFieldsImpl = null;
+function shapeFields(value) {
+  shapeFieldsImpl ??= require('./shaping/shape-font.cjs').shapeFields;
+  return shapeFieldsImpl(value);
+}
 
 /** Matches the captured-PDF per-face CID cap in src/io/pdf-fonts.ts. */
 const MAX_USED_CODEPOINTS = 65534;
