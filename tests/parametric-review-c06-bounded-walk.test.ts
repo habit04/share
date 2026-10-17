@@ -7,8 +7,10 @@
  * same state N times), with no sharing, depth or work accounting.
  * The walk is now iterative, sharing-aware (an identity set spans the
  * whole pass), depth-bounded by MAX_FINITE_WALK_DEPTH and charged
- * into the evaluation's existing work budget at 1 per unique
- * container node. These tests pin the bounded behaviour:
+ * into the evaluation's existing work budget per node at
+ * FINITE_WALK_NODE_WEIGHT, each container's fan-out admitted before
+ * its children are enumerated (round 4, R3-03 — see
+ * parametric-review-r3-fanout.test.ts). These tests pin the bounded behaviour:
  *  - shared structure is charged once, proved by budget titration (a
  *    limit a per-copy rescan would blow by an order of magnitude);
  *  - a maximal evaluation at the output-entity cap still succeeds
@@ -60,10 +62,11 @@ const spanState = (block: string, v: number): DynamicInstanceState => ({
 describe('C06 bounded walk: shared structure is walked and charged once', () => {
   // A nested insert member carrying a dynamic state with 400 stored
   // values. Array copies share the source's dynamic state object by
-  // reference (design §3.4), so a per-copy rescan would walk those
-  // ~402 container nodes once per copy (~121k node visits for 300
-  // copies); the sharing-aware walk visits them once (~1.0k walk
-  // charges total, ~1.6k including step 7's per-copy charges).
+  // reference (design §3.4), so a per-copy rescan would visit the
+  // state's 1,203 nodes once per copy (~361k node visits for 300
+  // copies); the sharing-aware walk expands them once (~2,545 walk
+  // charges total, ~3,143 including step 7's per-copy charges, under
+  // the per-node weight accounting of round 4).
   const SHARED_VALUES = 400;
   const COPIES = 300;
   const sharedState = (): DynamicInstanceState => {
@@ -96,9 +99,10 @@ describe('C06 bounded walk: shared structure is walked and charged once', () => 
 
   it('the walk accounting is real: a limit below the sharing-aware cost refuses work-limit-exceeded', () => {
     // Step 7 alone charges ~2 per copy (598); the sharing-aware walk
-    // brings the total to ~1.6k, so 1,200 refuses — while a walk that
+    // brings the total to ~3.1k, so 1,200 refuses — while a walk that
     // charged nothing would still succeed here, and one that rescanned
-    // per copy would need ~121k (see the 10,000 success above).
+    // per copy would need ~180k of walk charges (see the 10,000
+    // success above).
     const result = evaluateDynamicBlock(
       arrayDef('MEMBER'),
       [member()],
