@@ -38,11 +38,33 @@
 // evaluate only from samples of the pinned test-only observer
 // (scripts/xref-test-observer.cjs, preloaded via the Electron CLI
 // --require route under the G2 ruling) when this run is launched with
-// --observer. Without a valid observer baseline/witness those criteria
-// are BLOCKED (never passed by sleep) and make the exit code nonzero.
-// Clean process exit is recorded as exit evidence only - it is NOT a
-// completed-drain proof (the IPC dispose ignores the closeAll promise).
-// Executing the observer is a separately admitted native step.
+// --observer. Every launch captures its OWN observer baseline right
+// after window-ready (per-instance coverage: baselines and one-instance
+// proofs are never shared between app instances). Without a valid
+// observer baseline/witness those criteria are BLOCKED (never passed
+// by sleep) and make the exit code nonzero. Clean process exit is
+// recorded as exit evidence only - it is NOT a completed-drain proof
+// (the IPC dispose ignores the closeAll promise). Executing the
+// observer is a separately admitted native step.
+//
+// Refresh oracle (correction round 2, finding 1): loader signatures
+// serialize each external entity SEMANTICALLY - the canonical JSON of
+// the entity with ONLY its top-level parser-generated `id` removed
+// (commonProps in src/io/dxf/read-core.ts assigns id: newId() to every
+// parsed entity; a re-parse of identical bytes always mints fresh ids,
+// so raw serialization false-fails unchanged content). Everything else
+// is compared in full: geometry, layer/appearance, retained properties
+// and cadIdentity (the retained DXF group-5 handle). The comparator is
+// defined once below and injected into the page verbatim from its own
+// source; `node scripts/e2e-xref-refresh.mjs --self-test-oracle` runs
+// its regression without Electron (same ids-different-bytes cases).
+//
+// Overlap oracle (finding 2): section 3.3 is orchestrated from Node in
+// steps - A's slow read starts unawaited, then observer samples must
+// show A active (activeOps >= 1, reservedRawBytes = slow size + 1) at
+// the same-context BUSY refusal AND after context B completes, all on
+// the one main clock/sequence. If A finished too early the criterion
+// is BLOCKED (insufficient witness), never passed.
 //
 //   npm run build
 //   node scripts/xref-native-fixtures.mjs <work-root>/fixtures
@@ -50,10 +72,13 @@
 //     --work-root <work-root> --fixtures <work-root>/fixtures \
 //     --out <work-root>/out [--sections 3.1,3.2] \
 //     [--head <candidate-head>] [--tree <candidate-tree>]
+//   node scripts/e2e-xref-refresh.mjs --self-test-oracle
 //
 // Exit codes: 0 = every selected check passed and none blocked;
 // 1 = a check failed or a selected criterion is blocked;
-// 2 = invalid setup (fail closed, before any launch).
+// 2 = invalid setup (fail closed, before any launch);
+// 3 = evidence-persistence failure (results/log could not be written;
+//     stdout and any partial files are the surviving record).
 //
 // Platform note: the broker validates Windows absolute paths by design
 // (absoluteWindowsPath in electron/xref-read.cjs), and the preload
@@ -84,7 +109,64 @@ const argOf = (name) => {
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 const fileSha = (p) => sha256(readFileSync(p));
 const MIB = 1024 * 1024;
-const G2_REASON = 'awaiting reviewed G2 observation mechanism (no broker-stats entry point exists in the accepted tree)';
+const G2_REASON = 'observer not enabled for this run (no --observer): criterion stays BLOCKED under the G2 ruling';
+
+// ------------------------------------------------------------ semantic entity oracle (finding 1)
+// The ONE definition of the refresh comparator. It is injected into the
+// renderer verbatim from this function's own source (see
+// SEMANTIC_ENTITY_FN_SOURCE) and the --self-test-oracle regression below
+// calls this very function object, so the tested code is the shipped
+// code. Source facts it relies on (verified in the accepted tree):
+// commonProps (src/io/dxf/read-core.ts:32) builds every parsed entity
+// with `id: newId()` (src/core/entities.ts:372 - a Date.now/counter
+// string, fresh per parse) and puts the retained native handle in
+// `cadIdentity` (DXF group 5). EntityBase declares no other generated
+// identity; entities embed no nested entity objects (INSERT attributes
+// are a tag -> string record). So EXACTLY the top-level `id` is
+// transient; everything else - geometry, cadIdentity, layer, retained
+// properties - is file content and must compare.
+function semanticEntityJsonImpl(entity) {
+  const copy = { ...entity };
+  delete copy.id;
+  const canon = (v) => {
+    if (v === null || typeof v !== 'object') {
+      const s = JSON.stringify(v);
+      return s === undefined ? 'null' : s;
+    }
+    if (Array.isArray(v)) return `[${v.map(canon).join(',')}]`;
+    return `{${Object.keys(v).filter((k) => v[k] !== undefined).sort().map((k) => `${JSON.stringify(k)}:${canon(v[k])}`).join(',')}}`;
+  };
+  return canon(copy);
+}
+const SEMANTIC_ENTITY_FN_SOURCE = `window.__xrefSemanticEntityJson = ${semanticEntityJsonImpl.toString()};`;
+
+// Oracle regression, runnable without Electron:
+//   node scripts/e2e-xref-refresh.mjs --self-test-oracle
+// Exit 0 only if: (a) same geometry/properties with different generated
+// ids (and shuffled key order) compare EQUAL; (b) one changed
+// coordinate compares NOT equal; (c) one changed retained property
+// (layer, then linetype) compares NOT equal; (d) a changed retained
+// handle (cadIdentity) compares NOT equal.
+if (process.argv.includes('--self-test-oracle')) {
+  const sem = semanticEntityJsonImpl;
+  const lineA = { id: 'emt0a1', cadIdentity: '2F', layer: '0', color: 'ByLayer', type: 'line', a: { x: 0, y: 0 }, b: { x: 10, y: 0 } };
+  const lineTwin = { b: { y: 0, x: 10 }, a: { y: 0, x: 0 }, type: 'line', color: 'ByLayer', layer: '0', cadIdentity: '2F', id: 'emz9q77' };
+  const cases = [
+    ['(a) same geometry+properties, different generated ids -> EQUAL', sem(lineA) === sem(lineTwin), true],
+    ['(b) one changed coordinate (b.y 0 -> 1) -> NOT equal', sem(lineA) === sem({ ...lineA, b: { x: 10, y: 1 } }), false],
+    ['(c1) one changed retained property (layer) -> NOT equal', sem(lineA) === sem({ ...lineA, layer: 'WALLS' }), false],
+    ['(c2) one changed retained property (linetype) -> NOT equal', sem(lineA) === sem({ ...lineA, linetype: 'DASHED' }), false],
+    ['(d) one changed retained handle (cadIdentity) -> NOT equal', sem(lineA) === sem({ ...lineA, cadIdentity: '30' }), false],
+  ];
+  let okAll = true;
+  for (const [name, got, want] of cases) {
+    const ok = got === want;
+    okAll = okAll && ok;
+    console.log(`${ok ? 'ok  ' : 'FAIL'} self-test-oracle ${name} (equal=${got}, expected equal=${want})`);
+  }
+  console.log(`self-test-oracle: ${okAll ? 'PASS' : 'FAIL'}`);
+  process.exit(okAll ? 0 : 1);
+}
 
 // ------------------------------------------------------------ setup (fail closed)
 const workRootArg = argOf('--work-root');
@@ -129,7 +211,13 @@ const fixtureDir = insideWork(resolve(fixtureArg), '--fixtures');
 const outDir = insideWork(resolve(outArg), '--out');
 const tempDir = join(workRoot, 'temp');
 mkdirSync(tempDir, { recursive: true });
-mkdirSync(outDir, { recursive: true });
+try {
+  mkdirSync(outDir, { recursive: true });
+} catch (error) {
+  // The out dir is where ALL run evidence lands; if it cannot be
+  // created there is no run worth starting (finding 5).
+  setupFail(`--out (${outDir}) cannot be created as the evidence directory: ${String(error && error.message || error)}`);
+}
 
 const fx = (rel) => join(fixtureDir, ...rel.split('/'));
 if (!existsSync(fx('fixtures.json'))) setupFail(`fixtures.json not found in ${fixtureDir} - run scripts/xref-native-fixtures.mjs first`);
@@ -179,11 +267,21 @@ function failHalt(name, detail = '') {
   haltReason = `stopped at the first failed PASS criterion: [${currentSection}] ${name}`;
 }
 const results = { header: {}, checks, observer: { mode: observerMode ? 'cli-require via default_app' : 'off', path: observerPath || null, sha256: observerSha256 || null, targetSha256: observerTargetSha || null }, observerSamples: [], observerBaseline: null, residue: { workRoot, fixtureDir, outDir, tempDir, profiles: [], childExits: [], watchdogFired: false, deleted: 'nothing (residue preserved by design)' } };
+// Evidence persistence (finding 5): a run that cannot write its
+// evidence has NOT passed, whatever the checks say. Any write failure
+// is reported explicitly on stderr/stdout and forces exit code 3 at
+// every exit path; partial files and stdout are preserved as the
+// surviving record.
+let evidenceFailed = false;
 function writeResults() {
-  try {
-    writeFileSync(join(outDir, 'harness.log'), logLines.join('\n') + '\n');
-    writeFileSync(join(outDir, 'results.json'), JSON.stringify(results, null, 2) + '\n');
-  } catch { /* the out dir itself is the evidence; a failed write cannot be helped here */ }
+  const failures = [];
+  try { writeFileSync(join(outDir, 'harness.log'), logLines.join('\n') + '\n'); } catch (error) { failures.push(`harness.log: ${String(error && error.message || error)}`); }
+  try { writeFileSync(join(outDir, 'results.json'), JSON.stringify(results, null, 2) + '\n'); } catch (error) { failures.push(`results.json: ${String(error && error.message || error)}`); }
+  if (failures.length) {
+    evidenceFailed = true;
+    console.error(`e2e-xref-refresh: EVIDENCE FAILURE - run evidence could not be persisted (${failures.join(' | ')}); exit code will be 3 and stdout/partial files are the surviving record`);
+  }
+  return failures.length === 0;
 }
 
 // ------------------------------------------------------------ watchdog + owned processes
@@ -209,7 +307,7 @@ const watchdog = setTimeout(() => {
   for (const entry of children) killChild(entry);
   record('fail', 'global watchdog fired (10 min)');
   writeResults();
-  process.exit(1);
+  process.exit(evidenceFailed ? 3 : 1);
 }, 10 * 60 * 1000);
 watchdog.unref();
 
@@ -297,12 +395,26 @@ async function launchApp(label) {
       return p ? { canceled: false, filePaths: [p] } : { canceled: true, filePaths: [] };
     };
   });
-  return { app, win, pageErrors, profile };
+  // Per-instance observer coverage (finding 2): EVERY launch captures
+  // its OWN zero baseline immediately after window-ready, before any
+  // begin on this instance. Coverage is never borrowed from another app.
+  let observer = null;
+  if (observerMode) {
+    const baseline = await sampleObserver(app, `baseline:${label}`);
+    const bs = baseline?.stats;
+    const usable = Boolean(baseline && baseline.captured && baseline.factoryCalls === 1 && !baseline.invalidated && bs
+      && bs.contexts === 0 && bs.tickets === 0 && bs.activeOps === 0 && bs.retiredActiveOps === 0 && bs.reservedRawBytes === 0 && bs.disposed === false);
+    observer = { baseline, usable };
+    log(`observer[${label}]: baseline ${JSON.stringify(baseline)} usable=${usable}`);
+    if (!usable) log(`observer[${label}]: WARNING - baseline not a clean zero capture; stats-derived criteria for THIS launch will be BLOCKED`);
+  }
+  return { app, win, pageErrors, profile, observer };
 }
 
 // ------------------------------------------------------------ G2 observer sampling
-let observerBaseline = null;
-let observerBaselineUsable = false;
+// Coverage state is PER APP INSTANCE: launchApp captures { baseline,
+// usable } for each launch and callers pass that launch's own state.
+// There is deliberately no global baseline to fall back to.
 async function sampleObserver(appInstance, tag) {
   if (!observerMode) return null;
   try {
@@ -316,23 +428,23 @@ async function sampleObserver(appInstance, tag) {
     return null;
   }
 }
-function observerUsable(s) {
-  return Boolean(observerBaselineUsable && s && s.captured && s.factoryCalls === 1 && !s.invalidated && s.stats);
+function observerUsable(state, s) {
+  return Boolean(state && state.usable && s && s.captured && s.factoryCalls === 1 && !s.invalidated && s.stats);
 }
-function observerBlockReason(s) {
+function observerBlockReason(state, s) {
   if (!observerMode) return 'observer not enabled for this run (no --observer): stats criteria stay BLOCKED under the G2 ruling';
-  if (!observerBaselineUsable) return 'observer baseline was not a clean zero capture: stats coverage invalid for this run';
+  if (!state || !state.usable) return 'this launch\'s observer baseline was not a clean zero capture: stats coverage invalid for this instance';
   if (!s) return 'observer facade absent or sampling failed: stats coverage invalid for this run';
   if (s.invalidated) return `observer coverage invalidated: ${s.invalidated}`;
   if (!s.captured || s.factoryCalls !== 1) return `observer one-instance proof failed (captured=${s.captured}, factoryCalls=${s.factoryCalls})`;
   return 'observer sample unusable';
 }
-async function statsZeroCheck(appInstance, name) {
+async function statsZeroCheck(appInstance, state, name) {
   const s = await sampleObserver(appInstance, name);
-  if (!observerUsable(s)) { blocked(name, observerBlockReason(s)); return; }
+  if (!observerUsable(state, s)) { blocked(name, observerBlockReason(state, s)); return; }
   const st = s.stats;
-  const b = observerBaseline.stats;
-  check(st.activeOps === 0 && st.reservedRawBytes === 0 && st.contexts === b.contexts && st.tickets === b.tickets,
+  const b = state.baseline.stats;
+  check(st.activeOps === 0 && st.reservedRawBytes === 0 && st.contexts === b.contexts && st.tickets === b.tickets && st.retiredActiveOps === b.retiredActiveOps,
     name, `sample=${JSON.stringify(st)} baseline=${JSON.stringify(b)}`);
 }
 
@@ -428,9 +540,15 @@ async function g1LoadInPage(win, docId) {
       }
       return acc;
     };
+    const sem = window.__xrefSemanticEntityJson;
+    if (typeof sem !== 'function') throw new Error('semantic entity serializer was not injected (window.__xrefSemanticEntityJson missing) - refusing to fall back to raw serialization');
+    // Semantic signature (finding 1): block/path/version/byteLength bind
+    // the node's source identity as before; entities serialize through
+    // the semantic oracle (canonical JSON minus ONLY the parser-generated
+    // top-level id), so a re-parse of unchanged bytes compares EQUAL.
     const sig = (snap) => core.externalContent(snap).map((e) => ({
       block: e.node.blockName, path: e.node.resolvedPath, version: e.file.version ?? null,
-      byteLength: e.file.byteLength, entities: e.entities.map((x) => JSON.stringify(x)),
+      byteLength: e.file.byteLength, entities: e.entities.map((x) => sem(x)),
     }));
     try {
       const r = await store.load(input, { reader: handle.reader });
@@ -514,6 +632,7 @@ const leafLine = (entry) => {
 
 // ------------------------------------------------------------ main flow
 let app; let win; let pageErrors = [];
+let mainObserver = null; // the main launch's OWN observer coverage state
 let g1 = null; // { sig } after a successful in-page load
 const sourceIdentity = {
   xrefLoadingSha256: fileSha(join(repo, 'src/io/xref-loading.ts')),
@@ -529,7 +648,10 @@ try {
   } catch (error) {
     bundleError = String(error && error.message || error);
   }
-  ({ app, win, pageErrors } = await launchApp('main'));
+  const mainLaunch = await launchApp('main');
+  ({ app, win, pageErrors } = mainLaunch);
+  mainObserver = mainLaunch.observer;
+  results.observerBaseline = mainObserver?.baseline ?? null;
   const versions = await app.evaluate(() => process.versions);
   const appInfo = await win.evaluate(() => window.jcad.appInfo());
   results.header = {
@@ -558,15 +680,8 @@ try {
   const bridgeOk = await win.evaluate(() => ['beginXrefContext', 'identifyXref', 'readXref', 'cancelXref', 'closeXrefContext'].every((k) => typeof window.jcad[k] === 'function'));
   check(bridgeOk, 'window.jcad exposes the five xref bridge methods (Windows-only in the preload by design)');
   if (!bridgeOk) failHalt('xref bridge unavailable on this platform/build - this gate requires the Windows app');
-  if (observerMode) {
-    observerBaseline = await sampleObserver(app, 'baseline');
-    results.observerBaseline = observerBaseline;
-    const bs = observerBaseline?.stats;
-    observerBaselineUsable = Boolean(observerBaseline && observerBaseline.captured && observerBaseline.factoryCalls === 1 && !observerBaseline.invalidated && bs
-      && bs.contexts === 0 && bs.tickets === 0 && bs.activeOps === 0 && bs.retiredActiveOps === 0 && bs.reservedRawBytes === 0 && bs.disposed === false);
-    log(`observer: baseline ${JSON.stringify(observerBaseline)} usable=${observerBaselineUsable}`);
-    if (!observerBaselineUsable) log('observer: WARNING - baseline not a clean zero capture; stats-derived criteria will be BLOCKED for this run');
-  }
+  // The main launch's observer baseline was captured inside launchApp
+  // (per-instance, before any begin); nothing to re-sample here.
 
   const begin = (docId) => win.evaluate((d) => window.__xref.begin(d), docId);
   const identify = (token, p) => win.evaluate(([t, q]) => window.__xref.identify(t, q), [token, p]);
@@ -632,7 +747,7 @@ try {
       check(fine.ok && typeof fine.text === 'string' && sha256(Buffer.from(fine.text, 'utf8')) === fixtureMeta.files[leafRel].sha256,
         'a normal read still succeeds after the refusals and returns the pinned leaf content', JSON.stringify(fine.ok ? { byteLength: fine.byteLength } : fine));
       await closeCtx(ctx.token);
-      await statsZeroCheck(app, 'broker stats return to baseline after the LIMIT refusals and the explicit context close (activeOps / reservedRawBytes zero; contexts / tickets back to baseline)');
+      await statsZeroCheck(app, mainObserver, 'broker stats return to baseline after the LIMIT refusals and the explicit context close (activeOps / reservedRawBytes zero; contexts / tickets / retiredActiveOps back to baseline)');
       if (sectionFailed(mark)) { halted = true; haltReason = 'stopped at the first failed PASS criterion in section 3.2'; }
     }
   }
@@ -647,45 +762,64 @@ try {
       const slow = await identify(ctxA.token, fx('slow.dxf'));
       const leafA = await identify(ctxA.token, fx(leafRel));
       check(slow.ok && leafA.ok, 'context A identifies slow.dxf and leaf.dxf');
-      let burstSettled = false;
-      const burstPromise = win.evaluate(async ([tokA, slowTicket, leafTicketA, leafPath]) => {
-        const x = window.__xref;
-        const held = x.read(tokA, slowTicket, 16 * 1024 * 1024);
-        const competing = x.read(tokA, leafTicketA, 1024 * 1024);
-        const beginB = await x.begin('native-3.3-b');
-        const idB = beginB.ok ? await x.identify(beginB.token, leafPath) : { ok: false };
-        const readB = idB.ok ? await x.read(beginB.token, idB.ticket, 1024 * 1024) : { ok: false };
-        const heldResult = await held;
-        const competingResult = await competing;
-        if (beginB.ok) await x.close(beginB.token);
-        return { held: heldResult, competing: competingResult, readB };
-      }, [ctxA.token, slow.ticket, leafA.ticket, fx(leafRel)]).then((r) => { burstSettled = true; return r; });
-      // Main-side observer samples taken WHILE the burst is in flight:
-      // the witness is the samples' content (same main clock/sequence as
-      // the broker), never a sleep. Sampling cadence only paces evaluate.
-      const windowSamples = [];
-      while (!burstSettled && windowSamples.length < 60) {
-        const s = await sampleObserver(app, 'burst-window');
-        if (s) windowSamples.push(s);
-        if (!burstSettled) await new Promise((r) => setTimeout(r, 10));
-      }
-      const burst = await burstPromise;
-      check(burst.competing && !burst.competing.ok && burst.competing.code === 'ERR_XREF_RESOURCE_BUSY', 'second read in the same context refuses BUSY - the refusal itself witnesses an active operation (zero queue)', JSON.stringify(burst.competing));
-      check(burst.readB && burst.readB.ok, 'a read in a second context proceeds meanwhile', JSON.stringify(burst.readB));
-      check(burst.held && burst.held.ok && burst.held.rawBytes === fixtureMeta.files['slow.dxf'].bytes, 'the held read completes with the full file', JSON.stringify(burst.held));
+      // True-overlap orchestration (finding 2): Node drives the burst in
+      // steps instead of one opaque page evaluate, and observer samples
+      // on the one main clock/sequence bind A's pending read + its
+      // reservation to the same-context refusal AND to B's completion.
+      // No artificial holds, fake reads or sleeps-as-oracle: if A
+      // finishes before a bound step, the overlap criterion is BLOCKED
+      // (insufficient witness), never passed.
+      const slowBytes = fixtureMeta.files['slow.dxf'].bytes;
+      const burstSteps = [];
+      const stepMark = (step, sample) => {
+        const m = { step, seq: sample?.seq ?? null, atMs: sample?.atMs ?? null };
+        burstSteps.push(m);
+        results.burstSteps = burstSteps;
+        return m;
+      };
+      // Step 1: start A's slow read WITHOUT awaiting it (the page-side
+      // promise is stored; this evaluate itself returns immediately).
+      await win.evaluate(([t, k, m]) => { window.__xrefBurstHeld = window.__xref.read(t, k, m); }, [ctxA.token, slow.ticket, 16 * MIB]);
+      stepMark('A slow read started (unawaited)', null);
+      // Step 2: sample S1 - A must already show as genuinely active.
+      const s1 = await sampleObserver(app, 'burst-s1-after-a-start');
+      stepMark('S1 sampled', s1);
+      // Step 3: the same-context competing read (awaited) must refuse.
+      const competing = await read(ctxA.token, leafA.ticket, MIB);
+      stepMark('competing read returned', null);
+      // Step 4: sample S2 - A must STILL be active at the refusal.
+      const s2 = await sampleObserver(app, 'burst-s2-at-refusal');
+      stepMark('S2 sampled (at refusal)', s2);
+      // Step 5: context B identifies and reads to completion.
+      const ctxB = await begin('native-3.3-b');
+      const idB = ctxB.ok ? await identify(ctxB.token, fx(leafRel)) : { ok: false };
+      const readB = idB.ok ? await read(ctxB.token, idB.ticket, MIB) : { ok: false };
+      stepMark('B read completed', null);
+      if (ctxB.ok) await closeCtx(ctxB.token);
+      // Step 6: sample S3 - A must STILL be active at B's completion.
+      const s3 = await sampleObserver(app, 'burst-s3-at-b-completion');
+      stepMark('S3 sampled (at B completion)', s3);
+      // Step 7: await A's own completion, then sample S4 (settled).
+      const held = await win.evaluate(() => window.__xrefBurstHeld);
+      const s4 = await sampleObserver(app, 'burst-s4-after-a-settles');
+      stepMark('A settled (S4 sampled)', s4);
+      check(competing && !competing.ok && competing.code === 'ERR_XREF_RESOURCE_BUSY', 'second read in the same context refuses BUSY while A is in flight (zero queue)', JSON.stringify(competing));
+      check(readB && readB.ok, 'a read in a second context proceeds and completes while A is in flight', JSON.stringify(readB));
+      check(held && held.ok && held.rawBytes === slowBytes, 'the held read completes with the full file', JSON.stringify(held));
       {
-        const slowBytes = fixtureMeta.files['slow.dxf'].bytes;
-        const witnessName = 'observer witnessed the held read genuinely active during the burst (activeOps >= 1 with reservedRawBytes = slow size + sentinel, main-clock samples)';
-        if (!observerMode) blocked(witnessName);
-        else if (!windowSamples.length || !observerUsable(windowSamples[windowSamples.length - 1])) blocked(witnessName, observerBlockReason(windowSamples[windowSamples.length - 1] ?? null));
-        else {
-          const witnessing = windowSamples.filter((s) => s.stats.activeOps >= 1 && s.stats.reservedRawBytes === slowBytes + 1);
-          if (witnessing.length >= 1) check(true, witnessName, `${witnessing.length} witnessing sample(s), seq ${witnessing[0].seq}..${witnessing[witnessing.length - 1].seq}`);
-          else blocked(witnessName, 'insufficient witness: no in-window sample caught the held read active (never passed by default)');
+        const overlapName = 'observer-bound overlap: A pending with its reservation (activeOps >= 1, reservedRawBytes = slow size + sentinel) at S1, at the BUSY refusal (S2) and at B completion (S3), one main clock/sequence';
+        const aActive = (s) => Boolean(s && s.stats && s.stats.activeOps >= 1 && s.stats.reservedRawBytes === slowBytes + 1);
+        if (!observerMode) blocked(overlapName);
+        else if (!observerUsable(mainObserver, s1) || !observerUsable(mainObserver, s2) || !observerUsable(mainObserver, s3)) {
+          blocked(overlapName, observerBlockReason(mainObserver, s3 ?? s2 ?? s1));
+        } else if (!(aActive(s1) && aActive(s2) && aActive(s3))) {
+          blocked(overlapName, `insufficient witness: A not proven active at every bound step (S1 seq=${s1.seq} active=${aActive(s1)}, S2 seq=${s2.seq} active=${aActive(s2)}, S3 seq=${s3.seq} active=${aActive(s3)}) - the native read may have finished too early; never passed by default`);
+        } else {
+          check(true, overlapName, `seq S1=${s1.seq} < S2=${s2.seq} < S3=${s3.seq} on the main monotonic clock; steps: ${burstSteps.map((m) => m.step).join(' -> ')}`);
         }
       }
       await closeCtx(ctxA.token);
-      await statsZeroCheck(app, 'broker stats return to baseline after the burst drains and context A closes (activeOps / reservedRawBytes zero; contexts / tickets back to baseline)');
+      await statsZeroCheck(app, mainObserver, 'broker stats return to baseline after the burst drains and context A closes (activeOps / reservedRawBytes zero; contexts / tickets / retiredActiveOps back to baseline)');
       // G1: the REAL loader + adapter, in the renderer, over this bridge.
       if (!bundleText) {
         blocked('real loader+adapter load (G1): the esbuild bundle of the accepted sources failed to build', bundleError ?? 'unknown bundle error');
@@ -693,6 +827,10 @@ try {
         await win.evaluate(bundleText);
         const injected = await win.evaluate(() => ['XrefStore', 'createXrefReader', 'collectXrefReferences', 'externalContent'].every((k) => typeof window.__xrefCore?.[k] === 'function'));
         check(injected, 'accepted loader/adapter bundle injected into the renderer (window.__xrefCore)');
+        // The semantic oracle ships from this file's own source (finding 1).
+        await win.evaluate(SEMANTIC_ENTITY_FN_SOURCE);
+        const semOk = await win.evaluate(() => typeof window.__xrefSemanticEntityJson === 'function');
+        check(semOk, 'semantic entity serializer injected into the renderer (window.__xrefSemanticEntityJson)');
         const out = await g1LoadInPage(win, 'native-g1');
         if (out.error) failHalt('real loader load threw in the renderer', out.error);
         else {
@@ -707,6 +845,15 @@ try {
           const wantLoaded = ['parts/child.dxf', 'shared/leaf.dxf', 'drawings/overlay-root.dxf', 'parts/grand.dxf', 'drawings/kid.dxf'];
           check(wantLoaded.every((w) => loadedPaths.some((p) => p.endsWith(w))), 'external content includes the nested graph (child, grand, leaf, overlay-root, kid)', loadedPaths.join(' | '));
           check(!loadedPaths.some((p) => p.endsWith('inner.dxf')), 'inner.dxf is NOT loaded (not referenced by this graph; nested-overlay witness stays unloaded)', loadedPaths.join(' | '));
+          // Nonempty authored geometry (finding 1): loaded paths alone
+          // are not enough - each node must carry exactly its authored
+          // entity count (whole-file counts; every fixture's BLOCKS
+          // section is empty, so these are the model entities).
+          const expectedCounts = { 'parts/child.dxf': 2, 'parts/grand.dxf': 1, 'shared/leaf.dxf': 2, 'drawings/overlay-root.dxf': 2, 'drawings/kid.dxf': 1 };
+          const countProblems = Object.entries(expectedCounts)
+            .filter(([suffix, n]) => { const e = sigEntry(out.load.sig, suffix); return !e || e.entities.length !== n; })
+            .map(([suffix, n]) => `${suffix}: expected ${n} entities, got ${sigEntry(out.load.sig, suffix)?.entities.length ?? 'node missing'}`);
+          check(countProblems.length === 0, 'every loaded node carries its expected NONEMPTY authored geometry (exact entity counts per node)', countProblems.join(' | ') || 'child 2, grand 1, leaf 2, overlay-root 2, kid 1');
           check((out.load.nodes ?? []).every((n) => n.status === 'loaded'), 'every graph node reports status loaded', JSON.stringify(out.load.nodes));
           check(out.before.json !== null && out.after.json === out.before.json && out.after.dirty === out.before.dirty && out.after.revision === out.before.revision,
             'the load changed no app document state (snapshot bytes, dirty flag, revision identical)');
@@ -749,10 +896,10 @@ try {
             check(Boolean(lineAfter) && lineAfter.b?.y === 9 && lineAfter.b?.x === 10, 'the leaf node refreshed to the NEW content (LINE endpoint b.y = 9, the pinned edit)', JSON.stringify(lineAfter));
             check(Boolean(leafBefore) && Boolean(leafAfter) && leafAfter.version !== leafBefore.version, 'the leaf file version evidence changed on refresh', `${leafBefore?.version} -> ${leafAfter?.version}`);
             const others = (names) => (names ?? []).filter((e) => !normPath(e.path).endsWith('shared/leaf.dxf')).map((e) => JSON.stringify(e.entities)).join('~');
-            check(others(refreshed.sig) === others(g1.sig), 'no other node changed on the leaf refresh');
+            check(others(refreshed.sig) === others(g1.sig), 'no other node changed on the leaf refresh (semantic entity comparison)');
             const again = await g1RefreshInPage(win);
             check(!again.error && again.committed && JSON.stringify(again.sig) === JSON.stringify(refreshed.sig),
-              'a second refresh of the unchanged graph is a no-op (identical external content)');
+              'a second refresh of the unchanged graph is a no-op (identical external content under the semantic oracle: re-parsed ids differ, content does not)');
             if (!again.error && again.sig) g1 = { sig: again.sig };
           }
         } finally {
@@ -808,7 +955,9 @@ if (sections.includes('3.5')) {
   for (const scenario of ['idle', 'after-limit']) {
     let qapp; let qwin;
     try {
-      ({ app: qapp, win: qwin } = await launchApp(`quit-${scenario}`));
+      const qLaunch = await launchApp(`quit-${scenario}`);
+      ({ app: qapp, win: qwin } = qLaunch);
+      const qState = qLaunch.observer; // THIS launch's own coverage
       await openProjectAndHost(qapp, qwin);
       await qwin.evaluate((p) => { window.__xrefHostPath = p; }, hostPath);
       await installBridge(qwin);
@@ -825,6 +974,29 @@ if (sections.includes('3.5')) {
           return window.__xref.read(window.__xrefToken, idn.ticket, 16 * 1024 * 1024);
         }, fx('oversized.dxf'));
         if (!(!res.ok && res.code === 'ERR_XREF_LIMIT')) throw new Error(`expected a LIMIT refusal before quitting, got ${JSON.stringify(res)}`);
+        // Per-instance cleanup accounting (finding 2): LIMIT does not
+        // close its context - close it explicitly, then this launch's
+        // stats must return to THIS launch's own baseline.
+        const closed = await qwin.evaluate(() => window.__xref.close(window.__xrefToken));
+        if (!closed.ok) throw new Error(`explicit context close failed: ${JSON.stringify(closed)}`);
+        const settleName = 'observer: after-limit launch returns to ITS OWN baseline after the explicit context close (activeOps / reservedRawBytes zero; contexts / tickets / retiredActiveOps at baseline)';
+        if (!observerMode) blocked(settleName);
+        else {
+          const s = await sampleObserver(qapp, 'quit-after-limit-settled');
+          if (!observerUsable(qState, s)) blocked(settleName, observerBlockReason(qState, s));
+          else {
+            const st = s.stats;
+            const b = qState.baseline.stats;
+            check(st.activeOps === 0 && st.reservedRawBytes === 0 && st.contexts === b.contexts && st.tickets === b.tickets && st.retiredActiveOps === b.retiredActiveOps,
+              settleName, `sample=${JSON.stringify(st)} baseline=${JSON.stringify(b)}`);
+          }
+        }
+      } else if (observerMode) {
+        // idle: this launch's own one-instance proof before quitting.
+        const proofName = 'observer one-instance proof for the quit-idle launch (own zero baseline, factoryCalls === 1, not invalidated)';
+        const s = await sampleObserver(qapp, 'quit-idle-pre-quit');
+        if (!observerUsable(qState, s)) blocked(proofName, observerBlockReason(qState, s));
+        else check(true, proofName, `baseline seq=${qState.baseline.seq}, pre-quit seq=${s.seq}`);
       }
       const child = qapp.process();
       await qapp.evaluate(({ app: a }) => a.quit());
@@ -845,7 +1017,9 @@ if (sections.includes('3.5')) {
   } else {
     let qapp; let qwin;
     try {
-      ({ app: qapp, win: qwin } = await launchApp('quit-inflight'));
+      const qLaunch = await launchApp('quit-inflight');
+      ({ app: qapp, win: qwin } = qLaunch);
+      const qState = qLaunch.observer; // THIS launch's own coverage
       await openProjectAndHost(qapp, qwin);
       await qwin.evaluate((p) => { window.__xrefHostPath = p; }, hostPath);
       await installBridge(qwin);
@@ -869,8 +1043,10 @@ if (sections.includes('3.5')) {
       results.observerSamples.push({ tag: 'quit-inflight', sample });
       const code = await waitForExit(child, 30_000);
       const slowBytes = fixtureMeta.files['slow.dxf'].bytes;
-      const witnessed = Boolean(sample && sample.captured && sample.factoryCalls === 1 && !sample.invalidated && sample.stats
-        && sample.stats.activeOps >= 1 && sample.stats.reservedRawBytes === slowBytes + 1);
+      // The witness must satisfy THIS launch's own one-instance proof
+      // and zero baseline (observerUsable against qState), not coverage
+      // borrowed from any other app instance.
+      const witnessed = Boolean(observerUsable(qState, sample) && sample.stats.activeOps >= 1 && sample.stats.reservedRawBytes === slowBytes + 1);
       if (!witnessed) blocked(inflightName, `insufficient witness at quit initiation: ${JSON.stringify(sample)}`);
       else check(code === 0, inflightName, `exit code ${code}, sample=${JSON.stringify(sample.stats)} seq=${sample.seq}`);
     } catch (error) {
@@ -886,4 +1062,5 @@ const blockedCount = checks.filter((c) => c.status === 'blocked').length;
 const passed = checks.filter((c) => c.status === 'pass').length;
 log(`\nxref-refresh: ${passed} passed, ${failed.length} failed, ${blockedCount} blocked, ${checks.filter((c) => c.status === 'skipped').length} skipped (${checks.length} records)${failed.length ? ` - FAILURES: ${failed.map((f) => `[${f.section}] ${f.name}`).join('; ')}` : ''}`);
 writeResults();
+if (evidenceFailed) process.exit(3); // never 0 (or 1) without persisted evidence (finding 5)
 process.exit(failed.length || blockedCount ? 1 : 0);
