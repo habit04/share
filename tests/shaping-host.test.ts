@@ -183,7 +183,13 @@ describe('startup laziness (correction 3)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'jcad-lazy-host-'));
     const script = join(dir, 'child.cjs');
     writeFileSync(script, child);
-    const result = spawnSync(process.execPath, [script, electronDir], { encoding: 'utf8' });
+    // Bounded inside the suite's existing 5 s default test budget
+    // (root review, correction-3 evidence round): a hung child is
+    // killed at 4 s and reported as this test's failure by the throw
+    // below, instead of consuming the test timeout opaquely. No
+    // budget is raised; all assertions are unchanged.
+    const result = spawnSync(process.execPath, [script, electronDir], { encoding: 'utf8', timeout: 4_000 });
+    if (result.error) throw new Error(`startup-laziness child did not complete: ${result.error.message}`);
     expect(result.stdout.trim()).toBe('OK');
     expect(result.status).toBe(0);
   });
