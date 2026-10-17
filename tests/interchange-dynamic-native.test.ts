@@ -26,6 +26,9 @@
  *                   recovered-values clause is vacuous per J3).
  *   J9  REAL      — DWG import through the native reader: same oracle geometry; the measured
  *                   DWG losses are asserted as facts, never borrowed from the DXF results.
+ *                   The object-graph loss is platform-split (absent on the Linux WASM
+ *                   fallback path, raw-preserved on the Windows native path — Windows
+ *                   review, 2026-10-17) and is asserted per shape in its own test.
  *   J10 TODO      — no R2000 save-down of this fixture is shipped.
  *   J11 REAL (absence half) — no JCAD_DYNAMIC carrier is invented for native data.
  *       INVENTORY (statement half) — the import report never states that parameter values
@@ -40,7 +43,7 @@ import { readDxf, writeDxf } from '../src/io/dxf';
 import { decodeDxfBytes } from '../src/io/encoding';
 import { importReportOf } from '../src/io/import-report';
 import type { DrawingState } from '../src/core/document';
-import type { BlockDef, CircleEntity, Entity, InsertEntity, LineEntity, PolylineEntity, TextEntity } from '../src/core/entities';
+import type { BlockDef, CircleEntity, InsertEntity, LineEntity, PolylineEntity, TextEntity } from '../src/core/entities';
 import { entityBounds, explodeInsert } from '../src/core/entities';
 import { unionBounds, type Bounds, type Point } from '../src/core/geometry';
 import { setDynamicParameter } from '../src/core/parametric/apply';
@@ -393,22 +396,65 @@ describe('p30-linear-stretch-HANDBUILT.dwg: native DWG import (J9)', () => {
     }
   });
 
-  it('measured DWG losses are asserted as facts: closed flag, ATTDEF default, object graph, dynamic state', () => {
+  it('measured DWG loss (closed flag): the plate closed flag does not survive the DWG reader', () => {
     for (const block of Object.values(state.blocks)) {
       const plate = block.entities.find((e): e is PolylineEntity => e.type === 'polyline')!;
-      expect(plate.closed).toBe(false); // the closed flag does not survive the DWG reader
-      expect(block.attributes[0]!.default).toBe(''); // the ATTDEF default "P-100" is lost
+      expect(plate.closed).toBe(false);
+    }
+  });
+
+  it('measured DWG loss (ATTDEF default): the ATTDEF default "P-100" does not survive the DWG reader', () => {
+    for (const block of Object.values(state.blocks)) {
+      expect(block.attributes[0]!.default).toBe('');
+    }
+  });
+
+  it('measured DWG loss (object graph): absent on the Linux WASM fallback path, raw-preserved on the Windows native path', () => {
+    // Platform split (Windows review, 2026-10-17): scripts/dwg-reader.mjs attaches the
+    // checked native metadata projection only on win32, so the two DWG paths retain
+    // different graph shapes. Each shape is asserted in full below; the earlier bundled
+    // version of this test hard-coded the Linux shape and failed on Windows.
+    const graph = state.cadGraph;
+    const items = importReportOf(state)?.items ?? [];
+    const omission = items.some((i) => i.type === 'XDATA' && i.action === 'unsupported' && i.reason.includes('dynamic parameters'));
+    if (graph === undefined) {
+      // Shape A — Linux LibreDWG WASM fallback (this platform): no object graph is
+      // retained at all, and the one report trace of the loss is the generic
+      // XDATA-omission item, which convertDwg emits only on the fallback path
+      // (src/io/dwg.ts, under !nativeProjected).
+      expect(graph).toBeUndefined();
+      expect(omission).toBe(true);
+    } else {
+      // Shape B — Windows native path (encoded from the Windows review of 2026-10-17;
+      // verified only by the reviewer's Windows rerun): the graph is present and
+      // raw-preserved — schema 1, every node raw-anchored, beginning with the header
+      // record ($ACADVER = AC1032). The fallback's XDATA-omission item is not emitted
+      // on this path: the metadata was retained, not omitted.
+      expect(graph.schema).toBe(1);
+      expect(graph.nodes.length).toBeGreaterThan(0);
+      for (const node of graph.nodes) expect(node.anchor?.kind).toBe('raw');
+      const first = graph.nodes[0]!;
+      expect(first.type).toBe('HEADER');
+      expect(first.groups[0]).toEqual([9, '$ACADVER']);
+      expect(first.groups[1]).toEqual([1, 'AC1032']);
+      expect(omission).toBe(false);
+    }
+  });
+
+  it('measured DWG invariant (dynamic state): the graph, absent or raw-preserved, is never decoded into dynamic state', () => {
+    // Universal on both platform shapes: raw retention is not decoding — no block or
+    // insert carries dynamic state, and no Distance1 value surfaces outside the
+    // retained raw graph itself.
+    for (const block of Object.values(state.blocks)) {
       expect(block.dynamic).toBeUndefined();
       expect(block.dynamicRetained).toBeUndefined();
     }
-    expect(state.cadGraph).toBeUndefined(); // no object graph is retained on the DWG path
     for (const ins of insertsOf(state)) {
       expect(ins.dynamic).toBeUndefined();
       expect(ins.dynamicRetained).toBeUndefined();
     }
-    // The one report trace of the loss is the generic XDATA-omission item.
-    const items = importReportOf(state)?.items ?? [];
-    expect(items.some((i) => i.type === 'XDATA' && i.action === 'unsupported' && i.reason.includes('dynamic parameters'))).toBe(true);
+    const { cadGraph: _graph, ...model } = state;
+    expect(JSON.stringify(model)).not.toContain('Distance1');
   });
 });
 
