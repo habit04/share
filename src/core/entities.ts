@@ -14,7 +14,7 @@ import { mtextBackgroundPolygons, hasMTextFill, hasMTextFrame, entityMTextBackgr
 import { polylineWidthGeometry, polylineWidthFrame, transformWidthFrame, polylineFramePoint, polylineFrameSource, polylineWidthProblem, moveWidthFrameGrip } from './polyline-widths';
 import { appearanceProperties, inheritedTransparency, resolveAlpha, type TransparencySpec } from './appearance';
 import { insertArrayCount, insertArrayInstances, MAX_INSERT_ARRAY_INSTANCES } from './insert-array';
-import { evaluateDynamicBlock } from './parametric/evaluate';
+import { evaluateDynamicBlock, type AttributeActionTransform } from './parametric/evaluate';
 import { dynamicGrips } from './parametric/grips';
 import { hasHatchGradient, hatchGradientDataProblem, hatchGradientFrame, hatchGradientFrameProblem, transformHatchGradientFrame, type HatchGradient, type HatchGradientFrame } from './hatch-gradient';
 
@@ -1360,6 +1360,21 @@ const insertCache = new WeakMap<InsertEntity, InsertCache>();
  * positions from the evaluated definition, and the DXF reader, which rebases
  * imported attribute placements against it.
  */
+/**
+ * The per-attribute transforms evaluation recorded for one DERIVED
+ * definition, keyed by the derived BlockDef object itself (round 4,
+ * R3-01). expansionBlock is the single producer of evaluated
+ * definitions for expansion, the DXF writer and the DXF reader, and
+ * every consumer composes placements against the exact object it
+ * returned, so identity keying is exact and the record never becomes
+ * document state: it is not serialized, cloned, or compared, and it
+ * dies with the derived definition. Presence of an entry — even an
+ * empty map — is the provenance marker: the definition came from an
+ * evaluation whose recorded transforms are complete for it, so an
+ * attribute with no entry was not moved by that evaluation.
+ */
+const evaluatedAttributeTransforms = new WeakMap<BlockDef, ReadonlyMap<string, AttributeTransform>>();
+
 export function expansionBlock(block: BlockDef, ins: InsertEntity): BlockDef {
   const definition = block.dynamic;
   const instance = ins.dynamic;
@@ -1373,7 +1388,13 @@ export function expansionBlock(block: BlockDef, ins: InsertEntity): BlockDef {
     result.entities.every((e, i) => e === block.entities[i]) &&
     result.attributes.length === block.attributes.length &&
     result.attributes.every((a, i) => a === block.attributes[i]);
-  return unchanged ? block : { ...block, entities: result.entities, attributes: result.attributes };
+  if (unchanged) return block;
+  const derived: BlockDef = { ...block, entities: result.entities, attributes: result.attributes };
+  evaluatedAttributeTransforms.set(
+    derived,
+    new Map([...result.attributeTransforms].map(([tag, tx]) => [tag, recordedAttributeTransform(tx)] as const)),
+  );
+  return derived;
 }
 
 // ---------------------------------------------------------------------------
@@ -1388,25 +1409,94 @@ interface LinearMap { readonly a: number; readonly b: number; readonly c: number
 const IDENTITY_MAP: LinearMap = { a: 1, b: 0, c: 0, d: 1 };
 
 /**
- * The transform evaluation applied to one attribute, recovered from the
- * authored and effective attribute definitions: everything needed to
- * re-express a placement written against one definition against the
- * other. Evaluation transforms an attribute's WHOLE placement (review
- * C05): anchors by a point transform, height by the actions' scale,
- * rotation by the actions' angle. The scalar parts are read off the
- * definition directly (height ratio, rotation delta); the point
- * transform's linear part is the matching similarity — except that a
- * flip leaves both scalars neutral, so the definition's own anchor
- * correspondences (position -> alignmentPoint / firstAlignmentPoint)
- * are consulted: they confirm the similarity, expose a reflection the
- * scalars cannot see, and, when two independent correspondences
- * disagree with the scalars (flip composed with rotate/scale), they
- * determine the linear part exactly.
+ * The transform evaluation applied to one attribute: everything needed
+ * to re-express a placement written against one definition against the
+ * other, as an absolute affine map (anchor q -> linear·q + offset) plus
+ * the scalar parts (height ratio, rotation delta).
+ *
+ * PROVENANCE (round 4, R3-01): the primary source is the transform the
+ * evaluation RECORDED while its action pipeline ran
+ * (EvaluationResult.attributeTransforms), attached by expansionBlock to
+ * the derived definition it produced — see evaluatedAttributeTransforms
+ * below. The record is authoritative and complete for that definition:
+ * an attribute with no record was not moved. It replaces the round-3
+ * snapshot inference as the primary mechanism because inference from
+ * before/after definitions is unsound for flip: a reflection and the
+ * identity can fix the same anchors (an axis through every anchor of
+ * the attribute — left, right, center and FIT placements alike), so
+ * identical authored/effective fields cannot prove "nothing moved",
+ * and no correspondence solve can recover an axis the snapshots do not
+ * show. Snapshot inference (attributeTransformBetween) survives ONLY
+ * as a fallback for definitions that carry no record, and only when no
+ * flip can be active for the attribute; when a flip may be active and
+ * no record exists, composition refuses explicitly (see
+ * attributePlacementsForDef / importedPlacementsToAuthoredFrame)
+ * rather than report success with wrong geometry.
  */
 interface AttributeTransform {
   readonly linear: LinearMap;
+  readonly offset: Point;
   readonly heightRatio: number;
   readonly rotationDelta: number;
+}
+
+/** A recorded evaluation transform in this module's transform shape. */
+function recordedAttributeTransform(tx: AttributeActionTransform): AttributeTransform {
+  return {
+    linear: { a: tx.a, b: tx.b, c: tx.c, d: tx.d },
+    offset: { x: tx.ox, y: tx.oy },
+    heightRatio: tx.heightRatio,
+    rotationDelta: tx.rotationDelta,
+  };
+}
+
+/** The exact inverse of a transform, or null when its linear part is
+ *  singular or non-finite (composed evaluation transforms are products
+ *  of translations, rotations, positive scales and reflections, so a
+ *  singular record means the transform did not come from an evaluation
+ *  this build performed). */
+function invertAttributeTransform(t: AttributeTransform): AttributeTransform | null {
+  const { a, b, c, d } = t.linear;
+  const det = a * d - b * c;
+  if (det === 0 || !Number.isFinite(det)) return null;
+  const ia = d / det;
+  const ib = -b / det;
+  const ic = -c / det;
+  const id = a / det;
+  const ox = -(ia * t.offset.x + ib * t.offset.y);
+  const oy = -(ic * t.offset.x + id * t.offset.y);
+  if (![ia, ib, ic, id, ox, oy].every(Number.isFinite)) return null;
+  return {
+    linear: { a: ia, b: ib, c: ic, d: id },
+    offset: { x: ox, y: oy },
+    heightRatio: 1 / t.heightRatio,
+    rotationDelta: -t.rotationDelta,
+  };
+}
+
+/**
+ * Can a flip action of the authored definition be contributing its
+ * reflection to the transform of `tag` at the instance's current state?
+ * The action applies its reflection iff its parameter's effective value
+ * differs from the parameter default (the pipeline's own rule); a
+ * missing value means the default state, and an unreadable (opaque)
+ * value — or a selection whose driving parameter cannot be resolved —
+ * is treated as "may be active", because it cannot be ruled out.
+ */
+function flipTransformPossible(authored: BlockDef, ins: InsertEntity, tag: string): boolean {
+  const definition = authored.dynamic;
+  if (!definition) return false;
+  for (const action of definition.actions) {
+    if (action.kind !== 'flip') continue;
+    if (!action.selection.some((s) => s.entityId === tag)) continue;
+    const param = definition.parameters.find((p) => p.id === action.parameterId);
+    if (!param || param.kind !== 'flip') return true;
+    const value = ins.dynamic?.values[action.parameterId];
+    if (value === undefined) continue; // default state: the reflection is not applied
+    if (value.kind !== 'flip') return true; // unreadable value: cannot rule the flip out
+    if (value.value !== param.defaultValue) return true;
+  }
+  return false;
 }
 
 interface AnchorCorr { readonly ux: number; readonly uy: number; readonly vx: number; readonly vy: number }
@@ -1454,10 +1544,20 @@ function solveLinearMap(c1: AnchorCorr, c2: AnchorCorr): LinearMap | null {
   };
 }
 
-/** The evaluation transform from attribute definition `a0` to `a1`, or
- *  null when the evaluation left the placement unchanged. Swapping the
- *  arguments yields the inverse transform (the ladder is symmetric:
- *  ratios invert, deltas negate, a reflection is its own inverse). */
+/** The transform from attribute definition `a0` to `a1` INFERRED from
+ *  the two snapshots, or null when the snapshots are field-identical.
+ *  Swapping the arguments yields the inverse transform (the ladder is
+ *  symmetric: ratios invert, deltas negate, a reflection is its own
+ *  inverse). FALLBACK ONLY (round 4, R3-01): callers consult this when
+ *  the definition carries no recorded evaluation transform, and never
+ *  when a flip may be active for the attribute — identical snapshots
+ *  cannot distinguish a flip whose axis fixes every anchor from the
+ *  identity, so in that case this function's null is not evidence that
+ *  nothing moved. For orientation-preserving motions (the stretch /
+ *  move / rotate / scale pipelines) the inference is exact: the scalar
+ *  parts are read off the definition directly (height ratio, rotation
+ *  delta), and the definition's own anchor correspondences confirm the
+ *  matching similarity. */
 function attributeTransformBetween(a0: AttributeDef, a1: AttributeDef): AttributeTransform | null {
   if (a0 === a1) return null;
   const samePoint = (u?: Point, v?: Point) =>
@@ -1508,26 +1608,32 @@ function attributeTransformBetween(a0: AttributeDef, a1: AttributeDef): Attribut
   } else if (corrs.length >= 2 && !corrs.every(consistentWithFields)) {
     linear = solveLinearMap(corrs[0]!, corrs[1]!) ?? fromFields;
   }
-  return { linear, heightRatio, rotationDelta };
+  // The absolute affine form: the map must send a0's position anchor to
+  // a1's, so offset = a1.position − L·a0.position.
+  const offset = {
+    x: a1.position.x - (linear.a * a0.position.x + linear.b * a0.position.y),
+    y: a1.position.y - (linear.c * a0.position.x + linear.d * a0.position.y),
+  };
+  return { linear, offset, heightRatio, rotationDelta };
 }
 
 /**
  * Re-express placement `p`, written against attribute definition `a0`,
- * against `a1` under transform `t` (from attributeTransformBetween):
- * anchors ride the transform's linear part about the definition's
- * position anchor, height composes by the transform's height ratio, and
- * rotation by its delta — so a placement that restates `a0` lands
- * exactly on `a1`, a genuine offset from the authored placement rides
- * the FULL transform (scale and rotation included, review round 3
- * R2-01), and fields evaluation never transforms (appearance, width
+ * against `a1` under transform `t`: anchors ride the transform's
+ * absolute affine map (its linear part about the definition's position
+ * anchor — the offset is exactly the part that sends a0's anchor to
+ * a1's), height composes by the transform's height ratio, and rotation
+ * by its delta — so a placement that restates `a0` lands exactly on
+ * `a1`, a genuine offset from the authored placement rides the FULL
+ * transform (scale, rotation and reflection included, review rounds 3
+ * and 4), and fields evaluation never transforms (appearance, width
  * factor, oblique, justification, style) carry through untouched.
  */
 function transformPlacement(p: AttributePlacement, a0: AttributeDef, a1: AttributeDef, t: AttributeTransform): AttributePlacement {
-  const map = (q: Point): Point => {
-    const dx = q.x - a0.position.x;
-    const dy = q.y - a0.position.y;
-    return { x: a1.position.x + t.linear.a * dx + t.linear.b * dy, y: a1.position.y + t.linear.c * dx + t.linear.d * dy };
-  };
+  const map = (q: Point): Point => ({
+    x: t.linear.a * q.x + t.linear.b * q.y + t.offset.x,
+    y: t.linear.c * q.x + t.linear.d * q.y + t.offset.y,
+  });
   const height = a0.height > 0 ? p.height * t.heightRatio : p.height + (a1.height - a0.height);
   const rotation = p.rotation === undefined && a0.rotation === undefined && a1.rotation === undefined
     ? undefined
@@ -1550,17 +1656,48 @@ function transformPlacement(p: AttributePlacement, a0: AttributeDef, a1: Attribu
  * attribute, so a genuine per-instance override rides the evaluated
  * transform instead of pinning the attribute against it. Returns `ins`
  * itself when nothing moves (the static path is untouched, by identity).
+ *
+ * The transform comes from the evaluation's own record for `effective`
+ * (see evaluatedAttributeTransforms): authoritative, and the only sound
+ * source when a flip is involved. A definition WITHOUT a record (one
+ * not produced by expansionBlock) falls back to snapshot inference —
+ * sound for the orientation-preserving action pipelines — UNLESS a
+ * flip may be active for the attribute at the instance's state: then
+ * the snapshots cannot prove what the transform was, and this function
+ * throws rather than compose a placement it cannot verify. That throw
+ * is the explicit, atomic refusal for the composition: no placement is
+ * produced at all, instead of a successful-looking wrong one. Every
+ * in-repo caller passes expansionBlock's own output, so the refusal is
+ * reachable only for foreign definitions a caller derived elsewhere
+ * while a flip state was live.
  */
 export function attributePlacementsForDef(ins: InsertEntity, authored: BlockDef, effective: BlockDef): InsertEntity {
   if (effective === authored || !ins.attributePlacements) return ins;
+  const recorded = evaluatedAttributeTransforms.get(effective);
   let changed = false;
   const out: Record<string, AttributePlacement> = {};
   for (const [tag, p] of Object.entries(ins.attributePlacements)) {
     const a0 = authored.attributes.find((a) => a.tag === tag);
     const a1 = effective.attributes.find((a) => a.tag === tag);
-    const t = a0 && a1 ? attributeTransformBetween(a0, a1) : null;
-    out[tag] = t ? transformPlacement(p, a0!, a1!, t) : p;
-    if (t) changed = true;
+    let t: AttributeTransform | null = null;
+    if (recorded) {
+      // Authoritative and complete for this definition: no entry means
+      // the evaluation did not move this attribute.
+      t = recorded.get(tag) ?? null;
+    } else if (a0 && a1) {
+      if (flipTransformPossible(authored, ins, tag)) {
+        throw new Error(
+          `Refusing to compose the placement override for attribute '${tag}': a flip action of block '${authored.name}' may be active at this instance's state, but the definition was not produced by an evaluation whose actual transform is recorded, and a flip cannot be recovered from before/after attribute snapshots.`,
+        );
+      }
+      t = attributeTransformBetween(a0, a1);
+    }
+    if (t && a0 && a1) {
+      out[tag] = transformPlacement(p, a0, a1, t);
+      changed = true;
+    } else {
+      out[tag] = p;
+    }
   }
   return changed ? { ...ins, attributePlacements: out } : ins;
 }
@@ -1602,7 +1739,15 @@ function placementRestatesEvaluated(p: AttributePlacement, ins: InsertEntity, a:
  * position: a height recorded at a scaled state is the evaluated height,
  * and storing it unrebased would freeze that scale into the authored
  * frame), so attributePlacementsForDef can ride it on future
- * evaluations. Without a modeled definition + instance state there is
+ * evaluations. The inverse is the exact inverse of the transform the
+ * saved-state evaluation RECORDED (round 4, R3-01) — the only sound
+ * source when a flip is involved, since a flip whose axis fixes every
+ * anchor leaves the evaluated definition field-identical to the
+ * authored one and no snapshot comparison can detect it. Snapshot
+ * inference remains as the fallback for a definition without a usable
+ * record, and only when no flip may be active at the saved state;
+ * otherwise the rebase throws rather than store a placement in the
+ * wrong frame. Without a modeled definition + instance state there is
  * nothing to rebase against and the placements pass through unchanged
  * (the static behaviour).
  * Attributes the saved state hid have no evaluated counterpart; their
@@ -1618,6 +1763,7 @@ export function importedPlacementsToAuthoredFrame(
   if (!block.dynamic || block.dynamicRetained !== undefined) return placements;
   const evaluated = expansionBlock(block, ins);
   if (evaluated === block) return placements;
+  const recorded = evaluatedAttributeTransforms.get(evaluated);
   let out: Record<string, AttributePlacement> | null = null;
   for (const [tag, p] of Object.entries(placements)) {
     const a1 = evaluated.attributes.find((a) => a.tag === tag);
@@ -1628,7 +1774,24 @@ export function importedPlacementsToAuthoredFrame(
       delete out[tag];
       continue;
     }
-    const inverse = attributeTransformBetween(a1, a0);
+    const forward = recorded?.get(tag);
+    if (recorded && !forward) {
+      // The saved-state evaluation did not move this attribute, so the
+      // placement as read is already in the authored frame.
+      continue;
+    }
+    let inverse = forward ? invertAttributeTransform(forward) : null;
+    if (!inverse) {
+      // No usable record: snapshot inference, unless a flip may be
+      // active at the saved state — then refuse explicitly rather than
+      // store a placement in the wrong frame (round 4, R3-01).
+      if (flipTransformPossible(block, ins, tag)) {
+        throw new Error(
+          `Refusing to rebase the imported placement for attribute '${tag}': a flip action of block '${block.name}' may be active at the saved state, but no recorded evaluation transform is available to invert, and a flip cannot be recovered from before/after attribute snapshots.`,
+        );
+      }
+      inverse = attributeTransformBetween(a1, a0);
+    }
     if (inverse) {
       out ??= { ...placements };
       out[tag] = transformPlacement(p, a1, a0, inverse);
