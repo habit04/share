@@ -1403,45 +1403,68 @@ function guardProblems(entities: readonly Entity[]): ConstraintProblem[] {
   // arrive JSON-shaped with fields missing or of the wrong type. A
   // missing field must surface as this refusal, never as a TypeError.
   const num = (v: unknown): number => (typeof v === 'number' ? v : NaN);
-  const coords = (p: unknown): [number, number] => {
+  const scalarOutOfRange = (v: number): boolean => !Number.isFinite(v) || Math.abs(v) > 1e15;
+  const pointOutOfRange = (p: unknown): boolean => {
     const q = p as { x?: unknown; y?: unknown } | null | undefined;
-    return [num(q?.x), num(q?.y)];
+    const xOutOfRange = scalarOutOfRange(num(q?.x));
+    const yOutOfRange = scalarOutOfRange(num(q?.y));
+    return xOutOfRange || yOutOfRange;
   };
+  // Streaming numeric validation (round 5, R4-02): coordinates are
+  // checked as they are read and only a boolean survives each entity,
+  // so preparation builds no vertex-proportional scalar collection
+  // before the solve/analysis admission decisions that consume it.
   for (const e of entities) {
     if (!isConstrainable(e)) continue;
-    const nums: number[] = [];
+    let outOfRange = false;
     switch (e.type) {
       case 'point':
-        nums.push(...coords(e.position));
+        outOfRange = pointOutOfRange(e.position);
         break;
-      case 'line':
-        nums.push(...coords(e.a), ...coords(e.b));
+      case 'line': {
+        const aOutOfRange = pointOutOfRange(e.a);
+        const bOutOfRange = pointOutOfRange(e.b);
+        outOfRange = aOutOfRange || bOutOfRange;
         break;
-      case 'circle':
-        nums.push(...coords(e.center), num(e.radius));
-        if (!(num(e.radius) > 0)) bad(e, 'a non-positive radius');
+      }
+      case 'circle': {
+        const radius = num(e.radius);
+        const centerOutOfRange = pointOutOfRange(e.center);
+        outOfRange = centerOutOfRange || scalarOutOfRange(radius);
+        if (!(radius > 0)) bad(e, 'a non-positive radius');
         break;
-      case 'arc':
-        nums.push(...coords(e.center), num(e.radius), num(e.startAngle), num(e.endAngle));
-        if (!(num(e.radius) > 0)) bad(e, 'a non-positive radius');
+      }
+      case 'arc': {
+        const radius = num(e.radius);
+        const startAngle = num(e.startAngle);
+        const endAngle = num(e.endAngle);
+        const centerOutOfRange = pointOutOfRange(e.center);
+        outOfRange = centerOutOfRange || scalarOutOfRange(radius) || scalarOutOfRange(startAngle) || scalarOutOfRange(endAngle);
+        if (!(radius > 0)) bad(e, 'a non-positive radius');
         break;
+      }
       case 'polyline': {
         // A polyline with no points has no anchors to resolve: its
         // 'start' would alias the *next* entity's variables (30.3.4).
-        const pts = Array.isArray(e.points) ? e.points : [];
-        if (pts.length === 0) {
+        const pts = Array.isArray(e.points) ? e.points : null;
+        if (pts === null || pts.length === 0) {
           bad(e, 'no points');
           break;
         }
-        for (const p of pts) nums.push(...coords(p));
+        for (const p of pts) {
+          if (pointOutOfRange(p)) outOfRange = true;
+        }
         // A width frame the solver must write back into (R05) has to
         // be invertible and vertex-aligned; a degenerate or mismatched
         // frame is refused here rather than throwing mid-solve.
         const wf = e.widthFrame as { points?: unknown; origin?: unknown; x?: unknown; y?: unknown } | undefined;
         if (wf !== undefined && wf !== null) {
-          const [ox, oy] = coords(wf.origin);
-          const [xx, xy] = coords(wf.x);
-          const [yx, yy] = coords(wf.y);
+          const ox = num((wf.origin as { x?: unknown } | null | undefined)?.x);
+          const oy = num((wf.origin as { y?: unknown } | null | undefined)?.y);
+          const xx = num((wf.x as { x?: unknown } | null | undefined)?.x);
+          const xy = num((wf.x as { y?: unknown } | null | undefined)?.y);
+          const yx = num((wf.y as { x?: unknown } | null | undefined)?.x);
+          const yy = num((wf.y as { y?: unknown } | null | undefined)?.y);
           const framePts = Array.isArray(wf.points) ? wf.points : null;
           if (
             framePts === null ||
@@ -1455,7 +1478,7 @@ function guardProblems(entities: readonly Entity[]): ConstraintProblem[] {
         break;
       }
     }
-    if (nums.some((v) => !Number.isFinite(v) || Math.abs(v) > 1e15)) bad(e, 'a non-finite coordinate or a coordinate beyond 1e15');
+    if (outOfRange) bad(e, 'a non-finite coordinate or a coordinate beyond 1e15');
   }
   return problems;
 }
@@ -3259,8 +3282,10 @@ export function analyzeConstraints(entities: readonly Entity[], set: ConstraintS
   // participating polyline entered the layout whole — all of its
   // vertices read into vars0 — even when the active constraints
   // reference only its first segment, and the allocation preceded
-  // any budget object. prep.totalVars is a pure count (prepare
-  // allocates nothing vars-sized), so the check costs nothing. When
+  // any budget object. prep.totalVars is a length-derived count,
+  // and preparation's numeric guard streams coordinate checks
+  // without materializing a vertex-proportional scalar array, so
+  // this admission is reached with no vars-sized vertex state. When
   // the linear state itself cannot fit, no layout is built and no
   // residual is evaluated: the report is the honest unknown — DOF
   // totals and nominal consumption are counts and stay exact, the
