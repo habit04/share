@@ -1644,6 +1644,112 @@ function attributeTransformBetween(a0: AttributeDef, a1: AttributeDef): Attribut
 }
 
 /**
+ * Exact binary exponent decomposition: returns [m, e] with value =
+ * m · 2^e and m in [0.5, 1) (m = value and e = 0 for zero and for
+ * non-finite inputs, which callers treat as an unrepresentable term).
+ * JavaScript has no Math.frexp; the exponent bits are read through a
+ * DataView. Scaling by a power of two is exact, so decomposition never
+ * rounds. Subnormals are first scaled up by 2^64 (exact) into the
+ * normal range. (The same helper exists in parametric/evaluate.ts for
+ * the evaluator's own anchored application; the two modules cannot
+ * share it without an import cycle.)
+ */
+const frexpView = new DataView(new ArrayBuffer(8));
+function frexpPair(value: number): readonly [number, number] {
+  if (value === 0 || !Number.isFinite(value)) return [value, 0];
+  frexpView.setFloat64(0, value);
+  const hi = frexpView.getUint32(0);
+  const expBits = (hi >>> 20) & 0x7ff;
+  if (expBits === 0) {
+    const [m, e] = frexpPair(value * 2 ** 64);
+    return [m, e - 64];
+  }
+  frexpView.setUint32(0, (hi & 0x800fffff) | (1022 << 20));
+  return [frexpView.getFloat64(0), expBits - 1022];
+}
+
+/**
+ * One component of an anchored affine application, image + a·(qx − ax)
+ * + b·(qy − ay), computed in power-of-two scaled space (round 7,
+ * R6-01). The plain expression can overflow BEFORE its terms cancel —
+ * the product a·qx when the point sits far from the anchor, the
+ * subtraction qx − ax when the two are large with opposite signs, or
+ * the partial sum image + a·dx before + b·dy can cancel it — even when
+ * every field of the transform is finite and the true result is
+ * finite. This form splits the subtractions into separate product
+ * terms (a·qx, −a·ax, b·qy, −b·ay) beside the image, decomposes every
+ * factor exactly, and sums the mantissas at a common exponent, so no
+ * intermediate ever leaves the finite range unless the TRUE result
+ * does. Its only rounding is the mantissa products and the aligned sum
+ * themselves (measured within ~2 ulp of the evaluator's stepwise
+ * result on the admitted large-finite class). Returns a non-finite
+ * value only when the true component is out of range (or an input was
+ * already non-finite); the caller turns that into an explicit refusal.
+ */
+function scaledTransformComponent(
+  image: number, a: number, qx: number, ax: number, b: number, qy: number, ay: number,
+): number {
+  const terms: Array<readonly [number, number]> = [];
+  const pushValue = (v: number): void => {
+    const [m, e] = frexpPair(v);
+    if (m !== 0) terms.push([m, e]);
+  };
+  const pushProduct = (u: number, v: number, sign: 1 | -1): void => {
+    const [mu, eu] = frexpPair(u);
+    const [mv, ev] = frexpPair(v);
+    const m = sign * mu * mv;
+    if (m !== 0) terms.push([m, eu + ev]);
+  };
+  pushValue(image);
+  pushProduct(a, qx, 1);
+  pushProduct(a, ax, -1);
+  pushProduct(b, qy, 1);
+  pushProduct(b, ay, -1);
+  if (terms.length === 0) return 0;
+  if (terms.some(([m]) => !Number.isFinite(m))) return NaN;
+  let eMax = terms[0]![1];
+  for (const [, e] of terms) if (e > eMax) eMax = e;
+  let sum = 0;
+  for (const [m, e] of terms) sum += m * Math.pow(2, e - eMax);
+  if (sum === 0) return 0;
+  // Renormalize before scaling back so the back-scaling overflows only
+  // when the true result does (a sum near 1 at exponent 1024 must not
+  // be multiplied by an already-overflowing power of two).
+  const [sm, se] = frexpPair(sum);
+  const e = eMax + se;
+  const e1 = Math.trunc(e / 2);
+  return sm * Math.pow(2, e1) * Math.pow(2, e - e1);
+}
+
+/**
+ * One component of the anchored application, GATED (round 7, R6-01):
+ * the plain expression is returned untouched whenever it is finite —
+ * bit-identical for every ordinary value and every previously passing
+ * case — and only a non-finite plain result is recomputed in scaled
+ * space. A component whose scaled result is still non-finite is
+ * genuinely out of range; it is returned as-is and transformPlacement
+ * refuses explicitly rather than let Infinity/NaN escape as geometry.
+ */
+function transformComponent(
+  image: number, a: number, qx: number, ax: number, b: number, qy: number, ay: number,
+): number {
+  const naive = image + a * (qx - ax) + b * (qy - ay);
+  if (Number.isFinite(naive)) return naive;
+  return scaledTransformComponent(image, a, qx, ax, b, qy, ay);
+}
+
+/** The explicit refusal raised when a placement's true image under a
+ *  recorded (or inferred) transform lies outside the finite range:
+ *  raised before any non-finite placement is produced, stored or
+ *  written, in the same spirit as the flip/no-record refusals of the
+ *  two callers below. */
+function nonFinitePlacementError(tag: string, what: string): Error {
+  return new Error(
+    `Refusing to apply the recorded transform for attribute '${tag}': the ${what} it produces is non-finite — the true placement lies outside the finite range a double can represent.`,
+  );
+}
+
+/**
  * Re-express placement `p`, written against attribute definition `a0`,
  * against `a1` under transform `t`: anchors ride the transform's
  * anchored affine map (its linear part applied to the vector from the
@@ -1657,11 +1763,25 @@ function attributeTransformBetween(a0: AttributeDef, a1: AttributeDef): Attribut
  * oblique, justification, style) carry through untouched.
  */
 function transformPlacement(p: AttributePlacement, a0: AttributeDef, a1: AttributeDef, t: AttributeTransform): AttributePlacement {
-  const map = (q: Point): Point => ({
-    x: t.image.x + t.linear.a * (q.x - t.anchor.x) + t.linear.b * (q.y - t.anchor.y),
-    y: t.image.y + t.linear.c * (q.x - t.anchor.x) + t.linear.d * (q.y - t.anchor.y),
-  });
+  // The ONE point-application expression for recorded and inferred
+  // transforms (round 7, R6-01): each component goes through the gated
+  // transformComponent — plain arithmetic when it stays finite (the
+  // historical behaviour, bit for bit), exponent-scaled recomputation
+  // when the plain form overflows before cancellation — and a
+  // component that is still non-finite in scaled space means the true
+  // point is out of range, which refuses explicitly here, before any
+  // placement carrying Infinity/NaN can be returned, stored or written.
+  const map = (q: Point): Point => {
+    const x = transformComponent(t.image.x, t.linear.a, q.x, t.anchor.x, t.linear.b, q.y, t.anchor.y);
+    const y = transformComponent(t.image.y, t.linear.c, q.x, t.anchor.x, t.linear.d, q.y, t.anchor.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) throw nonFinitePlacementError(a0.tag, 'anchor point');
+    return { x, y };
+  };
   const height = a0.height > 0 ? p.height * t.heightRatio : p.height + (a1.height - a0.height);
+  // The scalar side has no cancellation to rescue: an overflowing
+  // height product is a genuinely out-of-range height. It is checked
+  // explicitly (round 7, R6-01) instead of escaping as Infinity.
+  if (!Number.isFinite(height)) throw nonFinitePlacementError(a0.tag, 'height');
   const rotation = p.rotation === undefined && a0.rotation === undefined && a1.rotation === undefined
     ? undefined
     : (a1.rotation ?? 0) + ((p.rotation ?? 0) - (a0.rotation ?? 0));
