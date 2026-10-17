@@ -23,10 +23,12 @@
  * the result is refused adapter-side as an abort, never accepted.
  *
  * Errors: broker refusals cross IPC as coded messages
- * ("ERR_XREF_*"); the adapter restores error codes the core classifies
- * by — DENIED becomes `EACCES` (the core reports `denied`, never
- * `missing`, for ungranted paths), MISSING becomes `ENOENT`, and a
- * broker cancellation becomes an `AbortError`.
+ * ("ERR_XREF_*"), possibly inside Electron's invoke envelope; the
+ * adapter normalizes that one known transport prefix away and
+ * restores error codes the core classifies by — DENIED becomes
+ * `EACCES` (the core reports `denied`, never `missing`, for ungranted
+ * paths), MISSING becomes `ENOENT`, and a broker cancellation becomes
+ * an `AbortError`.
  */
 import type { XrefFileIdentity, XrefFileReader, XrefReadResult } from '../io/xref-loading';
 
@@ -59,6 +61,13 @@ export interface XrefReaderHandle {
 }
 
 const CODE_PREFIX = /^([A-Z][A-Z0-9_]*):/;
+/**
+ * The one transport envelope Electron wraps a main-process handler
+ * failure in before it reaches the renderer's rejected invoke
+ * promise. Only this exact leading shape is normalized away; message
+ * text is never searched for codes anywhere else.
+ */
+const INVOKE_ENVELOPE = /^Error invoking remote method '[^']*': Error: /;
 
 function abortError(): Error {
   const error = new Error('the xref operation was aborted');
@@ -68,7 +77,8 @@ function abortError(): Error {
 
 /** Restore a classifiable error from a broker IPC failure. */
 function mapBrokerError(error: unknown): Error {
-  const message = error instanceof Error ? error.message : String(error);
+  const raw = error instanceof Error ? error.message : String(error);
+  const message = raw.replace(INVOKE_ENVELOPE, '');
   const code = CODE_PREFIX.exec(message)?.[1];
   if (code === 'ERR_XREF_CANCELLED') return abortError();
   const mapped = new Error(message);
@@ -93,24 +103,50 @@ export function createXrefReader(bridge: XrefBrokerBridge, initialSession: XrefR
   /** Tickets by exact resolved path, from this context's identifications. */
   const tickets = new Map<string, { ticket: string; identity: XrefFileIdentity }>();
 
-  /** Refuse a completion that belongs to a retired generation. */
-  function throwIfStale(captured: number): void {
-    if (disposed || captured !== generation) throw abortError();
+  /**
+   * Refuse a completion that belongs to a retired generation. The
+   * disposed flag is compared against its captured value, so an
+   * operation that STARTS after disposal is not "stale" — it fails
+   * with ensureContext's own disposed error instead of an abort.
+   */
+  function throwIfStale(captured: number, capturedDisposed: boolean): void {
+    if (captured !== generation || disposed !== capturedDisposed) throw abortError();
   }
 
   function ensureContext(): Promise<string> {
     if (disposed) return Promise.reject(Object.assign(new Error('ERR_XREF_CONTEXT: the xref reader is disposed'), { code: 'ERR_XREF_CONTEXT' }));
     if (!tokenPromise) {
       const captured = session;
-      tokenPromise = bridge.beginXrefContext({
+      const pending = bridge.beginXrefContext({
         docId: captured.docId,
         contentGeneration: captured.contentGeneration,
         hostAnchor: captured.hostPath,
       }).then((begun) => begun.token);
+      tokenPromise = pending;
       // A failed begin must not wedge the handle: the next call retries.
-      tokenPromise.catch(() => { tokenPromise = null; });
+      // Clear ONLY the promise that still occupies the slot — a begin
+      // retired by a session change must never clear the replacement
+      // context's pointer, tickets or close ownership (R3).
+      pending.catch(() => { if (tokenPromise === pending) tokenPromise = null; });
     }
     return tokenPromise;
+  }
+
+  /**
+   * Await the context token for one operation. Retirement dominates a
+   * failed begin: a rejection landing after the captured generation
+   * was retired (or after the caller's signal aborted) surfaces as an
+   * abort, never as the retired session's ordinary error (R5). A
+   * non-stale begin failure propagates unchanged.
+   */
+  async function contextToken(captured: number, capturedDisposed: boolean, signal: AbortSignal | undefined): Promise<string> {
+    try {
+      return await ensureContext();
+    } catch (error) {
+      throwIfStale(captured, capturedDisposed);
+      if (signal?.aborted) throw abortError();
+      throw error;
+    }
   }
 
   /** Retire the live context (if any) without touching the session labels. */
@@ -124,66 +160,98 @@ export function createXrefReader(bridge: XrefBrokerBridge, initialSession: XrefR
     }
   }
 
-  /** Forward the core's abort to the broker and make sure no late result is accepted. */
-  function wireAbort(signal: AbortSignal | undefined, token: string): void {
-    if (!signal) return;
+  /**
+   * Forward the core's abort to the broker and make sure no late
+   * result is accepted. Returns the detach function: the caller
+   * removes the listener in a finally when its operation settles, so
+   * a completed operation can never cancel a later one that shares
+   * the context (R4).
+   */
+  function wireAbort(signal: AbortSignal | undefined, token: string): () => void {
+    if (!signal) return () => { /* nothing was wired */ };
     if (signal.aborted) {
       void bridge.cancelXref(token).catch(() => { /* already gone */ });
-      return;
+      return () => { /* nothing was wired */ };
     }
-    signal.addEventListener('abort', () => {
+    const forward = () => {
       void bridge.cancelXref(token).catch(() => { /* already gone */ });
-    }, { once: true });
+    };
+    signal.addEventListener('abort', forward, { once: true });
+    return () => { signal.removeEventListener('abort', forward); };
   }
 
   const reader: XrefFileReader = {
     async identify(resolvedPath, context) {
       const captured = generation;
-      const token = await ensureContext();
-      throwIfStale(captured);
-      wireAbort(context.signal, token);
-      if (context.signal?.aborted) throw abortError();
-      let result: { ticket: string; identity: XrefFileIdentity };
+      const capturedDisposed = disposed;
+      const token = await contextToken(captured, capturedDisposed, context.signal);
+      throwIfStale(captured, capturedDisposed);
+      const unwire = wireAbort(context.signal, token);
       try {
-        result = await bridge.identifyXref(token, resolvedPath);
-      } catch (error) {
-        throw mapBrokerError(error);
+        if (context.signal?.aborted) throw abortError();
+        let result: { ticket: string; identity: XrefFileIdentity };
+        try {
+          result = await bridge.identifyXref(token, resolvedPath);
+        } catch (error) {
+          // Retirement (or the caller's abort) dominates an ordinary
+          // broker error: a retired load is never surfaced as a
+          // routine missing/denied continuation (R5).
+          throwIfStale(captured, capturedDisposed);
+          if (context.signal?.aborted) throw abortError();
+          throw mapBrokerError(error);
+        }
+        if (context.signal?.aborted) throw abortError();
+        // A completion from a retired context is refused, and its ticket
+        // is never written into the new generation's ticket map.
+        throwIfStale(captured, capturedDisposed);
+        tickets.set(resolvedPath, { ticket: result.ticket, identity: result.identity });
+        return result.identity;
+      } finally {
+        unwire();
       }
-      if (context.signal?.aborted) throw abortError();
-      // A completion from a retired context is refused, and its ticket
-      // is never written into the new generation's ticket map.
-      throwIfStale(captured);
-      tickets.set(resolvedPath, { ticket: result.ticket, identity: result.identity });
-      return result.identity;
     },
 
     async readText(resolvedPath, context): Promise<XrefReadResult> {
       const captured = generation;
-      const token = await ensureContext();
-      throwIfStale(captured);
-      wireAbort(context.signal, token);
-      if (context.signal?.aborted) throw abortError();
-      let entry = tickets.get(resolvedPath);
-      if (!entry) {
-        // The core identifies before reading whenever an identify
-        // exists; if a caller reads first, identify through the same
-        // context rather than inventing a ticket.
-        const identity = await reader.identify!(resolvedPath, context);
-        if (!identity) throw Object.assign(new Error(`ERR_XREF_MISSING: no identification for ${resolvedPath}`), { code: 'ENOENT' });
-        entry = tickets.get(resolvedPath)!;
-      }
-      let result: { text: string; byteLength: number; version: string };
+      const capturedDisposed = disposed;
+      const token = await contextToken(captured, capturedDisposed, context.signal);
+      throwIfStale(captured, capturedDisposed);
+      const unwire = wireAbort(context.signal, token);
       try {
-        result = await bridge.readXref(token, entry.ticket, context.maxBytes);
-      } catch (error) {
-        throw mapBrokerError(error);
+        if (context.signal?.aborted) throw abortError();
+        let entry = tickets.get(resolvedPath);
+        if (!entry) {
+          // The core identifies before reading whenever an identify
+          // exists; if a caller reads first, identify through the same
+          // context rather than inventing a ticket.
+          const identity = await reader.identify!(resolvedPath, context);
+          // The nested identify may fulfil just as this generation is
+          // retired: re-check BEFORE touching the (now cleared) ticket
+          // map or issuing any read under a new session (R5).
+          throwIfStale(captured, capturedDisposed);
+          if (context.signal?.aborted) throw abortError();
+          if (!identity) throw Object.assign(new Error(`ERR_XREF_MISSING: no identification for ${resolvedPath}`), { code: 'ENOENT' });
+          entry = tickets.get(resolvedPath)!;
+        }
+        let result: { text: string; byteLength: number; version: string };
+        try {
+          result = await bridge.readXref(token, entry.ticket, context.maxBytes);
+        } catch (error) {
+          // Same dominance as identify: stale/cancel first, ordinary
+          // classification only for a still-current failure (R5).
+          throwIfStale(captured, capturedDisposed);
+          if (context.signal?.aborted) throw abortError();
+          throw mapBrokerError(error);
+        }
+        // A completion that arrives after the abort — or after this
+        // adapter generation was retired by a session change or
+        // disposal — is never accepted.
+        if (context.signal?.aborted) throw abortError();
+        throwIfStale(captured, capturedDisposed);
+        return { text: result.text, byteLength: result.byteLength, version: result.version };
+      } finally {
+        unwire();
       }
-      // A completion that arrives after the abort — or after this
-      // adapter generation was retired by a session change or
-      // disposal — is never accepted.
-      if (context.signal?.aborted) throw abortError();
-      throwIfStale(captured);
-      return { text: result.text, byteLength: result.byteLength, version: result.version };
     },
   };
 

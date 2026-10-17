@@ -88,6 +88,25 @@ describe('xref adapter — context and ticket translation', () => {
     const missing = await handle.reader.identify!('C:\\proj\\ghost.dxf', ctx()).catch((e: unknown) => e) as { code?: string };
     expect(missing.code).toBe('ENOENT');
   });
+
+  it('does not classify a message that merely mentions a broker code mid-string (R6 negative control)', async () => {
+    // Neither the bare anchored form ("ERR_XREF_*: ..." at the start)
+    // nor the known Electron invoke envelope: a code appearing inside
+    // arbitrary message text must pass through unmapped — never EACCES.
+    const mention = 'the companion log mentioned ERR_XREF_DENIED: not readable by name earlier';
+    const bridge: XrefBrokerBridge = {
+      async beginXrefContext() { return { token: 'token-1' }; },
+      async identifyXref() { throw new Error(mention); },
+      async readXref() { throw new Error('unreachable'); },
+      async cancelXref() { return true; },
+      async closeXrefContext() { return true; },
+    };
+    const handle = createXrefReader(bridge, SESSION);
+    const error = await handle.reader.identify!(LEAF, ctx()).catch((e: unknown) => e) as Error & { code?: string };
+    expect(error.name).toBe('Error');
+    expect(error.code).toBeUndefined();
+    expect(error.message).toBe(mention);
+  });
 });
 
 describe('xref adapter — cancellation and session lifecycle', () => {
