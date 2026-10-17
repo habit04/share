@@ -71,8 +71,8 @@ export type SolveStatus =
    *  rank probe was budget-skipped for at least one component, so no
    *  DOF verdict exists: `dof.effectiveConsumed` and `dof.remaining`
    *  are the stated unknown (-1), never an invented figure (review
-   *  R12). Analysis never produces this status — it always computes
-   *  its rank. */
+   *  R12). Analysis produces this status too when its rank work is
+   *  admission-skipped under the same budget (round 3, R2-02). */
   | 'rank-unknown';
 
 export type SolveFailureCode =
@@ -143,8 +143,14 @@ export interface AnalysisResult {
   readonly diagnostics: readonly ConstraintDiagnostic[];
   /** Null when validation problems exist. 'unsolved' here means "not
    *  satisfied at current geometry" — analysis never claims a conflict,
-   *  which requires a stationary point (design §5.6). */
+   *  which requires a stationary point (design §5.6). 'rank-unknown'
+   *  means every constraint is satisfied but the rank work was
+   *  admission-skipped, so no DOF verdict exists (round 3, R2-02). */
   readonly status: SolveStatus | null;
+  /** Charged rank work, on the same accounting as SolveResult.workUsed:
+   *  every dense step is checked against SOLVE_WORK_LIMIT BEFORE it
+   *  executes, so this never exceeds the limit. */
+  readonly workUsed: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -3236,6 +3242,7 @@ export function analyzeConstraints(entities: readonly Entity[], set: ConstraintS
       },
       diagnostics: buildDiagnostics(set, { magById: new Map(), redundant: new Set(), mode: 'failed', geometry: entities, shapes }),
       status: null,
+      workUsed: 0,
     };
   }
   const inputIndex = new Map<string, number>(entities.map((e, i) => [e.id, i] as const));
@@ -3248,6 +3255,7 @@ export function analyzeConstraints(entities: readonly Entity[], set: ConstraintS
   const magById = new Map<string, number>();
   const branchById = new Map<string, 'external' | 'internal'>();
   let effectiveConsumed = 0;
+  let rankUnknown = false;
   const perEntityRemaining = new Map<string, number>();
   const supportedActive = prep.active.filter(({ shape }) => shapeSupported(shape));
   if (supportedActive.length > 0) {
@@ -3268,43 +3276,67 @@ export function analyzeConstraints(entities: readonly Entity[], set: ConstraintS
       magById.set(rs.constraint.id, m);
     }
     const nVars = vars0.length;
-    let J = new Float64Array(totalRows * nVars);
-    for (const rs of residuals) rs.jac(vars0, J, offsets.get(rs.constraint.id)!, nVars);
-    work.used += totalRows * nVars;
-    effectiveConsumed = denseRank(J, totalRows, nVars);
-    // Generic rank (F-3034-2 / round-2 C02, as in solveConstraints):
-    // with a tangent row present and the plain rank not already
-    // maximal, also read the rank at a nearby point of the non-tangent
-    // constraints' manifold (manifoldRankProbe); the larger reading
-    // governs, and its Jacobian drives the per-entity marginals below
-    // so the report stays consistent.
-    if (effectiveConsumed < Math.min(totalRows, nVars) && residuals.some((rs) => rs.constraint.kind === 'tangent')) {
-      const probe = manifoldRankProbe({ residuals, rowOffset: offsets, totalRows, vars: vars0, S, work, budgeted: false });
-      if (probe && probe.rank > effectiveConsumed) {
-        J = probe.J;
-        effectiveConsumed = probe.rank;
+    // Rank admission (round 3, R2-02): analysis mirrors the solver's
+    // budget discipline — every dense step is checked and charged
+    // BEFORE it executes. The pointwise Jacobian costs rows·vars and
+    // is refused up front when that alone exceeds the cap (previously
+    // it was allocated first and charged afterwards, and the manifold
+    // probe below ran unbudgeted, so its QR step could request
+    // (rows + vars)·vars doubles — 4,024,027 for a 1,000-vertex
+    // polyline — despite the 200,000 work cap). When the rank cannot
+    // be read within budget, the report carries the R12 stated
+    // unknown (-1 / 'rank-unknown') instead of a verdict the skipped
+    // work cannot support: a skipped probe never claims a system
+    // fully constrained and never invents a remaining DOF.
+    if (work.used + totalRows * nVars > work.limit) {
+      rankUnknown = true;
+    } else {
+      let J = new Float64Array(totalRows * nVars);
+      for (const rs of residuals) rs.jac(vars0, J, offsets.get(rs.constraint.id)!, nVars);
+      work.used += totalRows * nVars;
+      effectiveConsumed = denseRank(J, totalRows, nVars);
+      // Generic rank (F-3034-2 / round-2 C02, as in solveConstraints):
+      // with a tangent row present and the plain rank not already
+      // maximal, also read the rank at a nearby point of the non-tangent
+      // constraints' manifold (manifoldRankProbe); the larger reading
+      // governs, and its Jacobian drives the per-entity marginals below
+      // so the report stays consistent. The probe is budgeted against
+      // the same shared cap and pre-gated on its second Jacobian
+      // exactly as in solveConstraints: when it does not fit, it does
+      // not run, and the pointwise reading stands.
+      if (effectiveConsumed < Math.min(totalRows, nVars) && residuals.some((rs) => rs.constraint.kind === 'tangent')) {
+        if (work.used + totalRows * nVars <= work.limit) {
+          const probe = manifoldRankProbe({ residuals, rowOffset: offsets, totalRows, vars: vars0, S, work, budgeted: true });
+          if (probe && probe.rank > effectiveConsumed) {
+            J = probe.J;
+            effectiveConsumed = probe.rank;
+          }
+        }
+      }
+      let cumulative = 0;
+      const colsSoFar: number[] = [];
+      let budgetOut = false;
+      for (const e of prep.participating) {
+        const ev = layout.get(e.id)!;
+        for (let vI = 0; vI < ev.count; vI += 1) colsSoFar.push(ev.offset + vI);
+        if (budgetOut || work.used + totalRows * colsSoFar.length > work.limit) {
+          budgetOut = true;
+          perEntityRemaining.set(e.id, -1);
+          continue;
+        }
+        work.used += totalRows * colsSoFar.length;
+        const r = denseRank(J, totalRows, nVars, colsSoFar);
+        perEntityRemaining.set(e.id, ev.count - (r - cumulative));
+        cumulative = r;
       }
     }
-    let cumulative = 0;
-    const colsSoFar: number[] = [];
-    let budgetOut = false;
-    for (const e of prep.participating) {
-      const ev = layout.get(e.id)!;
-      for (let vI = 0; vI < ev.count; vI += 1) colsSoFar.push(ev.offset + vI);
-      if (budgetOut || work.used + totalRows * colsSoFar.length > work.limit) {
-        budgetOut = true;
-        perEntityRemaining.set(e.id, -1);
-        continue;
-      }
-      work.used += totalRows * colsSoFar.length;
-      const r = denseRank(J, totalRows, nVars, colsSoFar);
-      perEntityRemaining.set(e.id, ev.count - (r - cumulative));
-      cumulative = r;
+    if (rankUnknown) {
+      for (const e of prep.participating) perEntityRemaining.set(e.id, -1);
     }
   } else {
     for (const e of prep.participating) perEntityRemaining.set(e.id, entityDof(e));
   }
-  const remaining = total - effectiveConsumed;
+  const remaining = rankUnknown ? -1 : total - effectiveConsumed;
   const geomById = new Map<string, Entity>(entities.map((e) => [e.id, e]));
   const allSatisfied = prep.active.every(({ c }) => {
     const m = magById.get(c.id);
@@ -3317,14 +3349,24 @@ export function analyzeConstraints(entities: readonly Entity[], set: ConstraintS
     }
     return true;
   });
+  // A satisfaction failure needs no rank and keeps its verdict even
+  // when the rank work was skipped; a satisfied system whose rank was
+  // skipped reports 'rank-unknown' — never 'fully-constrained' from
+  // work that did not run (R2-02, as R12 on the solve side).
   const status: SolveStatus =
-    prep.unsupported.length > 0 || !allSatisfied ? 'unsolved' : remaining === 0 ? 'fully-constrained' : 'underconstrained';
+    prep.unsupported.length > 0 || !allSatisfied
+      ? 'unsolved'
+      : rankUnknown
+        ? 'rank-unknown'
+        : remaining === 0
+          ? 'fully-constrained'
+          : 'underconstrained';
   return {
     problems: [],
     dof: {
       total,
       nominalConsumed: prep.nominalConsumed,
-      effectiveConsumed,
+      effectiveConsumed: rankUnknown ? -1 : effectiveConsumed,
       remaining,
       perEntity: prep.participating.map((e) => ({ entityId: e.id, dof: entityDof(e), remaining: perEntityRemaining.get(e.id) ?? entityDof(e) })),
     },
@@ -3337,5 +3379,6 @@ export function analyzeConstraints(entities: readonly Entity[], set: ConstraintS
       branchById,
     }),
     status,
+    workUsed: work.used,
   };
 }
