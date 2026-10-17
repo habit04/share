@@ -378,8 +378,17 @@ type FiniteWalkOutcome = 'finite' | 'non-finite' | 'over-budget';
  *      membership (own enumerable string keys), and each key's slot
  *      is charged BEFORE its value is read or scheduled. At most ONE
  *      produced key is ever held unconsumed (the frame's pending
- *      key), so a refused charge stops the enumeration at that slot:
- *      the remaining keys are never produced, let alone collected.
+ *      key), so a refused charge stops the walk's consumption at
+ *      that slot: the walk requests no further keys and collects
+ *      none. (What the walk controls is its own consumption.
+ *      Entering the generator — the first `next()` and each
+ *      lookahead — precedes the corresponding slot charge and
+ *      enters native `for…in` enumeration, whose engine-internal
+ *      setup the walk cannot subdivide or charge; for a Proxy
+ *      record the `ownKeys` trap may return the full key list
+ *      inside that one step. The bound claimed here is on
+ *      application-owned scheduling, stack and pending state, not
+ *      on native enumeration setup.)
  *      The per-slot charge is unchanged — FINITE_WALK_NODE_WEIGHT
  *      once per child — so every total the round-4 accounting pinned
  *      is preserved; only the moment and granularity of the record
@@ -394,9 +403,11 @@ type FiniteWalkOutcome = 'finite' | 'non-finite' | 'over-budget';
  *  string keys in insertion order) with Object.keys membership:
  *  `for…in` also visits INHERITED enumerable keys, so each produced
  *  key is filtered to own-enumerable before it is yielded — the
- *  yielded set is exactly Object.keys' set, but no key array is ever
- *  materialized: a consumer that stops early has produced only the
- *  keys it actually consumed (plus at most one lookahead). */
+ *  yielded set is exactly Object.keys' set, but the walk itself
+ *  never materializes a key array: a consumer that stops early has
+ *  *consumed* only the keys it actually took (plus at most one
+ *  lookahead). Native enumeration setup inside the engine is
+ *  outside this guarantee (see the walk comment above). */
 function* ownEnumerableKeys(value: object): Generator<string> {
   for (const key in value) {
     if (Object.prototype.propertyIsEnumerable.call(value, key)) yield key;
