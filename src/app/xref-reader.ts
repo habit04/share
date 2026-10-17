@@ -102,6 +102,17 @@ export function createXrefReader(bridge: XrefBrokerBridge, initialSession: XrefR
   let generation = 0;
   /** Tickets by exact resolved path, from this context's identifications. */
   const tickets = new Map<string, { ticket: string; identity: XrefFileIdentity }>();
+  /**
+   * Close promises for context generations this handle retired, still
+   * outstanding. `setSession` must stay synchronous, so a retirement
+   * cannot await its own close — but the close stays OWNED here until
+   * it settles, so `dispose()` can join it instead of acknowledging
+   * cleanup that is still running in main (G2). Entries are forgotten
+   * only when the close itself settles.
+   */
+  const ownedCloses = new Set<Promise<void>>();
+  /** The one genuine disposal completion, created by the first dispose(). */
+  let disposalPromise: Promise<void> | null = null;
 
   /**
    * Refuse a completion that belongs to a retired generation. The
@@ -149,15 +160,28 @@ export function createXrefReader(bridge: XrefBrokerBridge, initialSession: XrefR
     }
   }
 
+  /**
+   * Close the context a begun token promise belongs to, retaining the
+   * close in `ownedCloses` until it settles. The returned chain never
+   * rejects: a failed begin opened nothing, and a failed close means
+   * the context is already gone in main.
+   */
+  function closeWhenBegun(pending: Promise<string>): void {
+    const closing: Promise<void> = pending.then(
+      (token) => bridge.closeXrefContext(token),
+      () => false, // the begin failed: nothing to close
+    ).then(() => undefined, () => undefined);
+    ownedCloses.add(closing);
+    void closing.then(() => { ownedCloses.delete(closing); });
+  }
+
   /** Retire the live context (if any) without touching the session labels. */
   function retireContext(): void {
     generation += 1;
     const pending = tokenPromise;
     tokenPromise = null;
     tickets.clear();
-    if (pending) {
-      void pending.then((token) => bridge.closeXrefContext(token)).catch(() => { /* already gone */ });
-    }
+    if (pending) closeWhenBegun(pending);
   }
 
   /**
@@ -265,17 +289,23 @@ export function createXrefReader(bridge: XrefBrokerBridge, initialSession: XrefR
       session = { ...next };
       retireContext();
     },
-    async dispose() {
-      if (disposed) return;
+    dispose() {
+      if (disposalPromise) return disposalPromise;
       disposed = true;
       generation += 1;
       const pending = tokenPromise;
       tokenPromise = null;
       tickets.clear();
-      if (pending) {
-        const token = await pending.catch(() => null);
-        if (token) await bridge.closeXrefContext(token).catch(() => { /* already gone */ });
-      }
+      if (pending) closeWhenBegun(pending);
+      // ONE genuine completion, shared by every dispose() call: it
+      // resolves only after the current context's close AND every
+      // still-outstanding retired generation's close have settled —
+      // never while an owned close is still pending in main (G2). The
+      // snapshot is complete: disposal retired the current generation
+      // above, and ensureContext refuses to begin another one, so no
+      // new close can be registered after this point.
+      disposalPromise = Promise.all([...ownedCloses]).then(() => undefined);
+      return disposalPromise;
     },
   };
 }
