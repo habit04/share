@@ -27,8 +27,10 @@
  *   J9  REAL      — DWG import through the native reader: same oracle geometry; the measured
  *                   DWG losses are asserted as facts, never borrowed from the DXF results.
  *                   The object-graph loss is platform-split (absent on the Linux WASM
- *                   fallback path, raw-preserved on the Windows native path — Windows
- *                   review, 2026-10-17) and is asserted per shape in its own test.
+ *                   fallback path; on the Windows native path the graph is present
+ *                   with mixed anchor kinds and the dynamic graph objects retained
+ *                   among the raw-anchored nodes — Windows review, 2026-10-17) and
+ *                   is asserted per shape in its own test.
  *   J10 TODO      — no R2000 save-down of this fixture is shipped.
  *   J11 REAL (absence half) — no JCAD_DYNAMIC carrier is invented for native data.
  *       INVENTORY (statement half) — the import report never states that parameter values
@@ -425,18 +427,35 @@ describe('p30-linear-stretch-HANDBUILT.dwg: native DWG import (J9)', () => {
       expect(graph).toBeUndefined();
       expect(omission).toBe(true);
     } else {
-      // Shape B — Windows native path (encoded from the Windows review of 2026-10-17;
-      // verified only by the reviewer's Windows rerun): the graph is present and
-      // raw-preserved — schema 1, every node raw-anchored, beginning with the header
-      // record ($ACADVER = AC1032). The fallback's XDATA-omission item is not emitted
+      // Shape B — Windows native path (measured by the reviewer's probe on this
+      // fixture, Windows re-review of 2026-10-17; verified only by their rerun): the
+      // graph is present, schema 1, beginning with the HEADER record
+      // ($ACADVER = AC1032). Anchor kinds are MIXED — they vary by record nature
+      // (raw / entity / dictionary / table / layout); 'raw' is not universal. The
+      // key retained fact: the dynamic graph objects are among the raw-anchored
+      // nodes, so on this path they are retained raw, not lost — the 'no graph'
+      // loss asserted for Shape A is Linux-only. Exact node counts are
+      // deliberately not pinned. The fallback's XDATA-omission item is not emitted
       // on this path: the metadata was retained, not omitted.
       expect(graph.schema).toBe(1);
       expect(graph.nodes.length).toBeGreaterThan(0);
-      for (const node of graph.nodes) expect(node.anchor?.kind).toBe('raw');
       const first = graph.nodes[0]!;
+      expect(first.anchor?.kind).toBe('raw');
       expect(first.type).toBe('HEADER');
       expect(first.groups[0]).toEqual([9, '$ACADVER']);
       expect(first.groups[1]).toEqual([1, 'AC1032']);
+      const rawTypes = new Set(
+        graph.nodes.filter((n) => n.anchor?.kind === 'raw').map((n) => n.type),
+      );
+      for (const type of [
+        'ACAD_EVALUATION_GRAPH',
+        'BLOCKLINEARPARAMETER',
+        'BLOCKLINEARGRIP',
+        'BLOCKGRIPLOCATIONCOMPONENT',
+        'BLOCKSTRETCHACTION',
+      ]) {
+        expect(rawTypes.has(type)).toBe(true);
+      }
       expect(omission).toBe(false);
     }
   });
