@@ -12,7 +12,7 @@ import { stageXrefLoad, type XrefFileIdentity } from '../src/io/xref-loading';
 const HOST = 'C:\\proj\\host.dxf';
 const LEAF = 'C:\\proj\\leaf.dxf';
 const SESSION: XrefReaderSession = { docId: 'doc-1', contentGeneration: 3, hostPath: HOST };
-const LEAF_IDENTITY: XrefFileIdentity = { id: 'win:7:42', owningLocation: LEAF, version: '["7","42","100","1000","2000"]' };
+const LEAF_IDENTITY = { id: 'win:7:42', owningLocation: LEAF, version: '["7","42","100","1000","2000"]' } satisfies XrefFileIdentity;
 const LEAF_TEXT = readFileSync(new URL('./fixtures/xref/leaf.dxf', import.meta.url), 'utf8');
 
 class FakeBridge implements XrefBrokerBridge {

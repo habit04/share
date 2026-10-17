@@ -152,7 +152,7 @@ const versionKey = (v) => JSON.stringify([v.dev, v.ino, v.size, v.mtimeNs, v.cti
 
 /**
  * @param {{
- *   fs: { open: Function, stat: Function, realpath: Function },
+ *   fs: { open: (file: string, flags: number) => Promise<any>, stat: Function, realpath: Function },
  *   isKnownPath: (path: string) => boolean,
  *   decodeDxf: (bytes: Buffer) => Promise<{ text: string, encoding?: string }>,
  *   newId?: () => string,

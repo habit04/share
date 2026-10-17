@@ -26,7 +26,7 @@
 
 /**
  * @param {MainContext} ctx
- * @param {{ fs?: object, decodeDxf?: Function, broker?: object }} [deps]  injected in tests
+ * @param {{ fs?: object, decodeDxf?: (bytes: Buffer) => Promise<{ text: string, encoding?: string }>, broker?: object }} [deps]  injected in tests
  * @returns {{ dispose: () => void }}
  */
 function registerXrefIpc(ctx, deps = {}) {
