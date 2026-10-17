@@ -123,8 +123,15 @@ describe('shaped PDF line emission', () => {
     const scalarsOf = (value: string) => [...value.replace(/[‪-‮⁦-⁩\s\f]/g, '')].sort().join('');
     const python = findPython();
     if (python) {
-      const script = 'import sys\nfrom pypdf import PdfReader\nr = PdfReader(sys.argv[1])\nprint(repr(r.pages[0].extract_text()))\n';
-      const out = spawnSync(python, ['-c', script, file], { encoding: 'utf8' });
+      // The probe must be encoding-proof and quote-free: a
+      // Windows Python's stdout defaults to the console code page
+      // (cp1252), where printing Arabic raises UnicodeEncodeError,
+      // and repr() would wrap the text in quote characters the
+      // scalar scan does not strip. Force UTF-8 twice (in-process
+      // reconfigure + the child's environment) and print the text
+      // itself. (Seat finding, Windows gate 2026-10-17.)
+      const script = 'import sys\nsys.stdout.reconfigure(encoding="utf-8")\nfrom pypdf import PdfReader\nr = PdfReader(sys.argv[1])\nprint(r.pages[0].extract_text() or "")\n';
+      const out = spawnSync(python, ['-c', script, file], { encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
       expect(out.status).toBe(0);
       expect(scalarsOf(out.stdout)).toBe('اب');
     }
