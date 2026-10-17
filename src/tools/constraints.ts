@@ -663,7 +663,7 @@ export function conStatusTool(): Tool {
     const dof = a.dof;
     const rankPartial = dof.perEntity.some((p) => p.remaining === -1);
     ctx.log(
-      `CONSTATUS: ${a.status} — DOF total ${dof.total}, consumed ${dof.effectiveConsumed}, remaining ${
+      `CONSTATUS: ${a.status} — DOF total ${dof.total}, consumed ${dof.effectiveConsumed === -1 ? 'unknown' : dof.effectiveConsumed}, remaining ${
         rankPartial ? 'unknown (rank work skipped for part of the set)' : dof.remaining
       }.`,
     );
