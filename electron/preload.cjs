@@ -68,6 +68,7 @@ contextBridge.exposeInMainWorld('jcad', {
     cancelProjectSaveBatch: (batch) => ipcRenderer.invoke('cancel-project-save-batch', batch),
     fontMetrics: (request) => ipcRenderer.invoke('font-metrics', request),
     pdfFont: (request) => ipcRenderer.invoke('pdf-font', request),
+    shapeFont: (request) => ipcRenderer.invoke('shape-font', request),
     openShxFont: () => ipcRenderer.invoke('open-shx-font'),
     dwgExportStatus: () => ipcRenderer.invoke('dwg-export-status'),
     saveDwg: (path, text, admission) => ipcRenderer.invoke('save-dwg', path, text, admission),

@@ -140,6 +140,10 @@ if (fontMetricsHost) ipcMain.handle('pdf-font', async (_event, request) => {
   try { return { font: await fontMetricsHost.readPdf(request) }; }
   catch (error) { return { font: null, problem: String(error?.message || 'Installed font embedding unavailable.') }; }
 });
+if (fontMetricsHost) ipcMain.handle('shape-font', async (_event, request) => {
+  try { return { shaped: await fontMetricsHost.readShape(request) }; }
+  catch (error) { return { shaped: null, problem: String(error?.message || 'Text shaping unavailable.') }; }
+});
 app.on('will-quit', () => { void fontMetricsHost?.dispose(); void restrictedPdf?.host.dispose(); restrictedPdf?.registry.retireAll(); });
 
 // Headless probe used by packaging smoke tests:  jcad --probe-dwg <file.dwg>

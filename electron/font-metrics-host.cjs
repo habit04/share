@@ -1,5 +1,6 @@
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
+const { shapeFields } = require('./shaping/shape-font.cjs');
 
 /** Matches the captured-PDF per-face CID cap in src/io/pdf-fonts.ts. */
 const MAX_USED_CODEPOINTS = 65534;
@@ -99,9 +100,31 @@ function createFontMetricsHost({ workerFactory = (request) => new Worker(path.jo
       }
       pump(); return promise;
   }
+  /** Shaping mode (contract v4 §9.1): the descriptor is validated by
+      fontRequest and the shape block by the worker module's own
+      validator, so host and worker apply one definition. The usage
+      stamp is host-side, exactly like pdf mode; a renderer-supplied
+      usage never reaches a worker. The job rides the same queue,
+      worker cap, pending cap, timeout, and terminate-after-first-
+      message discipline as every other mode. */
+  function readShape(value) {
+      /** @type {ReturnType<typeof fontRequest> & {usage: string, shape: ReturnType<typeof shapeFields>}} */
+      let request;
+      try { request = { ...fontRequest(value), usage: 'shape', shape: shapeFields(value) }; }
+      catch (error) { return Promise.reject(error); }
+      if (disposed) return Promise.reject(new Error('Font metric reader is closed.'));
+      const key = JSON.stringify(request), existing = pending.get(key);
+      if (existing) return existing;
+      if (pending.size >= 32) return Promise.reject(new Error('Too many pending font metric requests.'));
+      const promise = new Promise((resolve, reject) => { queue.push({ request, resolve, reject }); });
+      pending.set(key, promise);
+      void promise.finally(() => { pending.delete(key); }).catch(() => {});
+      pump(); return promise;
+  }
   return {
     read: (value) => read(value),
     readPdf: (value) => read(value, true),
+    readShape: (value) => readShape(value),
     admittedPreviewPrint(value) {
       let request;
       try { request = fontRequest(value); } catch { return false; }
