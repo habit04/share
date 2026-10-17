@@ -352,7 +352,7 @@ describe('xref read broker — cancellation and lifecycle', () => {
   });
 
   it('bounds live contexts per owner and tickets per context', async () => {
-    const { fs, broker, begin } = setup();
+    const { begin } = setup();
     for (let i = 0; i < 32; i++) begin('wc:1');
     expect(() => begin('wc:1')).toThrowError(/ERR_XREF_LIMIT/);
     const fsx = new FakeFs();
@@ -369,7 +369,6 @@ describe('xref read broker — cancellation and lifecycle', () => {
     }
     fsx.add('C:\\proj\\overflow.dxf', 'x', 9999n);
     await expect(many.identify('wc:9', token, 'C:\\proj\\overflow.dxf')).rejects.toMatchObject({ code: 'ERR_XREF_LIMIT' });
-    void fs;
   });
 
   it('beginContext validates its labels before creating anything', () => {
