@@ -169,10 +169,11 @@ export interface InsertEntity extends EntityBase {
   /**
    * Native per-insert attribute placement, stored in the block's local coordinate system,
    * relative to the AUTHORED attribute definition: for a dynamic block the evaluation's
-   * per-attribute motion is applied on top of the stored placement wherever the current
+   * per-attribute transform (anchors, height and rotation — the whole placement motion,
+   * review R07 + round 3 R2-01) is composed with the stored placement wherever the current
    * state is rendered or written (see attributePlacementsForDef), so an imported override
-   * describes the attribute's offset from its authored placement — never a pin against
-   * the evaluated position (review R07).
+   * describes the attribute's placement in the authored frame — never a pin against
+   * the evaluated placement.
    */
   readonly attributePlacements?: Readonly<Record<string, TextPlacement & AttributeAppearance & { readonly style?: string }>>;
   /**
@@ -1381,50 +1382,185 @@ export function expansionBlock(block: BlockDef, ins: InsertEntity): BlockDef {
 
 type AttributePlacement = TextPlacement & AttributeAppearance & { readonly style?: string };
 
-/** Shift a placement's anchor points by a definition-space delta. The evaluator
- *  moves attribute definitions by their `position` only, so a delta is the
- *  whole motion; the placement's own anchors ride along by the same delta. */
-function shiftedAttributeAnchors(p: AttributePlacement, dx: number, dy: number): AttributePlacement {
-  if (dx === 0 && dy === 0) return p;
-  const shift = (q: Point): Point => ({ x: q.x + dx, y: q.y + dy });
+/** A 2D linear map: x' = a*x + b*y, y' = c*x + d*y. */
+interface LinearMap { readonly a: number; readonly b: number; readonly c: number; readonly d: number }
+
+const IDENTITY_MAP: LinearMap = { a: 1, b: 0, c: 0, d: 1 };
+
+/**
+ * The transform evaluation applied to one attribute, recovered from the
+ * authored and effective attribute definitions: everything needed to
+ * re-express a placement written against one definition against the
+ * other. Evaluation transforms an attribute's WHOLE placement (review
+ * C05): anchors by a point transform, height by the actions' scale,
+ * rotation by the actions' angle. The scalar parts are read off the
+ * definition directly (height ratio, rotation delta); the point
+ * transform's linear part is the matching similarity — except that a
+ * flip leaves both scalars neutral, so the definition's own anchor
+ * correspondences (position -> alignmentPoint / firstAlignmentPoint)
+ * are consulted: they confirm the similarity, expose a reflection the
+ * scalars cannot see, and, when two independent correspondences
+ * disagree with the scalars (flip composed with rotate/scale), they
+ * determine the linear part exactly.
+ */
+interface AttributeTransform {
+  readonly linear: LinearMap;
+  readonly heightRatio: number;
+  readonly rotationDelta: number;
+}
+
+interface AnchorCorr { readonly ux: number; readonly uy: number; readonly vx: number; readonly vy: number }
+
+const wrapAngleDelta = (a: number): number => {
+  let r = a % (2 * Math.PI);
+  if (r > Math.PI) r -= 2 * Math.PI;
+  if (r < -Math.PI) r += 2 * Math.PI;
+  return r;
+};
+
+/** The reflection (scaled) taking u to v: reflection across the angle
+ *  bisector of the two vectors; when v = -u the axis is perpendicular. */
+function reflectionMap(c: AnchorCorr): LinearMap {
+  const su = Math.hypot(c.ux, c.uy);
+  const sv = Math.hypot(c.vx, c.vy);
+  const ux = c.ux / su;
+  const uy = c.uy / su;
+  const vx = c.vx / sv;
+  const vy = c.vy / sv;
+  let tx = ux + vx;
+  let ty = uy + vy;
+  const tl = Math.hypot(tx, ty);
+  if (tl < 1e-9) {
+    tx = -uy;
+    ty = ux;
+  } else {
+    tx /= tl;
+    ty /= tl;
+  }
+  const s = sv / su;
+  return { a: s * (2 * tx * tx - 1), b: s * (2 * tx * ty), c: s * (2 * tx * ty), d: s * (2 * ty * ty - 1) };
+}
+
+/** The linear map taking both correspondences' u to their v, or null
+ *  when the two u vectors are (near-)dependent. */
+function solveLinearMap(c1: AnchorCorr, c2: AnchorCorr): LinearMap | null {
+  const det = c1.ux * c2.uy - c2.ux * c1.uy;
+  if (Math.abs(det) <= 1e-12 * Math.hypot(c1.ux, c1.uy) * Math.hypot(c2.ux, c2.uy)) return null;
   return {
-    ...p,
-    position: shift(p.position),
-    ...(p.alignmentPoint ? { alignmentPoint: shift(p.alignmentPoint) } : {}),
-    ...(p.firstAlignmentPoint ? { firstAlignmentPoint: shift(p.firstAlignmentPoint) } : {}),
+    a: (c1.vx * c2.uy - c2.vx * c1.uy) / det,
+    b: (-c1.vx * c2.ux + c2.vx * c1.ux) / det,
+    c: (c1.vy * c2.uy - c2.vy * c1.uy) / det,
+    d: (-c1.vy * c2.ux + c2.vy * c1.ux) / det,
   };
 }
 
-/** The evaluation motion of one attribute (evaluated position − authored
- *  position), or null when the attribute is absent from the effective
- *  definition or the evaluation did not move it. */
-function attributeMotion(authored: BlockDef, effective: BlockDef, tag: string): { dx: number; dy: number } | null {
-  const a1 = effective.attributes.find((a) => a.tag === tag);
-  if (!a1) return null;
-  const a0 = authored.attributes.find((a) => a.tag === tag);
-  if (!a0 || a0 === a1) return null;
-  const dx = a1.position.x - a0.position.x;
-  const dy = a1.position.y - a0.position.y;
-  return dx === 0 && dy === 0 ? null : { dx, dy };
+/** The evaluation transform from attribute definition `a0` to `a1`, or
+ *  null when the evaluation left the placement unchanged. Swapping the
+ *  arguments yields the inverse transform (the ladder is symmetric:
+ *  ratios invert, deltas negate, a reflection is its own inverse). */
+function attributeTransformBetween(a0: AttributeDef, a1: AttributeDef): AttributeTransform | null {
+  if (a0 === a1) return null;
+  const samePoint = (u?: Point, v?: Point) =>
+    (u === undefined && v === undefined) || (u !== undefined && v !== undefined && u.x === v.x && u.y === v.y);
+  if (
+    samePoint(a0.position, a1.position) &&
+    samePoint(a0.alignmentPoint, a1.alignmentPoint) &&
+    samePoint(a0.firstAlignmentPoint, a1.firstAlignmentPoint) &&
+    a0.height === a1.height &&
+    (a0.rotation ?? 0) === (a1.rotation ?? 0)
+  ) return null;
+
+  const heightRatio = a0.height > 0 && a1.height > 0 ? a1.height / a0.height : 1;
+  const rotationDelta = (a1.rotation ?? 0) - (a0.rotation ?? 0);
+
+  const corrs: AnchorCorr[] = [];
+  for (const key of ['alignmentPoint', 'firstAlignmentPoint'] as const) {
+    const p0 = a0[key];
+    const p1 = a1[key];
+    if (!p0 || !p1) continue;
+    const ux = p0.x - a0.position.x;
+    const uy = p0.y - a0.position.y;
+    if (ux === 0 && uy === 0) continue;
+    corrs.push({ ux, uy, vx: p1.x - a1.position.x, vy: p1.y - a1.position.y });
+  }
+  const corrScale = (c: AnchorCorr) => Math.hypot(c.vx, c.vy) / Math.hypot(c.ux, c.uy);
+  const corrAngle = (c: AnchorCorr) => Math.atan2(c.ux * c.vy - c.uy * c.vx, c.ux * c.vx + c.uy * c.vy);
+  const consistentWithFields = (c: AnchorCorr) =>
+    Math.abs(corrScale(c) - heightRatio) <= 1e-6 * Math.max(1, heightRatio) &&
+    Math.abs(wrapAngleDelta(corrAngle(c) - rotationDelta)) <= 1e-6;
+
+  const cos = Math.cos(rotationDelta);
+  const sin = Math.sin(rotationDelta);
+  const fromFields: LinearMap = {
+    a: heightRatio * cos,
+    b: -heightRatio * sin,
+    c: heightRatio * sin,
+    d: heightRatio * cos,
+  };
+
+  let linear = fromFields;
+  if (heightRatio === 1 && rotationDelta === 0) {
+    // Scalar-neutral motion: a translation (identity linear part) or a
+    // flip. Only an anchor correspondence that actually moved can be a
+    // flip; translation noise between the correspondences is float dust.
+    const moved = corrs.find((c) => Math.hypot(c.vx - c.ux, c.vy - c.uy) > 1e-9 * Math.max(1, Math.hypot(c.ux, c.uy)));
+    linear = moved ? reflectionMap(moved) : IDENTITY_MAP;
+  } else if (corrs.length >= 2 && !corrs.every(consistentWithFields)) {
+    linear = solveLinearMap(corrs[0]!, corrs[1]!) ?? fromFields;
+  }
+  return { linear, heightRatio, rotationDelta };
+}
+
+/**
+ * Re-express placement `p`, written against attribute definition `a0`,
+ * against `a1` under transform `t` (from attributeTransformBetween):
+ * anchors ride the transform's linear part about the definition's
+ * position anchor, height composes by the transform's height ratio, and
+ * rotation by its delta — so a placement that restates `a0` lands
+ * exactly on `a1`, a genuine offset from the authored placement rides
+ * the FULL transform (scale and rotation included, review round 3
+ * R2-01), and fields evaluation never transforms (appearance, width
+ * factor, oblique, justification, style) carry through untouched.
+ */
+function transformPlacement(p: AttributePlacement, a0: AttributeDef, a1: AttributeDef, t: AttributeTransform): AttributePlacement {
+  const map = (q: Point): Point => {
+    const dx = q.x - a0.position.x;
+    const dy = q.y - a0.position.y;
+    return { x: a1.position.x + t.linear.a * dx + t.linear.b * dy, y: a1.position.y + t.linear.c * dx + t.linear.d * dy };
+  };
+  const height = a0.height > 0 ? p.height * t.heightRatio : p.height + (a1.height - a0.height);
+  const rotation = p.rotation === undefined && a0.rotation === undefined && a1.rotation === undefined
+    ? undefined
+    : (a1.rotation ?? 0) + ((p.rotation ?? 0) - (a0.rotation ?? 0));
+  return {
+    ...p,
+    position: map(p.position),
+    ...(p.alignmentPoint ? { alignmentPoint: map(p.alignmentPoint) } : {}),
+    ...(p.firstAlignmentPoint ? { firstAlignmentPoint: map(p.firstAlignmentPoint) } : {}),
+    height,
+    ...(rotation === undefined ? {} : { rotation }),
+  };
 }
 
 /**
  * The insert as attributeText must see it when placements are consumed
  * against `effective` (a definition derived from `authored` by evaluation):
  * each stored placement — authored-frame by definition (see the field
- * comment) — is shifted by the evaluation motion of its attribute, so a
- * genuine per-instance offset rides on the evaluated position instead of
- * pinning the attribute against it. Returns `ins` itself when nothing
- * moves (the static path is untouched, by identity).
+ * comment) — is composed with the evaluation's full transform of its
+ * attribute, so a genuine per-instance override rides the evaluated
+ * transform instead of pinning the attribute against it. Returns `ins`
+ * itself when nothing moves (the static path is untouched, by identity).
  */
 export function attributePlacementsForDef(ins: InsertEntity, authored: BlockDef, effective: BlockDef): InsertEntity {
   if (effective === authored || !ins.attributePlacements) return ins;
   let changed = false;
   const out: Record<string, AttributePlacement> = {};
   for (const [tag, p] of Object.entries(ins.attributePlacements)) {
-    const motion = attributeMotion(authored, effective, tag);
-    out[tag] = motion ? shiftedAttributeAnchors(p, motion.dx, motion.dy) : p;
-    if (motion) changed = true;
+    const a0 = authored.attributes.find((a) => a.tag === tag);
+    const a1 = effective.attributes.find((a) => a.tag === tag);
+    const t = a0 && a1 ? attributeTransformBetween(a0, a1) : null;
+    out[tag] = t ? transformPlacement(p, a0!, a1!, t) : p;
+    if (t) changed = true;
   }
   return changed ? { ...ins, attributePlacements: out } : ins;
 }
@@ -1456,15 +1592,19 @@ function placementRestatesEvaluated(p: AttributePlacement, ins: InsertEntity, a:
 }
 
 /**
- * Rebase placements read from a file (where an ATTRIB's anchors record the
- * attribute's position at the SAVED parameter state — the evaluated
- * position, plus any genuine user offset) into the stored authored frame:
- * a placement that merely restates the evaluated definition is DROPPED
- * (evaluation reproduces it now and after any later edit), and a placement
- * carrying a genuine offset is shifted back by the saved-state motion so
- * attributePlacementsForDef can ride it on future evaluations. Without a
- * modeled definition + instance state there is nothing to rebase against
- * and the placements pass through unchanged (the static behaviour).
+ * Rebase placements read from a file (where an ATTRIB's fields record the
+ * attribute's placement at the SAVED parameter state — the evaluated
+ * placement, plus any genuine user difference) into the stored authored
+ * frame: a placement that merely restates the evaluated definition is
+ * DROPPED (evaluation reproduces it now and after any later edit), and a
+ * placement carrying a genuine difference is mapped back by the INVERSE
+ * of the saved-state transform (anchors, height and rotation — not just
+ * position: a height recorded at a scaled state is the evaluated height,
+ * and storing it unrebased would freeze that scale into the authored
+ * frame), so attributePlacementsForDef can ride it on future
+ * evaluations. Without a modeled definition + instance state there is
+ * nothing to rebase against and the placements pass through unchanged
+ * (the static behaviour).
  * Attributes the saved state hid have no evaluated counterpart; their
  * placements are kept as read (documented boundary: rebasing them would
  * require the pre-visibility evaluation).
@@ -1488,11 +1628,10 @@ export function importedPlacementsToAuthoredFrame(
       delete out[tag];
       continue;
     }
-    const dx = a0.position.x - a1.position.x;
-    const dy = a0.position.y - a1.position.y;
-    if (dx !== 0 || dy !== 0) {
+    const inverse = attributeTransformBetween(a1, a0);
+    if (inverse) {
       out ??= { ...placements };
-      out[tag] = shiftedAttributeAnchors(p, dx, dy);
+      out[tag] = transformPlacement(p, a1, a0, inverse);
     }
   }
   return out ?? placements;
