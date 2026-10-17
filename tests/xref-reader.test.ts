@@ -19,7 +19,9 @@ class FakeBridge implements XrefBrokerBridge {
   calls: Array<{ method: string; args: unknown[] }> = [];
   tokens = 0;
   gateRead: (() => void) | null = null;
+  gateIdentify = false;
   private releaseRead: (() => void) | null = null;
+  private releaseIdentify: (() => void) | null = null;
 
   async beginXrefContext(info: { docId: string; contentGeneration: number | string; hostAnchor: string }) {
     this.calls.push({ method: 'begin', args: [info] });
@@ -27,6 +29,10 @@ class FakeBridge implements XrefBrokerBridge {
   }
   async identifyXref(token: string, path: string) {
     this.calls.push({ method: 'identify', args: [token, path] });
+    if (this.gateIdentify) {
+      this.gateIdentify = false;
+      await new Promise<void>((resolve) => { this.releaseIdentify = resolve; });
+    }
     if (path === LEAF) return { ticket: 'ticket-leaf', identity: LEAF_IDENTITY };
     if (path === HOST) return { ticket: 'ticket-host', identity: { id: 'win:7:10', owningLocation: HOST, version: '["7","10","50","1000","2000"]' } };
     if (path === 'C:\\secret\\leaf.dxf') throw new Error('ERR_XREF_DENIED: not readable by name');
@@ -36,12 +42,15 @@ class FakeBridge implements XrefBrokerBridge {
     this.calls.push({ method: 'read', args: [token, ticket, maxBytes] });
     if (this.gateRead) {
       const gate = new Promise<void>((resolve) => { this.releaseRead = resolve; });
-      this.gateRead();
+      const g = this.gateRead;
+      this.gateRead = null;
+      g();
       await gate;
     }
     return { text: LEAF_TEXT, byteLength: Buffer.byteLength(LEAF_TEXT, 'utf8'), version: LEAF_IDENTITY.version };
   }
   release() { this.releaseRead?.(); }
+  releaseId() { this.releaseIdentify?.(); }
   async cancelXref(token: string) { this.calls.push({ method: 'cancel', args: [token] }); return true; }
   async closeXrefContext(token: string) { this.calls.push({ method: 'close', args: [token] }); return true; }
   methods(): string[] { return this.calls.map((c) => c.method); }
@@ -127,6 +136,50 @@ describe('xref adapter — cancellation and session lifecycle', () => {
     await new Promise((r) => setImmediate(r));
     expect(bridge.calls.filter((c) => c.method === 'close')).toHaveLength(2);
     expect(handle.session.hostPath).toBe('C:\\proj\\saved-as.dxf');
+  });
+
+  it('a read completing after a session replacement is refused as stale, never accepted (review regression)', async () => {
+    const bridge = new FakeBridge();
+    const handle = createXrefReader(bridge, SESSION);
+    await handle.reader.identify!(LEAF, ctx());
+    bridge.gateRead = () => {};
+    const pending = handle.reader.readText(LEAF, readCtx());
+    await new Promise((r) => setImmediate(r));
+    handle.setSession({ ...SESSION, contentGeneration: 4 }); // generation replacement mid-flight
+    bridge.release(); // the retired context's read now completes with valid content…
+    const error = await pending.catch((e: unknown) => e) as Error;
+    expect(error.name).toBe('AbortError'); // …and is refused adapter-side
+    // The new generation reads freshly.
+    await expect(handle.reader.readText(LEAF, readCtx())).resolves.toMatchObject({ text: LEAF_TEXT });
+  });
+
+  it('a read completing after disposal is refused as stale (review regression)', async () => {
+    const bridge = new FakeBridge();
+    const handle = createXrefReader(bridge, SESSION);
+    await handle.reader.identify!(LEAF, ctx());
+    bridge.gateRead = () => {};
+    const pending = handle.reader.readText(LEAF, readCtx());
+    await new Promise((r) => setImmediate(r));
+    const disposing = handle.dispose();
+    bridge.release();
+    const error = await pending.catch((e: unknown) => e) as Error;
+    expect(error.name).toBe('AbortError');
+    await disposing;
+  });
+
+  it('an identify completing after a session replacement is refused and its ticket never enters the new map (review regression)', async () => {
+    const bridge = new FakeBridge();
+    const handle = createXrefReader(bridge, SESSION);
+    bridge.gateIdentify = true;
+    const pending = handle.reader.identify!(LEAF, ctx());
+    await new Promise((r) => setImmediate(r));
+    handle.setSession({ ...SESSION, contentGeneration: 9 });
+    bridge.releaseId();
+    const error = await pending.catch((e: unknown) => e) as Error;
+    expect(error.name).toBe('AbortError');
+    const before = bridge.calls.filter((c) => c.method === 'identify').length;
+    await handle.reader.readText(LEAF, readCtx()); // must identify FRESH under the new context
+    expect(bridge.calls.filter((c) => c.method === 'identify').length).toBe(before + 1);
   });
 
   it('dispose retires the context and refuses later operations, idempotently', async () => {

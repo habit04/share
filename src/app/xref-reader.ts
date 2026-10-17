@@ -82,8 +82,21 @@ export function createXrefReader(bridge: XrefBrokerBridge, initialSession: XrefR
   let session: XrefReaderSession = { ...initialSession };
   let tokenPromise: Promise<string> | null = null;
   let disposed = false;
+  /**
+   * Bumped by every context retirement (session replacement, disposal).
+   * Operations capture it before awaiting and refuse any completion
+   * that lands after it moves: a late result from a retired generation
+   * is never accepted, even when the core's own signal never aborted
+   * (session replacement is an adapter-side event the core cannot see).
+   */
+  let generation = 0;
   /** Tickets by exact resolved path, from this context's identifications. */
   const tickets = new Map<string, { ticket: string; identity: XrefFileIdentity }>();
+
+  /** Refuse a completion that belongs to a retired generation. */
+  function throwIfStale(captured: number): void {
+    if (disposed || captured !== generation) throw abortError();
+  }
 
   function ensureContext(): Promise<string> {
     if (disposed) return Promise.reject(Object.assign(new Error('ERR_XREF_CONTEXT: the xref reader is disposed'), { code: 'ERR_XREF_CONTEXT' }));
@@ -102,6 +115,7 @@ export function createXrefReader(bridge: XrefBrokerBridge, initialSession: XrefR
 
   /** Retire the live context (if any) without touching the session labels. */
   function retireContext(): void {
+    generation += 1;
     const pending = tokenPromise;
     tokenPromise = null;
     tickets.clear();
@@ -124,7 +138,9 @@ export function createXrefReader(bridge: XrefBrokerBridge, initialSession: XrefR
 
   const reader: XrefFileReader = {
     async identify(resolvedPath, context) {
+      const captured = generation;
       const token = await ensureContext();
+      throwIfStale(captured);
       wireAbort(context.signal, token);
       if (context.signal?.aborted) throw abortError();
       let result: { ticket: string; identity: XrefFileIdentity };
@@ -134,12 +150,17 @@ export function createXrefReader(bridge: XrefBrokerBridge, initialSession: XrefR
         throw mapBrokerError(error);
       }
       if (context.signal?.aborted) throw abortError();
+      // A completion from a retired context is refused, and its ticket
+      // is never written into the new generation's ticket map.
+      throwIfStale(captured);
       tickets.set(resolvedPath, { ticket: result.ticket, identity: result.identity });
       return result.identity;
     },
 
     async readText(resolvedPath, context): Promise<XrefReadResult> {
+      const captured = generation;
       const token = await ensureContext();
+      throwIfStale(captured);
       wireAbort(context.signal, token);
       if (context.signal?.aborted) throw abortError();
       let entry = tickets.get(resolvedPath);
@@ -157,8 +178,11 @@ export function createXrefReader(bridge: XrefBrokerBridge, initialSession: XrefR
       } catch (error) {
         throw mapBrokerError(error);
       }
-      // A completion that arrives after the abort is never accepted.
+      // A completion that arrives after the abort — or after this
+      // adapter generation was retired by a session change or
+      // disposal — is never accepted.
       if (context.signal?.aborted) throw abortError();
+      throwIfStale(captured);
       return { text: result.text, byteLength: result.byteLength, version: result.version };
     },
   };
@@ -176,6 +200,7 @@ export function createXrefReader(bridge: XrefBrokerBridge, initialSession: XrefR
     async dispose() {
       if (disposed) return;
       disposed = true;
+      generation += 1;
       const pending = tokenPromise;
       tokenPromise = null;
       tickets.clear();
