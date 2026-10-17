@@ -25,6 +25,49 @@ export interface PdfFontRun {
   readonly advance: number;
   readonly glyphs: readonly number[];
 }
+/** One segment of a shaped line plan (built by the capture layer,
+    consumed by the writer): segments arrive in VISUAL order. */
+export type PdfShapedSegment =
+  | {
+      readonly kind: 'direct';
+      readonly start: number;
+      readonly end: number;
+      readonly faceKey: string;
+      readonly resourceName: string;
+      /** Content-stream hex for the segment's codes (direct encode). */
+      readonly hex: string;
+      /** Segment advance in the face's font units. */
+      readonly advance: number;
+    }
+  | {
+      readonly kind: 'shaped';
+      readonly start: number;
+      readonly end: number;
+      readonly faceKey: string;
+      readonly resourceName: string;
+      readonly direction: 'ltr' | 'rtl';
+      /** Codes parallel to the run's glyphs, with the glyphs'
+          advances and offsets in font units. */
+      readonly glyphs: readonly {
+        readonly code: number;
+        readonly glyph: number;
+        readonly xAdvance: number;
+        readonly yAdvance: number;
+        readonly xOffset: number;
+        readonly yOffset: number;
+      }[];
+      /** Sum of the glyphs' xAdvance, font units. */
+      readonly advance: number;
+    };
+
+/** A whole line's shaped plan: its logical text (the ActualText
+    value) and its segments in visual order. */
+export interface PdfShapedLine {
+  readonly logicalText: string;
+  readonly baseDirection: 'ltr' | 'rtl';
+  readonly segments: readonly PdfShapedSegment[];
+}
+
 export interface PdfFontObjectWriter {
   reserve(): number;
   set(num: number, body: string | Uint8Array[]): void;
@@ -36,6 +79,17 @@ const MAX_TOTAL_BYTES = 128 * 1024 * 1024;
 const MAX_CIDS = 65534;
 const enc = new TextEncoder();
 const hex = (n: number) => n.toString(16).toUpperCase().padStart(4, '0');
+/** UTF-16BE hex of a string (a ToUnicode bfchar value); '' -> ''. */
+export const utf16Hex = (value: string): string => {
+  let result = '';
+  for (const char of value) {
+    const scalar = char.codePointAt(0)!;
+    if (scalar > 0xffff) {
+      result += hex(0xd800 + ((scalar - 0x10000) >>> 10)) + hex(0xdc00 + ((scalar - 0x10000) & 1023));
+    } else result += hex(scalar);
+  }
+  return result;
+};
 const num = (n: number) => Number(n.toFixed(6)).toString();
 const fail = (problem: string): never => { throw new Error(`PDF font: ${problem}`); };
 const integer = (n: number, min: number, max: number) => Number.isInteger(n) && n >= min && n <= max;
@@ -410,9 +464,20 @@ function glyphIndex(font: NativeFontMetrics, code: number): number {
 interface UsedFace {
   face: PdfFontFace;
   name: string;
-  /** Unicode scalar -> assignment. `code` is the character code shown in content
-   * streams; `cid` keys widths (and, for TrueType, the CIDToGIDMap). */
-  codes: Map<number, { code: number; cid: number; glyph: number }>;
+  /**
+   * Assignment identity -> entry. Direct entries are keyed by the
+   * Unicode scalar (`c:<scalar>`); shaped entries by occurrence
+   * identity (`s:<binding>:<cluster>:<glyph>:<occurrence>`, §5.2).
+   * `code` is the character code shown in content streams; `cid`
+   * keys widths (and, for TrueType, the CIDToGIDMap); `unicode`
+   * is the entry's ToUnicode value (the scalar itself for direct
+   * entries; the cluster's logical source for a shaped anchor,
+   * empty for every other shaped occurrence, §5.3).
+   */
+  codes: Map<string, { code: number; cid: number; glyph: number; unicode: string }>;
+  /** Any shaped entry assigned: the document carries ActualText
+   * and declares at least PDF 1.5 (§5.5). */
+  shaped: boolean;
 }
 
 /** Mutable CID assignment is private to one plot. Failed runs cannot reserve partial resources. */
@@ -461,15 +526,15 @@ export class PdfFontRegistry {
     const glyphs = codes.map((code) => glyphIndex(face.metrics, code));
     if (glyphs.some((glyph) => !glyph || face.metrics.glyphBoundsKnown?.[glyph] === false)) return null;
     let used = this.used.get(key);
-    const additional = new Set(codes.filter((code) => !used?.codes.has(code)));
+    const additional = new Set(codes.filter((code) => !used?.codes.has(`c:${code}`)));
     if ((used?.codes.size ?? 0) + additional.size > MAX_CIDS) return null;
     if (!used) {
-      used = { face, name: `JCF${this.used.size + 1}`, codes: new Map() };
+      used = { face, name: `JCF${this.used.size + 1}`, codes: new Map(), shaped: false };
       this.used.set(key, used);
     }
     let result = '', advance = 0;
     codes.forEach((code, i) => {
-      let mapping = used!.codes.get(code);
+      let mapping = used!.codes.get(`c:${code}`);
       if (!mapping) {
         // Character codes are assigned sequentially per scalar for both outline
         // kinds, so two scalars sharing one glyph still get distinct codes and
@@ -479,13 +544,76 @@ export class PdfFontRegistry {
         // CMap written with the resources maps code -> CID. The scheme is fixed
         // at first encode because runs are emitted incrementally.
         const assigned = used!.codes.size + 1;
-        mapping = { code: assigned, cid: face.outline === 'cff' ? glyphs[i]! : assigned, glyph: glyphs[i]! };
-        used!.codes.set(code, mapping);
+        mapping = { code: assigned, cid: face.outline === 'cff' ? glyphs[i]! : assigned, glyph: glyphs[i]!, unicode: String.fromCodePoint(code) };
+        used!.codes.set(`c:${code}`, mapping);
       }
       result += hex(mapping.code);
       advance += face.metrics.advances[mapping.glyph]!;
     });
     return { resourceName: used.name, hex: result, advance, glyphs };
+  }
+
+  /**
+   * Assign character codes for one shaped run's glyphs under the
+   * contract's occurrence identity (§5.2): a code per (glyph,
+   * cluster, occurrence) under the run's binding identity, where
+   * occurrence is the glyph's ordinal among its cluster's glyphs
+   * in content order. The cluster anchor (occurrence 0) carries
+   * the cluster's full logical source substring as its ToUnicode
+   * value; every other occurrence carries the empty string (§5.3's
+   * nonduplicating rule). Rendering identity is untouched: every
+   * code resolves to the same glyph the engine produced. Returns
+   * the codes parallel to `glyphs`, or null — assigning nothing —
+   * when the face is unknown, a glyph is unusable, a cluster text
+   * is malformed, or the face's code budget (MAX_CIDS, shared with
+   * the direct path) would be exceeded.
+   */
+  encodeShaped(
+    key: string,
+    identity: string,
+    glyphs: readonly { readonly glyph: number; readonly clusterStart: number; readonly clusterEnd: number }[],
+    clusterText: (clusterStart: number, clusterEnd: number) => string,
+  ): { readonly resourceName: string; readonly codes: readonly number[] } | null {
+    const face = this.faces.get(key);
+    if (!face || !glyphs.length) return null;
+    let used = this.used.get(key);
+    const occurrences = new Map<string, number>();
+    const pending: { entryKey: string; glyph: number; unicode: string }[] = [];
+    for (const glyph of glyphs) {
+      if (!Number.isInteger(glyph.glyph) || glyph.glyph < 0 || glyph.glyph >= face.metrics.advances.length) return null;
+      if (face.metrics.glyphBoundsKnown?.[glyph.glyph] === false) return null;
+      if (!Number.isInteger(glyph.clusterStart) || !Number.isInteger(glyph.clusterEnd) || glyph.clusterStart < 0 || glyph.clusterEnd < glyph.clusterStart) return null;
+      const cluster = `${glyph.clusterStart}:${glyph.clusterEnd}`;
+      const occurrence = occurrences.get(cluster) ?? 0;
+      occurrences.set(cluster, occurrence + 1);
+      let unicode = '';
+      if (occurrence === 0) {
+        unicode = clusterText(glyph.clusterStart, glyph.clusterEnd);
+        if (typeof unicode !== 'string' || /[\u0000-\u001f\u007f-\u009f]/u.test(unicode)) return null;
+        for (const char of unicode) {
+          const scalar = char.codePointAt(0)!;
+          if (scalar >= 0xd800 && scalar <= 0xdfff) return null;
+        }
+      }
+      pending.push({ entryKey: `s:${identity}:${cluster}:${glyph.glyph}:${occurrence}`, glyph: glyph.glyph, unicode });
+    }
+    const additional = new Set(pending.filter(({ entryKey }) => !used?.codes.has(entryKey)).map(({ entryKey }) => entryKey));
+    if ((used?.codes.size ?? 0) + additional.size > MAX_CIDS) return null;
+    if (!used) {
+      used = { face, name: `JCF${this.used.size + 1}`, codes: new Map(), shaped: false };
+      this.used.set(key, used);
+    }
+    const codes = pending.map(({ entryKey, glyph, unicode }) => {
+      let mapping = used!.codes.get(entryKey);
+      if (!mapping) {
+        const assigned = used!.codes.size + 1;
+        mapping = { code: assigned, cid: face.outline === 'cff' ? glyph : assigned, glyph, unicode };
+        used!.codes.set(entryKey, mapping);
+      }
+      return mapping.code;
+    });
+    used.shaped = true;
+    return { resourceName: used.name, codes };
   }
 
   /** Snapshot of used resources for assembly; no saved drawing or global cache holds it. */
@@ -498,8 +626,13 @@ export class PdfFontRegistry {
    * never encoded (or was rejected) emits nothing and requires nothing.
    */
   get requiredVersion(): readonly [number, number] {
-    for (const used of this.used.values()) if (used.face.outline === 'cff') return [1, 6];
-    return [1, 4];
+    let shaped = false;
+    for (const used of this.used.values()) {
+      if (used.face.outline === 'cff') return [1, 6];
+      if (used.shaped) shaped = true;
+    }
+    // A document emitting shaped runs carries ActualText (§5.4/§5.5).
+    return shaped ? [1, 5] : [1, 4];
   }
 }
 
@@ -541,12 +674,14 @@ export function writePdfFontResources(registry: PdfFontRegistry, writer: PdfFont
     else stream(fontFile, program, ` /Length1 ${program.byteLength}`);
     const mapping = new Uint8Array((used.codes.size + 1) * 2);
     const entries: string[] = [], encodingEntries: string[] = [];
-    for (const [code, entry] of used.codes) {
+    for (const entry of used.codes.values()) {
       if (!cff) { mapping[entry.cid * 2] = entry.glyph >>> 8; mapping[entry.cid * 2 + 1] = entry.glyph & 255; }
       // ToUnicode is keyed by character code, never by CID: aliasing scalars
-      // (distinct codes, one CID) each keep their own Unicode value.
-      const scalar = code <= 0xffff ? hex(code) : hex(0xd800 + ((code - 0x10000) >>> 10)) + hex(0xdc00 + ((code - 0x10000) & 1023));
-      entries.push(`<${hex(entry.code)}> <${scalar}>`);
+      // (distinct codes, one CID) each keep their own Unicode value. Shaped
+      // anchors carry their cluster's logical source; every other shaped
+      // occurrence carries the empty string as an explicit bfchar entry
+      // (§5.3), which renders here as an empty hex string.
+      entries.push(`<${hex(entry.code)}> <${utf16Hex(entry.unicode)}>`);
       if (cff) encodingEntries.push(`<${hex(entry.code)}> ${entry.cid}`);
     }
     if (!cff) stream(cidMap!, mapping);

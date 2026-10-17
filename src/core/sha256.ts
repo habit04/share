@@ -27,7 +27,15 @@ const rotr = (x: number, n: number): number => (x >>> n) | (x << (32 - n));
 
 /** SHA-256 of the UTF-8 encoding of `text`, as lowercase hex. */
 export function sha256Hex(text: string): string {
-  const bytes = new TextEncoder().encode(text);
+  return digestBytes(new TextEncoder().encode(text));
+}
+
+/** SHA-256 of raw bytes, as lowercase hex. */
+export function sha256BytesHex(bytes: Uint8Array): string {
+  return digestBytes(bytes);
+}
+
+function digestBytes(bytes: Uint8Array): string {
   const bitLength = bytes.length * 8;
   const paddedLength = Math.ceil((bytes.length + 9) / 64) * 64;
   const padded = new Uint8Array(paddedLength);

@@ -281,6 +281,11 @@ export function createTextGeometryContext(styles: Styles, registry: FontMetricsR
       if (!active) return { state: 'missing' };
       return active.shaped(plainText(text), appearance, itemStart, itemEnd);
     },
+    shapedGlyphs: (text, appearance, itemStart, itemEnd) => {
+      const active = shapingHooks();
+      if (!active) return { state: 'missing' };
+      return active.shapedGlyphs(plainText(text), appearance, itemStart, itemEnd);
+    },
     fontIssues: issues,
   };
   function shapingHooks(): TextShapingHooks | null {

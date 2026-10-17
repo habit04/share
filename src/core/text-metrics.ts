@@ -63,7 +63,33 @@ export interface TextGeometryContext {
    * direct for gate-admitted items.
    */
   shaped?(text: string, appearance: TextAppearance, itemStart: number, itemEnd: number): ShapedItemState;
+  /**
+   * The full glyph placements of a ready shaped item, per
+   * subitem, with each subitem's program identity — the PDF
+   * writer's seam (step 3). Same totality as shaped().
+   */
+  shapedGlyphs?(text: string, appearance: TextAppearance, itemStart: number, itemEnd: number): ShapedGlyphState;
 }
+
+/** One post-shaping glyph placement (font units, item-relative
+    cluster range in UTF-16 units). */
+export interface ShapedGlyphPlacement {
+  readonly glyph: number;
+  readonly clusterStart: number;
+  readonly clusterEnd: number;
+  readonly xAdvance: number;
+  readonly yAdvance: number;
+  readonly xOffset: number;
+  readonly yOffset: number;
+}
+
+/** A ready item's full glyph data, per coverage subitem. */
+export type ShapedGlyphState =
+  | { readonly state: 'ready'; readonly subitems: readonly { readonly start: number; readonly end: number; readonly programSha256: string; readonly glyphs: readonly ShapedGlyphPlacement[] }[] }
+  | { readonly state: 'pending' }
+  | { readonly state: 'missing' }
+  | { readonly state: 'refused'; readonly problem: string }
+  | { readonly state: 'direct'; readonly reason: 'admitted-native' };
 
 /** One host shape production request: a font descriptor the host
     validates (never a renderer-supplied path or buffer) plus the
@@ -146,6 +172,7 @@ export type ShapingHooksFactory = (init: {
 export interface TextShapingHooks {
   prepare(text: string, appearance: TextAppearance): Promise<void>;
   shaped(text: string, appearance: TextAppearance, itemStart: number, itemEnd: number): ShapedItemState;
+  shapedGlyphs(text: string, appearance: TextAppearance, itemStart: number, itemEnd: number): ShapedGlyphState;
 }
 
 /**

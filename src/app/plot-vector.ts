@@ -166,7 +166,7 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pe
     const images = await collectImages(pages, lookup, captured.imageLoader);
     const ctx = drawingContext(state, lookup, (p) => images.get(p) ?? null);
     const fontFallbacks = new Set<string>();
-    Object.assign(ctx, { embeddedFonts: prepared?.fonts, textGeometry: prepared?.geometry, fontFallbacks });
+    Object.assign(ctx, { embeddedFonts: prepared?.fonts, textGeometry: prepared?.geometry, fontFallbacks, ...(prepared?.shapedText ? { shapedText: prepared.shapedText } : {}) });
     const title = target === 'model' ? base : target === 'layouts' ? `${base} - layouts` : `${base} - ${target}`;
     const bytes = await vectorPdfCompressed(pages, ctx, style, title, deflate);
     reportPlotStyles();

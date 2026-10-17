@@ -42,6 +42,7 @@ import {
 import type {
   ShapeBridge,
   ShapeFaceCandidate,
+  ShapedGlyphState,
   ShapedItemState,
   TextAppearance,
 } from '../core/text-metrics';
@@ -477,6 +478,7 @@ export function createShapingHooks(init: {
 }): {
   readonly prepare: (text: string, appearance: TextAppearance) => Promise<void>;
   readonly shaped: (text: string, appearance: TextAppearance, itemStart: number, itemEnd: number) => ShapedItemState;
+  readonly shapedGlyphs: (text: string, appearance: TextAppearance, itemStart: number, itemEnd: number) => ShapedGlyphState;
   readonly session: ShapePreparationSession;
 } {
   const session = new ShapePreparationSession(init.bridge, init.candidatesFor);
@@ -500,6 +502,28 @@ export function createShapingHooks(init: {
             end: subitem.end,
             run: { advanceX: subitem.run.advanceX, ink: subitem.run.ink },
             capitalHeight: subitem.capitalHeight,
+          })),
+        };
+      }
+      return { state: 'missing' };
+    },
+    shapedGlyphs: (text, _appearance, itemStart, itemEnd) => {
+      const itemized = itemizeParagraph(text);
+      for (const item of itemized.items) {
+        const start = item.route === 'shaped' ? item.derivation.itemStart : item.itemStart;
+        const end = item.route === 'shaped' ? item.derivation.itemEnd : item.itemEnd;
+        if (start !== itemStart || end !== itemEnd) continue;
+        if (item.route === 'direct') return { state: 'direct', reason: 'admitted-native' };
+        if (item.route === 'refused') return { state: 'refused', problem: item.problem };
+        const state = session.lookup(init.contextId(), text, item.derivation);
+        if (state.state !== 'ready') return state;
+        return {
+          state: 'ready',
+          subitems: state.subitems.map((subitem) => ({
+            start: subitem.start,
+            end: subitem.end,
+            programSha256: subitem.run.binding.programSha256,
+            glyphs: subitem.run.glyphs,
           })),
         };
       }
