@@ -411,46 +411,68 @@ function walkNumbersFinite(
 
 /**
  * The composed transform one evaluation applied to one attribute
- * definition, as an absolute affine point map plus the scalar parts of
+ * definition, as an ANCHORED affine point map plus the scalar parts of
  * the placement transform: a point q of the authored placement maps to
- * (a·q.x + b·q.y + ox, c·q.x + d·q.y + oy), the height composes by
- * `heightRatio` and the rotation by `rotationDelta` — exactly the
- * operations transformAttributePlacement performed on the definition
- * while the pipeline ran (round 4, R3-01). Recorded per attribute in
- * pipeline order by evaluateDynamicBlock and returned in the result,
- * so placement composition consumes the ACTUAL action transforms:
- * a flip contributes its true reflection even when the axis fixes
- * every authored anchor and the evaluated definition is field-for-field
- * identical to the authored one.
+ * (ix + a·(q.x − ax) + b·(q.y − ay), iy + c·(q.x − ax) + d·(q.y − ay)),
+ * where (ax, ay) is the transform's anchor and (ix, iy) is the anchor's
+ * own image; the height composes by `heightRatio` and the rotation by
+ * `rotationDelta` — exactly the operations transformAttributePlacement
+ * performed on the definition while the pipeline ran (round 4, R3-01).
+ * Recorded per attribute in pipeline order by evaluateDynamicBlock and
+ * returned in the result, so placement composition consumes the ACTUAL
+ * action transforms: a flip contributes its true reflection even when
+ * the axis fixes every authored anchor and the evaluated definition is
+ * field-for-field identical to the authored one.
+ *
+ * The anchored form is load-bearing, not cosmetic (round 5, R4-01):
+ * the ABSOLUTE affine offset (the image of the origin) of a rotation
+ * by π about a centre at (1e308, 0) is 2·1e308, which overflows a
+ * double even though every point such a transform actually moves
+ * stays finite — the evaluator's own centre-relative application
+ * proves the transform itself is representable. Each action therefore
+ * records as its anchor a point the action fixes exactly (a rotate
+ * centre, a flip axis point, a scale base point — each is its own
+ * image), and composition keeps the first action's anchor, so every
+ * quantity ever formed is a difference of finite points or a product
+ * with one: a representable transform always has a finite record.
  */
 export interface AttributeActionTransform {
   readonly a: number;
   readonly b: number;
   readonly c: number;
   readonly d: number;
-  readonly ox: number;
-  readonly oy: number;
+  readonly ax: number;
+  readonly ay: number;
+  readonly ix: number;
+  readonly iy: number;
   readonly heightRatio: number;
   readonly rotationDelta: number;
 }
 
 /** Compose two attribute transforms: the result applies `prev` first,
- *  then `next` (pipeline order). */
+ *  then `next` (pipeline order). The composed transform keeps `prev`'s
+ *  anchor; its image is `next` applied to `prev`'s image, computed
+ *  through `next`'s own anchored form so the linear part only ever
+ *  multiplies a relative vector (the difference of two finite points). */
 function composeAttributeTransforms(next: AttributeActionTransform, prev: AttributeActionTransform): AttributeActionTransform {
+  const rx = prev.ix - next.ax;
+  const ry = prev.iy - next.ay;
   return {
     a: next.a * prev.a + next.b * prev.c,
     b: next.a * prev.b + next.b * prev.d,
     c: next.c * prev.a + next.d * prev.c,
     d: next.c * prev.b + next.d * prev.d,
-    ox: next.a * prev.ox + next.b * prev.oy + next.ox,
-    oy: next.c * prev.ox + next.d * prev.oy + next.oy,
+    ax: prev.ax,
+    ay: prev.ay,
+    ix: next.ix + next.a * rx + next.b * ry,
+    iy: next.iy + next.c * rx + next.d * ry,
     heightRatio: prev.heightRatio * next.heightRatio,
     rotationDelta: prev.rotationDelta + next.rotationDelta,
   };
 }
 
 const translationTransform = (delta: Point): AttributeActionTransform => ({
-  a: 1, b: 0, c: 0, d: 1, ox: delta.x, oy: delta.y, heightRatio: 1, rotationDelta: 0,
+  a: 1, b: 0, c: 0, d: 1, ax: 0, ay: 0, ix: delta.x, iy: delta.y, heightRatio: 1, rotationDelta: 0,
 });
 
 /** Reflect a point across the line a-b. The point-level half of
@@ -1070,10 +1092,12 @@ export function evaluateDynamicBlock(
           transformAttr = (attribute) => transformAttributePlacement(attribute, (p) => rotate(p, deltaAngle, center), deltaAngle);
           const cos = Math.cos(deltaAngle);
           const sin = Math.sin(deltaAngle);
+          // Anchored at the rotation centre, which the rotation fixes
+          // exactly: the record never forms c − R·c in absolute space
+          // (that offset overflows for a huge centre, round 5, R4-01).
           actionTx = {
             a: cos, b: -sin, c: sin, d: cos,
-            ox: center.x - (cos * center.x - sin * center.y),
-            oy: center.y - (sin * center.x + cos * center.y),
+            ax: center.x, ay: center.y, ix: center.x, iy: center.y,
             heightRatio: 1, rotationDelta: deltaAngle,
           };
         }
@@ -1097,7 +1121,7 @@ export function evaluateDynamicBlock(
           transformAttr = (attribute) => transformAttributePlacement(attribute, (p) => add(basePoint, scalePoint(sub(p, basePoint), factor)), 0, factor);
           actionTx = {
             a: factor, b: 0, c: 0, d: factor,
-            ox: basePoint.x * (1 - factor), oy: basePoint.y * (1 - factor),
+            ax: basePoint.x, ay: basePoint.y, ix: basePoint.x, iy: basePoint.y,
             heightRatio: factor, rotationDelta: 0,
           };
         }
@@ -1123,8 +1147,7 @@ export function evaluateDynamicBlock(
           const rd = 2 * u.y * u.y - 1;
           actionTx = {
             a: ra, b: rb, c: rb, d: rd,
-            ox: axisA.x - (ra * axisA.x + rb * axisA.y),
-            oy: axisA.y - (rb * axisA.x + rd * axisA.y),
+            ax: axisA.x, ay: axisA.y, ix: axisA.x, iy: axisA.y,
             heightRatio: 1, rotationDelta: 0,
           };
         }

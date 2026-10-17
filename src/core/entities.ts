@@ -1411,8 +1411,12 @@ const IDENTITY_MAP: LinearMap = { a: 1, b: 0, c: 0, d: 1 };
 /**
  * The transform evaluation applied to one attribute: everything needed
  * to re-express a placement written against one definition against the
- * other, as an absolute affine map (anchor q -> linear·q + offset) plus
- * the scalar parts (height ratio, rotation delta).
+ * other, as an ANCHORED affine map (anchor q -> image + linear·(q −
+ * anchor)) plus the scalar parts (height ratio, rotation delta). The
+ * anchored form never forms the absolute offset (the image of the
+ * origin), which overflows for representable transforms whose fixed
+ * point is huge — a rotation by π about (1e308, 0) has absolute offset
+ * 2·1e308 (round 5, R4-01).
  *
  * PROVENANCE (round 4, R3-01): the primary source is the transform the
  * evaluation RECORDED while its action pipeline ran
@@ -1435,7 +1439,8 @@ const IDENTITY_MAP: LinearMap = { a: 1, b: 0, c: 0, d: 1 };
  */
 interface AttributeTransform {
   readonly linear: LinearMap;
-  readonly offset: Point;
+  readonly anchor: Point;
+  readonly image: Point;
   readonly heightRatio: number;
   readonly rotationDelta: number;
 }
@@ -1444,32 +1449,49 @@ interface AttributeTransform {
 function recordedAttributeTransform(tx: AttributeActionTransform): AttributeTransform {
   return {
     linear: { a: tx.a, b: tx.b, c: tx.c, d: tx.d },
-    offset: { x: tx.ox, y: tx.oy },
+    anchor: { x: tx.ax, y: tx.ay },
+    image: { x: tx.ix, y: tx.iy },
     heightRatio: tx.heightRatio,
     rotationDelta: tx.rotationDelta,
   };
 }
 
 /** The exact inverse of a transform, or null when its linear part is
- *  singular or non-finite (composed evaluation transforms are products
- *  of translations, rotations, positive scales and reflections, so a
- *  singular record means the transform did not come from an evaluation
- *  this build performed). */
+ *  singular or its inverse is not representable in doubles (composed
+ *  evaluation transforms are products of translations, rotations,
+ *  positive scales and reflections, so a singular record means the
+ *  transform did not come from an evaluation this build performed).
+ *  The determinant is computed on the magnitude-NORMALIZED linear
+ *  part and the adjugate divided by it before the scale is divided
+ *  out (round 5, R4-01): the raw determinant of a representable
+ *  transform such as a 1e160 scale composed with a flip is −(1e160)²,
+ *  which overflows a double even though every entry of the inverse is
+ *  representable, and treating that overflow as singularity made the
+ *  reader refuse JCad's own written output. The inverse is anchored
+ *  at the forward transform's image (whose own image is the forward
+ *  anchor), so no absolute offset is formed on this side either. */
 function invertAttributeTransform(t: AttributeTransform): AttributeTransform | null {
   const { a, b, c, d } = t.linear;
-  const det = a * d - b * c;
-  if (det === 0 || !Number.isFinite(det)) return null;
-  const ia = d / det;
-  const ib = -b / det;
-  const ic = -c / det;
-  const id = a / det;
-  const ox = -(ia * t.offset.x + ib * t.offset.y);
-  const oy = -(ic * t.offset.x + id * t.offset.y);
-  if (![ia, ib, ic, id, ox, oy].every(Number.isFinite)) return null;
+  const s = Math.max(Math.abs(a), Math.abs(b), Math.abs(c), Math.abs(d));
+  if (s === 0 || !Number.isFinite(s)) return null;
+  const na = a / s;
+  const nb = b / s;
+  const nc = c / s;
+  const nd = d / s;
+  const detN = na * nd - nb * nc;
+  if (detN === 0 || !Number.isFinite(detN)) return null;
+  // L⁻¹ = adj(L)/det(L) = adj(normalized L) / (det(normalized L) · s).
+  const ia = nd / detN / s;
+  const ib = -nb / detN / s;
+  const ic = -nc / detN / s;
+  const id = na / detN / s;
+  const heightRatio = 1 / t.heightRatio;
+  if (![ia, ib, ic, id, heightRatio].every(Number.isFinite)) return null;
   return {
     linear: { a: ia, b: ib, c: ic, d: id },
-    offset: { x: ox, y: oy },
-    heightRatio: 1 / t.heightRatio,
+    anchor: { x: t.image.x, y: t.image.y },
+    image: { x: t.anchor.x, y: t.anchor.y },
+    heightRatio,
     rotationDelta: -t.rotationDelta,
   };
 }
@@ -1608,31 +1630,36 @@ function attributeTransformBetween(a0: AttributeDef, a1: AttributeDef): Attribut
   } else if (corrs.length >= 2 && !corrs.every(consistentWithFields)) {
     linear = solveLinearMap(corrs[0]!, corrs[1]!) ?? fromFields;
   }
-  // The absolute affine form: the map must send a0's position anchor to
-  // a1's, so offset = a1.position − L·a0.position.
-  const offset = {
-    x: a1.position.x - (linear.a * a0.position.x + linear.b * a0.position.y),
-    y: a1.position.y - (linear.c * a0.position.x + linear.d * a0.position.y),
+  // The anchored form: the map must send a0's position anchor to a1's,
+  // so the anchor is a0's position and its image is a1's — the absolute
+  // offset (a1.position − L·a0.position) is never formed; it overflows
+  // for huge-centre motions whose endpoints stay finite (round 5, R4-01).
+  return {
+    linear,
+    anchor: { x: a0.position.x, y: a0.position.y },
+    image: { x: a1.position.x, y: a1.position.y },
+    heightRatio,
+    rotationDelta,
   };
-  return { linear, offset, heightRatio, rotationDelta };
 }
 
 /**
  * Re-express placement `p`, written against attribute definition `a0`,
  * against `a1` under transform `t`: anchors ride the transform's
- * absolute affine map (its linear part about the definition's position
- * anchor — the offset is exactly the part that sends a0's anchor to
- * a1's), height composes by the transform's height ratio, and rotation
- * by its delta — so a placement that restates `a0` lands exactly on
- * `a1`, a genuine offset from the authored placement rides the FULL
- * transform (scale, rotation and reflection included, review rounds 3
- * and 4), and fields evaluation never transforms (appearance, width
- * factor, oblique, justification, style) carry through untouched.
+ * anchored affine map (its linear part applied to the vector from the
+ * transform's anchor, landed on the anchor's image — the anchor is
+ * exactly the point that sends a0's frame to a1's), height composes
+ * by the transform's height ratio, and rotation by its delta — so a
+ * placement that restates `a0` lands exactly on `a1`, a genuine offset
+ * from the authored placement rides the FULL transform (scale,
+ * rotation and reflection included, review rounds 3 and 4), and
+ * fields evaluation never transforms (appearance, width factor,
+ * oblique, justification, style) carry through untouched.
  */
 function transformPlacement(p: AttributePlacement, a0: AttributeDef, a1: AttributeDef, t: AttributeTransform): AttributePlacement {
   const map = (q: Point): Point => ({
-    x: t.linear.a * q.x + t.linear.b * q.y + t.offset.x,
-    y: t.linear.c * q.x + t.linear.d * q.y + t.offset.y,
+    x: t.image.x + t.linear.a * (q.x - t.anchor.x) + t.linear.b * (q.y - t.anchor.y),
+    y: t.image.y + t.linear.c * (q.x - t.anchor.x) + t.linear.d * (q.y - t.anchor.y),
   });
   const height = a0.height > 0 ? p.height * t.heightRatio : p.height + (a1.height - a0.height);
   const rotation = p.rotation === undefined && a0.rotation === undefined && a1.rotation === undefined
