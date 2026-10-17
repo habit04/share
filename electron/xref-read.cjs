@@ -73,6 +73,19 @@
  * immediately, but its in-flight operations and reservations stay in
  * a separate retired ledger until their finally/descriptor cleanup
  * completes — resource credits never disappear early.
+ *
+ * Correction R2 adds three narrow completions. The global drain
+ * (closeAll) joins EVERY outstanding operation — live and already
+ * retired — through one broker-wide settle-marker set, and repeated
+ * cleanup callers share the same pending drain instead of ACKing
+ * early. A read whose IDENTIFIED size permanently exceeds the
+ * effective allowance (the caller's allowance lowered by the 16 MiB
+ * ceiling) refuses with ERR_XREF_LIMIT after authority and before
+ * admission, reservation or any filesystem contact; ERR_XREF_RESOURCE_
+ * BUSY is reserved for contention among otherwise-eligible reads.
+ * And the read helper is invoked with the identified size as its raw
+ * ceiling, so its allocation can never exceed the reserved size + 1
+ * sentinel even if a fresh stat disagrees with the identified one.
  */
 'use strict';
 
@@ -216,6 +229,15 @@ function createXrefReadBroker(deps) {
   const liveOps = new Set();
   /** @type {Set<{ ctx: any, reservation: bigint }>} operations whose context retired mid-flight */
   const retiredOps = new Set();
+  /**
+   * Settle markers of ALL in-flight operations, on live and retired
+   * contexts alike (correction R2): the global drain joins this set,
+   * so work whose context was retired before closeAll is still awaited.
+   * @type {Set<Promise<void>>}
+   */
+  const pendingOps = new Set();
+  /** The in-flight closeAll drain, shared by repeated cleanup callers. @type {Promise<void> | null} */
+  let closeAllPromise = null;
 
   const throwIfAborted = (signal) => { if (signal?.aborted) throw ERR.cancelled(); };
 
@@ -300,12 +322,14 @@ function createXrefReadBroker(deps) {
     let settle = () => {};
     const drained = new Promise((resolve) => { settle = () => resolve(undefined); });
     ctx.pending.add(drained);
+    pendingOps.add(drained);
     try {
       return await fn(controller.signal);
     } finally {
       ctx.controllers.delete(controller);
       releaseOp(record);
       ctx.pending.delete(drained);
+      pendingOps.delete(drained);
       settle();
     }
   }
@@ -429,20 +453,38 @@ function createXrefReadBroker(deps) {
     // Authority completes before admission: the ticket names the file
     // and the policy must still make it readable by name.
     if (!isKnownPath(ticket.path)) throw ERR.denied(`the path is no longer readable by name under the existing file policy: ${ticket.path}`);
+    // Permanent-limit precedence (correction R2, lead policy ruling):
+    // an identified size that exceeds the effective allowance can
+    // NEVER succeed, so it refuses with ERR_XREF_LIMIT here — after
+    // authority, before admission, reservation and any filesystem
+    // contact — and is never masked as temporary contention (BUSY is
+    // reserved for otherwise-eligible reads). The comparison uses the
+    // identified native size only; nothing has been charged or read.
+    const identifiedSize = BigInt(ticket.version.size);
+    if (identifiedSize > BigInt(allowance)) {
+      throw ERR.limit(`the identified file size (${identifiedSize} bytes) exceeds the byte allowance of ${allowance}: ${ticket.path}`);
+    }
     // The reservation is charged from the IDENTIFIED native size plus
     // the read helper's one-byte EOF sentinel (its allocation is
     // size + 1), checked here — before the helper is invoked — so a
     // size that changed after identification can never be allocated
     // against a stale charge: the helper's before-read hook
     // re-verifies this exact version before it allocates.
-    const reservation = BigInt(ticket.version.size) + 1n;
+    const reservation = identifiedSize + 1n;
     return runOp(ctx, reservation, async (signal) => {
       throwIfAborted(signal);
       const key = ticket.versionKey;
       /** @type {Buffer} */
       let bytes;
       try {
-        bytes = /** @type {Buffer} */ (await readLimitedFile(fs, ticket.path, allowance, undefined, {
+        // The helper's raw ceiling is the IDENTIFIED size, not the
+        // caller allowance (correction R2): the helper allocates from
+        // its own fresh stat, and binding it here means a stat that
+        // disagrees with the identified size refuses ("larger than")
+        // before allocating — the allocation can never exceed the
+        // reserved identified size + 1 sentinel. The decoded-text
+        // admission against the caller allowance still runs below.
+        bytes = /** @type {Buffer} */ (await readLimitedFile(fs, ticket.path, Number(identifiedSize), undefined, {
           async beforeRead(handle) {
             const held = await handle.stat({ bigint: true });
             if (!held.isFile()) throw ERR.type(`not a regular file: ${ticket.path}`);
@@ -563,23 +605,32 @@ function createXrefReadBroker(deps) {
 
   /**
    * Dispose the whole broker (main-process shutdown). Revocation is
-   * synchronous; the returned promise resolves once every context's
-   * in-flight operations have drained, for callers that can await it.
+   * synchronous; the returned promise resolves once EVERY outstanding
+   * operation has drained — including operations whose context was
+   * already retired by retireOwner/closeContext before this call
+   * (correction R2): the drain joins the broker-wide settle-marker
+   * set, not just the contexts still in the map. Repeated or
+   * concurrent callers share the SAME pending drain rather than
+   * acknowledging early; the shared promise is forgotten once it
+   * settles, so a later call drains whatever (empty) set remains.
    * Synchronous callers keep working: nothing here delays revocation.
    * @returns {Promise<void>}
    */
   function closeAll() {
     disposed = true;
-    const drains = [];
     for (const ctx of [...contexts.values()]) {
       ctx.closed = true;
       abortContext(ctx);
       ctx.tickets.clear();
       retireOpRecords(ctx);
-      drains.push(drainContext(ctx));
     }
     contexts.clear();
-    return Promise.allSettled(drains).then(() => undefined);
+    if (!closeAllPromise) {
+      const draining = Promise.allSettled([...pendingOps]).then(() => undefined);
+      closeAllPromise = draining;
+      draining.then(() => { if (closeAllPromise === draining) closeAllPromise = null; });
+    }
+    return closeAllPromise;
   }
 
   return Object.freeze({

@@ -251,7 +251,7 @@ describe('R1 — reservation accounting (identified size + EOF sentinel, 64 MiB 
     expect(broker.stats()).toMatchObject({ activeOps: 0, reservedRawBytes: 0 });
   });
 
-  it('the ceiling is exact at admission: size 64 MiB - 1 is admitted (then refused by the per-file limit, NOT busy); size 64 MiB refuses BUSY before any I/O', async () => {
+  it('the boundary pair: size 64 MiB - 1 and size 64 MiB both refuse with the permanent per-file LIMIT before any I/O (an ineligible size is never BUSY)', async () => {
     const { fs, broker, begin } = setup([HOST, leaf(1), leaf(2)]);
     fs.add(leaf(1), 'A', 1n, BigInt(64 * MIB - 1)); // (size + 1 sentinel) == the 64 MiB ceiling exactly
     fs.add(leaf(2), 'B', 2n, BigInt(64 * MIB)); // (size + 1 sentinel) == one byte over the ceiling
@@ -259,16 +259,17 @@ describe('R1 — reservation accounting (identified size + EOF sentinel, 64 MiB 
     const big = await broker.identify('wc:1', t1, leaf(1));
     const t2 = begin('wc:1');
     const over = await broker.identify('wc:1', t2, leaf(2));
-    // Admitted past the reservation (charge exactly at the ceiling):
-    // the helper's own per-file size refusal is what answers — proof
-    // the +1 sentinel was counted and the boundary is inclusive.
+    // Both identified sizes exceed the 16 MiB per-file ceiling, so
+    // the permanent identified-size limit answers before admission
+    // (correction R2 policy ruling: LIMIT precedes temporary BUSY).
     await expect(broker.read('wc:1', t1, big.ticket, MAX_RAW_BYTES)).rejects.toMatchObject({ code: 'ERR_XREF_LIMIT' });
     expect(broker.stats()).toMatchObject({ activeOps: 0, reservedRawBytes: 0 });
-    // One byte more of identified size and the RESERVATION refuses,
+    // The larger size (whose size + 1 sentinel crosses the 64 MiB
+    // reservation ceiling) gets the same permanent LIMIT, still
     // before the file is even opened.
     const opensBefore = fs.counts.open;
     const before = fs.totalCalls();
-    await expect(broker.read('wc:1', t2, over.ticket, MAX_RAW_BYTES)).rejects.toMatchObject(BUSY);
+    await expect(broker.read('wc:1', t2, over.ticket, MAX_RAW_BYTES)).rejects.toMatchObject({ code: 'ERR_XREF_LIMIT' });
     expect(fs.counts.open).toBe(opensBefore);
     expect(fs.totalCalls()).toBe(before);
     expect(broker.stats()).toMatchObject({ activeOps: 0, reservedRawBytes: 0 });
