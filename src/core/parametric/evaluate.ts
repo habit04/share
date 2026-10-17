@@ -281,16 +281,74 @@ const inFrame = (p: Point, frame: StretchAction['frame']): boolean =>
   p.y >= frame.min.y - EVALUATION_TOLERANCE &&
   p.y <= frame.max.y + EVALUATION_TOLERANCE;
 
-/** True when every number reachable in a JSON-shaped value is finite.
- *  Entities and attribute definitions are plain data all the way down, so
- *  a structural walk reaches every coordinate, radius, angle and size the
- *  transforms compute — including the ones a per-type field list would
- *  eventually forget (review C06). */
-function allNumbersFinite(value: unknown): boolean {
-  if (typeof value === 'number') return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every(allNumbersFinite);
-  if (value !== null && typeof value === 'object') return Object.values(value).every(allNumbersFinite);
-  return true;
+/** Depth bound for the derived-output finiteness walk (step 7.5).
+ *  Entities and attribute definitions in this data model nest at most
+ *  about five container levels — entity → array → element → point →
+ *  scalar, or insert → dynamic state → values record → value object →
+ *  scalar — so 32 leaves generous headroom over every model-conformant
+ *  structure while keeping the walk's shape model-bounded: a structure
+ *  nested deeper than the model admits is treated as unbounded work
+ *  (the walk reports 'over-budget'), never walked without limit. */
+export const MAX_FINITE_WALK_DEPTH = 32;
+
+/** Outcome of one bounded finiteness walk: every reachable number is
+ *  finite, a reachable number is not finite, or the walk could not
+ *  complete within its bounds (work budget exhausted, or the depth
+ *  bound above breached). */
+type FiniteWalkOutcome = 'finite' | 'non-finite' | 'over-budget';
+
+/** Bounded structural finiteness walk over one derived root (step 7.5).
+ *  Entities and attribute definitions are plain data all the way down,
+ *  so a structural walk reaches every coordinate, radius, angle and
+ *  size the transforms compute — including the ones a per-type field
+ *  list would eventually forget (review C06).
+ *
+ *  The traversal is deliberately bounded in three ways (round-3 static
+ *  cost note on the original recursive walk, which rescanned shared
+ *  sub-objects once per referencing root with no accounting):
+ *  - ITERATIVE, with an explicit stack: no call-stack growth, so a
+ *    deeply nested structure cannot overflow the interpreter stack.
+ *  - SHARING-AWARE: `seen` is keyed by object identity and shared by
+ *    every root of the step-7.5 pass, so a sub-object referenced from
+ *    many derived entries — a nested insert's dynamic state, shared by
+ *    reference by every array copy of that insert — is walked and
+ *    charged exactly once, not once per copy.
+ *  - BUDGETED: each unique container (object/array) node is charged 1
+ *    through `chargeNode`, the evaluation's existing work-budget
+ *    charge, so the walk refuses under the same discipline as the
+ *    rest of the evaluation instead of scanning without limit. Scalar
+ *    leaves ride along with their container. The per-node charge
+ *    tracks the step-7 convention (1 + movable points per entity), so
+ *    a maximal evaluation stays within budget: at the output cap of
+ *    10,000 derived lines, step 7 charges 29,997 and this walk charges
+ *    another 29,997 of the 100,000 default budget (pinned by the
+ *    output-cap regression in parametric-review-c06-bounded-walk).
+ *  Visitation follows the old recursive walk's order (children in
+ *  Object.values order, depth-first), so the first non-finite number
+ *  found — and therefore the refusal step 7.5 reports — is unchanged. */
+function walkNumbersFinite(
+  root: unknown,
+  seen: Set<object>,
+  chargeNode: (n: number) => boolean,
+): FiniteWalkOutcome {
+  const stack: { value: unknown; depth: number }[] = [{ value: root, depth: 0 }];
+  while (stack.length > 0) {
+    const { value, depth } = stack.pop()!;
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) return 'non-finite';
+      continue;
+    }
+    if (value === null || typeof value !== 'object') continue;
+    if (seen.has(value)) continue;
+    if (depth > MAX_FINITE_WALK_DEPTH) return 'over-budget';
+    if (!chargeNode(1)) return 'over-budget';
+    seen.add(value);
+    const children: readonly unknown[] = Array.isArray(value) ? value : Object.values(value);
+    for (let i = children.length - 1; i >= 0; i -= 1) {
+      stack.push({ value: children[i], depth: depth + 1 });
+    }
+  }
+  return 'finite';
 }
 
 /** Reflect a point across the line a-b. The point-level half of
@@ -1116,18 +1174,27 @@ export function evaluateDynamicBlock(
   //    ok:true also poisons the R06 edit dry run, which trusts ok and
   //    would commit the parameter state. So before success is returned,
   //    every DERIVED working entry (transformed, point-moved or
-  //    array-copied — see the identity sets in step 7) is walked once
-  //    and every number in it must be finite: one bounded post-pass over
-  //    the produced output (itself capped by maxOutputEntities), charged
-  //    against no new budget and adding no unbounded pass. The first
-  //    offender in working order refuses the whole evaluation with
-  //    'degenerate-transform'; nothing is clamped or repaired, and the
-  //    refusal is atomic by purity, exactly like every other refusal.
-  //    Huge-but-finite results (1e308 exactly, products that stay
-  //    finite) pass: the test is Number.isFinite, not a magnitude cap.
+  //    array-copied — see the identity sets in step 7) is walked and
+  //    every number in it must be finite. The traversal is the bounded
+  //    walkNumbersFinite above: iterative, sharing-aware (one identity
+  //    set across both loops, so sub-objects shared between derived
+  //    entries are walked once), depth-bounded by MAX_FINITE_WALK_DEPTH
+  //    and charged into this evaluation's existing work budget at 1 per
+  //    unique container node. If the walk cannot complete within those
+  //    bounds it refuses 'work-limit-exceeded' like any other budget
+  //    exhaustion, rather than scanning without limit. Otherwise the
+  //    first offender in working order refuses the whole evaluation
+  //    with 'degenerate-transform'; nothing is clamped or repaired, and
+  //    the refusal is atomic by purity, exactly like every other
+  //    refusal. Huge-but-finite results (1e308 exactly, products that
+  //    stay finite) pass: the test is Number.isFinite, not a magnitude
+  //    cap.
+  const finiteSeen = new Set<object>();
   for (const entity of outEntities) {
     if (baseEntityObjects.has(entity)) continue;
-    if (!allNumbersFinite(entity)) {
+    const outcome = walkNumbersFinite(entity, finiteSeen, charge);
+    if (outcome === 'over-budget') return workRefusal();
+    if (outcome === 'non-finite') {
       return refuse({
         code: 'degenerate-transform',
         message: `Evaluation derived non-finite geometry for entity '${entity.id}' (${entity.type}); finite parameter values overflowed the derived coordinates, so the result is refused rather than returned with Infinity/NaN values.`,
@@ -1136,7 +1203,9 @@ export function evaluateDynamicBlock(
   }
   for (const attribute of outAttributes) {
     if (baseAttributeObjects.has(attribute)) continue;
-    if (!allNumbersFinite(attribute)) {
+    const outcome = walkNumbersFinite(attribute, finiteSeen, charge);
+    if (outcome === 'over-budget') return workRefusal();
+    if (outcome === 'non-finite') {
       return refuse({
         code: 'degenerate-transform',
         message: `Evaluation derived a non-finite placement for attribute definition '${attribute.tag}'; finite parameter values overflowed the derived coordinates, so the result is refused rather than returned with Infinity/NaN values.`,
