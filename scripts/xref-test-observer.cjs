@@ -82,7 +82,18 @@
  * computed or claimed.
  */
 
-const Module = require('node:module');
+/**
+ * The two internal statics of node:module this file interposes on. The
+ * public @types/node surface for the Module class does not declare them;
+ * the signatures below are Node's real ones: _load returns the loaded
+ * module's exports, and _resolveFilename returns the resolved absolute
+ * filename (throwing when the request is unresolvable). `parent` is the
+ * requesting module object, or null/undefined for a top-level load.
+ * @typedef {Object} NodeModuleInternalStatics
+ * @property {(request: string, parent: (object | null | undefined), isMain: boolean) => unknown} _load
+ * @property {(request: string, parent: (object | null | undefined), isMain: boolean, options: unknown) => string} _resolveFilename
+ */
+const Module = /** @type {typeof import('node:module') & NodeModuleInternalStatics} */ (require('node:module'));
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
@@ -204,8 +215,11 @@ function armBoundary() {
 /**
  * The finite Module._load interception. Installed only when the startup
  * cache scan found the target unloaded; restored the moment the target
- * loads, or by the boundary above if it never does.
- * @param {string} request @param {object} parent @param {boolean} isMain
+ * loads, or by the boundary above if it never does. The receiver is the
+ * Module class itself (the loader is always invoked as Module._load);
+ * it is only ever forwarded, unchanged, to the original loader.
+ * @this {typeof import('node:module') & NodeModuleInternalStatics}
+ * @param {string} request @param {object | null | undefined} parent @param {boolean} isMain
  * @returns {unknown}
  */
 function interceptionLoad(request, parent, isMain) {
@@ -215,7 +229,7 @@ function interceptionLoad(request, parent, isMain) {
   }
   try {
     const brokerModule = originalLoad.call(this, request, parent, isMain);
-    installFactoryWrapper(brokerModule);
+    installFactoryWrapper(/** @type {object} */ (brokerModule));
     interceptionInstalled = true;
     clearBoundary();
     return brokerModule;

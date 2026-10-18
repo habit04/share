@@ -143,6 +143,190 @@ const fileSha = (p) => sha256(readFileSync(p));
 const MIB = 1024 * 1024;
 const G2_REASON = 'observer not enabled for this run (no --observer): criterion stays BLOCKED under the G2 ruling';
 
+// ------------------------------------------------------------ page-side + observer types
+// The truthful shapes of what THIS harness installs on the page's
+// window inside Playwright evaluate callbacks (the __xref bridge stub
+// in installBridge, the injected __xrefCore bundle and semantic
+// serializer, the G1 session slot, the per-section read slots) and of
+// the Node-side per-launch observer state. scripts/types/
+// page-globals.d.ts declares the app's own window members (editor,
+// jcad); the members below are the harness's own, declared here with
+// the signatures the harness actually installs and calls. Evaluate
+// callbacks reach them through an XrefPageWindow cast of `window`.
+// Bridge-stub result bags: every stub method resolves to
+// { ok: true, ... } on success or { ok: false, code } on refusal, so
+// the success-only fields are optional in the merged shape the
+// sections consume (they gate on .ok via check() and read the fields
+// directly).
+/**
+ * @typedef {Object} XrefFileIdentity - a broker file identity, as returned by the real bridge's identifyXref (FileBridge in src/app/editor/types.ts).
+ * @property {string} id
+ * @property {string} owningLocation
+ * @property {string} version
+ */
+/**
+ * @typedef {Object} XrefBeginResult - window.__xref.begin resolution.
+ * @property {boolean} ok
+ * @property {string} [token] - success only: the broker context token
+ * @property {string} [code] - refusal only: an ERR_XREF_* code
+ */
+/**
+ * @typedef {Object} XrefIdentifyResult - window.__xref.identify resolution.
+ * @property {boolean} ok
+ * @property {string} [ticket] - success only: the main-owned read ticket
+ * @property {XrefFileIdentity} [identity] - success only
+ * @property {string} [code] - refusal only: an ERR_XREF_* code
+ */
+/**
+ * @typedef {Object} XrefReadResult - window.__xref.read resolution.
+ * @property {boolean} ok
+ * @property {number} [byteLength] - success only
+ * @property {number} [rawBytes] - success only
+ * @property {string} [rawSha256] - success only
+ * @property {string} [version] - success only
+ * @property {string} [text] - success only, and only for reads of at most 65536 raw bytes; otherwise the key is present with value undefined
+ * @property {string} [code] - refusal only: an ERR_XREF_* code
+ */
+/**
+ * @typedef {Object} XrefCloseResult - window.__xref.close resolution.
+ * @property {boolean} ok
+ * @property {boolean} [value] - success only: the real bridge's closeXrefContext result
+ * @property {string} [code] - refusal only: an ERR_XREF_* code
+ */
+/**
+ * @typedef {Object} XrefBridgeStub - window.__xref, installed by installBridge: thin page-side wrappers over window.jcad's xref methods that resolve to the result bags above instead of throwing.
+ * @property {(docId: string) => Promise<XrefBeginResult>} begin
+ * @property {(token: string, path: string) => Promise<XrefIdentifyResult>} identify
+ * @property {(token: string, ticket: string, maxBytes: number) => Promise<XrefReadResult>} read
+ * @property {(token: string) => Promise<XrefCloseResult>} close
+ */
+/**
+ * @typedef {Object} XrefGraphNode - one node of the loader's resolved xref graph, as flattened by the G1 in-page code (src/io/xref-loading.ts).
+ * @property {string} blockName
+ * @property {string} status
+ * @property {string | null} resolvedPath
+ * @property {boolean} overlay
+ * @property {number} depth
+ * @property {XrefGraphNode[]} children
+ */
+/**
+ * @typedef {Object} XrefStoreSnapshot - the loader's staged snapshot the G1 code reads: the node graph, plus the load stats, which the harness only serializes into its results (never inspects field by field).
+ * @property {XrefGraphNode[]} nodes
+ * @property {unknown} stats
+ */
+/**
+ * @typedef {Object} XrefLoadFailure - one loader failure record, as mapped by the G1 in-page code.
+ * @property {string} kind
+ * @property {string} blockName
+ * @property {string} message
+ */
+/**
+ * @typedef {Object} XrefLoadOutcome - the bundled XrefStore.load/refresh resolution, as read by the G1 in-page code.
+ * @property {boolean} committed
+ * @property {boolean} preserved
+ * @property {XrefLoadFailure[]} failures
+ * @property {XrefStoreSnapshot | null} current
+ */
+/**
+ * @typedef {Object} XrefLoadInput - the store input the G1 code builds: the opened drawing's block table (passed through opaquely) and the host path.
+ * @property {{ blocks: unknown }} hostState
+ * @property {string} hostPath
+ */
+/**
+ * @typedef {Object} XrefReaderHandle - the adapter handle from the bundled createXrefReader (src/app/xref-reader.ts): the harness hands .reader to the store and awaits .dispose().
+ * @property {object} reader
+ * @property {() => Promise<void>} dispose
+ */
+/**
+ * @typedef {Object} XrefAdapterBridge - the FileBridge-shaped subset the bundled createXrefReader consumes; the G1 code builds it directly over window.jcad.
+ * @property {(info: { docId: string, contentGeneration: (number | string), hostAnchor: string }) => Promise<{ token: string }>} beginXrefContext
+ * @property {(token: string, path: string) => Promise<{ ticket: string, identity: XrefFileIdentity }>} identifyXref
+ * @property {(token: string, ticket: string, maxBytes: number) => Promise<{ text: string, byteLength: number, version: string, rawBytes: number, rawSha256: string }>} readXref
+ * @property {(token: string) => Promise<boolean>} cancelXref
+ * @property {(token: string) => Promise<boolean>} closeXrefContext
+ */
+/**
+ * @typedef {Object} XrefStoreLike - the members of the bundled XrefStore the G1 code calls.
+ * @property {(input: XrefLoadInput, opts: { reader: object }) => Promise<XrefLoadOutcome>} load
+ * @property {(input: XrefLoadInput, opts: { reader: object }) => Promise<XrefLoadOutcome>} refresh
+ */
+/**
+ * @typedef {Object} XrefExternalEntry - one entry of the bundled externalContent(snapshot): the source node, the file evidence, and the parsed entities (each serialized through the semantic oracle before any comparison).
+ * @property {{ blockName: string, resolvedPath: (string | null) }} node
+ * @property {{ version: (string | null), byteLength: number }} file
+ * @property {object[]} entities
+ */
+/**
+ * @typedef {Object} XrefSigEntry - one entry of the G1 semantic signature the in-page sig() builds from externalContent.
+ * @property {string} block
+ * @property {string | null} path
+ * @property {string | null} version
+ * @property {number} byteLength
+ * @property {string[]} entities
+ */
+/**
+ * @typedef {Object} XrefG1Session - window.__xrefG1: the live in-page loader session installed by g1LoadInPage.
+ * @property {XrefStoreLike} store
+ * @property {XrefReaderHandle} handle
+ * @property {XrefLoadInput} input
+ * @property {(snap: XrefStoreSnapshot) => XrefSigEntry[]} sig
+ */
+/**
+ * @typedef {Record<string, unknown> & {
+ *   XrefStore: new () => XrefStoreLike,
+ *   collectXrefReferences: (host: { blocks: unknown }) => Array<{ blockName: string, path: string, overlay?: boolean }>,
+ *   createXrefReader: (bridge: XrefAdapterBridge, opts: { docId: string, contentGeneration: (number | string), hostPath: string }) => XrefReaderHandle,
+ *   externalContent: (snap: XrefStoreSnapshot) => XrefExternalEntry[],
+ * }} XrefCoreBundle - window.__xrefCore: the esbuild bundle of the accepted loader/adapter sources, injected by the harness (buildBundle). The Record constituent covers the name-based member probe in section 3.3.
+ */
+/**
+ * @typedef {Object} XrefPageGlobals - the window members this harness installs and uses inside evaluate callbacks. Every member is optional: each is absent from the page until the harness installs it (installBridge, bundle injection, or a section's own setup), which is also what makes the XrefPageWindow cast of the plain DOM Window a plain widening of the declared window shape.
+ * @property {XrefBridgeStub} [__xref]
+ * @property {string} [__xrefHost]
+ * @property {string} [__xrefHostPath]
+ * @property {XrefCoreBundle} [__xrefCore]
+ * @property {(entity: object) => string} [__xrefSemanticEntityJson]
+ * @property {XrefG1Session | null} [__xrefG1]
+ * @property {Promise<XrefReadResult>} [__xrefBurstHeld]
+ * @property {string} [__xrefToken]
+ * @property {Promise<XrefReadResult>} [__xrefHeldRead]
+ */
+/** @typedef {Window & XrefPageGlobals} XrefPageWindow */
+/**
+ * @typedef {Object} XrefBrokerStats - the observer facade's raw aggregate stats (sample() in scripts/xref-test-observer.cjs).
+ * @property {number} contexts
+ * @property {number} tickets
+ * @property {number} activeOps
+ * @property {number} retiredActiveOps
+ * @property {number} reservedRawBytes
+ * @property {boolean} disposed
+ */
+/**
+ * @typedef {Object} XrefObserverSample - one sample from the observer facade.
+ * @property {number} seq
+ * @property {number} atMs
+ * @property {boolean} captured
+ * @property {number} factoryCalls
+ * @property {string | null} invalidated
+ * @property {XrefBrokerStats | null} stats
+ */
+/**
+ * @typedef {Object} CorrelationRecord - runCorrelation's per-launch outcome, stored on the launch's observer state and in results.correlations.
+ * @property {string} label
+ * @property {boolean} ok
+ * @property {string} reason
+ * @property {boolean} beginOk
+ * @property {boolean} closeOk
+ * @property {number | null} afterBeginSeq
+ * @property {number | null} afterCloseSeq
+ */
+/**
+ * @typedef {Object} LaunchObserverState - ONE launch's own observer coverage (captured by launchApp): its zero baseline, whether that baseline was a clean zero capture, and - once runCorrelation has run for the launch - its same-broker correlation record.
+ * @property {XrefObserverSample | null} baseline
+ * @property {boolean} usable
+ * @property {CorrelationRecord} [correlation]
+ */
+
 // ------------------------------------------------------------ semantic entity oracle (finding 1)
 // The ONE definition of the refresh comparator. It is injected into the
 // renderer verbatim from this function's own source (see
@@ -472,7 +656,7 @@ function waitForExit(child, ms) {
 
 // ------------------------------------------------------------ child env (whitelist)
 function childEnv() {
-  const env = {};
+  const env = /** @type {Record<string, string>} */ ({});
   for (const k of ['PATH', 'SystemRoot', 'windir']) if (process.env[k]) env[k] = process.env[k];
   env.TEMP = tempDir;
   env.TMP = tempDir;
@@ -492,8 +676,11 @@ function childEnv() {
 }
 
 // ------------------------------------------------------------ loader bundle (G1)
+/** @type {string | null} */
 let bundleText = null;
+/** @type {string | null} */
 let bundleError = null;
+/** @type {{ bytes: number, sha256: string } | null} */
 let bundleInfo = null;
 async function buildBundle() {
   const entryPath = join(outDir, 'xref-core-entry.ts');
@@ -548,6 +735,7 @@ async function launchApp(label) {
   // Per-instance observer coverage (finding 2): EVERY launch captures
   // its OWN zero baseline immediately after window-ready, before any
   // begin on this instance. Coverage is never borrowed from another app.
+  /** @type {LaunchObserverState | null} */
   let observer = null;
   if (observerMode) {
     const baseline = await sampleObserver(app, `baseline:${label}`);
@@ -617,12 +805,12 @@ async function runCorrelation(label, launch) {
   };
   if (!state.usable) return finish('this launch\'s observer baseline was not a clean zero capture');
   try {
-    const begun = await launch.win.evaluate((d) => window.__xref.begin(d), `correlation-${label}`);
+    const begun = await launch.win.evaluate((d) => /** @type {XrefPageWindow} */ (window).__xref.begin(d), `correlation-${label}`);
     record.beginOk = Boolean(begun?.ok);
     if (!begun?.ok) return finish(`real bridge begin for correlation failed: ${JSON.stringify(begun)}`);
     const s = await sampleObserver(launch.app, `correlation:${label}:after-begin`);
     record.afterBeginSeq = s?.seq ?? null;
-    const closed = await launch.win.evaluate((t) => window.__xref.close(t), begun.token);
+    const closed = await launch.win.evaluate((t) => /** @type {XrefPageWindow} */ (window).__xref.close(t), begun.token);
     record.closeOk = Boolean(closed?.ok);
     const s2 = await sampleObserver(launch.app, `correlation:${label}:after-close`);
     record.afterCloseSeq = s2?.seq ?? null;
@@ -672,10 +860,10 @@ async function installBridge(win) {
       const m = /ERR_XREF_[A-Z_]+/.exec(String(e));
       return m ? m[0] : String(e);
     };
-    window.__xref = {
+    /** @type {XrefPageWindow} */ (window).__xref = {
       async begin(docId) {
         try {
-          const r = await window.jcad.beginXrefContext({ docId, contentGeneration: 1, hostAnchor: window.__xrefHost });
+          const r = await window.jcad.beginXrefContext({ docId, contentGeneration: 1, hostAnchor: /** @type {XrefPageWindow} */ (window).__xrefHost });
           return { ok: true, token: r.token };
         } catch (e) { return { ok: false, code: code(e) }; }
       },
@@ -696,7 +884,7 @@ async function installBridge(win) {
         catch (e) { return { ok: false, code: code(e) }; }
       },
     };
-    window.__xrefHost = window.__xrefHostPath;
+    /** @type {XrefPageWindow} */ (window).__xrefHost = /** @type {XrefPageWindow} */ (window).__xrefHostPath;
   });
 }
 
@@ -713,7 +901,7 @@ async function closeBounded(app) {
 // ------------------------------------------------------------ G1 in-page (real loader + adapter)
 async function g1LoadInPage(win, docId) {
   return win.evaluate(async (cfg) => {
-    const core = window.__xrefCore;
+    const core = /** @type {XrefPageWindow} */ (window).__xrefCore;
     const ed = window.editor;
     const snapJson = () => { try { return JSON.stringify(ed.doc.snapshot); } catch { return null; } };
     const docState = () => ({ json: snapJson(), dirty: ed.doc.dirty, revision: ed.doc.revision });
@@ -737,7 +925,7 @@ async function g1LoadInPage(win, docId) {
       }
       return acc;
     };
-    const sem = window.__xrefSemanticEntityJson;
+    const sem = /** @type {XrefPageWindow} */ (window).__xrefSemanticEntityJson;
     if (typeof sem !== 'function') throw new Error('semantic entity serializer was not injected (window.__xrefSemanticEntityJson missing) - refusing to fall back to raw serialization');
     // Semantic signature (finding 1): block/path/version/byteLength bind
     // the node's source identity as before; entities serialize through
@@ -749,7 +937,7 @@ async function g1LoadInPage(win, docId) {
     }));
     try {
       const r = await store.load(input, { reader: handle.reader });
-      window.__xrefG1 = { store, handle, input, sig };
+      /** @type {XrefPageWindow} */ (window).__xrefG1 = { store, handle, input, sig };
       return {
         references, before, after: docState(),
         load: {
@@ -768,7 +956,7 @@ async function g1LoadInPage(win, docId) {
 
 async function g1RefreshInPage(win) {
   return win.evaluate(async () => {
-    const g = window.__xrefG1;
+    const g = /** @type {XrefPageWindow} */ (window).__xrefG1;
     if (!g) return { error: 'no G1 loader session in this page' };
     try {
       const r = await g.store.refresh(g.input, { reader: g.handle.reader });
@@ -785,8 +973,8 @@ async function g1RefreshInPage(win) {
 
 async function g1DisposeInPage(win) {
   await win.evaluate(async () => {
-    const g = window.__xrefG1;
-    if (g) { try { await g.handle.dispose(); } catch { /* recorded by the run, not fatal here */ } window.__xrefG1 = null; }
+    const g = /** @type {XrefPageWindow} */ (window).__xrefG1;
+    if (g) { try { await g.handle.dispose(); } catch { /* recorded by the run, not fatal here */ } /** @type {XrefPageWindow} */ (window).__xrefG1 = null; }
   }).catch(() => {});
 }
 
@@ -869,7 +1057,7 @@ try {
   if (process.platform !== 'win32') log('header: WARNING - not win32: the bridge is win32-gated and the broker refuses non-Windows paths by design; this run validates harness mechanics only.');
   const listed = await openProjectAndHost(app, win);
   check(listed > 0, 'fixture project opened through the genuine Open Project flow (its drawings are registry-known)', `${listed} drawings listed`);
-  await win.evaluate((p) => { window.__xrefHostPath = p; }, hostPath);
+  await win.evaluate((p) => { /** @type {XrefPageWindow} */ (window).__xrefHostPath = p; }, hostPath);
   await installBridge(win);
   // Same-broker correlation for the MAIN launch (round 3, group 2),
   // immediately after the bridge is installed and before any section
@@ -884,10 +1072,10 @@ try {
   // The main launch's observer baseline was captured inside launchApp
   // (per-instance, before any begin); nothing to re-sample here.
 
-  const begin = (docId) => win.evaluate((d) => window.__xref.begin(d), docId);
-  const identify = (token, p) => win.evaluate(([t, q]) => window.__xref.identify(t, q), [token, p]);
-  const read = (token, ticket, max) => win.evaluate(([t, k, m]) => window.__xref.read(t, k, m), [token, ticket, max]);
-  const closeCtx = (token) => win.evaluate((t) => window.__xref.close(t), token);
+  const begin = (docId) => win.evaluate((d) => /** @type {XrefPageWindow} */ (window).__xref.begin(d), docId);
+  const identify = (token, p) => win.evaluate(([t, q]) => /** @type {XrefPageWindow} */ (window).__xref.identify(t, q), [token, p]);
+  const read = (token, ticket, max) => win.evaluate(([t, k, m]) => /** @type {XrefPageWindow} */ (window).__xref.read(t, k, m), [token, ticket, max]);
+  const closeCtx = (token) => win.evaluate((t) => /** @type {XrefPageWindow} */ (window).__xref.close(t), token);
   const sectionWanted = (s) => sections.includes(s);
   const sectionFailed = (mark) => checks.slice(mark).some((c) => c.status === 'fail');
 
@@ -980,7 +1168,7 @@ try {
       };
       // Step 1: start A's slow read WITHOUT awaiting it (the page-side
       // promise is stored; this evaluate itself returns immediately).
-      await win.evaluate(([t, k, m]) => { window.__xrefBurstHeld = window.__xref.read(t, k, m); }, [ctxA.token, slow.ticket, 16 * MIB]);
+      await win.evaluate(([t, k, m]) => { /** @type {XrefPageWindow} */ (window).__xrefBurstHeld = /** @type {XrefPageWindow} */ (window).__xref.read(t, k, m); }, [ctxA.token, slow.ticket, 16 * MIB]);
       stepMark('A slow read started (unawaited)', null);
       // Step 2: sample S1 - A must already show as genuinely active.
       const s1 = await sampleObserver(app, 'burst-s1-after-a-start');
@@ -1001,7 +1189,7 @@ try {
       const s3 = await sampleObserver(app, 'burst-s3-at-b-completion');
       stepMark('S3 sampled (at B completion)', s3);
       // Step 7: await A's own completion, then sample S4 (settled).
-      const held = await win.evaluate(() => window.__xrefBurstHeld);
+      const held = await win.evaluate(() => /** @type {XrefPageWindow} */ (window).__xrefBurstHeld);
       const s4 = await sampleObserver(app, 'burst-s4-after-a-settles');
       stepMark('A settled (S4 sampled)', s4);
       check(competing && !competing.ok && competing.code === 'ERR_XREF_RESOURCE_BUSY', 'second read in the same context refuses BUSY while A is in flight (zero queue)', JSON.stringify(competing));
@@ -1028,11 +1216,11 @@ try {
         blocked('real loader+adapter load (G1): the esbuild bundle of the accepted sources failed to build', bundleError ?? 'unknown bundle error');
       } else {
         await win.evaluate(bundleText);
-        const injected = await win.evaluate(() => ['XrefStore', 'createXrefReader', 'collectXrefReferences', 'externalContent'].every((k) => typeof window.__xrefCore?.[k] === 'function'));
+        const injected = await win.evaluate(() => ['XrefStore', 'createXrefReader', 'collectXrefReferences', 'externalContent'].every((k) => typeof /** @type {XrefPageWindow} */ (window).__xrefCore?.[k] === 'function'));
         check(injected, 'accepted loader/adapter bundle injected into the renderer (window.__xrefCore)');
         // The semantic oracle ships from this file's own source (finding 1).
         await win.evaluate(SEMANTIC_ENTITY_FN_SOURCE);
-        const semOk = await win.evaluate(() => typeof window.__xrefSemanticEntityJson === 'function');
+        const semOk = await win.evaluate(() => typeof /** @type {XrefPageWindow} */ (window).__xrefSemanticEntityJson === 'function');
         check(semOk, 'semantic entity serializer injected into the renderer (window.__xrefSemanticEntityJson)');
         const out = await g1LoadInPage(win, 'native-g1');
         if (out.error) failHalt('real loader load threw in the renderer', out.error);
@@ -1156,9 +1344,9 @@ try {
       // navigation retires the owner - the trigger the shipped wiring implements.
       await win.reload();
       await win.waitForFunction(() => !!window.editor, null, { timeout: 30_000 });
-      await win.evaluate((p) => { window.__xrefHostPath = p; }, hostPath);
+      await win.evaluate((p) => { /** @type {XrefPageWindow} */ (window).__xrefHostPath = p; }, hostPath);
       await installBridge(win);
-      const afterNav = await win.evaluate(([t, k, m]) => window.__xref.read(t, k, m), [ctx.token, leaf.ticket, MIB]);
+      const afterNav = await win.evaluate(([t, k, m]) => /** @type {XrefPageWindow} */ (window).__xref.read(t, k, m), [ctx.token, leaf.ticket, MIB]);
       check(ctx.ok && leaf.ok && !afterNav.ok && afterNav.code === 'ERR_XREF_CONTEXT', 'additional observation: read after page navigation refuses CONTEXT (owner retired)', JSON.stringify(afterNav));
     }
   }
@@ -1183,29 +1371,29 @@ if (sections.includes('3.5')) {
       ({ app: qapp, win: qwin } = qLaunch);
       const qState = qLaunch.observer; // THIS launch's own coverage
       await openProjectAndHost(qapp, qwin);
-      await qwin.evaluate((p) => { window.__xrefHostPath = p; }, hostPath);
+      await qwin.evaluate((p) => { /** @type {XrefPageWindow} */ (window).__xrefHostPath = p; }, hostPath);
       await installBridge(qwin);
       // Same-broker correlation for THIS quit launch (round 3, group 2),
       // with its own short-lived context, before the scenario's own
       // context work: gates this launch's stats-derived checks.
       await runCorrelation(`quit-${scenario}`, qLaunch);
       const ctx = await qwin.evaluate(async () => {
-        const b = await window.__xref.begin('native-quit');
-        if (b.ok) window.__xrefToken = b.token;
+        const b = await /** @type {XrefPageWindow} */ (window).__xref.begin('native-quit');
+        if (b.ok) /** @type {XrefPageWindow} */ (window).__xrefToken = b.token;
         return b;
       });
       if (!ctx.ok) throw new Error(`begin failed: ${JSON.stringify(ctx)}`);
       if (scenario === 'after-limit') {
         const res = await qwin.evaluate(async (p) => {
-          const idn = await window.__xref.identify(window.__xrefToken, p);
+          const idn = await /** @type {XrefPageWindow} */ (window).__xref.identify(/** @type {XrefPageWindow} */ (window).__xrefToken, p);
           if (!idn.ok) return idn;
-          return window.__xref.read(window.__xrefToken, idn.ticket, 16 * 1024 * 1024);
+          return /** @type {XrefPageWindow} */ (window).__xref.read(/** @type {XrefPageWindow} */ (window).__xrefToken, idn.ticket, 16 * 1024 * 1024);
         }, fx('oversized.dxf'));
         if (!(!res.ok && res.code === 'ERR_XREF_LIMIT')) throw new Error(`expected a LIMIT refusal before quitting, got ${JSON.stringify(res)}`);
         // Per-instance cleanup accounting (finding 2): LIMIT does not
         // close its context - close it explicitly, then this launch's
         // stats must return to THIS launch's own baseline.
-        const closed = await qwin.evaluate(() => window.__xref.close(window.__xrefToken));
+        const closed = await qwin.evaluate(() => /** @type {XrefPageWindow} */ (window).__xref.close(/** @type {XrefPageWindow} */ (window).__xrefToken));
         if (!closed.ok) throw new Error(`explicit context close failed: ${JSON.stringify(closed)}`);
         const settleName = 'observer: after-limit launch returns to ITS OWN baseline after the explicit context close (activeOps / reservedRawBytes zero; contexts / tickets / retiredActiveOps at baseline)';
         const s = await sampleObserver(qapp, 'quit-after-limit-settled');
@@ -1252,19 +1440,19 @@ if (sections.includes('3.5')) {
       ({ app: qapp, win: qwin } = qLaunch);
       const qState = qLaunch.observer; // THIS launch's own coverage
       await openProjectAndHost(qapp, qwin);
-      await qwin.evaluate((p) => { window.__xrefHostPath = p; }, hostPath);
+      await qwin.evaluate((p) => { /** @type {XrefPageWindow} */ (window).__xrefHostPath = p; }, hostPath);
       await installBridge(qwin);
       // Same-broker correlation for the inflight launch (round 3,
       // group 2), BEFORE the held read starts: if it fails, the
       // inflight criterion is BLOCKED regardless of the quit sample.
       await runCorrelation('quit-inflight', qLaunch);
       const started = await qwin.evaluate(async (p) => {
-        const b = await window.__xref.begin('native-quit-inflight');
+        const b = await /** @type {XrefPageWindow} */ (window).__xref.begin('native-quit-inflight');
         if (!b.ok) return b;
-        window.__xrefToken = b.token;
-        const idn = await window.__xref.identify(b.token, p);
+        /** @type {XrefPageWindow} */ (window).__xrefToken = b.token;
+        const idn = await /** @type {XrefPageWindow} */ (window).__xref.identify(b.token, p);
         if (!idn.ok) return idn;
-        window.__xrefHeldRead = window.__xref.read(b.token, idn.ticket, 16 * 1024 * 1024);
+        /** @type {XrefPageWindow} */ (window).__xrefHeldRead = /** @type {XrefPageWindow} */ (window).__xref.read(b.token, idn.ticket, 16 * 1024 * 1024);
         return { ok: true };
       }, fx('slow.dxf'));
       if (!started.ok) throw new Error(`inflight setup failed: ${JSON.stringify(started)}`);
