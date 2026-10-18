@@ -74,7 +74,16 @@
 // an attempt admitted in an inter-link gap completes a real read and
 // is logged. A sample that misses the chain's activity (inter-link
 // gap, early chain end, unhealthy chain) makes the criterion BLOCKED
-// (insufficient witness), never passed. The pass/blocked decision is
+// (insufficient witness), never passed. Two accounting rules guard
+// the stop/drain boundary (Codex rerun-3 review H1/H2): EVERY
+// already-issued chain read is validated and accounted before the
+// stop flag is honored - stop prevents the NEXT issuance, it never
+// erases a pending outcome, so a late error or short read stays
+// non-passing - and the witness accepts the chain only on a
+// POSITIVELY confirmed drain (the done promise resolved with the
+// final accounted state); a collection timeout, rejection or
+// missing state leaves the summary undrained and BLOCKED, with any
+// live counters kept as diagnostics only. The pass/blocked decision is
 // one pure function (burstWitnessDecisionImpl below);
 // `node scripts/e2e-xref-refresh.mjs --self-test-burst` runs its
 // regression without Electron, including the fail-first old-shape
@@ -303,26 +312,49 @@ const G2_REASON = 'observer not enabled for this run (no --observer): criterion 
  * @property {(entity: object) => string} [__xrefSemanticEntityJson]
  * @property {XrefG1Session | null} [__xrefG1]
  * @property {Promise<XrefReadResult>} [__xrefBurstHeld]
+ * @property {XrefChainLoopFn} [__xrefChainLoop]
  * @property {XrefChainState} [__xrefChain]
  * @property {string} [__xrefToken]
  * @property {Promise<XrefReadResult>} [__xrefHeldRead]
  */
 /**
- * @typedef {Object} XrefChainSummary - the section 3.3 renewal chain's final accounting, resolved by its done promise.
+ * @typedef {Object} XrefChainLoopResult - the renewal chain loop's final accounting, resolved by its done promise (xrefChainLoopImpl's return).
  * @property {number} links
  * @property {number} errors
  * @property {number} totalBytes
  * @property {string | null} lastError
  */
 /**
- * @typedef {Object} XrefChainState - the section 3.3 renewal chain's page-side state, installed by the burst's start evaluate.
+ * @typedef {Object} XrefChainSummary - the chain summary the harness collects (chainCollectionDecisionImpl's return): the loop's final accounting plus the drain marker.
+ * @property {number} links
+ * @property {number} errors
+ * @property {number} totalBytes
+ * @property {string | null} lastError
+ * @property {boolean} drained - true ONLY when the chain's done promise resolved with the final accounted state; false for timeout / rejection / missing state / fallback counters (diagnostics only, never witness-eligible)
+ */
+/**
+ * @typedef {Object} XrefChainState - the section 3.3 renewal chain's page-side state, installed by the burst's start evaluate. It is also the loop's caller-owned state handle: the loop mutates the counters and reads `stopped`; stop() (or the self-test) requests a stop by setting it.
  * @property {number} links
  * @property {number} errors
  * @property {number} totalBytes
  * @property {boolean} stopped
  * @property {string | null} lastError
- * @property {Promise<XrefChainSummary> | null} done
+ * @property {Promise<XrefChainLoopResult> | null} done
  * @property {() => void} stop
+ */
+/**
+ * @typedef {Object} XrefChainLoopOpts - xrefChainLoopImpl's bounds and caller-owned state.
+ * @property {number} maxLinks
+ * @property {number} busyRetries
+ * @property {number} expectBytes
+ * @property {XrefChainState} state
+ */
+/** @typedef {(readFn: () => Promise<XrefReadResult>, opts: XrefChainLoopOpts) => Promise<XrefChainLoopResult>} XrefChainLoopFn - the renewal chain loop (xrefChainLoopImpl), serialized into the page as window.__xrefChainLoop. */
+/**
+ * @typedef {Object} XrefChainCollectionInput - chainCollectionDecisionImpl's input: how collecting the chain's done promise ended.
+ * @property {'resolved' | 'timeout' | 'rejected' | 'missing'} outcome
+ * @property {XrefChainLoopResult | null} summary - the done promise's resolution (outcome 'resolved' only)
+ * @property {XrefChainLoopResult | null} fallbackCounters - live page counters read after a non-resolved outcome (diagnostics only)
  */
 /** @typedef {Window & XrefPageGlobals} XrefPageWindow */
 /**
@@ -563,12 +595,18 @@ const CHAIN_BUSY_RETRIES = 50;
 //               by back-to-back full reads), errors === 0, and
 //               totalBytes === links * slowBytes (every link returned
 //               exactly the full file; bytes are also verified per
-//               link in the page before they are counted).
+//               link in the page before they are counted) AND the
+//               chain's drain was positively confirmed
+//               (chain.drained === true - its done promise resolved
+//               with this final accounted state; H2).
 //   blocked <=> anything else, with the specific reason: unusable
 //               observer coverage, unproven correlation, a sample
 //               that failed the predicate (insufficient witness - a
 //               sample may have landed in an inter-link gap, or the
-//               chain ended early), or an unhealthy/absent chain.
+//               chain ended early), an unhealthy/absent chain, or a
+//               chain summary whose drain was not positively
+//               confirmed (its counters are then diagnostics only and
+//               are never read for a verdict).
 // A miss can ONLY produce blocked, never pass.
 function burstWitnessDecisionImpl({ s1, s2, s3, chain, slowBytes, correlationOk, observerOk }) {
   const blocked = (reason) => ({ verdict: 'blocked', reason });
@@ -580,49 +618,255 @@ function burstWitnessDecisionImpl({ s1, s2, s3, chain, slowBytes, correlationOk,
     return blocked(`insufficient witness: the burst context was not proven active at every bound step (S1 seq=${s1?.seq ?? null} active=${act[0]}, S2 seq=${s2?.seq ?? null} active=${act[1]}, S3 seq=${s3?.seq ?? null} active=${act[2]}) - a sample may have landed in an inter-link gap or the chain ended early; never passed by default`);
   }
   if (!chain) return blocked('no renewal-chain summary was collected for the burst: chain health unproven');
+  if (chain.drained !== true) return blocked('renewal chain drain was not positively confirmed (the done promise did not resolve with the final accounted state): the collected counters are diagnostics only and cannot carry the witness');
   if (chain.errors !== 0) return blocked(`renewal chain recorded ${chain.errors} failed link(s) (last: ${chain.lastError ?? 'unknown'}): chain health unproven`);
   if (!(chain.links >= 3)) return blocked(`renewal chain completed only ${chain.links} link(s) (< 3): the burst window was not covered by back-to-back genuine full reads`);
   if (chain.totalBytes !== chain.links * slowBytes) return blocked(`renewal chain byte accounting mismatch (totalBytes=${chain.totalBytes}, links=${chain.links}, slowBytes=${slowBytes}): per-link byte verification unproven`);
   return { verdict: 'pass', reason: '' };
 }
 
+// The renewal chain loop itself (section 3.3). It runs in the PAGE
+// (installed from this function's own serialized source - see
+// XREF_CHAIN_LOOP_FN_SOURCE below), and --self-test-burst drives THIS
+// VERY function object with scripted fake read functions, so the
+// regression exercises the shipped loop, not a re-implementation.
+// Fully self-contained (no closure over harness state): every input
+// arrives via readFn / opts, because the source is serialized.
+//   readFn: one chain link's read, issued fresh per link (and per
+//     BUSY retry); resolves with the bridge read result bag.
+//   opts.state: the caller-owned state handle. The loop mutates the
+//     counters and reads state.stopped; the caller requests a stop by
+//     setting state.stopped (the page's chain.stop()). Stop is
+//     consulted ONLY (a) in the loop condition, before issuing the
+//     NEXT link, and (b) as a gate on retrying a BUSY refusal - a
+//     retry is a NEW issuance. The settled outcome of an
+//     ALREADY-ISSUED read is validated and accounted FIRST, whatever
+//     the stop flag says (H1): a refusal/error increments errors, a
+//     wrong rawBytes increments errors, a good read increments links
+//     and totalBytes - stop never erases a pending outcome, so a
+//     late error or short read stays non-passing.
+// Resolves with the final accounted state { links, errors,
+// totalBytes, lastError } - only then is the chain drained (H2).
+/**
+ * @param {() => Promise<XrefReadResult>} readFn
+ * @param {XrefChainLoopOpts} opts
+ * @returns {Promise<XrefChainLoopResult>}
+ */
+async function xrefChainLoopImpl(readFn, opts) {
+  const { maxLinks, busyRetries, expectBytes, state } = opts;
+  while (!state.stopped && state.links < maxLinks) {
+    let r = null;
+    let busyLeft = busyRetries;
+    for (;;) {
+      try { r = await readFn(); } catch (e) { r = { ok: false, code: String(e && e.message || e) }; }
+      // A BUSY refusal of an issued read is retried as a NEW issuance
+      // of the same link (the harness's own gap-admitted competing
+      // read holds the context briefly), but only while retries
+      // remain AND no stop was requested; otherwise this settled
+      // outcome is the link's final outcome and is accounted below.
+      if (r && !r.ok && r.code === 'ERR_XREF_RESOURCE_BUSY' && busyLeft > 0 && !state.stopped) {
+        busyLeft -= 1;
+        continue;
+      }
+      break;
+    }
+    // H1: account the link's settled outcome UNCONDITIONALLY, before
+    // the stop flag can end the loop. An error/refusal or a short
+    // read is a chain error and ends the chain.
+    if (!r || !r.ok) { state.errors += 1; state.lastError = r ? (r.code ?? 'read refused') : 'read returned nothing'; break; }
+    if (r.rawBytes !== expectBytes) { state.errors += 1; state.lastError = `link returned rawBytes=${r.rawBytes}, expected ${expectBytes}`; break; }
+    state.links += 1;
+    state.totalBytes += r.rawBytes;
+  }
+  state.stopped = true;
+  return { links: state.links, errors: state.errors, totalBytes: state.totalBytes, lastError: state.lastError };
+}
+const XREF_CHAIN_LOOP_FN_SOURCE = `window.__xrefChainLoop = ${xrefChainLoopImpl.toString()};`;
+
+// The ONE decision for collecting the chain's final summary after a
+// stop (section 3.3). Pure and timing-free: the caller classifies how
+// awaiting the done promise ended (the live bound is the harness's
+// 60 s race) and this function decides what the collection MEANS.
+//   outcome 'resolved' with a well-formed summary => the summary,
+//     drained: true - the ONLY witness-eligible shape (H2): the done
+//     promise resolved only after the loop validated and accounted
+//     every already-issued read and exited.
+//   anything else (timeout / rejected / missing / malformed) =>
+//     drained: false; the counters come from fallbackCounters when
+//     available and are DIAGNOSTICS ONLY - burstWitnessDecisionImpl
+//     refuses them a verdict regardless of their values.
+/**
+ * @param {XrefChainCollectionInput} input
+ * @returns {XrefChainSummary}
+ */
+function chainCollectionDecisionImpl({ outcome, summary, fallbackCounters }) {
+  const wellFormed = (s) => Boolean(s && typeof s.links === 'number' && typeof s.errors === 'number' && typeof s.totalBytes === 'number');
+  if (outcome === 'resolved' && wellFormed(summary)) {
+    return { links: /** @type {XrefChainLoopResult} */ (summary).links, errors: /** @type {XrefChainLoopResult} */ (summary).errors, totalBytes: /** @type {XrefChainLoopResult} */ (summary).totalBytes, lastError: /** @type {XrefChainLoopResult} */ (summary).lastError ?? null, drained: true };
+  }
+  const diag = wellFormed(fallbackCounters) ? fallbackCounters : null;
+  return { links: diag?.links ?? 0, errors: diag?.errors ?? 0, totalBytes: diag?.totalBytes ?? 0, lastError: diag?.lastError ?? null, drained: false };
+}
+
 // Burst witness regression, runnable without Electron:
 //   node scripts/e2e-xref-refresh.mjs --self-test-burst
-// Exit 0 only if burstWitnessDecisionImpl (the very function the live
-// run uses) decides: (a) the OLD orchestration's trace - one held
-// read active at S1/S2 but finished before S3, no chain - is BLOCKED
-// as insufficient witness (the portable fail-first: the shipped
-// predicate on the old shape); (b) a healthy chain trace passes;
-// (c) a chain with an error link blocks; (d) a chain with too few
-// links blocks; (e) a sample whose reservation is not exactly the
-// slow size + sentinel blocks; (f) unusable observer coverage blocks;
-// (g) unproven correlation blocks.
+// Exit 0 only if the shipped functions decide as specified.
+// Fixed-summary cases on burstWitnessDecisionImpl: (a) the OLD
+// orchestration's trace - one held read active at S1/S2 but finished
+// before S3, no chain - is BLOCKED as insufficient witness (the
+// portable fail-first: the shipped predicate on the old shape);
+// (b) a healthy, positively drained chain trace passes; (c) a chain
+// with an error link blocks; (d) a chain with too few links blocks;
+// (e) a sample whose reservation is not exactly the slow size +
+// sentinel blocks; (f) unusable observer coverage blocks;
+// (g) unproven correlation blocks; (h) healthy counters whose drain
+// was NOT positively confirmed block (H2); (i) a summary with no
+// drained marker at all blocks (H2).
+// Live-loop cases drive xrefChainLoopImpl ITSELF with scripted fake
+// reads (controllable deferreds) and chainCollectionDecisionImpl on
+// the outcomes: (L1) three good links + a fourth pending, stop
+// requested mid-fourth, the fourth settles as an ERROR -> the error
+// is accounted (errors=1), not discarded (H1), and the witness
+// blocks; (L2) the fourth settles SHORT -> errors=1, blocked;
+// (L3) the fourth never settles -> collection outcome 'timeout' with
+// healthy live counters decides drained=false and the witness
+// blocks (H2); (L4) collection outcomes 'rejected' / 'missing'
+// decide drained=false and block; (L5) POSITIVE CONTROL: the fourth
+// settles good, no fifth read is issued after the stop, collection
+// 'resolved' decides drained=true and the witness passes;
+// (L6) a BUSY refusal of a link is retried as a new issuance and
+// counted once, and a good read settling after a stop request is
+// still accounted (H1).
 if (process.argv.includes('--self-test-burst')) {
   const SIZE = 16 * 1024 * 1024;
   const mkS = (activeOps, reservedRawBytes, seq) => ({ seq, atMs: seq * 10, captured: true, factoryCalls: 1, invalidated: null, stats: { contexts: 2, tickets: 2, activeOps, retiredActiveOps: 0, reservedRawBytes, disposed: false } });
   const on = (seq) => mkS(1, SIZE + 1, seq);
   const off = (seq) => mkS(0, 0, seq);
-  const healthy = { links: 5, errors: 0, totalBytes: 5 * SIZE, lastError: null };
+  const healthy = { links: 5, errors: 0, totalBytes: 5 * SIZE, lastError: null, drained: true };
   const base = { slowBytes: SIZE, correlationOk: true, observerOk: true };
   const cases = [
     ['(a) old-shape trace (active, active, INACTIVE at S3; no chain) -> blocked', burstWitnessDecisionImpl({ ...base, s1: on(1), s2: on(2), s3: off(3), chain: null }).verdict, 'blocked'],
-    ['(b) chain trace (all samples active + healthy chain) -> pass', burstWitnessDecisionImpl({ ...base, s1: on(1), s2: on(2), s3: on(3), chain: healthy }).verdict, 'pass'],
+    ['(b) chain trace (all samples active + healthy drained chain) -> pass', burstWitnessDecisionImpl({ ...base, s1: on(1), s2: on(2), s3: on(3), chain: healthy }).verdict, 'pass'],
     ['(c) healthy samples but one error link in the chain -> blocked', burstWitnessDecisionImpl({ ...base, s1: on(1), s2: on(2), s3: on(3), chain: { ...healthy, errors: 1, lastError: 'ERR_XREF_CHANGED' } }).verdict, 'blocked'],
-    ['(d) healthy samples but the chain completed only 1 link -> blocked', burstWitnessDecisionImpl({ ...base, s1: on(1), s2: on(2), s3: on(3), chain: { links: 1, errors: 0, totalBytes: SIZE, lastError: null } }).verdict, 'blocked'],
+    ['(d) healthy samples but the chain completed only 1 link -> blocked', burstWitnessDecisionImpl({ ...base, s1: on(1), s2: on(2), s3: on(3), chain: { links: 1, errors: 0, totalBytes: SIZE, lastError: null, drained: true } }).verdict, 'blocked'],
     ['(e) samples active but reservedRawBytes = 2*(size+1) at S2 -> blocked', burstWitnessDecisionImpl({ ...base, s1: on(1), s2: mkS(2, 2 * (SIZE + 1), 2), s3: on(3), chain: healthy }).verdict, 'blocked'],
     ['(f) observer coverage unusable -> blocked', burstWitnessDecisionImpl({ ...base, observerOk: false, s1: on(1), s2: on(2), s3: on(3), chain: healthy }).verdict, 'blocked'],
     ['(g) same-broker correlation unproven -> blocked', burstWitnessDecisionImpl({ ...base, correlationOk: false, s1: on(1), s2: on(2), s3: on(3), chain: healthy }).verdict, 'blocked'],
+    ['(h) healthy counters but drain NOT positively confirmed (drained=false) -> blocked', burstWitnessDecisionImpl({ ...base, s1: on(1), s2: on(2), s3: on(3), chain: { ...healthy, drained: false } }).verdict, 'blocked'],
+    ['(i) healthy counters but no drained marker at all -> blocked', burstWitnessDecisionImpl({ ...base, s1: on(1), s2: on(2), s3: on(3), chain: { links: 5, errors: 0, totalBytes: 5 * SIZE, lastError: null } }).verdict, 'blocked'],
   ];
   let okAll = true;
-  for (const [name, got, want] of cases) {
-    const ok = got === want;
+  const report = (name, got, want) => {
+    const ok = JSON.stringify(got) === JSON.stringify(want);
     okAll = okAll && ok;
-    console.log(`${ok ? 'ok  ' : 'FAIL'} self-test-burst ${name} (verdict=${got}, expected=${want})`);
-  }
+    console.log(`${ok ? 'ok  ' : 'FAIL'} self-test-burst ${name} (got=${JSON.stringify(got)}, expected=${JSON.stringify(want)})`);
+  };
+  for (const [name, got, want] of cases) report(name, got, want);
   const aReason = burstWitnessDecisionImpl({ ...base, s1: on(1), s2: on(2), s3: off(3), chain: null }).reason;
   const aOk = aReason.includes('insufficient witness');
   okAll = okAll && aOk;
   console.log(`${aOk ? 'ok  ' : 'FAIL'} self-test-burst (a2) the old-shape block reason names the insufficient witness (reason=${JSON.stringify(aReason)})`);
+
+  // ---- live-loop scenarios: the REAL xrefChainLoopImpl, scripted reads
+  const deferred = () => {
+    /** @type {(v: XrefReadResult) => void} */
+    let resolveFn = () => {};
+    const promise = new Promise((res) => { resolveFn = res; });
+    return { promise, resolve: resolveFn };
+  };
+  /** @returns {XrefChainState} */
+  const newChainState = () => ({ stopped: false, links: 0, errors: 0, totalBytes: 0, lastError: null, done: null, stop() { this.stopped = true; } });
+  // Spin (bounded) until the loop has issued n reads.
+  const untilCalls = async (counter, n) => { for (let i = 0; i < 10000 && counter.n < n; i += 1) await new Promise((r) => setImmediate(r)); };
+  const healthySamples = { ...base, s1: on(1), s2: on(2), s3: on(3) };
+  // Three immediately-good links, then a fourth read the scenario
+  // holds pending and settles by hand.
+  const threeGoodThenHeld = () => {
+    const counter = { n: 0 };
+    const held = deferred();
+    /** @returns {Promise<XrefReadResult>} */
+    const readFn = () => {
+      counter.n += 1;
+      if (counter.n <= 3) return Promise.resolve({ ok: true, rawBytes: SIZE });
+      return held.promise;
+    };
+    return { counter, held, readFn };
+  };
+
+  { // (L1) H1: stop mid-fourth; fourth settles as an ERROR.
+    const { counter, held, readFn } = threeGoodThenHeld();
+    const state = newChainState();
+    const doneP = xrefChainLoopImpl(readFn, { maxLinks: 64, busyRetries: 0, expectBytes: SIZE, state });
+    await untilCalls(counter, 4);
+    report('(L1) setup: three good links accounted, fourth read issued', [state.links, state.errors, counter.n], [3, 0, 4]);
+    state.stop();
+    held.resolve({ ok: false, code: 'ERR_XREF_IO' });
+    const summary = await doneP;
+    report('(L1) H1: the late error is accounted, not discarded (errors=1, links stay 3)', [summary.errors, summary.links, summary.totalBytes], [1, 3, 3 * SIZE]);
+    const collected = chainCollectionDecisionImpl({ outcome: 'resolved', summary, fallbackCounters: null });
+    report('(L1) collection resolved -> drained=true, counters carried', [collected.drained, collected.errors], [true, 1]);
+    report('(L1) witness on the accounted-error chain -> blocked', burstWitnessDecisionImpl({ ...healthySamples, chain: collected }).verdict, 'blocked');
+  }
+  { // (L2) H1: stop mid-fourth; fourth settles SHORT.
+    const { counter, held, readFn } = threeGoodThenHeld();
+    const state = newChainState();
+    const doneP = xrefChainLoopImpl(readFn, { maxLinks: 64, busyRetries: 0, expectBytes: SIZE, state });
+    await untilCalls(counter, 4);
+    state.stop();
+    held.resolve({ ok: true, rawBytes: SIZE - 1 });
+    const summary = await doneP;
+    report('(L2) H1: the late short read is accounted (errors=1, links stay 3)', [summary.errors, summary.links, summary.totalBytes], [1, 3, 3 * SIZE]);
+    const collected = chainCollectionDecisionImpl({ outcome: 'resolved', summary, fallbackCounters: null });
+    report('(L2) witness on the short-read chain -> blocked', burstWitnessDecisionImpl({ ...healthySamples, chain: collected }).verdict, 'blocked');
+  }
+  { // (L3) H2: fourth NEVER settles; the done promise stays pending,
+    // so the collection (the harness's bounded race) times out while
+    // the live counters look perfectly healthy.
+    const { counter, readFn } = threeGoodThenHeld();
+    const state = newChainState();
+    void xrefChainLoopImpl(readFn, { maxLinks: 64, busyRetries: 0, expectBytes: SIZE, state });
+    await untilCalls(counter, 4);
+    state.stop();
+    const collected = chainCollectionDecisionImpl({ outcome: 'timeout', summary: null, fallbackCounters: { links: state.links, errors: state.errors, totalBytes: state.totalBytes, lastError: state.lastError } });
+    report('(L3) H2: timeout collection -> drained=false, healthy counters kept as diagnostics only', [collected.drained, collected.links, collected.errors], [false, 3, 0]);
+    report('(L3) H2: witness on an undrained summary -> blocked despite healthy counters', burstWitnessDecisionImpl({ ...healthySamples, chain: collected }).verdict, 'blocked');
+  }
+  { // (L4) H2: collection outcomes 'rejected' and 'missing'.
+    const healthyCounters = { links: 3, errors: 0, totalBytes: 3 * SIZE, lastError: null };
+    const rej = chainCollectionDecisionImpl({ outcome: 'rejected', summary: null, fallbackCounters: healthyCounters });
+    const mis = chainCollectionDecisionImpl({ outcome: 'missing', summary: null, fallbackCounters: null });
+    report('(L4) H2: rejected collection -> drained=false', rej.drained, false);
+    report('(L4) H2: missing collection -> drained=false, zero diagnostic counters', [mis.drained, mis.links, mis.totalBytes], [false, 0, 0]);
+    report('(L4) H2: witness on rejected/missing collections -> blocked', [burstWitnessDecisionImpl({ ...healthySamples, chain: rej }).verdict, burstWitnessDecisionImpl({ ...healthySamples, chain: mis }).verdict], ['blocked', 'blocked']);
+  }
+  { // (L5) POSITIVE CONTROL: fourth settles good after the stop
+    // request; the loop accounts it and issues NO fifth read.
+    const { counter, held, readFn } = threeGoodThenHeld();
+    const state = newChainState();
+    const doneP = xrefChainLoopImpl(readFn, { maxLinks: 64, busyRetries: 0, expectBytes: SIZE, state });
+    await untilCalls(counter, 4);
+    state.stop();
+    held.resolve({ ok: true, rawBytes: SIZE });
+    const summary = await doneP;
+    report('(L5) control: late good read accounted; stop prevented any fifth issuance', [summary.links, summary.errors, summary.totalBytes, counter.n], [4, 0, 4 * SIZE, 4]);
+    const collected = chainCollectionDecisionImpl({ outcome: 'resolved', summary, fallbackCounters: null });
+    report('(L5) control: resolved collection -> drained=true', collected.drained, true);
+    report('(L5) control: witness passes on the healthy drained chain', burstWitnessDecisionImpl({ ...healthySamples, chain: collected }).verdict, 'pass');
+  }
+  { // (L6) BUSY retry + H1 accounting of a post-stop good read.
+    const counter = { n: 0 };
+    const state = newChainState();
+    /** @returns {Promise<XrefReadResult>} */
+    const readFn = () => {
+      counter.n += 1;
+      if (counter.n === 1) return Promise.resolve({ ok: false, code: 'ERR_XREF_RESOURCE_BUSY' });
+      if (counter.n === 4) state.stop();
+      return Promise.resolve({ ok: true, rawBytes: SIZE });
+    };
+    const summary = await xrefChainLoopImpl(readFn, { maxLinks: 64, busyRetries: 50, expectBytes: SIZE, state });
+    report('(L6) BUSY retried as a new issuance (4 calls, 3 links, 0 errors); the post-stop good read is accounted', [counter.n, summary.links, summary.errors, summary.totalBytes], [4, 3, 0, 3 * SIZE]);
+  }
+
   console.log(`self-test-burst: ${okAll ? 'PASS' : 'FAIL'}`);
   process.exit(okAll ? 0 : 1);
 }
@@ -1294,13 +1538,23 @@ try {
       // A link that meets the harness's own gap-admitted competing
       // read retries that BUSY refusal (bounded); any other refusal
       // or a byte mismatch is a chain error and stops the chain.
-      // The chain stops deterministically: the harness stops it
-      // right after S3 (in a finally, so a harness error cannot
-      // leave it running), and it stops itself at CHAIN_MAX_LINKS
-      // even if never told. No artificial holds, fake reads or
-      // sleeps-as-oracle: a sample that lands in an inter-link gap
-      // or after an early chain end makes the overlap criterion
-      // BLOCKED (insufficient witness), never passed.
+      // The loop is this file's xrefChainLoopImpl, serialized into
+      // the page. The chain stops deterministically: the harness
+      // stops it right after S3 (in a finally, so a harness error
+      // cannot leave it running), and it stops itself at
+      // CHAIN_MAX_LINKS even if never told. Two stop/drain rules
+      // (Codex rerun-3 review H1/H2): every already-issued read is
+      // validated and accounted BEFORE the stop flag is honored -
+      // stop prevents the next issuance, never erases a pending
+      // outcome, so a late error or short read stays non-passing -
+      // and the summary carries the witness only on a POSITIVELY
+      // confirmed drain (drained === true); a collection timeout,
+      // rejection or missing state leaves it undrained and BLOCKED,
+      // with live counters kept as diagnostics only. No artificial
+      // holds, fake reads or sleeps-as-oracle: a sample that lands
+      // in an inter-link gap or after an early chain end makes the
+      // overlap criterion BLOCKED (insufficient witness), never
+      // passed.
       const slowBytes = fixtureMeta.files['slow.dxf'].bytes;
       const burstSteps = [];
       const stepMark = (step, sample) => {
@@ -1312,27 +1566,42 @@ try {
       const attempts = [];
       results.burstAttempts = attempts;
       // Stop the page-side chain and collect its final summary.
-      // Never throws: a dead page or an unsettled chain (bounded
-      // wait) falls back to the live counters, and a missing summary
-      // is treated as an unhealthy chain by the witness decision.
+      // Never throws. The bounded race (60 s) classifies HOW awaiting
+      // the chain's done promise ended - resolved with the final
+      // accounted state / timeout / rejected / missing - and
+      // chainCollectionDecisionImpl decides what the collection
+      // means: only 'resolved' yields drained === true (H2). On any
+      // other outcome the live counters are still read, but they
+      // travel as diagnostics on an undrained summary and can never
+      // carry the witness.
       const stopChainAndCollect = async () => {
         try { await win.evaluate(() => { /** @type {XrefPageWindow} */ (window).__xrefChain?.stop(); }); } catch { /* page may be gone */ }
-        let summary = null;
+        /** @type {'resolved' | 'timeout' | 'rejected' | 'missing'} */
+        let outcome = 'missing';
+        /** @type {XrefChainLoopResult | null} */
+        let settled = null;
         try {
-          summary = await Promise.race([
-            win.evaluate(() => { const w = /** @type {XrefPageWindow} */ (window); return w.__xrefChain ? w.__xrefChain.done : null; }),
-            new Promise((done) => setTimeout(() => done(null), 60_000)),
+          const raced = await Promise.race([
+            win.evaluate(() => { const w = /** @type {XrefPageWindow} */ (window); return w.__xrefChain ? w.__xrefChain.done : null; })
+              .then((v) => ({ tag: 'value', v }), () => ({ tag: 'error', v: null })),
+            new Promise((doneRace) => setTimeout(() => doneRace({ tag: 'timeout', v: null }), 60_000)),
           ]);
-        } catch { summary = null; }
-        if (!summary) {
+          if (raced.tag === 'timeout') outcome = 'timeout';
+          else if (raced.tag === 'error') outcome = 'rejected';
+          else if (raced.v) { outcome = 'resolved'; settled = raced.v; }
+          else outcome = 'missing';
+        } catch { outcome = 'rejected'; }
+        /** @type {XrefChainLoopResult | null} */
+        let fallbackCounters = null;
+        if (outcome !== 'resolved') {
           try {
-            summary = await win.evaluate(() => {
+            fallbackCounters = await win.evaluate(() => {
               const c = /** @type {XrefPageWindow} */ (window).__xrefChain;
               return c ? { links: c.links, errors: c.errors, totalBytes: c.totalBytes, lastError: c.lastError } : null;
             });
-          } catch { summary = null; }
+          } catch { fallbackCounters = null; }
         }
-        return summary;
+        return chainCollectionDecisionImpl({ outcome, summary: settled, fallbackCounters });
       };
       let s1 = null;
       let s2 = null;
@@ -1341,31 +1610,19 @@ try {
       let chainSummary = null;
       try {
         // Step 1: start the renewal chain on context A (the evaluate
-        // returns immediately; the chain runs in the page).
+        // returns immediately; the chain runs in the page). The loop
+        // is THIS FILE's xrefChainLoopImpl, installed from its own
+        // serialized source and driven by the page's real bridge
+        // read - the same function object --self-test-burst drives.
+        await win.evaluate(XREF_CHAIN_LOOP_FN_SOURCE);
         await win.evaluate(([t, k, m, expectBytes, maxLinks, busyRetries]) => {
+          const w = /** @type {XrefPageWindow} */ (window);
           const chain = {
             links: 0, errors: 0, totalBytes: 0, stopped: false, lastError: null, done: null,
             stop() { chain.stopped = true; },
           };
-          chain.done = (async () => {
-            while (!chain.stopped && chain.links < maxLinks) {
-              let r = null;
-              let busyLeft = busyRetries;
-              while (!chain.stopped) {
-                try { r = await /** @type {XrefPageWindow} */ (window).__xref.read(t, k, m); } catch (e) { r = { ok: false, code: String(e && e.message || e) }; }
-                if (!r || r.ok || r.code !== 'ERR_XREF_RESOURCE_BUSY' || busyLeft <= 0) break;
-                busyLeft -= 1; // the harness's own competing read holds the context briefly; retry this link
-              }
-              if (chain.stopped) break;
-              if (!r || !r.ok) { chain.errors += 1; chain.lastError = r ? (r.code ?? 'read refused') : 'read returned nothing'; break; }
-              if (r.rawBytes !== expectBytes) { chain.errors += 1; chain.lastError = `link returned rawBytes=${r.rawBytes}, expected ${expectBytes}`; break; }
-              chain.links += 1;
-              chain.totalBytes += r.rawBytes;
-            }
-            chain.stopped = true;
-            return { links: chain.links, errors: chain.errors, totalBytes: chain.totalBytes, lastError: chain.lastError };
-          })();
-          /** @type {XrefPageWindow} */ (window).__xrefChain = chain;
+          chain.done = /** @type {XrefChainLoopFn} */ (w.__xrefChainLoop)(() => /** @type {XrefBridgeStub} */ (w.__xref).read(t, k, m), { maxLinks, busyRetries, expectBytes, state: chain });
+          w.__xrefChain = chain;
         }, [ctxA.token, slow.ticket, 16 * MIB, slowBytes, CHAIN_MAX_LINKS, CHAIN_BUSY_RETRIES]);
         stepMark('renewal chain started on context A (unawaited)', null);
         // Step 2: sample S1 - the chain must already show as genuinely active.
@@ -1396,19 +1653,22 @@ try {
         s3 = await sampleObserver(app, 'burst-s3-at-b-completion');
         stepMark('S3 sampled (at B completion)', s3);
       } finally {
-        // The chain never outlives the burst: stop it and await its
-        // drain (bounded) before S4, whatever happened above.
+        // The chain never outlives the burst: stop it and collect
+        // its summary (bounded wait) before S4, whatever happened
+        // above. 'Drained' is claimed ONLY when the collection
+        // positively confirmed the drain (H2).
         chainSummary = await stopChainAndCollect();
-        stepMark('renewal chain stopped and drained', null);
+        stepMark(chainSummary.drained ? 'renewal chain stopped and drained (drain positively confirmed)' : 'renewal chain stop requested; drain NOT positively confirmed (summary is diagnostic only)', null);
       }
-      // Step 7: sample S4 (settled - chain stopped and drained).
+      // Step 7: sample S4 (the burst's settle point; 'settled' is
+      // claimed only on a positively confirmed drain).
       const s4 = await sampleObserver(app, 'burst-s4-after-a-settles');
-      stepMark('chain settled (S4 sampled)', s4);
+      stepMark(chainSummary?.drained ? 'chain settled (S4 sampled)' : 'S4 sampled (chain drain unconfirmed)', s4);
       const busyAttempt = attempts.find((a) => !a.ok && a.code === 'ERR_XREF_RESOURCE_BUSY');
       check(Boolean(busyAttempt), 'second read in the same context refuses BUSY while A is in flight (zero queue)', JSON.stringify(attempts));
       check(readB && readB.ok, 'a read in a second context proceeds and completes while A is in flight', JSON.stringify(readB));
-      check(chainSummary && chainSummary.errors === 0 && chainSummary.links >= 1 && chainSummary.totalBytes === chainSummary.links * slowBytes,
-        'every renewal-chain link returns the full file (per-link bytes verified in the page; total = links * slow size)', JSON.stringify(chainSummary));
+      check(chainSummary && chainSummary.drained === true && chainSummary.errors === 0 && chainSummary.links >= 1 && chainSummary.totalBytes === chainSummary.links * slowBytes,
+        'every renewal-chain link returns the full file (per-link bytes verified in the page; total = links * slow size; drain positively confirmed)', JSON.stringify(chainSummary));
       {
         const overlapName = 'observer-bound overlap: A pending with its reservation (activeOps >= 1, reservedRawBytes = slow size + sentinel) at S1, at the BUSY refusal (S2) and at B completion (S3), one main clock/sequence';
         if (!observerMode) blocked(overlapName);
@@ -1419,7 +1679,7 @@ try {
         } else {
           const decision = burstWitnessDecisionImpl({ s1, s2, s3, chain: chainSummary, slowBytes, correlationOk: true, observerOk: true });
           if (decision.verdict === 'pass') {
-            check(true, overlapName, `seq S1=${s1.seq} < S2=${s2.seq} < S3=${s3.seq} on the main monotonic clock; chain links=${chainSummary.links}, errors=0, totalBytes=${chainSummary.totalBytes}; steps: ${burstSteps.map((m) => m.step).join(' -> ')}`);
+            check(true, overlapName, `seq S1=${s1.seq} < S2=${s2.seq} < S3=${s3.seq} on the main monotonic clock; chain links=${chainSummary.links}, errors=0, totalBytes=${chainSummary.totalBytes}, drained=true; steps: ${burstSteps.map((m) => m.step).join(' -> ')}`);
           } else {
             blocked(overlapName, decision.reason);
           }
