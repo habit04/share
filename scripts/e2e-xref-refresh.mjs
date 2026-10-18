@@ -66,6 +66,20 @@
 // the one main clock/sequence. If A finished too early the criterion
 // is BLOCKED (insufficient witness), never passed.
 //
+// Same-broker correlation (correction round 3, group 2): a launch-zero
+// baseline plus factoryCalls === 1 does NOT prove the observed broker
+// is the one the real bridge drives. For EVERY launch, right after the
+// bridge is installed, the harness performs a real bridge begin, then
+// requires an observer sample at contexts = baseline+1 with NO active
+// or reserved work (a begun context, before any read), then a real
+// bridge close and a sample back at baseline contexts/tickets. Only a
+// launch whose correlation holds may have its stats-derived checks
+// evaluated; every other stats-derived check for that launch records
+// BLOCKED ('same-broker correlation unproven for this launch'). The
+// pass/blocked decision is one pure function (correlationDecisionImpl
+// below); `node scripts/e2e-xref-refresh.mjs --self-test-correlation`
+// runs its bookkeeping regression without Electron.
+//
 //   npm run build
 //   node scripts/xref-native-fixtures.mjs <work-root>/fixtures
 //   node --experimental-strip-types scripts/e2e-xref-refresh.mjs \
@@ -73,6 +87,7 @@
 //     --out <work-root>/out [--sections 3.1,3.2] \
 //     [--head <candidate-head>] [--tree <candidate-tree>]
 //   node scripts/e2e-xref-refresh.mjs --self-test-oracle
+//   node scripts/e2e-xref-refresh.mjs --self-test-correlation
 //
 // Exit codes: 0 = every selected check passed and none blocked;
 // 1 = a check failed or a selected criterion is blocked;
@@ -140,6 +155,35 @@ function semanticEntityJsonImpl(entity) {
 }
 const SEMANTIC_ENTITY_FN_SOURCE = `window.__xrefSemanticEntityJson = ${semanticEntityJsonImpl.toString()};`;
 
+// ------------------------------------------------------------ same-broker correlation (round 3, group 2)
+// The ONE pass/blocked decision for a launch's same-broker correlation.
+// Pure bookkeeping: it decides only from the launch's own baseline
+// stats and the two correlation samples (after-begin S, after-close
+// S2), including their factoryCalls/invalidated fields. Contract:
+//   pass  <=> S shows contexts = baseline+1 with activeOps and
+//             reservedRawBytes still AT baseline (a real context
+//             exists, no active/reserved work before any read), under
+//             factoryCalls === 1 and no invalidation, AND S2 shows
+//             contexts and tickets back AT baseline after the close.
+//   anything else -> blocked, with the specific reason.
+function correlationDecisionImpl(baselineStats, s, s2) {
+  const blocked = (reason) => ({ verdict: 'blocked', reason });
+  const usable = (x) => Boolean(x && x.captured && x.stats);
+  if (!baselineStats) return blocked('no baseline stats for this launch');
+  if (!usable(s)) return blocked('no usable correlation sample after the real begin');
+  if (s.invalidated) return blocked(`observer coverage invalidated: ${s.invalidated}`);
+  if (s.factoryCalls !== 1) return blocked(`one-instance proof failed at the correlation sample (factoryCalls=${s.factoryCalls})`);
+  if (s.stats.contexts !== baselineStats.contexts + 1) return blocked(`observed contexts=${s.stats.contexts} after a real begin, expected baseline+1=${baselineStats.contexts + 1}: the observed broker is not proven to be the bridge's broker`);
+  if (s.stats.activeOps !== baselineStats.activeOps) return blocked(`active work present at the correlation sample, before any read (activeOps=${s.stats.activeOps}, baseline=${baselineStats.activeOps})`);
+  if (s.stats.reservedRawBytes !== baselineStats.reservedRawBytes) return blocked(`reserved bytes present at the correlation sample, before any read (reservedRawBytes=${s.stats.reservedRawBytes}, baseline=${baselineStats.reservedRawBytes})`);
+  if (!usable(s2)) return blocked('no usable correlation sample after the real close');
+  if (s2.invalidated) return blocked(`observer coverage invalidated: ${s2.invalidated}`);
+  if (s2.factoryCalls !== 1) return blocked(`one-instance proof failed at the post-close sample (factoryCalls=${s2.factoryCalls})`);
+  if (s2.stats.contexts !== baselineStats.contexts) return blocked(`contexts did not return to baseline after the close (contexts=${s2.stats.contexts}, baseline=${baselineStats.contexts})`);
+  if (s2.stats.tickets !== baselineStats.tickets) return blocked(`tickets did not return to baseline after the close (tickets=${s2.stats.tickets}, baseline=${baselineStats.tickets})`);
+  return { verdict: 'pass', reason: '' };
+}
+
 // Oracle regression, runnable without Electron:
 //   node scripts/e2e-xref-refresh.mjs --self-test-oracle
 // Exit 0 only if: (a) same geometry/properties with different generated
@@ -165,6 +209,38 @@ if (process.argv.includes('--self-test-oracle')) {
     console.log(`${ok ? 'ok  ' : 'FAIL'} self-test-oracle ${name} (equal=${got}, expected equal=${want})`);
   }
   console.log(`self-test-oracle: ${okAll ? 'PASS' : 'FAIL'}`);
+  process.exit(okAll ? 0 : 1);
+}
+
+// Correlation bookkeeping regression, runnable without Electron:
+//   node scripts/e2e-xref-refresh.mjs --self-test-correlation
+// Exit 0 only if correlationDecisionImpl (the very function the live
+// run uses) decides: perfect correlation -> pass; contexts not
+// baseline+1 after begin -> blocked; reserved bytes present at the
+// correlation sample -> blocked; active work at the correlation sample
+// -> blocked; close not returning contexts/tickets to baseline ->
+// blocked; a second broker instance or invalidated coverage -> blocked.
+if (process.argv.includes('--self-test-correlation')) {
+  const B = { contexts: 0, tickets: 0, activeOps: 0, retiredActiveOps: 0, reservedRawBytes: 0, disposed: false };
+  const mk = (over = {}, fields = {}) => ({ seq: 7, atMs: 1234, captured: true, factoryCalls: 1, invalidated: null, stats: { ...B, ...over }, ...fields });
+  const cases = [
+    ['(a) perfect correlation (begin -> contexts+1, quiet; close -> baseline) -> pass', correlationDecisionImpl(B, mk({ contexts: 1 }), mk({})).verdict, 'pass'],
+    ['(b) contexts not baseline+1 after begin -> blocked', correlationDecisionImpl(B, mk({ contexts: 0 }), mk({})).verdict, 'blocked'],
+    ['(c) reserved bytes nonzero at the correlation sample -> blocked', correlationDecisionImpl(B, mk({ contexts: 1, reservedRawBytes: 4097 }), mk({})).verdict, 'blocked'],
+    ['(d) active work at the correlation sample -> blocked', correlationDecisionImpl(B, mk({ contexts: 1, activeOps: 1 }), mk({})).verdict, 'blocked'],
+    ['(e) close does not return contexts to baseline -> blocked', correlationDecisionImpl(B, mk({ contexts: 1 }), mk({ contexts: 1 })).verdict, 'blocked'],
+    ['(f) close does not return tickets to baseline -> blocked', correlationDecisionImpl(B, mk({ contexts: 1 }), mk({ tickets: 1 })).verdict, 'blocked'],
+    ['(g) second broker instance (factoryCalls = 2) -> blocked', correlationDecisionImpl(B, mk({ contexts: 1 }, { factoryCalls: 2 }), mk({})).verdict, 'blocked'],
+    ['(h) invalidated coverage -> blocked', correlationDecisionImpl(B, mk({ contexts: 1 }, { invalidated: 'second-broker-instance' }), mk({})).verdict, 'blocked'],
+    ['(i) no usable sample after begin -> blocked', correlationDecisionImpl(B, null, mk({})).verdict, 'blocked'],
+  ];
+  let okAll = true;
+  for (const [name, got, want] of cases) {
+    const ok = got === want;
+    okAll = okAll && ok;
+    console.log(`${ok ? 'ok  ' : 'FAIL'} self-test-correlation ${name} (verdict=${got}, expected=${want})`);
+  }
+  console.log(`self-test-correlation: ${okAll ? 'PASS' : 'FAIL'}`);
   process.exit(okAll ? 0 : 1);
 }
 
@@ -266,7 +342,7 @@ function failHalt(name, detail = '') {
   halted = true;
   haltReason = `stopped at the first failed PASS criterion: [${currentSection}] ${name}`;
 }
-const results = { header: {}, checks, observer: { mode: observerMode ? 'cli-require via default_app' : 'off', path: observerPath || null, sha256: observerSha256 || null, targetSha256: observerTargetSha || null }, observerSamples: [], observerBaseline: null, residue: { workRoot, fixtureDir, outDir, tempDir, profiles: [], childExits: [], watchdogFired: false, deleted: 'nothing (residue preserved by design)' } };
+const results = { header: {}, checks, observer: { mode: observerMode ? 'cli-require via default_app' : 'off', path: observerPath || null, sha256: observerSha256 || null, targetSha256: observerTargetSha || null }, observerSamples: [], observerBaseline: null, correlations: {}, residue: { workRoot, fixtureDir, outDir, tempDir, profiles: [], childExits: [], watchdogFired: false, deleted: 'nothing (residue preserved by design)' } };
 // Evidence persistence (finding 5): a run that cannot write its
 // evidence has NOT passed, whatever the checks say. Any write failure
 // is reported explicitly on stderr/stdout and forces exit code 3 at
@@ -439,8 +515,55 @@ function observerBlockReason(state, s) {
   if (!s.captured || s.factoryCalls !== 1) return `observer one-instance proof failed (captured=${s.captured}, factoryCalls=${s.factoryCalls})`;
   return 'observer sample unusable';
 }
+const CORRELATION_REASON = 'same-broker correlation unproven for this launch';
+function correlationBlockReason(state) {
+  if (!observerMode) return `${CORRELATION_REASON}: observer not enabled for this run (no --observer)`;
+  const c = state?.correlation;
+  if (!c) return `${CORRELATION_REASON}: correlation was not run for this launch`;
+  return `${CORRELATION_REASON}: ${c.reason}`;
+}
+// Same-broker correlation for ONE launch (round 3, group 2): a real
+// bridge begin on this launch's window, a sample that must show the
+// context at baseline+1 with no active/reserved work, a real bridge
+// close, and a sample back at baseline. Runs immediately after the
+// bridge is installed for the launch, before any scenario context
+// work. Never throws: the outcome is recorded on the launch's observer
+// state and in results.correlations, and GATES every stats-derived
+// check for the launch (missing correlation -> BLOCKED, never pass).
+async function runCorrelation(label, launch) {
+  const state = launch?.observer;
+  if (!observerMode || !state) return null;
+  const record = { label, ok: false, reason: '', beginOk: false, closeOk: false, afterBeginSeq: null, afterCloseSeq: null };
+  const finish = (reason) => {
+    record.reason = reason;
+    state.correlation = record;
+    results.correlations[label] = record;
+    log(`observer[${label}]: same-broker correlation ${record.ok ? 'PROVEN' : `UNPROVEN - ${reason}`}`);
+    return record;
+  };
+  if (!state.usable) return finish('this launch\'s observer baseline was not a clean zero capture');
+  try {
+    const begun = await launch.win.evaluate((d) => window.__xref.begin(d), `correlation-${label}`);
+    record.beginOk = Boolean(begun?.ok);
+    if (!begun?.ok) return finish(`real bridge begin for correlation failed: ${JSON.stringify(begun)}`);
+    const s = await sampleObserver(launch.app, `correlation:${label}:after-begin`);
+    record.afterBeginSeq = s?.seq ?? null;
+    const closed = await launch.win.evaluate((t) => window.__xref.close(t), begun.token);
+    record.closeOk = Boolean(closed?.ok);
+    const s2 = await sampleObserver(launch.app, `correlation:${label}:after-close`);
+    record.afterCloseSeq = s2?.seq ?? null;
+    if (!closed?.ok) return finish(`real bridge close for correlation failed: ${JSON.stringify(closed)}`);
+    const decision = correlationDecisionImpl(state.baseline.stats, s, s2);
+    if (decision.verdict !== 'pass') return finish(decision.reason);
+    record.ok = true;
+    return finish('');
+  } catch (error) {
+    return finish(`correlation sequence threw: ${String(error && error.message || error)}`);
+  }
+}
 async function statsZeroCheck(appInstance, state, name) {
   const s = await sampleObserver(appInstance, name);
+  if (!state?.correlation?.ok) { blocked(name, correlationBlockReason(state)); return; }
   if (!observerUsable(state, s)) { blocked(name, observerBlockReason(state, s)); return; }
   const st = s.stats;
   const b = state.baseline.stats;
@@ -674,6 +797,10 @@ try {
   check(listed > 0, 'fixture project opened through the genuine Open Project flow (its drawings are registry-known)', `${listed} drawings listed`);
   await win.evaluate((p) => { window.__xrefHostPath = p; }, hostPath);
   await installBridge(win);
+  // Same-broker correlation for the MAIN launch (round 3, group 2),
+  // immediately after the bridge is installed and before any section
+  // context work: gates every main stats-derived check (3.2/3.3).
+  await runCorrelation('main', mainLaunch);
   await win.screenshot({ path: join(outDir, 'host-open.png') });
   check(true, 'host drawing opened through the app OPEN flow', hostPath);
   check(pageErrors.length === 0, 'no page errors during launch/open', pageErrors.join(' | '));
@@ -812,6 +939,8 @@ try {
         if (!observerMode) blocked(overlapName);
         else if (!observerUsable(mainObserver, s1) || !observerUsable(mainObserver, s2) || !observerUsable(mainObserver, s3)) {
           blocked(overlapName, observerBlockReason(mainObserver, s3 ?? s2 ?? s1));
+        } else if (!mainObserver.correlation?.ok) {
+          blocked(overlapName, correlationBlockReason(mainObserver));
         } else if (!(aActive(s1) && aActive(s2) && aActive(s3))) {
           blocked(overlapName, `insufficient witness: A not proven active at every bound step (S1 seq=${s1.seq} active=${aActive(s1)}, S2 seq=${s2.seq} active=${aActive(s2)}, S3 seq=${s3.seq} active=${aActive(s3)}) - the native read may have finished too early; never passed by default`);
         } else {
@@ -961,6 +1090,10 @@ if (sections.includes('3.5')) {
       await openProjectAndHost(qapp, qwin);
       await qwin.evaluate((p) => { window.__xrefHostPath = p; }, hostPath);
       await installBridge(qwin);
+      // Same-broker correlation for THIS quit launch (round 3, group 2),
+      // with its own short-lived context, before the scenario's own
+      // context work: gates this launch's stats-derived checks.
+      await runCorrelation(`quit-${scenario}`, qLaunch);
       const ctx = await qwin.evaluate(async () => {
         const b = await window.__xref.begin('native-quit');
         if (b.ok) window.__xrefToken = b.token;
@@ -980,23 +1113,26 @@ if (sections.includes('3.5')) {
         const closed = await qwin.evaluate(() => window.__xref.close(window.__xrefToken));
         if (!closed.ok) throw new Error(`explicit context close failed: ${JSON.stringify(closed)}`);
         const settleName = 'observer: after-limit launch returns to ITS OWN baseline after the explicit context close (activeOps / reservedRawBytes zero; contexts / tickets / retiredActiveOps at baseline)';
-        if (!observerMode) blocked(settleName);
+        const s = await sampleObserver(qapp, 'quit-after-limit-settled');
+        if (!qState?.correlation?.ok) blocked(settleName, correlationBlockReason(qState));
+        else if (!observerUsable(qState, s)) blocked(settleName, observerBlockReason(qState, s));
         else {
-          const s = await sampleObserver(qapp, 'quit-after-limit-settled');
-          if (!observerUsable(qState, s)) blocked(settleName, observerBlockReason(qState, s));
-          else {
-            const st = s.stats;
-            const b = qState.baseline.stats;
-            check(st.activeOps === 0 && st.reservedRawBytes === 0 && st.contexts === b.contexts && st.tickets === b.tickets && st.retiredActiveOps === b.retiredActiveOps,
-              settleName, `sample=${JSON.stringify(st)} baseline=${JSON.stringify(b)}`);
-          }
+          const st = s.stats;
+          const b = qState.baseline.stats;
+          check(st.activeOps === 0 && st.reservedRawBytes === 0 && st.contexts === b.contexts && st.tickets === b.tickets && st.retiredActiveOps === b.retiredActiveOps,
+            settleName, `sample=${JSON.stringify(st)} baseline=${JSON.stringify(b)}`);
         }
       } else if (observerMode) {
-        // idle: this launch's own one-instance proof before quitting.
-        const proofName = 'observer one-instance proof for the quit-idle launch (own zero baseline, factoryCalls === 1, not invalidated)';
+        // idle: the one-instance proof for THIS launch is its
+        // same-broker correlation (round 3, group 2): usable stats
+        // alone no longer suffice - the proof passes only when this
+        // launch's correlation holds, on its own baseline/factory
+        // evidence (begin observed at baseline+1, closed back).
+        const proofName = 'observer same-broker correlation proof for the quit-idle launch (own zero baseline; real begin observed at contexts = baseline+1 with no active/reserved work; close returns contexts/tickets to baseline; factoryCalls === 1)';
         const s = await sampleObserver(qapp, 'quit-idle-pre-quit');
-        if (!observerUsable(qState, s)) blocked(proofName, observerBlockReason(qState, s));
-        else check(true, proofName, `baseline seq=${qState.baseline.seq}, pre-quit seq=${s.seq}`);
+        if (!qState.correlation?.ok) blocked(proofName, correlationBlockReason(qState));
+        else if (!observerUsable(qState, s)) blocked(proofName, observerBlockReason(qState, s));
+        else check(true, proofName, `baseline seq=${qState.baseline.seq}, correlation seq ${qState.correlation.afterBeginSeq} -> ${qState.correlation.afterCloseSeq}, pre-quit seq=${s.seq}`);
       }
       const child = qapp.process();
       await qapp.evaluate(({ app: a }) => a.quit());
@@ -1023,6 +1159,10 @@ if (sections.includes('3.5')) {
       await openProjectAndHost(qapp, qwin);
       await qwin.evaluate((p) => { window.__xrefHostPath = p; }, hostPath);
       await installBridge(qwin);
+      // Same-broker correlation for the inflight launch (round 3,
+      // group 2), BEFORE the held read starts: if it fails, the
+      // inflight criterion is BLOCKED regardless of the quit sample.
+      await runCorrelation('quit-inflight', qLaunch);
       const started = await qwin.evaluate(async (p) => {
         const b = await window.__xref.begin('native-quit-inflight');
         if (!b.ok) return b;
@@ -1045,9 +1185,12 @@ if (sections.includes('3.5')) {
       const slowBytes = fixtureMeta.files['slow.dxf'].bytes;
       // The witness must satisfy THIS launch's own one-instance proof
       // and zero baseline (observerUsable against qState), not coverage
-      // borrowed from any other app instance.
+      // borrowed from any other app instance - AND this launch's
+      // same-broker correlation (round 3, group 2): without it the
+      // criterion is BLOCKED regardless of the quit sample.
       const witnessed = Boolean(observerUsable(qState, sample) && sample.stats.activeOps >= 1 && sample.stats.reservedRawBytes === slowBytes + 1);
-      if (!witnessed) blocked(inflightName, `insufficient witness at quit initiation: ${JSON.stringify(sample)}`);
+      if (!qState.correlation?.ok) blocked(inflightName, correlationBlockReason(qState));
+      else if (!witnessed) blocked(inflightName, `insufficient witness at quit initiation: ${JSON.stringify(sample)}`);
       else check(code === 0, inflightName, `exit code ${code}, sample=${JSON.stringify(sample.stats)} seq=${sample.seq}`);
     } catch (error) {
       check(false, 'quit scenario inflight', String(error && error.message || error));
