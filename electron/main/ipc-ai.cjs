@@ -26,6 +26,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { AiHostError, createAiConfigStore, createAiKeyStore, createAiService } = require('../ai-host.cjs');
+const { createLiveChecksRunner } = require('../ai-live-checks.cjs');
 const { createOpenAiTransport } = require('../ai-openai-transport.cjs');
 const { createAnthropicTransport } = require('../ai-anthropic-transport.cjs');
 const { atomicWriteFile } = require('../atomic-write.cjs');
@@ -135,9 +136,11 @@ function respond(fn) {
 function registerAiIpc(ctx, overrides = {}) {
   const { ipcMain } = ctx;
   const { service } = createAiRuntime(overrides);
+  const liveChecks = createLiveChecksRunner(service);
   const state = async () => ({ state: await service.getState() });
   const requests = new Map();
   const probes = new Set();
+  const liveCheckRuns = new Set();
   const observed = new WeakSet();
   const owner = (ev) => ({ sender: ev?.sender, processId: ev?.senderFrame?.processId, routingId: ev?.senderFrame?.routingId });
   const sameOwner = (a, b) => a.sender === b.sender && a.processId === b.processId && a.routingId === b.routingId;
@@ -145,7 +148,7 @@ function registerAiIpc(ctx, overrides = {}) {
     if (!contents || observed.has(contents)) return;
     observed.add(contents);
     const revoke = () => {
-      for (const record of [...requests.values(), ...probes]) if (record.owner.sender === contents) record.abort.abort();
+      for (const record of [...requests.values(), ...probes, ...liveCheckRuns]) if (record.owner.sender === contents) record.abort.abort();
     };
     contents.once('destroyed', revoke);
     contents.on('render-process-gone', revoke);
@@ -219,6 +222,28 @@ function registerAiIpc(ctx, overrides = {}) {
     // refinements with no extra path.
     requests.set(requestId, record); // Own cancellation before service initialization can await.
     try { return { draft: await service.refine(request, record.abort.signal) }; } finally { requests.delete(requestId); }
+  }));
+  ipcMain.handle('ai-live-checks-run', respond(async (ev) => {
+    // No payload: a run is the fixed, unparameterisable check sequence
+    // against the destination the host state already reports
+    // (docs/AI-LIVE-CHECKS.md). The run record joins the same
+    // owner-lifecycle revocation as requests and probes, and is
+    // installed before the run can await anything.
+    const record = { owner: owner(ev), abort: new AbortController() };
+    observe(record.owner.sender);
+    liveCheckRuns.add(record); // Own cancellation before the run starts.
+    try { return { report: await liveChecks.run(record.abort.signal) }; } finally { liveCheckRuns.delete(record); }
+  }));
+  ipcMain.handle('ai-live-checks-cancel', respond(async (ev) => {
+    // Consults the live-checks run registry — not the ask/draft
+    // request map — owner-checked exactly like ai-cancel.
+    const mine = owner(ev);
+    for (const record of liveCheckRuns) {
+      if (!sameOwner(record.owner, mine)) continue;
+      record.abort.abort();
+      return { cancelled: true };
+    }
+    return { cancelled: false };
   }));
   ipcMain.handle('ai-cancel', respond(async (ev, requestId) => {
     const record = requests.get(requestId);
