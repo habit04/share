@@ -26,7 +26,7 @@
  * Part 2 (PENDING) mirrors recipe section 3.5's J-assertion table exactly, as it.todo.
  * Each entry becomes a real test when the fixture lands, driven by the committed
  * oracle — never by this recipe. Binding requires, under
- * tests/fixtures/native-dynamic-q13-array/:
+ * tests/fixtures/native-dynamic-array-handbuilt/:
  *   p30-linear-array-HANDBUILT.dwg, p30-linear-array-HANDBUILT.dxf,
  *   oracle-measure.json (recipe section 3.2 shape, incl. per-instance arrayFeature
  *   {count, centersDef, lastOffset} and anonymousRecords), PROVENANCE-HANDBUILT.md.
@@ -354,7 +354,7 @@ describe('Q13 skeleton - Part 1: rule-independent geometry', () => {
 
 describe('Q13 fixture binding - PENDING (recipe section 3.5)', () => {
   it.todo(
-    'intake: fixture package committed under tests/fixtures/native-dynamic-q13-array/ ' +
+    'intake: fixture package committed under tests/fixtures/native-dynamic-array-handbuilt/ ' +
       '(p30-linear-array-HANDBUILT.dwg/.dxf, oracle-measure.json, PROVENANCE-HANDBUILT.md); SHA-256s verified ' +
       'against the provenance; manifest parses in the recipe section 3.2 shape incl. arrayFeature ' +
       '{count, centersDef, lastOffset} and anonymousRecords',
