@@ -40,10 +40,16 @@
  * entirely (the reader does not retain them; the writer synthesizes fresh *D names) but
  * present on the DWG import as ANON_D* records — asserted per path. The
  * DynamicBlockGUID is regenerated per session: presence only, never a value. J11 stays
- * it.todo: no R2000 save-down ships with this fixture. The Windows branch of J9 —
- * whether the native metadata projection captures the associative constraint web at
- * all — is UNMEASURED, encoded by the N1-pattern analogy and verified only by the
- * lead's Windows rerun.
+ * it.todo: no R2000 save-down ships with this fixture. J9's DWG object-graph shape is
+ * MEASURED on both platforms and is the same shape on both: for this DWG the checked
+ * native metadata projection is rejected — on Windows, LibreDWG returns compatibility
+ * flag 64 for the read (the lead's Windows probe: VALIDATION.md +
+ * windows-evidence/j9-web-probe.json on their side) — so JCad imports through the
+ * fallback reader on Windows exactly as on the Linux WASM path: no cadGraph is
+ * retained on the DWG path on either platform, and the associative constraint web is
+ * therefore NOT captured there (the DXF path retains it in full — J1). The only
+ * platform-specific report fact is the CAD_METADATA 'unsupported' item carrying the
+ * flags-64 note, which the rejected projection produces on win32 only.
  *
  * Scope: Q12 only. No claim about Q10, Q11 or Q13.
  */
@@ -674,42 +680,37 @@ describe('p30-constraint-width-HANDBUILT.dwg: constraint-parameter fixture, DWG 
     }
   });
 
-  it('J9 measured DWG loss (object graph): absent on the Linux WASM fallback path, raw-preserved on the Windows native path', () => {
-    // Platform split (accepted N1 J9 pattern): the reader attaches the checked native
-    // metadata projection only on win32, so the two DWG paths retain different graph
-    // shapes; each shape is asserted in full. The Windows shape for Q12 is UNMEASURED —
-    // in particular, whether the native projection captures the ASSOCIATIVE CONSTRAINT
-    // WEB (as opposed to N1/Q13's evaluation graph) is unknown: the branch below is
-    // encoded by analogy to the accepted N1 correction-2 shape (schema 1, HEADER first,
-    // the retained objects among the raw-anchored nodes, no omission item) and is
-    // verified only by the lead's Windows rerun.
-    const graph = state.cadGraph;
+  it('J9 measured DWG loss (object graph): no object graph is retained on the DWG path on either platform — the native projection is rejected for this DWG', () => {
+    // Single shape, MEASURED on both platforms (Linux here; Windows per the lead's
+    // probe — VALIDATION.md + windows-evidence/j9-web-probe.json on their side): for
+    // THIS DWG, LibreDWG returns compatibility flag 64 for the native read, so the
+    // checked native metadata projection is rejected and JCad imports through the
+    // fallback reader on Windows exactly as on the Linux WASM path. Unlike
+    // N1/Q10/Q13 — whose Windows projections attach — no cadGraph is retained here
+    // on either platform, so the associative constraint web is lost with it on the
+    // DWG path (the DXF path retains it in full; J1). These assertions are
+    // unconditional: if a graph ever appears on this path, this test must FAIL,
+    // not branch.
+    expect(state.cadGraph).toBeUndefined();
     const items = importReportOf(state)?.items ?? [];
-    const omission = items.some((i) => i.type === 'XDATA' && i.action === 'unsupported' && i.reason.includes('dynamic parameters'));
-    if (graph === undefined) {
-      // Shape A — Linux LibreDWG WASM fallback (this platform): no object graph is
-      // retained at all — the whole constraint web is lost with it — and the
-      // XDATA-omission item is the report trace of the loss.
-      expect(graph).toBeUndefined();
-      expect(omission).toBe(true);
-    } else {
-      // Shape B — Windows native path (BY ANALOGY, UNMEASURED for Q12): graph present,
-      // schema 1, HEADER first ($ACADVER = AC1032), the constraint-web kinds among the
-      // raw-anchored nodes; no omission item.
-      expect(graph.schema).toBe(1);
-      expect(graph.nodes.length).toBeGreaterThan(0);
-      const first = graph.nodes[0]!;
-      expect(first.anchor?.kind).toBe('raw');
-      expect(first.type).toBe('HEADER');
-      expect(first.groups[0]).toEqual([9, '$ACADVER']);
-      expect(first.groups[1]).toEqual([1, 'AC1032']);
-      const rawTypes = new Set(graph.nodes.filter((n) => n.anchor?.kind === 'raw').map((n) => n.type));
-      for (const kind of WEB_KINDS) expect(rawTypes.has(kind), kind).toBe(true);
-      expect(omission).toBe(false);
+    // The fallback reader's trace of the loss, present on both platforms: the
+    // generic XDATA-omission item (its reason names dynamic parameters).
+    expect(items.some((i) => i.type === 'XDATA' && i.action === 'unsupported' && i.reason.includes('dynamic parameters'))).toBe(true);
+    if (process.platform === 'win32') {
+      // win32 only: the rejected projection additionally leaves a CAD_METADATA
+      // 'unsupported' item whose reason carries the decoder's compatibility-flags
+      // note (the rejection item in convertDwg, src/io/dwg.ts; the flags text is
+      // produced by scripts/dwg-native-metadata.mjs when the read reports flags).
+      // On Linux the payload carries no native metadata at all, so no such item
+      // can exist there (the Q12 recon report contains zero CAD_METADATA items)
+      // and nothing is asserted about it off win32.
+      const metadataItem = items.find((i) => i.type === 'CAD_METADATA' && i.action === 'unsupported');
+      expect(metadataItem).toBeDefined();
+      expect(metadataItem!.reason).toContain('compatibility flags 64');
     }
   });
 
-  it('J9 measured DWG invariant (dynamic/constraint state): the web, absent or raw-preserved, is never decoded into dynamic or constraint state', () => {
+  it('J9 measured DWG invariant (dynamic/constraint state): the unretained web is never decoded into dynamic or constraint state', () => {
     for (const block of Object.values(state.blocks)) {
       expect(block.dynamic).toBeUndefined();
       expect(block.dynamicRetained).toBeUndefined();
