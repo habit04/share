@@ -1,0 +1,2881 @@
+{
+  "check": "C1",
+  "note": "run on a throwaway open copy of the saved DWG; never saved",
+  "before": {
+    "note": "HANDBUILT dynamic objects; AutoCAD headless evaluation",
+    "acadver": "26.0",
+    "file": "C:\\Users\\justi\\Chad\\.codex-local\\p30-native-q13-20261018\\final\\checks\\copy-C1.dwg",
+    "originalFileVersion": "AC1032",
+    "insunits": "Inches",
+    "definitionIsDynamic": true,
+    "definitionHasXDictionary": true,
+    "definitionEntities": [
+      {
+        "type": "LWPOLYLINE",
+        "handle": "267",
+        "layer": "0",
+        "color": "BYLAYER",
+        "closed": true,
+        "vertices": [
+          [
+            0,
+            0
+          ],
+          [
+            180,
+            0
+          ],
+          [
+            180,
+            60
+          ],
+          [
+            0,
+            60
+          ]
+        ],
+        "constantWidth": 0
+      },
+      {
+        "type": "CIRCLE",
+        "handle": "268",
+        "layer": "0",
+        "color": "BYLAYER",
+        "center": [
+          20,
+          30,
+          0
+        ],
+        "radius": 5
+      },
+      {
+        "type": "LINE",
+        "handle": "269",
+        "layer": "0",
+        "color": "BYLAYER",
+        "start": [
+          150,
+          10,
+          0
+        ],
+        "end": [
+          170,
+          25,
+          0
+        ]
+      },
+      {
+        "type": "ATTDEF",
+        "handle": "26A",
+        "layer": "0",
+        "color": "BYLAYER",
+        "tag": "TAG1",
+        "prompt": "Plate ID",
+        "default": "P-100",
+        "position": [
+          10,
+          45,
+          0
+        ],
+        "height": 5,
+        "rotationDeg": 0,
+        "justify": "BaseLeft",
+        "style": "Standard",
+        "invisible": false,
+        "constant": false,
+        "verify": false,
+        "preset": false,
+        "lockPositionInBlock": true
+      }
+    ],
+    "definitionXData": [
+      [
+        1001,
+        "AcDbBlockRepETag"
+      ],
+      [
+        1070,
+        "1"
+      ],
+      [
+        1071,
+        "4"
+      ],
+      [
+        1001,
+        "AcDbDynamicBlockTrueName"
+      ],
+      [
+        1000,
+        "P30_LINEAR_ARRAY"
+      ],
+      [
+        1001,
+        "AcDbDynamicBlockGUID"
+      ],
+      [
+        1000,
+        "{726771F3-311C-5640-933E-14B032F966DC}"
+      ]
+    ],
+    "instances": [
+      {
+        "instance": "A",
+        "handle": "27C",
+        "blockName": "P30_LINEAR_ARRAY",
+        "isAnonymous": false,
+        "effectiveName": "P30_LINEAR_ARRAY",
+        "isDynamicBlock": true,
+        "insertion": [
+          0,
+          0,
+          0
+        ],
+        "rotationDeg": 0,
+        "scale": [
+          1,
+          1,
+          1
+        ],
+        "properties": [
+          {
+            "name": "Distance1",
+            "value": 60,
+            "readOnly": false,
+            "allowed": [
+              55,
+              60,
+              135
+            ],
+            "units": "Distance",
+            "description": ""
+          },
+          {
+            "name": "Origin",
+            "value": {
+              "Z": 0,
+              "Y": 30,
+              "X": 0
+            },
+            "readOnly": true,
+            "allowed": [],
+            "units": "NoUnits",
+            "description": ""
+          }
+        ],
+        "extents": [
+          [
+            0,
+            0,
+            0
+          ],
+          [
+            180,
+            60,
+            0
+          ]
+        ],
+        "blockEntities": [
+          {
+            "type": "LWPOLYLINE",
+            "handle": "267",
+            "layer": "0",
+            "color": "BYLAYER",
+            "closed": true,
+            "vertices": [
+              [
+                0,
+                0
+              ],
+              [
+                180,
+                0
+              ],
+              [
+                180,
+                60
+              ],
+              [
+                0,
+                60
+              ]
+            ],
+            "constantWidth": 0
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "268",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              20,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "LINE",
+            "handle": "269",
+            "layer": "0",
+            "color": "BYLAYER",
+            "start": [
+              150,
+              10,
+              0
+            ],
+            "end": [
+              170,
+              25,
+              0
+            ]
+          },
+          {
+            "type": "ATTDEF",
+            "handle": "26A",
+            "layer": "0",
+            "color": "BYLAYER",
+            "tag": "TAG1",
+            "prompt": "Plate ID",
+            "default": "P-100",
+            "position": [
+              10,
+              45,
+              0
+            ],
+            "height": 5,
+            "rotationDeg": 0,
+            "justify": "BaseLeft",
+            "style": "Standard",
+            "invisible": false,
+            "constant": false,
+            "verify": false,
+            "preset": false,
+            "lockPositionInBlock": true
+          }
+        ],
+        "attributes": [
+          {
+            "tag": "TAG1",
+            "text": "P-100",
+            "position": [
+              10,
+              45,
+              0
+            ],
+            "lockPositionInBlock": true
+          }
+        ],
+        "arrayFeature": {
+          "count": 1,
+          "centersDef": [
+            [
+              20,
+              30
+            ]
+          ],
+          "lastOffset": 0,
+          "lastOffsetNote": "x of last circle centre minus x of first, measured in the referenced record"
+        },
+        "insertXData": []
+      },
+      {
+        "instance": "B",
+        "handle": "27F",
+        "blockName": "*U2",
+        "isAnonymous": true,
+        "effectiveName": "P30_LINEAR_ARRAY",
+        "isDynamicBlock": true,
+        "insertion": [
+          240,
+          0,
+          0
+        ],
+        "rotationDeg": 0,
+        "scale": [
+          1,
+          1,
+          1
+        ],
+        "properties": [
+          {
+            "name": "Distance1",
+            "value": 135,
+            "readOnly": false,
+            "allowed": [
+              55,
+              60,
+              135
+            ],
+            "units": "Distance",
+            "description": ""
+          },
+          {
+            "name": "Origin",
+            "value": {
+              "Z": 0,
+              "Y": 30,
+              "X": 0
+            },
+            "readOnly": true,
+            "allowed": [],
+            "units": "NoUnits",
+            "description": ""
+          }
+        ],
+        "extents": [
+          [
+            240,
+            0,
+            0
+          ],
+          [
+            420,
+            60,
+            0
+          ]
+        ],
+        "blockEntities": [
+          {
+            "type": "LWPOLYLINE",
+            "handle": "287",
+            "layer": "0",
+            "color": "BYLAYER",
+            "closed": true,
+            "vertices": [
+              [
+                0,
+                0
+              ],
+              [
+                180,
+                0
+              ],
+              [
+                180,
+                60
+              ],
+              [
+                0,
+                60
+              ]
+            ],
+            "constantWidth": 0
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "288",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              20,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "LINE",
+            "handle": "289",
+            "layer": "0",
+            "color": "BYLAYER",
+            "start": [
+              150,
+              10,
+              0
+            ],
+            "end": [
+              170,
+              25,
+              0
+            ]
+          },
+          {
+            "type": "ATTDEF",
+            "handle": "28A",
+            "layer": "0",
+            "color": "BYLAYER",
+            "tag": "TAG1",
+            "prompt": "Plate ID",
+            "default": "P-100",
+            "position": [
+              10,
+              45,
+              0
+            ],
+            "height": 5,
+            "rotationDeg": 0,
+            "justify": "BaseLeft",
+            "style": "Standard",
+            "invisible": false,
+            "constant": false,
+            "verify": false,
+            "preset": false,
+            "lockPositionInBlock": true
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "28F",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              40,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "291",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              60,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "292",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              80,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "293",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              100,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "294",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              120,
+              30,
+              0
+            ],
+            "radius": 5
+          }
+        ],
+        "attributes": [
+          {
+            "tag": "TAG1",
+            "text": "P-100",
+            "position": [
+              250,
+              45,
+              0
+            ],
+            "lockPositionInBlock": true
+          }
+        ],
+        "arrayFeature": {
+          "count": 6,
+          "centersDef": [
+            [
+              20,
+              30
+            ],
+            [
+              40,
+              30
+            ],
+            [
+              60,
+              30
+            ],
+            [
+              80,
+              30
+            ],
+            [
+              100,
+              30
+            ],
+            [
+              120,
+              30
+            ]
+          ],
+          "lastOffset": 100,
+          "lastOffsetNote": "x of last circle centre minus x of first, measured in the referenced record"
+        },
+        "insertXData": []
+      },
+      {
+        "instance": "C",
+        "handle": "29A",
+        "blockName": "*U2",
+        "isAnonymous": true,
+        "effectiveName": "P30_LINEAR_ARRAY",
+        "isDynamicBlock": true,
+        "insertion": [
+          480,
+          0,
+          0
+        ],
+        "rotationDeg": 29.999999999999996,
+        "scale": [
+          1,
+          1,
+          1
+        ],
+        "properties": [
+          {
+            "name": "Distance1",
+            "value": 135,
+            "readOnly": false,
+            "allowed": [
+              55,
+              60,
+              135
+            ],
+            "units": "Distance",
+            "description": ""
+          },
+          {
+            "name": "Origin",
+            "value": {
+              "Z": 0,
+              "Y": 30,
+              "X": 0
+            },
+            "readOnly": true,
+            "allowed": [],
+            "units": "NoUnits",
+            "description": ""
+          }
+        ],
+        "extents": [
+          [
+            450,
+            0,
+            0
+          ],
+          [
+            635.884572681199,
+            141.96152422706632,
+            0
+          ]
+        ],
+        "blockEntities": [
+          {
+            "type": "LWPOLYLINE",
+            "handle": "287",
+            "layer": "0",
+            "color": "BYLAYER",
+            "closed": true,
+            "vertices": [
+              [
+                0,
+                0
+              ],
+              [
+                180,
+                0
+              ],
+              [
+                180,
+                60
+              ],
+              [
+                0,
+                60
+              ]
+            ],
+            "constantWidth": 0
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "288",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              20,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "LINE",
+            "handle": "289",
+            "layer": "0",
+            "color": "BYLAYER",
+            "start": [
+              150,
+              10,
+              0
+            ],
+            "end": [
+              170,
+              25,
+              0
+            ]
+          },
+          {
+            "type": "ATTDEF",
+            "handle": "28A",
+            "layer": "0",
+            "color": "BYLAYER",
+            "tag": "TAG1",
+            "prompt": "Plate ID",
+            "default": "P-100",
+            "position": [
+              10,
+              45,
+              0
+            ],
+            "height": 5,
+            "rotationDeg": 0,
+            "justify": "BaseLeft",
+            "style": "Standard",
+            "invisible": false,
+            "constant": false,
+            "verify": false,
+            "preset": false,
+            "lockPositionInBlock": true
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "28F",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              40,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "291",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              60,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "292",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              80,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "293",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              100,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "294",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              120,
+              30,
+              0
+            ],
+            "radius": 5
+          }
+        ],
+        "attributes": [
+          {
+            "tag": "TAG1",
+            "text": "P-100",
+            "position": [
+              466.16025403784437,
+              43.97114317029974,
+              0
+            ],
+            "lockPositionInBlock": true
+          }
+        ],
+        "arrayFeature": {
+          "count": 6,
+          "centersDef": [
+            [
+              20,
+              30
+            ],
+            [
+              40,
+              30
+            ],
+            [
+              60,
+              30
+            ],
+            [
+              80,
+              30
+            ],
+            [
+              100,
+              30
+            ],
+            [
+              120,
+              30
+            ]
+          ],
+          "lastOffset": 100,
+          "lastOffsetNote": "x of last circle centre minus x of first, measured in the referenced record"
+        },
+        "insertXData": []
+      },
+      {
+        "instance": "D",
+        "handle": "2B2",
+        "blockName": "*U4",
+        "isAnonymous": true,
+        "effectiveName": "P30_LINEAR_ARRAY",
+        "isDynamicBlock": true,
+        "insertion": [
+          700,
+          0,
+          0
+        ],
+        "rotationDeg": 0,
+        "scale": [
+          1,
+          1,
+          1
+        ],
+        "properties": [
+          {
+            "name": "Distance1",
+            "value": 55,
+            "readOnly": false,
+            "allowed": [
+              55,
+              60,
+              135
+            ],
+            "units": "Distance",
+            "description": ""
+          },
+          {
+            "name": "Origin",
+            "value": {
+              "Z": 0,
+              "Y": 30,
+              "X": 0
+            },
+            "readOnly": true,
+            "allowed": [],
+            "units": "NoUnits",
+            "description": ""
+          }
+        ],
+        "extents": [
+          [
+            700,
+            0,
+            0
+          ],
+          [
+            880,
+            60,
+            0
+          ]
+        ],
+        "blockEntities": [
+          {
+            "type": "LWPOLYLINE",
+            "handle": "2B8",
+            "layer": "0",
+            "color": "BYLAYER",
+            "closed": true,
+            "vertices": [
+              [
+                0,
+                0
+              ],
+              [
+                180,
+                0
+              ],
+              [
+                180,
+                60
+              ],
+              [
+                0,
+                60
+              ]
+            ],
+            "constantWidth": 0
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "2B9",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              20,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "LINE",
+            "handle": "2BA",
+            "layer": "0",
+            "color": "BYLAYER",
+            "start": [
+              150,
+              10,
+              0
+            ],
+            "end": [
+              170,
+              25,
+              0
+            ]
+          },
+          {
+            "type": "ATTDEF",
+            "handle": "2BB",
+            "layer": "0",
+            "color": "BYLAYER",
+            "tag": "TAG1",
+            "prompt": "Plate ID",
+            "default": "P-100",
+            "position": [
+              10,
+              45,
+              0
+            ],
+            "height": 5,
+            "rotationDeg": 0,
+            "justify": "BaseLeft",
+            "style": "Standard",
+            "invisible": false,
+            "constant": false,
+            "verify": false,
+            "preset": false,
+            "lockPositionInBlock": true
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "2C0",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              40,
+              30,
+              0
+            ],
+            "radius": 5
+          }
+        ],
+        "attributes": [
+          {
+            "tag": "TAG1",
+            "text": "P-100",
+            "position": [
+              710,
+              45,
+              0
+            ],
+            "lockPositionInBlock": true
+          }
+        ],
+        "arrayFeature": {
+          "count": 2,
+          "centersDef": [
+            [
+              20,
+              30
+            ],
+            [
+              40,
+              30
+            ]
+          ],
+          "lastOffset": 20,
+          "lastOffsetNote": "x of last circle centre minus x of first, measured in the referenced record"
+        },
+        "insertXData": []
+      }
+    ],
+    "anonymousRecords": [
+      {
+        "name": "*U2",
+        "referencedByInstances": [
+          "B",
+          "C"
+        ],
+        "holeCount": 6,
+        "linkBack": [
+          [
+            1001,
+            "AcDbBlockRepBTag"
+          ],
+          [
+            1070,
+            "1"
+          ],
+          [
+            1005,
+            "265"
+          ]
+        ]
+      },
+      {
+        "name": "*U4",
+        "referencedByInstances": [
+          "D"
+        ],
+        "holeCount": 2,
+        "linkBack": [
+          [
+            1001,
+            "AcDbBlockRepBTag"
+          ],
+          [
+            1070,
+            "1"
+          ],
+          [
+            1005,
+            "265"
+          ]
+        ]
+      }
+    ],
+    "blockRecords": [
+      {
+        "name": "P30_LINEAR_ARRAY",
+        "handle": "265",
+        "isAnonymous": false,
+        "isDynamic": true,
+        "hasXDictionary": true,
+        "referencedByInstances": [
+          "A"
+        ],
+        "holeCount": 1,
+        "entityCount": 4,
+        "xdata": [
+          [
+            1001,
+            "AcDbBlockRepETag"
+          ],
+          [
+            1070,
+            "1"
+          ],
+          [
+            1071,
+            "4"
+          ],
+          [
+            1001,
+            "AcDbDynamicBlockTrueName"
+          ],
+          [
+            1000,
+            "P30_LINEAR_ARRAY"
+          ],
+          [
+            1001,
+            "AcDbDynamicBlockGUID"
+          ],
+          [
+            1000,
+            "{726771F3-311C-5640-933E-14B032F966DC}"
+          ]
+        ],
+        "entities": [
+          {
+            "type": "LWPOLYLINE",
+            "handle": "267",
+            "layer": "0",
+            "color": "BYLAYER",
+            "closed": true,
+            "vertices": [
+              [
+                0,
+                0
+              ],
+              [
+                180,
+                0
+              ],
+              [
+                180,
+                60
+              ],
+              [
+                0,
+                60
+              ]
+            ],
+            "constantWidth": 0
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "268",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              20,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "LINE",
+            "handle": "269",
+            "layer": "0",
+            "color": "BYLAYER",
+            "start": [
+              150,
+              10,
+              0
+            ],
+            "end": [
+              170,
+              25,
+              0
+            ]
+          },
+          {
+            "type": "ATTDEF",
+            "handle": "26A",
+            "layer": "0",
+            "color": "BYLAYER",
+            "tag": "TAG1",
+            "prompt": "Plate ID",
+            "default": "P-100",
+            "position": [
+              10,
+              45,
+              0
+            ],
+            "height": 5,
+            "rotationDeg": 0,
+            "justify": "BaseLeft",
+            "style": "Standard",
+            "invisible": false,
+            "constant": false,
+            "verify": false,
+            "preset": false,
+            "lockPositionInBlock": true
+          }
+        ]
+      },
+      {
+        "name": "*U2",
+        "handle": "282",
+        "isAnonymous": true,
+        "isDynamic": false,
+        "hasXDictionary": true,
+        "referencedByInstances": [
+          "B",
+          "C"
+        ],
+        "holeCount": 6,
+        "entityCount": 9,
+        "xdata": [
+          [
+            1001,
+            "AcDbBlockRepBTag"
+          ],
+          [
+            1070,
+            "1"
+          ],
+          [
+            1005,
+            "265"
+          ]
+        ],
+        "entities": [
+          {
+            "type": "LWPOLYLINE",
+            "handle": "287",
+            "layer": "0",
+            "color": "BYLAYER",
+            "closed": true,
+            "vertices": [
+              [
+                0,
+                0
+              ],
+              [
+                180,
+                0
+              ],
+              [
+                180,
+                60
+              ],
+              [
+                0,
+                60
+              ]
+            ],
+            "constantWidth": 0
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "288",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              20,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "LINE",
+            "handle": "289",
+            "layer": "0",
+            "color": "BYLAYER",
+            "start": [
+              150,
+              10,
+              0
+            ],
+            "end": [
+              170,
+              25,
+              0
+            ]
+          },
+          {
+            "type": "ATTDEF",
+            "handle": "28A",
+            "layer": "0",
+            "color": "BYLAYER",
+            "tag": "TAG1",
+            "prompt": "Plate ID",
+            "default": "P-100",
+            "position": [
+              10,
+              45,
+              0
+            ],
+            "height": 5,
+            "rotationDeg": 0,
+            "justify": "BaseLeft",
+            "style": "Standard",
+            "invisible": false,
+            "constant": false,
+            "verify": false,
+            "preset": false,
+            "lockPositionInBlock": true
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "28F",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              40,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "291",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              60,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "292",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              80,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "293",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              100,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "294",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              120,
+              30,
+              0
+            ],
+            "radius": 5
+          }
+        ]
+      },
+      {
+        "name": "*U4",
+        "handle": "2B5",
+        "isAnonymous": true,
+        "isDynamic": false,
+        "hasXDictionary": true,
+        "referencedByInstances": [
+          "D"
+        ],
+        "holeCount": 2,
+        "entityCount": 5,
+        "xdata": [
+          [
+            1001,
+            "AcDbBlockRepBTag"
+          ],
+          [
+            1070,
+            "1"
+          ],
+          [
+            1005,
+            "265"
+          ]
+        ],
+        "entities": [
+          {
+            "type": "LWPOLYLINE",
+            "handle": "2B8",
+            "layer": "0",
+            "color": "BYLAYER",
+            "closed": true,
+            "vertices": [
+              [
+                0,
+                0
+              ],
+              [
+                180,
+                0
+              ],
+              [
+                180,
+                60
+              ],
+              [
+                0,
+                60
+              ]
+            ],
+            "constantWidth": 0
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "2B9",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              20,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "LINE",
+            "handle": "2BA",
+            "layer": "0",
+            "color": "BYLAYER",
+            "start": [
+              150,
+              10,
+              0
+            ],
+            "end": [
+              170,
+              25,
+              0
+            ]
+          },
+          {
+            "type": "ATTDEF",
+            "handle": "2BB",
+            "layer": "0",
+            "color": "BYLAYER",
+            "tag": "TAG1",
+            "prompt": "Plate ID",
+            "default": "P-100",
+            "position": [
+              10,
+              45,
+              0
+            ],
+            "height": 5,
+            "rotationDeg": 0,
+            "justify": "BaseLeft",
+            "style": "Standard",
+            "invisible": false,
+            "constant": false,
+            "verify": false,
+            "preset": false,
+            "lockPositionInBlock": true
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "2C0",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              40,
+              30,
+              0
+            ],
+            "radius": 5
+          }
+        ]
+      }
+    ]
+  },
+  "log": [
+    "B Distance1 := 60 ok"
+  ],
+  "after": {
+    "note": "HANDBUILT dynamic objects; AutoCAD headless evaluation",
+    "acadver": "26.0",
+    "file": "C:\\Users\\justi\\Chad\\.codex-local\\p30-native-q13-20261018\\final\\checks\\copy-C1.dwg",
+    "originalFileVersion": "AC1032",
+    "insunits": "Inches",
+    "definitionIsDynamic": true,
+    "definitionHasXDictionary": true,
+    "definitionEntities": [
+      {
+        "type": "LWPOLYLINE",
+        "handle": "267",
+        "layer": "0",
+        "color": "BYLAYER",
+        "closed": true,
+        "vertices": [
+          [
+            0,
+            0
+          ],
+          [
+            180,
+            0
+          ],
+          [
+            180,
+            60
+          ],
+          [
+            0,
+            60
+          ]
+        ],
+        "constantWidth": 0
+      },
+      {
+        "type": "CIRCLE",
+        "handle": "268",
+        "layer": "0",
+        "color": "BYLAYER",
+        "center": [
+          20,
+          30,
+          0
+        ],
+        "radius": 5
+      },
+      {
+        "type": "LINE",
+        "handle": "269",
+        "layer": "0",
+        "color": "BYLAYER",
+        "start": [
+          150,
+          10,
+          0
+        ],
+        "end": [
+          170,
+          25,
+          0
+        ]
+      },
+      {
+        "type": "ATTDEF",
+        "handle": "26A",
+        "layer": "0",
+        "color": "BYLAYER",
+        "tag": "TAG1",
+        "prompt": "Plate ID",
+        "default": "P-100",
+        "position": [
+          10,
+          45,
+          0
+        ],
+        "height": 5,
+        "rotationDeg": 0,
+        "justify": "BaseLeft",
+        "style": "Standard",
+        "invisible": false,
+        "constant": false,
+        "verify": false,
+        "preset": false,
+        "lockPositionInBlock": true
+      }
+    ],
+    "definitionXData": [
+      [
+        1001,
+        "AcDbBlockRepETag"
+      ],
+      [
+        1070,
+        "1"
+      ],
+      [
+        1071,
+        "4"
+      ],
+      [
+        1001,
+        "AcDbDynamicBlockTrueName"
+      ],
+      [
+        1000,
+        "P30_LINEAR_ARRAY"
+      ],
+      [
+        1001,
+        "AcDbDynamicBlockGUID"
+      ],
+      [
+        1000,
+        "{726771F3-311C-5640-933E-14B032F966DC}"
+      ]
+    ],
+    "instances": [
+      {
+        "instance": "A",
+        "handle": "27C",
+        "blockName": "P30_LINEAR_ARRAY",
+        "isAnonymous": false,
+        "effectiveName": "P30_LINEAR_ARRAY",
+        "isDynamicBlock": true,
+        "insertion": [
+          0,
+          0,
+          0
+        ],
+        "rotationDeg": 0,
+        "scale": [
+          1,
+          1,
+          1
+        ],
+        "properties": [
+          {
+            "name": "Distance1",
+            "value": 60,
+            "readOnly": false,
+            "allowed": [
+              55,
+              60,
+              135
+            ],
+            "units": "Distance",
+            "description": ""
+          },
+          {
+            "name": "Origin",
+            "value": {
+              "Z": 0,
+              "Y": 30,
+              "X": 0
+            },
+            "readOnly": true,
+            "allowed": [],
+            "units": "NoUnits",
+            "description": ""
+          }
+        ],
+        "extents": [
+          [
+            0,
+            0,
+            0
+          ],
+          [
+            180,
+            60,
+            0
+          ]
+        ],
+        "blockEntities": [
+          {
+            "type": "LWPOLYLINE",
+            "handle": "267",
+            "layer": "0",
+            "color": "BYLAYER",
+            "closed": true,
+            "vertices": [
+              [
+                0,
+                0
+              ],
+              [
+                180,
+                0
+              ],
+              [
+                180,
+                60
+              ],
+              [
+                0,
+                60
+              ]
+            ],
+            "constantWidth": 0
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "268",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              20,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "LINE",
+            "handle": "269",
+            "layer": "0",
+            "color": "BYLAYER",
+            "start": [
+              150,
+              10,
+              0
+            ],
+            "end": [
+              170,
+              25,
+              0
+            ]
+          },
+          {
+            "type": "ATTDEF",
+            "handle": "26A",
+            "layer": "0",
+            "color": "BYLAYER",
+            "tag": "TAG1",
+            "prompt": "Plate ID",
+            "default": "P-100",
+            "position": [
+              10,
+              45,
+              0
+            ],
+            "height": 5,
+            "rotationDeg": 0,
+            "justify": "BaseLeft",
+            "style": "Standard",
+            "invisible": false,
+            "constant": false,
+            "verify": false,
+            "preset": false,
+            "lockPositionInBlock": true
+          }
+        ],
+        "attributes": [
+          {
+            "tag": "TAG1",
+            "text": "P-100",
+            "position": [
+              10,
+              45,
+              0
+            ],
+            "lockPositionInBlock": true
+          }
+        ],
+        "arrayFeature": {
+          "count": 1,
+          "centersDef": [
+            [
+              20,
+              30
+            ]
+          ],
+          "lastOffset": 0,
+          "lastOffsetNote": "x of last circle centre minus x of first, measured in the referenced record"
+        },
+        "insertXData": []
+      },
+      {
+        "instance": "B",
+        "handle": "27F",
+        "blockName": "*U5",
+        "isAnonymous": true,
+        "effectiveName": "P30_LINEAR_ARRAY",
+        "isDynamicBlock": true,
+        "insertion": [
+          240,
+          0,
+          0
+        ],
+        "rotationDeg": 0,
+        "scale": [
+          1,
+          1,
+          1
+        ],
+        "properties": [
+          {
+            "name": "Distance1",
+            "value": 60,
+            "readOnly": false,
+            "allowed": [
+              55,
+              60,
+              135
+            ],
+            "units": "Distance",
+            "description": ""
+          },
+          {
+            "name": "Origin",
+            "value": {
+              "Z": 0,
+              "Y": 30,
+              "X": 0
+            },
+            "readOnly": true,
+            "allowed": [],
+            "units": "NoUnits",
+            "description": ""
+          }
+        ],
+        "extents": [
+          [
+            240,
+            0,
+            0
+          ],
+          [
+            420,
+            60,
+            0
+          ]
+        ],
+        "blockEntities": [
+          {
+            "type": "LWPOLYLINE",
+            "handle": "2D4",
+            "layer": "0",
+            "color": "BYLAYER",
+            "closed": true,
+            "vertices": [
+              [
+                0,
+                0
+              ],
+              [
+                180,
+                0
+              ],
+              [
+                180,
+                60
+              ],
+              [
+                0,
+                60
+              ]
+            ],
+            "constantWidth": 0
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "2D5",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              20,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "LINE",
+            "handle": "2D6",
+            "layer": "0",
+            "color": "BYLAYER",
+            "start": [
+              150,
+              10,
+              0
+            ],
+            "end": [
+              170,
+              25,
+              0
+            ]
+          },
+          {
+            "type": "ATTDEF",
+            "handle": "2D7",
+            "layer": "0",
+            "color": "BYLAYER",
+            "tag": "TAG1",
+            "prompt": "Plate ID",
+            "default": "P-100",
+            "position": [
+              10,
+              45,
+              0
+            ],
+            "height": 5,
+            "rotationDeg": 0,
+            "justify": "BaseLeft",
+            "style": "Standard",
+            "invisible": false,
+            "constant": false,
+            "verify": false,
+            "preset": false,
+            "lockPositionInBlock": true
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "2DE",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              40,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "2DF",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              60,
+              30,
+              0
+            ],
+            "radius": 5
+          }
+        ],
+        "attributes": [
+          {
+            "tag": "TAG1",
+            "text": "P-100",
+            "position": [
+              250,
+              45,
+              0
+            ],
+            "lockPositionInBlock": true
+          }
+        ],
+        "arrayFeature": {
+          "count": 3,
+          "centersDef": [
+            [
+              20,
+              30
+            ],
+            [
+              40,
+              30
+            ],
+            [
+              60,
+              30
+            ]
+          ],
+          "lastOffset": 40,
+          "lastOffsetNote": "x of last circle centre minus x of first, measured in the referenced record"
+        },
+        "insertXData": []
+      },
+      {
+        "instance": "C",
+        "handle": "29A",
+        "blockName": "*U2",
+        "isAnonymous": true,
+        "effectiveName": "P30_LINEAR_ARRAY",
+        "isDynamicBlock": true,
+        "insertion": [
+          480,
+          0,
+          0
+        ],
+        "rotationDeg": 29.999999999999996,
+        "scale": [
+          1,
+          1,
+          1
+        ],
+        "properties": [
+          {
+            "name": "Distance1",
+            "value": 135,
+            "readOnly": false,
+            "allowed": [
+              55,
+              60,
+              135
+            ],
+            "units": "Distance",
+            "description": ""
+          },
+          {
+            "name": "Origin",
+            "value": {
+              "Z": 0,
+              "Y": 30,
+              "X": 0
+            },
+            "readOnly": true,
+            "allowed": [],
+            "units": "NoUnits",
+            "description": ""
+          }
+        ],
+        "extents": [
+          [
+            450,
+            0,
+            0
+          ],
+          [
+            635.884572681199,
+            141.96152422706632,
+            0
+          ]
+        ],
+        "blockEntities": [
+          {
+            "type": "LWPOLYLINE",
+            "handle": "287",
+            "layer": "0",
+            "color": "BYLAYER",
+            "closed": true,
+            "vertices": [
+              [
+                0,
+                0
+              ],
+              [
+                180,
+                0
+              ],
+              [
+                180,
+                60
+              ],
+              [
+                0,
+                60
+              ]
+            ],
+            "constantWidth": 0
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "288",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              20,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "LINE",
+            "handle": "289",
+            "layer": "0",
+            "color": "BYLAYER",
+            "start": [
+              150,
+              10,
+              0
+            ],
+            "end": [
+              170,
+              25,
+              0
+            ]
+          },
+          {
+            "type": "ATTDEF",
+            "handle": "28A",
+            "layer": "0",
+            "color": "BYLAYER",
+            "tag": "TAG1",
+            "prompt": "Plate ID",
+            "default": "P-100",
+            "position": [
+              10,
+              45,
+              0
+            ],
+            "height": 5,
+            "rotationDeg": 0,
+            "justify": "BaseLeft",
+            "style": "Standard",
+            "invisible": false,
+            "constant": false,
+            "verify": false,
+            "preset": false,
+            "lockPositionInBlock": true
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "28F",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              40,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "291",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              60,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "292",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              80,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "293",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              100,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "294",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              120,
+              30,
+              0
+            ],
+            "radius": 5
+          }
+        ],
+        "attributes": [
+          {
+            "tag": "TAG1",
+            "text": "P-100",
+            "position": [
+              466.16025403784437,
+              43.97114317029974,
+              0
+            ],
+            "lockPositionInBlock": true
+          }
+        ],
+        "arrayFeature": {
+          "count": 6,
+          "centersDef": [
+            [
+              20,
+              30
+            ],
+            [
+              40,
+              30
+            ],
+            [
+              60,
+              30
+            ],
+            [
+              80,
+              30
+            ],
+            [
+              100,
+              30
+            ],
+            [
+              120,
+              30
+            ]
+          ],
+          "lastOffset": 100,
+          "lastOffsetNote": "x of last circle centre minus x of first, measured in the referenced record"
+        },
+        "insertXData": []
+      },
+      {
+        "instance": "D",
+        "handle": "2B2",
+        "blockName": "*U4",
+        "isAnonymous": true,
+        "effectiveName": "P30_LINEAR_ARRAY",
+        "isDynamicBlock": true,
+        "insertion": [
+          700,
+          0,
+          0
+        ],
+        "rotationDeg": 0,
+        "scale": [
+          1,
+          1,
+          1
+        ],
+        "properties": [
+          {
+            "name": "Distance1",
+            "value": 55,
+            "readOnly": false,
+            "allowed": [
+              55,
+              60,
+              135
+            ],
+            "units": "Distance",
+            "description": ""
+          },
+          {
+            "name": "Origin",
+            "value": {
+              "Z": 0,
+              "Y": 30,
+              "X": 0
+            },
+            "readOnly": true,
+            "allowed": [],
+            "units": "NoUnits",
+            "description": ""
+          }
+        ],
+        "extents": [
+          [
+            700,
+            0,
+            0
+          ],
+          [
+            880,
+            60,
+            0
+          ]
+        ],
+        "blockEntities": [
+          {
+            "type": "LWPOLYLINE",
+            "handle": "2B8",
+            "layer": "0",
+            "color": "BYLAYER",
+            "closed": true,
+            "vertices": [
+              [
+                0,
+                0
+              ],
+              [
+                180,
+                0
+              ],
+              [
+                180,
+                60
+              ],
+              [
+                0,
+                60
+              ]
+            ],
+            "constantWidth": 0
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "2B9",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              20,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "LINE",
+            "handle": "2BA",
+            "layer": "0",
+            "color": "BYLAYER",
+            "start": [
+              150,
+              10,
+              0
+            ],
+            "end": [
+              170,
+              25,
+              0
+            ]
+          },
+          {
+            "type": "ATTDEF",
+            "handle": "2BB",
+            "layer": "0",
+            "color": "BYLAYER",
+            "tag": "TAG1",
+            "prompt": "Plate ID",
+            "default": "P-100",
+            "position": [
+              10,
+              45,
+              0
+            ],
+            "height": 5,
+            "rotationDeg": 0,
+            "justify": "BaseLeft",
+            "style": "Standard",
+            "invisible": false,
+            "constant": false,
+            "verify": false,
+            "preset": false,
+            "lockPositionInBlock": true
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "2C0",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              40,
+              30,
+              0
+            ],
+            "radius": 5
+          }
+        ],
+        "attributes": [
+          {
+            "tag": "TAG1",
+            "text": "P-100",
+            "position": [
+              710,
+              45,
+              0
+            ],
+            "lockPositionInBlock": true
+          }
+        ],
+        "arrayFeature": {
+          "count": 2,
+          "centersDef": [
+            [
+              20,
+              30
+            ],
+            [
+              40,
+              30
+            ]
+          ],
+          "lastOffset": 20,
+          "lastOffsetNote": "x of last circle centre minus x of first, measured in the referenced record"
+        },
+        "insertXData": []
+      }
+    ],
+    "anonymousRecords": [
+      {
+        "name": "*U2",
+        "referencedByInstances": [
+          "C"
+        ],
+        "holeCount": 6,
+        "linkBack": [
+          [
+            1001,
+            "AcDbBlockRepBTag"
+          ],
+          [
+            1070,
+            "1"
+          ],
+          [
+            1005,
+            "265"
+          ]
+        ]
+      },
+      {
+        "name": "*U4",
+        "referencedByInstances": [
+          "D"
+        ],
+        "holeCount": 2,
+        "linkBack": [
+          [
+            1001,
+            "AcDbBlockRepBTag"
+          ],
+          [
+            1070,
+            "1"
+          ],
+          [
+            1005,
+            "265"
+          ]
+        ]
+      },
+      {
+        "name": "*U5",
+        "referencedByInstances": [
+          "B"
+        ],
+        "holeCount": 3,
+        "linkBack": [
+          [
+            1001,
+            "AcDbBlockRepBTag"
+          ],
+          [
+            1070,
+            "1"
+          ],
+          [
+            1005,
+            "265"
+          ]
+        ]
+      }
+    ],
+    "blockRecords": [
+      {
+        "name": "P30_LINEAR_ARRAY",
+        "handle": "265",
+        "isAnonymous": false,
+        "isDynamic": true,
+        "hasXDictionary": true,
+        "referencedByInstances": [
+          "A"
+        ],
+        "holeCount": 1,
+        "entityCount": 4,
+        "xdata": [
+          [
+            1001,
+            "AcDbBlockRepETag"
+          ],
+          [
+            1070,
+            "1"
+          ],
+          [
+            1071,
+            "4"
+          ],
+          [
+            1001,
+            "AcDbDynamicBlockTrueName"
+          ],
+          [
+            1000,
+            "P30_LINEAR_ARRAY"
+          ],
+          [
+            1001,
+            "AcDbDynamicBlockGUID"
+          ],
+          [
+            1000,
+            "{726771F3-311C-5640-933E-14B032F966DC}"
+          ]
+        ],
+        "entities": [
+          {
+            "type": "LWPOLYLINE",
+            "handle": "267",
+            "layer": "0",
+            "color": "BYLAYER",
+            "closed": true,
+            "vertices": [
+              [
+                0,
+                0
+              ],
+              [
+                180,
+                0
+              ],
+              [
+                180,
+                60
+              ],
+              [
+                0,
+                60
+              ]
+            ],
+            "constantWidth": 0
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "268",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              20,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "LINE",
+            "handle": "269",
+            "layer": "0",
+            "color": "BYLAYER",
+            "start": [
+              150,
+              10,
+              0
+            ],
+            "end": [
+              170,
+              25,
+              0
+            ]
+          },
+          {
+            "type": "ATTDEF",
+            "handle": "26A",
+            "layer": "0",
+            "color": "BYLAYER",
+            "tag": "TAG1",
+            "prompt": "Plate ID",
+            "default": "P-100",
+            "position": [
+              10,
+              45,
+              0
+            ],
+            "height": 5,
+            "rotationDeg": 0,
+            "justify": "BaseLeft",
+            "style": "Standard",
+            "invisible": false,
+            "constant": false,
+            "verify": false,
+            "preset": false,
+            "lockPositionInBlock": true
+          }
+        ]
+      },
+      {
+        "name": "*U2",
+        "handle": "282",
+        "isAnonymous": true,
+        "isDynamic": false,
+        "hasXDictionary": true,
+        "referencedByInstances": [
+          "C"
+        ],
+        "holeCount": 6,
+        "entityCount": 9,
+        "xdata": [
+          [
+            1001,
+            "AcDbBlockRepBTag"
+          ],
+          [
+            1070,
+            "1"
+          ],
+          [
+            1005,
+            "265"
+          ]
+        ],
+        "entities": [
+          {
+            "type": "LWPOLYLINE",
+            "handle": "287",
+            "layer": "0",
+            "color": "BYLAYER",
+            "closed": true,
+            "vertices": [
+              [
+                0,
+                0
+              ],
+              [
+                180,
+                0
+              ],
+              [
+                180,
+                60
+              ],
+              [
+                0,
+                60
+              ]
+            ],
+            "constantWidth": 0
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "288",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              20,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "LINE",
+            "handle": "289",
+            "layer": "0",
+            "color": "BYLAYER",
+            "start": [
+              150,
+              10,
+              0
+            ],
+            "end": [
+              170,
+              25,
+              0
+            ]
+          },
+          {
+            "type": "ATTDEF",
+            "handle": "28A",
+            "layer": "0",
+            "color": "BYLAYER",
+            "tag": "TAG1",
+            "prompt": "Plate ID",
+            "default": "P-100",
+            "position": [
+              10,
+              45,
+              0
+            ],
+            "height": 5,
+            "rotationDeg": 0,
+            "justify": "BaseLeft",
+            "style": "Standard",
+            "invisible": false,
+            "constant": false,
+            "verify": false,
+            "preset": false,
+            "lockPositionInBlock": true
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "28F",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              40,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "291",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              60,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "292",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              80,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "293",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              100,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "294",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              120,
+              30,
+              0
+            ],
+            "radius": 5
+          }
+        ]
+      },
+      {
+        "name": "*U4",
+        "handle": "2B5",
+        "isAnonymous": true,
+        "isDynamic": false,
+        "hasXDictionary": true,
+        "referencedByInstances": [
+          "D"
+        ],
+        "holeCount": 2,
+        "entityCount": 5,
+        "xdata": [
+          [
+            1001,
+            "AcDbBlockRepBTag"
+          ],
+          [
+            1070,
+            "1"
+          ],
+          [
+            1005,
+            "265"
+          ]
+        ],
+        "entities": [
+          {
+            "type": "LWPOLYLINE",
+            "handle": "2B8",
+            "layer": "0",
+            "color": "BYLAYER",
+            "closed": true,
+            "vertices": [
+              [
+                0,
+                0
+              ],
+              [
+                180,
+                0
+              ],
+              [
+                180,
+                60
+              ],
+              [
+                0,
+                60
+              ]
+            ],
+            "constantWidth": 0
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "2B9",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              20,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "LINE",
+            "handle": "2BA",
+            "layer": "0",
+            "color": "BYLAYER",
+            "start": [
+              150,
+              10,
+              0
+            ],
+            "end": [
+              170,
+              25,
+              0
+            ]
+          },
+          {
+            "type": "ATTDEF",
+            "handle": "2BB",
+            "layer": "0",
+            "color": "BYLAYER",
+            "tag": "TAG1",
+            "prompt": "Plate ID",
+            "default": "P-100",
+            "position": [
+              10,
+              45,
+              0
+            ],
+            "height": 5,
+            "rotationDeg": 0,
+            "justify": "BaseLeft",
+            "style": "Standard",
+            "invisible": false,
+            "constant": false,
+            "verify": false,
+            "preset": false,
+            "lockPositionInBlock": true
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "2C0",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              40,
+              30,
+              0
+            ],
+            "radius": 5
+          }
+        ]
+      },
+      {
+        "name": "*U5",
+        "handle": "2D1",
+        "isAnonymous": true,
+        "isDynamic": false,
+        "hasXDictionary": true,
+        "referencedByInstances": [
+          "B"
+        ],
+        "holeCount": 3,
+        "entityCount": 6,
+        "xdata": [
+          [
+            1001,
+            "AcDbBlockRepBTag"
+          ],
+          [
+            1070,
+            "1"
+          ],
+          [
+            1005,
+            "265"
+          ]
+        ],
+        "entities": [
+          {
+            "type": "LWPOLYLINE",
+            "handle": "2D4",
+            "layer": "0",
+            "color": "BYLAYER",
+            "closed": true,
+            "vertices": [
+              [
+                0,
+                0
+              ],
+              [
+                180,
+                0
+              ],
+              [
+                180,
+                60
+              ],
+              [
+                0,
+                60
+              ]
+            ],
+            "constantWidth": 0
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "2D5",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              20,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "LINE",
+            "handle": "2D6",
+            "layer": "0",
+            "color": "BYLAYER",
+            "start": [
+              150,
+              10,
+              0
+            ],
+            "end": [
+              170,
+              25,
+              0
+            ]
+          },
+          {
+            "type": "ATTDEF",
+            "handle": "2D7",
+            "layer": "0",
+            "color": "BYLAYER",
+            "tag": "TAG1",
+            "prompt": "Plate ID",
+            "default": "P-100",
+            "position": [
+              10,
+              45,
+              0
+            ],
+            "height": 5,
+            "rotationDeg": 0,
+            "justify": "BaseLeft",
+            "style": "Standard",
+            "invisible": false,
+            "constant": false,
+            "verify": false,
+            "preset": false,
+            "lockPositionInBlock": true
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "2DE",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              40,
+              30,
+              0
+            ],
+            "radius": 5
+          },
+          {
+            "type": "CIRCLE",
+            "handle": "2DF",
+            "layer": "0",
+            "color": "BYLAYER",
+            "center": [
+              60,
+              30,
+              0
+            ],
+            "radius": 5
+          }
+        ]
+      }
+    ]
+  }
+}
