@@ -35,6 +35,7 @@
 'use strict';
 const { createHash } = require('node:crypto');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { readWindowsPdfFont } = require('../pdf-font.cjs');
 const { verifyAssets, ASSETS } = require('./verify-assets.cjs');
 
@@ -100,7 +101,7 @@ function loadEngine() {
   if (enginePromise === null) {
     enginePromise = (async () => {
       verifyAssets();
-      const hb = await import(path.join(ASSETS, 'index.mjs'));
+      const hb = await import(pathToFileURL(path.join(ASSETS, 'index.mjs')).href);
       // The wrapper binds its wasm from beside the glue; touching the
       // version forces the lazy load inside this worker so a load
       // failure surfaces as this job's error, not a later trap.
