@@ -230,6 +230,17 @@ Tests: `tests/ai-draft-refine.test.ts`,
 `tests/ai-draft-panel-refine.test.ts`, plus refinement coverage added to
 the host, service, transport, IPC, bridge and live-provider suites.
 
+## Live provider checks (manual harness)
+
+A manual, in-app test harness (docs/AI-LIVE-CHECKS.md) can exercise the
+live provider paths end-to-end — probe, Ask, Draft, and a refinement
+built from the Draft check's actual validated plan — against a fixed
+synthetic drawing, using the key the user saved in Connection settings.
+It is an acceptance aid only: it runs solely on an explicit two-step
+confirmation inside the app, never in CI, returns its plans nowhere near
+the compiler or Apply, and persists nothing. The M4 contract above is
+unchanged by it.
+
 ## Limitations
 
 - Refinement quality is bounded by the provider: the renderer/host enforce
