@@ -80,6 +80,18 @@
 // below); `node scripts/e2e-xref-refresh.mjs --self-test-correlation`
 // runs its bookkeeping regression without Electron.
 //
+// Tab-removal precondition (section 3.5a): before the post-close
+// read, the harness proves the host tab is actually gone - the host
+// PATH and the host session's docId are both absent from the sessions
+// list. The count expectation is shape-aware: closing one of several
+// tabs drops the count by one, but closing the ONLY tab leaves the
+// count at 1, because SessionManager.close (src/app/sessions.ts)
+// replaces an emptied list with one fresh blank drawing (filePath
+// null, fresh docId). The decision is one pure function
+// (tabRemovalDecisionImpl below);
+// `node scripts/e2e-xref-refresh.mjs --self-test-tab-removal` runs
+// its regression without Electron.
+//
 //   npm run build
 //   node scripts/xref-native-fixtures.mjs <work-root>/fixtures
 //   node --experimental-strip-types scripts/e2e-xref-refresh.mjs \
@@ -88,6 +100,7 @@
 //     [--head <candidate-head>] [--tree <candidate-tree>]
 //   node scripts/e2e-xref-refresh.mjs --self-test-oracle
 //   node scripts/e2e-xref-refresh.mjs --self-test-correlation
+//   node scripts/e2e-xref-refresh.mjs --self-test-tab-removal
 //
 // Exit codes: 0 = every selected check passed and none blocked;
 // 1 = a check failed or a selected criterion is blocked;
@@ -245,6 +258,63 @@ if (process.argv.includes('--self-test-correlation')) {
     console.log(`${ok ? 'ok  ' : 'FAIL'} self-test-correlation ${name} (verdict=${got}, expected=${want})`);
   }
   console.log(`self-test-correlation: ${okAll ? 'PASS' : 'FAIL'}`);
+  process.exit(okAll ? 0 : 1);
+}
+
+// ------------------------------------------------------------ tab-removal precondition (section 3.5a)
+// The ONE decision for the 3.5a precondition "the host tab is
+// actually removed before the read". Pure: it decides only from the
+// pre-close capture { count, hostDocId, hostPath } (the 3.5 setup
+// evaluate) and the post-close capture { count, paths, docIds,
+// soleUntitled } (one evaluate after sessions.close). Removed means:
+//   the host path is absent from the post-close paths AND the host
+//   docId is absent from the post-close docIds, AND the count moved
+//   in one of the two truthful shapes:
+//   - normal: count === preCount - 1 (one of several tabs closed);
+//   - last tab: preCount === 1 and count === 1 with the sole
+//     remaining session untitled - SessionManager.close
+//     (src/app/sessions.ts) replaces an emptied list with one fresh
+//     blank drawing (filePath null, fresh docId), so the count does
+//     NOT drop when the only tab closes. (The docId-absence clause
+//     already requires that remaining session to be a different
+//     document than the host.)
+function tabRemovalDecisionImpl(pre, post) {
+  if (!pre || !post) return false;
+  if (typeof pre.hostDocId !== 'string' || pre.hostDocId === '') return false;
+  if (!Array.isArray(post.paths) || !Array.isArray(post.docIds)) return false;
+  if (post.paths.includes(pre.hostPath)) return false;
+  if (post.docIds.includes(pre.hostDocId)) return false;
+  if (post.count === pre.count - 1) return true;
+  if (pre.count === 1 && post.count === 1 && post.soleUntitled === true) return true;
+  return false;
+}
+
+// Tab-removal regression, runnable without Electron:
+//   node scripts/e2e-xref-refresh.mjs --self-test-tab-removal
+// Exit 0 only if tabRemovalDecisionImpl (the very function the live
+// 3.5a check uses) decides: normal close (one of several tabs) ->
+// removed; last-tab close (blank replacement) -> removed; host path
+// still listed -> NOT removed; host docId still listed -> NOT
+// removed; last-tab count but the remaining session is a file
+// session -> NOT removed.
+if (process.argv.includes('--self-test-tab-removal')) {
+  const HP = 'C:\\fx\\drawings\\host.dxf';
+  const pre3 = { count: 3, hostDocId: 'doc-host', hostPath: HP };
+  const pre1 = { count: 1, hostDocId: 'doc-host', hostPath: HP };
+  const cases = [
+    ['(a) normal shape (3 tabs -> 2, host path+docId absent) -> removed', tabRemovalDecisionImpl(pre3, { count: 2, paths: ['C:\\fx\\a.dxf', 'C:\\fx\\b.dxf'], docIds: ['doc-a', 'doc-b'], soleUntitled: false }), true],
+    ['(b) last-tab shape (1 -> 1, sole session a fresh untitled blank) -> removed', tabRemovalDecisionImpl(pre1, { count: 1, paths: [null], docIds: ['doc-blank'], soleUntitled: true }), true],
+    ['(c) host path still in the list -> NOT removed', tabRemovalDecisionImpl(pre3, { count: 2, paths: [HP, 'C:\\fx\\a.dxf'], docIds: ['doc-a', 'doc-b'], soleUntitled: false }), false],
+    ['(d) host docId still in the list -> NOT removed', tabRemovalDecisionImpl(pre3, { count: 2, paths: ['C:\\fx\\a.dxf', 'C:\\fx\\b.dxf'], docIds: ['doc-host', 'doc-b'], soleUntitled: false }), false],
+    ['(e) last-tab count but the remaining session has a file path -> NOT removed', tabRemovalDecisionImpl(pre1, { count: 1, paths: ['C:\\fx\\other.dxf'], docIds: ['doc-other'], soleUntitled: false }), false],
+  ];
+  let okAll = true;
+  for (const [name, got, want] of cases) {
+    const ok = got === want;
+    okAll = okAll && ok;
+    console.log(`${ok ? 'ok  ' : 'FAIL'} self-test-tab-removal ${name} (removed=${got}, expected removed=${want})`);
+  }
+  console.log(`self-test-tab-removal: ${okAll ? 'PASS' : 'FAIL'}`);
   process.exit(okAll ? 0 : 1);
 }
 
@@ -1069,12 +1139,17 @@ try {
         if (i >= 0) s.close(i);
       }, hostPath);
       await win.waitForTimeout(300);
-      const tabState = await win.evaluate((p) => {
+      const tabState = await win.evaluate(() => {
         const s = window.editor.sessions;
-        return { count: s.list.length, stillOpen: s.indexOfPath(p) >= 0 };
-      }, hostPath);
-      check(hostSession !== null && tabState.stillOpen === false && tabState.count === hostSession.count - 1,
-        'the host tab is actually removed before the read (sessions list no longer contains the host path, length dropped by one)', JSON.stringify(tabState));
+        return {
+          count: s.list.length,
+          paths: s.list.map((x) => x.filePath ?? null),
+          docIds: s.list.map((x) => x.docId),
+          soleUntitled: s.list.length === 1 ? !s.list[0].filePath : false,
+        };
+      });
+      check(hostSession !== null && tabRemovalDecisionImpl({ count: hostSession.count, hostDocId: hostSession.docId, hostPath }, tabState),
+        'the host tab is actually removed before the read (host path and host docId absent from the sessions list)', JSON.stringify(tabState));
       const afterTab = await read(ctx.token, leaf.ticket, MIB);
       check(ctx.ok && leaf.ok && !afterTab.ok && afterTab.code === 'ERR_XREF_CONTEXT', 'read on a context whose host tab closed refuses CONTEXT (doc contexts retired on tab close)', JSON.stringify(afterTab));
       // 3.5a2: ADDITIONAL observation (not a substitute for 3.5a):
