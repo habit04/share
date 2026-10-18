@@ -46,14 +46,18 @@
  *
  * Finite boundary: the global Module._load hook is restored the moment
  * the target loads (existing behaviour, success or failure). If the
- * target has NOT loaded within OBSERVER_LOAD_BOUNDARY_MS of the app
- * becoming ready (guarded Electron app 'ready'; if Electron is not
- * available, the same constant measured from this module's load), the
- * boundary fires: it restores the global loader (only if it is still
- * this file's wrapper) and invalidates coverage with reason
- * 'target-not-loaded-within-boundary'. The timer is unref'd and is
- * cleared the moment interception installs. The boundary can only ever
- * invalidate - it can never make any criterion pass.
+ * target has NOT loaded within OBSERVER_LOAD_BOUNDARY_MS, the boundary
+ * fires: it restores the global loader (only if it is still this
+ * file's wrapper) and invalidates coverage with reason
+ * 'target-not-loaded-within-boundary'. The boundary timer is armed at
+ * THIS MODULE's load, unconditionally - it does not wait for, or
+ * depend on, the Electron app's 'ready' event, so a startup that
+ * stalls before ready (or never reaches it) is still bounded. (An
+ * earlier revision armed the timer only from 'ready' when an Electron
+ * app existed, which left a pre-ready stall with no timer at all.)
+ * The timer is unref'd and is cleared the moment interception
+ * installs. The boundary can only ever invalidate - it can never make
+ * any criterion pass.
  *
  * Capture: the interception resolves every request exactly as the
  * original loader does and touches ONLY the one canonical target. The
@@ -229,21 +233,17 @@ function interceptionLoad(request, parent, isMain) {
 
 if (invalidated === null) {
   Module._load = interceptionLoad;
-  // Arm the finite boundary: from app 'ready' when the Electron app is
-  // available (immediately if it is already ready), otherwise from this
-  // module's load. Guarded: require('electron') yields the API only in
-  // an Electron process; anywhere else it is not an object with .app.
-  let electronApp = null;
+  // Arm the finite boundary NOW, at module load, in all cases -
+  // independent of Electron readiness (see header). A startup that
+  // stalls before 'ready' is bounded by the same timer. If arming
+  // itself fails, leave no hook behind: restore the original loader
+  // (only if it is still this file's wrapper) and invalidate coverage.
   try {
-    const electron = require('electron');
-    if (electron && typeof electron === 'object' && electron.app && typeof electron.app.isReady === 'function') {
-      electronApp = electron.app;
-    }
+    armBoundary();
   } catch {
-    electronApp = null;
+    if (Module._load === interceptionLoad) Module._load = originalLoad;
+    invalidated = 'observer-install-failed';
   }
-  if (electronApp === null || electronApp.isReady()) armBoundary();
-  else electronApp.once('ready', armBoundary);
 }
 
 /**
