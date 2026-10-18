@@ -59,12 +59,26 @@
 // source; `node scripts/e2e-xref-refresh.mjs --self-test-oracle` runs
 // its regression without Electron (same ids-different-bytes cases).
 //
-// Overlap oracle (finding 2): section 3.3 is orchestrated from Node in
-// steps - A's slow read starts unawaited, then observer samples must
-// show A active (activeOps >= 1, reservedRawBytes = slow size + 1) at
-// the same-context BUSY refusal AND after context B completes, all on
-// the one main clock/sequence. If A finished too early the criterion
-// is BLOCKED (insufficient witness), never passed.
+// Overlap oracle (finding 2; witness design v2, lead-approved
+// PLAN-3.3-WITNESS): section 3.3 is orchestrated from Node in steps -
+// a renewal chain of genuine full reads of the slow fixture runs on
+// context A, and observer samples must show A busy (activeOps >= 1,
+// reservedRawBytes = slow size + 1) at S1, at the same-context BUSY
+// refusal (S2) AND after context B completes (S3), all on the one
+// main clock/sequence. The chain replaced a single held read, which
+// twice failed to span S1..S3 on the seat's PC (size cannot win: B's
+// completion couples to A's transfer). The chain is a SEQUENCE, never
+// concurrent - the broker admits ONE active op per context - and it
+// stops deterministically (harness stop after S3, or a fixed link
+// bound). The BUSY refusal is attempted a bounded number of times:
+// an attempt admitted in an inter-link gap completes a real read and
+// is logged. A sample that misses the chain's activity (inter-link
+// gap, early chain end, unhealthy chain) makes the criterion BLOCKED
+// (insufficient witness), never passed. The pass/blocked decision is
+// one pure function (burstWitnessDecisionImpl below);
+// `node scripts/e2e-xref-refresh.mjs --self-test-burst` runs its
+// regression without Electron, including the fail-first old-shape
+// trace (active, active, inactive at S3 -> BLOCKED).
 //
 // Same-broker correlation (correction round 3, group 2): a launch-zero
 // baseline plus factoryCalls === 1 does NOT prove the observed broker
@@ -101,6 +115,7 @@
 //   node scripts/e2e-xref-refresh.mjs --self-test-oracle
 //   node scripts/e2e-xref-refresh.mjs --self-test-correlation
 //   node scripts/e2e-xref-refresh.mjs --self-test-tab-removal
+//   node scripts/e2e-xref-refresh.mjs --self-test-burst
 //
 // Exit codes: 0 = every selected check passed and none blocked;
 // 1 = a check failed or a selected criterion is blocked;
@@ -288,8 +303,26 @@ const G2_REASON = 'observer not enabled for this run (no --observer): criterion 
  * @property {(entity: object) => string} [__xrefSemanticEntityJson]
  * @property {XrefG1Session | null} [__xrefG1]
  * @property {Promise<XrefReadResult>} [__xrefBurstHeld]
+ * @property {XrefChainState} [__xrefChain]
  * @property {string} [__xrefToken]
  * @property {Promise<XrefReadResult>} [__xrefHeldRead]
+ */
+/**
+ * @typedef {Object} XrefChainSummary - the section 3.3 renewal chain's final accounting, resolved by its done promise.
+ * @property {number} links
+ * @property {number} errors
+ * @property {number} totalBytes
+ * @property {string | null} lastError
+ */
+/**
+ * @typedef {Object} XrefChainState - the section 3.3 renewal chain's page-side state, installed by the burst's start evaluate.
+ * @property {number} links
+ * @property {number} errors
+ * @property {number} totalBytes
+ * @property {boolean} stopped
+ * @property {string | null} lastError
+ * @property {Promise<XrefChainSummary> | null} done
+ * @property {() => void} stop
  */
 /** @typedef {Window & XrefPageGlobals} XrefPageWindow */
 /**
@@ -499,6 +532,98 @@ if (process.argv.includes('--self-test-tab-removal')) {
     console.log(`${ok ? 'ok  ' : 'FAIL'} self-test-tab-removal ${name} (removed=${got}, expected removed=${want})`);
   }
   console.log(`self-test-tab-removal: ${okAll ? 'PASS' : 'FAIL'}`);
+  process.exit(okAll ? 0 : 1);
+}
+
+// ------------------------------------------------------------ burst overlap witness (section 3.3, design v2)
+// Renewal-chain bounds (lead-approved PLAN-3.3-WITNESS): the chain
+// stops ITSELF at CHAIN_MAX_LINKS links even if never told to stop;
+// the harness stops it explicitly right after S3 regardless. The BUSY
+// refusal gets at most CHAIN_REFUSAL_ATTEMPTS competing reads (an
+// attempt admitted in an inter-link gap completes a real read and is
+// logged, then retried). A chain link that meets the harness's own
+// gap-admitted competing read retries the refusal - each retry is one
+// IPC round trip, so CHAIN_BUSY_RETRIES is a livelock guard, not a
+// timing oracle.
+const CHAIN_MAX_LINKS = 64;
+const CHAIN_REFUSAL_ATTEMPTS = 5;
+const CHAIN_BUSY_RETRIES = 50;
+
+// The ONE pass/blocked decision for the section 3.3 observer-bound
+// overlap criterion. Pure: it decides only from the three burst
+// samples, the renewal chain's final summary, the slow fixture size,
+// and the two gate verdicts the caller computed with the existing
+// plumbing (observer usability, same-broker correlation). The sample
+// predicate is the SHIPPED one, unchanged: a sample shows the burst
+// context busy iff activeOps >= 1 AND reservedRawBytes ===
+// slowBytes + 1 (one active op reserving the slow file plus the
+// sentinel byte). Contract:
+//   pass    <=> every sample satisfies the predicate AND the chain is
+//               healthy: links >= 3 (the window was genuinely covered
+//               by back-to-back full reads), errors === 0, and
+//               totalBytes === links * slowBytes (every link returned
+//               exactly the full file; bytes are also verified per
+//               link in the page before they are counted).
+//   blocked <=> anything else, with the specific reason: unusable
+//               observer coverage, unproven correlation, a sample
+//               that failed the predicate (insufficient witness - a
+//               sample may have landed in an inter-link gap, or the
+//               chain ended early), or an unhealthy/absent chain.
+// A miss can ONLY produce blocked, never pass.
+function burstWitnessDecisionImpl({ s1, s2, s3, chain, slowBytes, correlationOk, observerOk }) {
+  const blocked = (reason) => ({ verdict: 'blocked', reason });
+  if (!observerOk) return blocked('observer coverage unusable for the burst samples');
+  if (!correlationOk) return blocked('same-broker correlation unproven for this launch');
+  const aActive = (s) => Boolean(s && s.stats && s.stats.activeOps >= 1 && s.stats.reservedRawBytes === slowBytes + 1);
+  const act = [aActive(s1), aActive(s2), aActive(s3)];
+  if (!act.every(Boolean)) {
+    return blocked(`insufficient witness: the burst context was not proven active at every bound step (S1 seq=${s1?.seq ?? null} active=${act[0]}, S2 seq=${s2?.seq ?? null} active=${act[1]}, S3 seq=${s3?.seq ?? null} active=${act[2]}) - a sample may have landed in an inter-link gap or the chain ended early; never passed by default`);
+  }
+  if (!chain) return blocked('no renewal-chain summary was collected for the burst: chain health unproven');
+  if (chain.errors !== 0) return blocked(`renewal chain recorded ${chain.errors} failed link(s) (last: ${chain.lastError ?? 'unknown'}): chain health unproven`);
+  if (!(chain.links >= 3)) return blocked(`renewal chain completed only ${chain.links} link(s) (< 3): the burst window was not covered by back-to-back genuine full reads`);
+  if (chain.totalBytes !== chain.links * slowBytes) return blocked(`renewal chain byte accounting mismatch (totalBytes=${chain.totalBytes}, links=${chain.links}, slowBytes=${slowBytes}): per-link byte verification unproven`);
+  return { verdict: 'pass', reason: '' };
+}
+
+// Burst witness regression, runnable without Electron:
+//   node scripts/e2e-xref-refresh.mjs --self-test-burst
+// Exit 0 only if burstWitnessDecisionImpl (the very function the live
+// run uses) decides: (a) the OLD orchestration's trace - one held
+// read active at S1/S2 but finished before S3, no chain - is BLOCKED
+// as insufficient witness (the portable fail-first: the shipped
+// predicate on the old shape); (b) a healthy chain trace passes;
+// (c) a chain with an error link blocks; (d) a chain with too few
+// links blocks; (e) a sample whose reservation is not exactly the
+// slow size + sentinel blocks; (f) unusable observer coverage blocks;
+// (g) unproven correlation blocks.
+if (process.argv.includes('--self-test-burst')) {
+  const SIZE = 16 * 1024 * 1024;
+  const mkS = (activeOps, reservedRawBytes, seq) => ({ seq, atMs: seq * 10, captured: true, factoryCalls: 1, invalidated: null, stats: { contexts: 2, tickets: 2, activeOps, retiredActiveOps: 0, reservedRawBytes, disposed: false } });
+  const on = (seq) => mkS(1, SIZE + 1, seq);
+  const off = (seq) => mkS(0, 0, seq);
+  const healthy = { links: 5, errors: 0, totalBytes: 5 * SIZE, lastError: null };
+  const base = { slowBytes: SIZE, correlationOk: true, observerOk: true };
+  const cases = [
+    ['(a) old-shape trace (active, active, INACTIVE at S3; no chain) -> blocked', burstWitnessDecisionImpl({ ...base, s1: on(1), s2: on(2), s3: off(3), chain: null }).verdict, 'blocked'],
+    ['(b) chain trace (all samples active + healthy chain) -> pass', burstWitnessDecisionImpl({ ...base, s1: on(1), s2: on(2), s3: on(3), chain: healthy }).verdict, 'pass'],
+    ['(c) healthy samples but one error link in the chain -> blocked', burstWitnessDecisionImpl({ ...base, s1: on(1), s2: on(2), s3: on(3), chain: { ...healthy, errors: 1, lastError: 'ERR_XREF_CHANGED' } }).verdict, 'blocked'],
+    ['(d) healthy samples but the chain completed only 1 link -> blocked', burstWitnessDecisionImpl({ ...base, s1: on(1), s2: on(2), s3: on(3), chain: { links: 1, errors: 0, totalBytes: SIZE, lastError: null } }).verdict, 'blocked'],
+    ['(e) samples active but reservedRawBytes = 2*(size+1) at S2 -> blocked', burstWitnessDecisionImpl({ ...base, s1: on(1), s2: mkS(2, 2 * (SIZE + 1), 2), s3: on(3), chain: healthy }).verdict, 'blocked'],
+    ['(f) observer coverage unusable -> blocked', burstWitnessDecisionImpl({ ...base, observerOk: false, s1: on(1), s2: on(2), s3: on(3), chain: healthy }).verdict, 'blocked'],
+    ['(g) same-broker correlation unproven -> blocked', burstWitnessDecisionImpl({ ...base, correlationOk: false, s1: on(1), s2: on(2), s3: on(3), chain: healthy }).verdict, 'blocked'],
+  ];
+  let okAll = true;
+  for (const [name, got, want] of cases) {
+    const ok = got === want;
+    okAll = okAll && ok;
+    console.log(`${ok ? 'ok  ' : 'FAIL'} self-test-burst ${name} (verdict=${got}, expected=${want})`);
+  }
+  const aReason = burstWitnessDecisionImpl({ ...base, s1: on(1), s2: on(2), s3: off(3), chain: null }).reason;
+  const aOk = aReason.includes('insufficient witness');
+  okAll = okAll && aOk;
+  console.log(`${aOk ? 'ok  ' : 'FAIL'} self-test-burst (a2) the old-shape block reason names the insufficient witness (reason=${JSON.stringify(aReason)})`);
+  console.log(`self-test-burst: ${okAll ? 'PASS' : 'FAIL'}`);
   process.exit(okAll ? 0 : 1);
 }
 
@@ -1151,13 +1276,31 @@ try {
       const slow = await identify(ctxA.token, fx('slow.dxf'));
       const leafA = await identify(ctxA.token, fx(leafRel));
       check(slow.ok && leafA.ok, 'context A identifies slow.dxf and leaf.dxf');
-      // True-overlap orchestration (finding 2): Node drives the burst in
-      // steps instead of one opaque page evaluate, and observer samples
-      // on the one main clock/sequence bind A's pending read + its
-      // reservation to the same-context refusal AND to B's completion.
-      // No artificial holds, fake reads or sleeps-as-oracle: if A
-      // finishes before a bound step, the overlap criterion is BLOCKED
-      // (insufficient witness), never passed.
+      // True-overlap orchestration (finding 2; witness design v2,
+      // lead-approved PLAN-3.3-WITNESS): Node drives the burst in
+      // steps instead of one opaque page evaluate, and observer
+      // samples on the one main clock/sequence bind A's activity +
+      // its reservation to the same-context refusal AND to B's
+      // completion. A single held read cannot be trusted to span
+      // S1..S3 - measured natively, growing slow.dxf to the 16 MiB
+      // allowance ceiling widened the S1->S3 span to 172 ms but B's
+      // completion moved with it (57 -> 167 ms), so size cannot win.
+      // Instead a RENEWAL CHAIN of genuine full reads of slow.dxf
+      // runs on context A from before S1 until after S3: each link
+      // is a complete real read whose bytes are verified in the
+      // page, and the next link starts in the same continuation.
+      // The broker's ONE-active-op-per-context cap is respected by
+      // construction - the chain is a sequence, never concurrent.
+      // A link that meets the harness's own gap-admitted competing
+      // read retries that BUSY refusal (bounded); any other refusal
+      // or a byte mismatch is a chain error and stops the chain.
+      // The chain stops deterministically: the harness stops it
+      // right after S3 (in a finally, so a harness error cannot
+      // leave it running), and it stops itself at CHAIN_MAX_LINKS
+      // even if never told. No artificial holds, fake reads or
+      // sleeps-as-oracle: a sample that lands in an inter-link gap
+      // or after an early chain end makes the overlap criterion
+      // BLOCKED (insufficient witness), never passed.
       const slowBytes = fixtureMeta.files['slow.dxf'].bytes;
       const burstSteps = [];
       const stepMark = (step, sample) => {
@@ -1166,47 +1309,120 @@ try {
         results.burstSteps = burstSteps;
         return m;
       };
-      // Step 1: start A's slow read WITHOUT awaiting it (the page-side
-      // promise is stored; this evaluate itself returns immediately).
-      await win.evaluate(([t, k, m]) => { /** @type {XrefPageWindow} */ (window).__xrefBurstHeld = /** @type {XrefPageWindow} */ (window).__xref.read(t, k, m); }, [ctxA.token, slow.ticket, 16 * MIB]);
-      stepMark('A slow read started (unawaited)', null);
-      // Step 2: sample S1 - A must already show as genuinely active.
-      const s1 = await sampleObserver(app, 'burst-s1-after-a-start');
-      stepMark('S1 sampled', s1);
-      // Step 3: the same-context competing read (awaited) must refuse.
-      const competing = await read(ctxA.token, leafA.ticket, MIB);
-      stepMark('competing read returned', null);
-      // Step 4: sample S2 - A must STILL be active at the refusal.
-      const s2 = await sampleObserver(app, 'burst-s2-at-refusal');
-      stepMark('S2 sampled (at refusal)', s2);
-      // Step 5: context B identifies and reads to completion.
-      const ctxB = await begin('native-3.3-b');
-      const idB = ctxB.ok ? await identify(ctxB.token, fx(leafRel)) : { ok: false };
-      const readB = idB.ok ? await read(ctxB.token, idB.ticket, MIB) : { ok: false };
-      stepMark('B read completed', null);
-      if (ctxB.ok) await closeCtx(ctxB.token);
-      // Step 6: sample S3 - A must STILL be active at B's completion.
-      const s3 = await sampleObserver(app, 'burst-s3-at-b-completion');
-      stepMark('S3 sampled (at B completion)', s3);
-      // Step 7: await A's own completion, then sample S4 (settled).
-      const held = await win.evaluate(() => /** @type {XrefPageWindow} */ (window).__xrefBurstHeld);
+      const attempts = [];
+      results.burstAttempts = attempts;
+      // Stop the page-side chain and collect its final summary.
+      // Never throws: a dead page or an unsettled chain (bounded
+      // wait) falls back to the live counters, and a missing summary
+      // is treated as an unhealthy chain by the witness decision.
+      const stopChainAndCollect = async () => {
+        try { await win.evaluate(() => { /** @type {XrefPageWindow} */ (window).__xrefChain?.stop(); }); } catch { /* page may be gone */ }
+        let summary = null;
+        try {
+          summary = await Promise.race([
+            win.evaluate(() => { const w = /** @type {XrefPageWindow} */ (window); return w.__xrefChain ? w.__xrefChain.done : null; }),
+            new Promise((done) => setTimeout(() => done(null), 60_000)),
+          ]);
+        } catch { summary = null; }
+        if (!summary) {
+          try {
+            summary = await win.evaluate(() => {
+              const c = /** @type {XrefPageWindow} */ (window).__xrefChain;
+              return c ? { links: c.links, errors: c.errors, totalBytes: c.totalBytes, lastError: c.lastError } : null;
+            });
+          } catch { summary = null; }
+        }
+        return summary;
+      };
+      let s1 = null;
+      let s2 = null;
+      let s3 = null;
+      let readB = { ok: false };
+      let chainSummary = null;
+      try {
+        // Step 1: start the renewal chain on context A (the evaluate
+        // returns immediately; the chain runs in the page).
+        await win.evaluate(([t, k, m, expectBytes, maxLinks, busyRetries]) => {
+          const chain = {
+            links: 0, errors: 0, totalBytes: 0, stopped: false, lastError: null, done: null,
+            stop() { chain.stopped = true; },
+          };
+          chain.done = (async () => {
+            while (!chain.stopped && chain.links < maxLinks) {
+              let r = null;
+              let busyLeft = busyRetries;
+              while (!chain.stopped) {
+                try { r = await /** @type {XrefPageWindow} */ (window).__xref.read(t, k, m); } catch (e) { r = { ok: false, code: String(e && e.message || e) }; }
+                if (!r || r.ok || r.code !== 'ERR_XREF_RESOURCE_BUSY' || busyLeft <= 0) break;
+                busyLeft -= 1; // the harness's own competing read holds the context briefly; retry this link
+              }
+              if (chain.stopped) break;
+              if (!r || !r.ok) { chain.errors += 1; chain.lastError = r ? (r.code ?? 'read refused') : 'read returned nothing'; break; }
+              if (r.rawBytes !== expectBytes) { chain.errors += 1; chain.lastError = `link returned rawBytes=${r.rawBytes}, expected ${expectBytes}`; break; }
+              chain.links += 1;
+              chain.totalBytes += r.rawBytes;
+            }
+            chain.stopped = true;
+            return { links: chain.links, errors: chain.errors, totalBytes: chain.totalBytes, lastError: chain.lastError };
+          })();
+          /** @type {XrefPageWindow} */ (window).__xrefChain = chain;
+        }, [ctxA.token, slow.ticket, 16 * MIB, slowBytes, CHAIN_MAX_LINKS, CHAIN_BUSY_RETRIES]);
+        stepMark('renewal chain started on context A (unawaited)', null);
+        // Step 2: sample S1 - the chain must already show as genuinely active.
+        s1 = await sampleObserver(app, 'burst-s1-after-chain-start');
+        stepMark('S1 sampled', s1);
+        // Step 3: the same-context competing read must refuse BUSY
+        // (zero queue), with bounded attempts: an attempt that lands
+        // in an inter-link gap is ADMITTED and completes a real read
+        // of the leaf - it is recorded in results.burstAttempts and
+        // retried; the refusal counts when BUSY occurs within
+        // CHAIN_REFUSAL_ATTEMPTS attempts.
+        for (let i = 0; i < CHAIN_REFUSAL_ATTEMPTS; i += 1) {
+          const r = await read(ctxA.token, leafA.ticket, MIB);
+          attempts.push({ attempt: i + 1, ok: Boolean(r && r.ok), code: r && !r.ok ? (r.code ?? null) : null });
+          stepMark(`competing read attempt ${i + 1} returned`, null);
+          if (r && !r.ok && r.code === 'ERR_XREF_RESOURCE_BUSY') break;
+        }
+        // Step 4: sample S2 - the chain must STILL be active at the refusal.
+        s2 = await sampleObserver(app, 'burst-s2-at-refusal');
+        stepMark('S2 sampled (at refusal)', s2);
+        // Step 5: context B identifies and reads to completion.
+        const ctxB = await begin('native-3.3-b');
+        const idB = ctxB.ok ? await identify(ctxB.token, fx(leafRel)) : { ok: false };
+        readB = idB.ok ? await read(ctxB.token, idB.ticket, MIB) : { ok: false };
+        stepMark('B read completed', null);
+        if (ctxB.ok) await closeCtx(ctxB.token);
+        // Step 6: sample S3 - the chain must STILL be active at B's completion.
+        s3 = await sampleObserver(app, 'burst-s3-at-b-completion');
+        stepMark('S3 sampled (at B completion)', s3);
+      } finally {
+        // The chain never outlives the burst: stop it and await its
+        // drain (bounded) before S4, whatever happened above.
+        chainSummary = await stopChainAndCollect();
+        stepMark('renewal chain stopped and drained', null);
+      }
+      // Step 7: sample S4 (settled - chain stopped and drained).
       const s4 = await sampleObserver(app, 'burst-s4-after-a-settles');
-      stepMark('A settled (S4 sampled)', s4);
-      check(competing && !competing.ok && competing.code === 'ERR_XREF_RESOURCE_BUSY', 'second read in the same context refuses BUSY while A is in flight (zero queue)', JSON.stringify(competing));
+      stepMark('chain settled (S4 sampled)', s4);
+      const busyAttempt = attempts.find((a) => !a.ok && a.code === 'ERR_XREF_RESOURCE_BUSY');
+      check(Boolean(busyAttempt), 'second read in the same context refuses BUSY while A is in flight (zero queue)', JSON.stringify(attempts));
       check(readB && readB.ok, 'a read in a second context proceeds and completes while A is in flight', JSON.stringify(readB));
-      check(held && held.ok && held.rawBytes === slowBytes, 'the held read completes with the full file', JSON.stringify(held));
+      check(chainSummary && chainSummary.errors === 0 && chainSummary.links >= 1 && chainSummary.totalBytes === chainSummary.links * slowBytes,
+        'every renewal-chain link returns the full file (per-link bytes verified in the page; total = links * slow size)', JSON.stringify(chainSummary));
       {
         const overlapName = 'observer-bound overlap: A pending with its reservation (activeOps >= 1, reservedRawBytes = slow size + sentinel) at S1, at the BUSY refusal (S2) and at B completion (S3), one main clock/sequence';
-        const aActive = (s) => Boolean(s && s.stats && s.stats.activeOps >= 1 && s.stats.reservedRawBytes === slowBytes + 1);
         if (!observerMode) blocked(overlapName);
         else if (!observerUsable(mainObserver, s1) || !observerUsable(mainObserver, s2) || !observerUsable(mainObserver, s3)) {
           blocked(overlapName, observerBlockReason(mainObserver, s3 ?? s2 ?? s1));
         } else if (!mainObserver.correlation?.ok) {
           blocked(overlapName, correlationBlockReason(mainObserver));
-        } else if (!(aActive(s1) && aActive(s2) && aActive(s3))) {
-          blocked(overlapName, `insufficient witness: A not proven active at every bound step (S1 seq=${s1.seq} active=${aActive(s1)}, S2 seq=${s2.seq} active=${aActive(s2)}, S3 seq=${s3.seq} active=${aActive(s3)}) - the native read may have finished too early; never passed by default`);
         } else {
-          check(true, overlapName, `seq S1=${s1.seq} < S2=${s2.seq} < S3=${s3.seq} on the main monotonic clock; steps: ${burstSteps.map((m) => m.step).join(' -> ')}`);
+          const decision = burstWitnessDecisionImpl({ s1, s2, s3, chain: chainSummary, slowBytes, correlationOk: true, observerOk: true });
+          if (decision.verdict === 'pass') {
+            check(true, overlapName, `seq S1=${s1.seq} < S2=${s2.seq} < S3=${s3.seq} on the main monotonic clock; chain links=${chainSummary.links}, errors=0, totalBytes=${chainSummary.totalBytes}; steps: ${burstSteps.map((m) => m.step).join(' -> ')}`);
+          } else {
+            blocked(overlapName, decision.reason);
+          }
         }
       }
       await closeCtx(ctxA.token);
