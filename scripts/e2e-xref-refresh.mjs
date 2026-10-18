@@ -121,6 +121,10 @@
 //     --work-root <work-root> --fixtures <work-root>/fixtures \
 //     --out <work-root>/out [--sections 3.1,3.2] \
 //     [--head <candidate-head>] [--tree <candidate-tree>]
+//   Stage 2 (packaged, admitted 2026-10-18): add
+//     --packaged-exe <path to the unpacked test build's executable>
+//   to target the packaged app (the `npm run dist:test` output) instead
+//   of the development electron. Every check and verdict is unchanged.
 //   node scripts/e2e-xref-refresh.mjs --self-test-oracle
 //   node scripts/e2e-xref-refresh.mjs --self-test-correlation
 //   node scripts/e2e-xref-refresh.mjs --self-test-tab-removal
@@ -900,6 +904,26 @@ if (observerMode) {
   if (actualTarget !== observerTargetSha) setupFail(`--observer-target-sha (${observerTargetSha}) does not match electron/xref-read.cjs (${actualTarget}) - refusing to launch`);
   observerSha256 = fileSha(observerPath);
 }
+// Stage 2 packaged mode (admitted 2026-10-18, test-only): --packaged-exe
+// names the executable of an UNPACKED test build (npm run dist:test ->
+// release-test/win-unpacked/JCad Electrical.exe). When present, every
+// launch targets that binary through Playwright's executablePath and
+// drops the development app-path argument '.'; when absent, launches
+// are byte-for-byte the Stage 1 development launches. No check, sample
+// criterion or verdict changes in either mode. The packaged broker
+// loads from app.asar while the observer's pinned target stays anchored
+// to this source tree (scripts/xref-test-observer.cjs), so in packaged
+// mode observer capture is not expected and stats criteria BLOCK by
+// design - see the Stage 2 packaged runbook.
+const packagedExeArg = argOf('--packaged-exe');
+const packagedMode = packagedExeArg !== '';
+let packagedExe = '';
+let packagedExeSha256 = '';
+if (packagedMode) {
+  packagedExe = resolve(packagedExeArg);
+  if (!existsSync(packagedExe)) setupFail('--packaged-exe file does not exist');
+  packagedExeSha256 = fileSha(packagedExe);
+}
 if (!workRootArg) setupFail('--work-root is required (fixtures, out, profiles and TEMP are confined under it)');
 if (!fixtureArg) setupFail('--fixtures is required');
 if (!outArg) setupFail('--out is required');
@@ -1080,14 +1104,22 @@ async function buildBundle() {
 
 // ------------------------------------------------------------ app driving
 async function launchApp(label) {
+  if (packagedMode) log(`launch[${label}]: packaged exe ${packagedExe} (sha256 ${packagedExeSha256.slice(0, 12)}..)`);
   const profile = join(workRoot, `profile-${label}`);
   mkdirSync(profile, { recursive: true });
   results.residue.profiles.push(profile);
-  const args = observerMode
-    ? ['--require', observerPath, '.', `--user-data-dir=${profile}`]
-    : ['.', `--user-data-dir=${profile}`];
+  const args = packagedMode
+    ? [...(observerMode ? ['--require', observerPath] : []), `--user-data-dir=${profile}`]
+    : observerMode
+      ? ['--require', observerPath, '.', `--user-data-dir=${profile}`]
+      : ['.', `--user-data-dir=${profile}`];
   if (process.platform === 'linux') args.push('--no-sandbox');
-  const app = await electron.launch({ args, cwd: repo, env: childEnv(), timeout: 60_000 });
+  // Packaged launches run with cwd inside the work root: the packaged
+  // tree is evidence, not a working directory (Stage 1 decision C -
+  // driver residue such as NVIDIA umdlogs lands in the cwd).
+  const app = packagedMode
+    ? await electron.launch({ executablePath: packagedExe, args, cwd: workRoot, env: childEnv(), timeout: 90_000 })
+    : await electron.launch({ args, cwd: repo, env: childEnv(), timeout: 60_000 });
   trackChild(label, app.process());
   const win = await applicationWindow(app);
   const pageErrors = [];
@@ -1416,6 +1448,7 @@ try {
     sourceIdentity: { ...sourceIdentity, bundle: bundleInfo ?? { error: bundleError } },
     fixtureManifestSha256: manifestSha, fixtureDir, workRoot,
     observer: results.observer,
+    launchMode: packagedMode ? { mode: 'packaged', exe: packagedExe, exeSha256: packagedExeSha256 } : { mode: 'dev' },
     evidenceClass: process.platform === 'win32' ? 'windows-stage1' : 'mechanics-only-non-win32',
   };
   log(`header: electron ${versions.electron} / chromium ${versions.chrome} / node ${versions.node}`);
@@ -1423,6 +1456,8 @@ try {
   log(`header: supplied head ${results.header.suppliedHead} tree ${results.header.suppliedTree} (labels)`);
   log(`header: source identity: xref-loading ${sourceIdentity.xrefLoadingSha256.slice(0, 12)}.., xref-reader ${sourceIdentity.xrefReaderSha256.slice(0, 12)}.., bundle ${bundleInfo ? `${bundleInfo.sha256.slice(0, 12)}.. (${bundleInfo.bytes} B)` : `FAILED: ${bundleError}`}, dist/index.html ${sourceIdentity.distIndexHtmlSha256.slice(0, 12)}..`);
   log(`header: fixture manifest sha256 ${manifestSha}`);
+  if (packagedMode) log(`header: launch mode packaged - exe ${packagedExe} sha256 ${packagedExeSha256.slice(0, 12)}..`);
+  if (packagedMode && observerMode) log('header: NOTE - packaged mode: the observer target is anchored to the source tree while the packaged broker loads from app.asar; observer capture is not expected and stats-derived criteria will BLOCK by design (Stage 2 runbook).');
   if (process.platform !== 'win32') log('header: WARNING - not win32: the bridge is win32-gated and the broker refuses non-Windows paths by design; this run validates harness mechanics only.');
   const listed = await openProjectAndHost(app, win);
   check(listed > 0, 'fixture project opened through the genuine Open Project flow (its drawings are registry-known)', `${listed} drawings listed`);
