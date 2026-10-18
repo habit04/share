@@ -1240,6 +1240,20 @@ canvas#drawing {
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* AI live provider checks (docs/AI-LIVE-CHECKS.md, src/ui/ai-panel.ts) */
+.ai-live-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ai-live-checks-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ai-live-checks-result {
+  max-height: 260px;
+}
 /* AI Draft / Edit (milestone 3, src/ui/ai-panel.ts) */
 .ai-modes {
   display: flex;
