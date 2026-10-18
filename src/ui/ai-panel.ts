@@ -1371,6 +1371,11 @@ export class AiAssistantPanel {
       return;
     }
     this.renderLiveChecks();
+    // A new run supersedes any earlier report: clear and hide the
+    // previous result at admission, so a rejection of this invocation
+    // can never leave a stale PASS on screen reading as current.
+    els.liveResultEl.textContent = '';
+    els.liveResultEl.classList.add('hidden');
     try {
       const report = await this.connection.runLiveChecks();
       if (!this.currentConnectionOperation(epoch)) return;

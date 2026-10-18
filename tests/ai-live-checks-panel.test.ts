@@ -103,6 +103,7 @@ function fakeConnection(report: AiLiveChecksReport = passReport) {
 }
 
 type LiveEls = {
+  errorEl: FakeElement;
   liveRunBtn: FakeElement & { disabled: boolean };
   liveCancelBtn: FakeElement & { disabled: boolean };
   liveConfirmEl: FakeElement; liveConfirmText: FakeElement;
@@ -189,6 +190,30 @@ describe('AiAssistantPanel live provider checks (T13)', () => {
     expect(els.liveCancelBtn.classes.has('hidden')).toBe(true);
     expect(els.liveRunBtn.classes.has('hidden')).toBe(false);
     expect(els.liveRunBtn.disabled).toBe(false);
+    panel.dispose();
+  });
+
+  it('clears a previous PASS report when the next run rejects at the bridge (C1)', async () => {
+    const { panel, els, runLiveChecks } = await makeConnectedPanel();
+    // First run: resolves with the PASS report, rendered and visible.
+    els.liveRunBtn.fire('click');
+    els.liveConfirmBtn.fire('click');
+    await flush();
+    expect(runLiveChecks).toHaveBeenCalledTimes(1);
+    expect(els.liveResultEl.classes.has('hidden')).toBe(false);
+    expect(els.liveResultEl.textContent).toContain('Result: PASS');
+    // Second run: the bridge rejects (IPC-level failure, no report).
+    runLiveChecks.mockRejectedValueOnce(new Error('IPC bridge failure (simulated)'));
+    els.liveRunBtn.fire('click');
+    els.liveConfirmBtn.fire('click');
+    await flush();
+    expect(runLiveChecks).toHaveBeenCalledTimes(2);
+    // The stale PASS must not survive as if it were the latest outcome:
+    // the result element is cleared and hidden, and the rejection
+    // surfaces as the connection error instead.
+    expect(els.liveResultEl.classes.has('hidden')).toBe(true);
+    expect(els.liveResultEl.textContent).not.toContain('PASS');
+    expect(els.errorEl.textContent).toContain('IPC bridge failure (simulated)');
     panel.dispose();
   });
 
