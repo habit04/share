@@ -139,13 +139,22 @@ failure stops the run), zero on refusal; total output bounded by 10,304
 tokens; no retries anywhere.** An attempt counts a service invocation
 even when it is refused or cancelled before any provider transport
 runs, so the report's attempt total is that structural bound on service
-invocations, not a tally of confirmed provider calls. Harness calls enter the same host queue
-as panel requests. Test Connection and a live-checks run are
-independent, user-initiated facilities: neither blocks the other, and
-starting one never refuses or queues the other. Each is individually
-bounded — Test Connection probes are capped at 16 concurrent in the
-IPC layer, and live-checks runs are single-flight (a second Run while
-one is active is refused `busy`).
+invocations, not a tally of confirmed provider calls. Harness checks
+invoke the same service methods as the panel's own operations. Test
+Connection and a live-checks run in particular share the probe path —
+both call `service.testConnection` (a run's first check is that probe) —
+and the host admits **one probe transport at a time**: while a probe is
+in flight, `testConnection` refuses with `provider-failure` ("An AI
+connection test is already running."), and the slot is released only
+when the transport invocation settles, so a provider that ignores abort
+keeps the slot until it actually settles. Starting one while the other
+holds the probe therefore fails fast; it never queues and never runs
+concurrently. The 16 bound in the IPC layer caps **pending Test
+Connection channel records**, not simultaneous provider probes. The
+panel additionally serializes its own connection operations
+(`connectionBusy`), so from the UI a connection test and a run never
+even start at the same time. Live-checks runs are single-flight among
+themselves: a second Run while one is active is refused `busy`.
 
 ## Report
 
