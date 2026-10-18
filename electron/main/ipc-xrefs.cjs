@@ -105,6 +105,18 @@ function registerXrefIpc(ctx, deps = {}) {
     return broker.closeContext(owner, token);
   });
 
+  // A host tab closed: retire every context the SENDER owns for that
+  // document. The owner key comes from the event, never from renderer
+  // data, so a sender can only retire its own WebContents' contexts.
+  ipcMain.handle('xref-retire-doc-contexts', async (ev, docId) => {
+    const owner = ownerOf(ev);
+    try {
+      return Object.freeze({ retired: broker.retireDoc(owner, docId) });
+    } catch (error) {
+      return refuse('xref-retire-doc-contexts', error);
+    }
+  });
+
   let disposed = false;
   return {
     /** Close every context and refuse later work (app shutdown). Idempotent. */

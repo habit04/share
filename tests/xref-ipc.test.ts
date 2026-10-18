@@ -12,6 +12,7 @@ const require = createRequire(import.meta.url);
 const { createPathRegistry } = require('../electron/path-registry.cjs') as { createPathRegistry: (opts?: unknown) => Registry };
 const { guardIpc } = require('../electron/ipc-guard.cjs') as { guardIpc: (raw: unknown, opts: unknown) => unknown };
 const { registerXrefIpc } = require('../electron/main/ipc-xrefs.cjs') as { registerXrefIpc: (ctx: unknown, deps?: unknown) => { dispose(): void } };
+const { createXrefReadBroker } = require('../electron/xref-read.cjs') as { createXrefReadBroker: (deps: Record<string, unknown>) => unknown };
 
 interface Registry {
   isKnown(p: string): boolean;
@@ -101,10 +102,10 @@ function setup() {
 }
 
 describe('xref IPC — owner-bound context protocol', () => {
-  it('registers exactly the five xref channels', () => {
+  it('registers exactly the six xref channels', () => {
     const { handlers } = setup();
     expect([...handlers.keys()].sort()).toEqual([
-      'xref-begin-context', 'xref-cancel', 'xref-close-context', 'xref-identify', 'xref-read',
+      'xref-begin-context', 'xref-cancel', 'xref-close-context', 'xref-identify', 'xref-read', 'xref-retire-doc-contexts',
     ]);
   });
 
@@ -175,5 +176,59 @@ describe('xref IPC — owner-bound context protocol', () => {
     mod.dispose();
     mod.dispose();
     await expect(call('xref-begin-context', { docId: 'd', contentGeneration: 1, hostAnchor: 'C:\\proj\\host.dxf' })).rejects.toThrowError(/ERR_XREF_CONTEXT/);
+  });
+});
+
+describe('xref IPC — retire-doc-contexts (host tab close, Stage-1 fix A)', () => {
+  it('retires the calling sender contexts for the named doc only, idempotently', async () => {
+    const { call } = setup();
+    const a = await call('xref-begin-context', { docId: 'doc-a', contentGeneration: 1, hostAnchor: 'C:\\\\proj\\\\host.dxf' }) as { token: string };
+    const b = await call('xref-begin-context', { docId: 'doc-b', contentGeneration: 1, hostAnchor: 'C:\\\\proj\\\\host.dxf' }) as { token: string };
+    await expect(call('xref-retire-doc-contexts', 'doc-a')).resolves.toEqual({ retired: 1 });
+    await expect(call('xref-identify', a.token, LEAF)).rejects.toThrowError(/ERR_XREF_CONTEXT/);
+    const idB = await call('xref-identify', b.token, LEAF) as { ticket: string };
+    await expect(call('xref-read', b.token, idB.ticket, 1024)).resolves.toMatchObject({ text: TEXT });
+    await expect(call('xref-retire-doc-contexts', 'doc-a')).resolves.toEqual({ retired: 0 });
+  });
+
+  it('a different sender cannot retire the victim contexts (owner comes from the event, never the payload)', async () => {
+    // Two registrations sharing ONE broker, each guarded to its OWN
+    // window/sender — the production construction with two windows.
+    const broker = createXrefReadBroker({
+      fs: fakeFs(),
+      isKnownPath: (p: string) => p === LEAF,
+      decodeDxf: async (bytes: Buffer) => ({ text: bytes.toString('utf8'), encoding: 'utf-8' }),
+    });
+    const frame = { processId: 1, routingId: 1, parent: null, url: 'jcad://app/index.html' };
+    const registerFor = (senderId: number) => {
+      const handlers = new Map<string, Handler>();
+      const sender = new FakeSender(senderId);
+      sender.mainFrame = frame;
+      const win = { webContents: sender, isDestroyed: () => false };
+      const ipcMain = guardIpc(
+        { handle: (channel: string, h: Handler) => handlers.set(channel, h) },
+        { getWindow: () => win, isAppUrl: (url: string) => url === frame.url, log: { reject: () => {} } },
+      );
+      registerXrefIpc(
+        { ipcMain, registry: { isKnown: (p: string) => p === LEAF }, rejections: { reject: () => {} } },
+        { broker },
+      );
+      const ev = { sender, senderFrame: frame };
+      return { call: (channel: string, ...args: unknown[]) => handlers.get(channel)!(ev, ...args) };
+    };
+    const A = registerFor(1);
+    const B = registerFor(2);
+    const ctxA = await A.call('xref-begin-context', { docId: 'doc-1', contentGeneration: 1, hostAnchor: 'C:\\\\proj\\\\host.dxf' }) as { token: string };
+    await expect(B.call('xref-retire-doc-contexts', 'doc-1')).resolves.toEqual({ retired: 0 });
+    const id = await A.call('xref-identify', ctxA.token, LEAF) as { ticket: string };
+    await expect(A.call('xref-read', ctxA.token, id.ticket, 1024)).resolves.toMatchObject({ text: TEXT });
+    await expect(A.call('xref-retire-doc-contexts', 'doc-1')).resolves.toEqual({ retired: 1 });
+    await expect(A.call('xref-identify', ctxA.token, LEAF)).rejects.toThrowError(/ERR_XREF_CONTEXT/);
+  });
+
+  it('an invalid docId is refused by the broker and logged as a rejection', async () => {
+    const { call, rejections } = setup();
+    await expect(call('xref-retire-doc-contexts', '')).rejects.toThrowError(/ERR_XREF_ARGUMENT/);
+    expect(rejections.some(([what]) => what === 'xref-retire-doc-contexts')).toBe(true);
   });
 });

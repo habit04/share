@@ -24,6 +24,7 @@ interface Broker {
   cancel(owner: string, token: string): Promise<boolean>;
   closeContext(owner: string, token: string): Promise<boolean>;
   retireOwner(owner: string): number;
+  retireDoc(owner: string, docId: unknown): number;
   closeAll(): Promise<void>;
   stats(): { contexts: number; tickets: number; disposed: boolean };
 }
@@ -389,5 +390,57 @@ describe('xref read broker — cancellation and lifecycle', () => {
     broker.closeAll();
     await expect(broker.identify('wc:1', token, LEAF)).rejects.toMatchObject({ code: 'ERR_XREF_CONTEXT' });
     expect(() => begin()).toThrowError(/ERR_XREF_CONTEXT/);
+  });
+});
+
+describe('xref read broker — retireDoc (host tab close, Stage-1 fix A)', () => {
+  function seeded() {
+    const s = setup();
+    s.fs.add(HOST, 'host-bytes', 10n);
+    s.fs.add(LEAF, LEAF_TEXT, 42n);
+    const beginAs = (owner: string, docId: string) => s.broker.beginContext(owner, { docId, contentGeneration: 1, hostAnchor: HOST }).token;
+    return { ...s, beginAs };
+  }
+
+  it('retires only the contexts matching (owner, docId); the rest keep reading', async () => {
+    const { broker, beginAs } = seeded();
+    const a1 = beginAs('wc:1', 'doc-a');
+    const a2 = beginAs('wc:1', 'doc-a');
+    const b1 = beginAs('wc:1', 'doc-b');
+    const c1 = beginAs('wc:2', 'doc-a');
+    expect(broker.retireDoc('wc:1', 'doc-a')).toBe(2);
+    await expect(broker.identify('wc:1', a1, LEAF)).rejects.toThrowError(/ERR_XREF_CONTEXT/);
+    await expect(broker.identify('wc:1', a2, LEAF)).rejects.toThrowError(/ERR_XREF_CONTEXT/);
+    const idB = await broker.identify('wc:1', b1, LEAF);
+    await expect(broker.read('wc:1', b1, idB.ticket, 1 << 20)).resolves.toMatchObject({ text: LEAF_TEXT });
+    const idC = await broker.identify('wc:2', c1, LEAF);
+    await expect(broker.read('wc:2', c1, idC.ticket, 1 << 20)).resolves.toMatchObject({ text: LEAF_TEXT });
+  });
+
+  it('a read on a retired context refuses ERR_XREF_CONTEXT (its tickets die with it)', async () => {
+    const { broker, beginAs } = seeded();
+    const token = beginAs('wc:1', 'doc-a');
+    const id = await broker.identify('wc:1', token, LEAF);
+    expect(broker.retireDoc('wc:1', 'doc-a')).toBe(1);
+    await expect(broker.read('wc:1', token, id.ticket, 1 << 20)).rejects.toThrowError(/ERR_XREF_CONTEXT/);
+  });
+
+  it('is idempotent: a repeated retireDoc retires nothing and returns 0', () => {
+    const { broker, beginAs } = seeded();
+    beginAs('wc:1', 'doc-a');
+    expect(broker.retireDoc('wc:1', 'doc-a')).toBe(1);
+    expect(broker.retireDoc('wc:1', 'doc-a')).toBe(0);
+    expect(broker.retireDoc('wc:1', 'doc-never-begun')).toBe(0);
+    expect(broker.retireDoc('wc:9', 'doc-a')).toBe(0);
+  });
+
+  it('refuses an invalid docId with ERR_XREF_ARGUMENT, before touching any context', async () => {
+    const { broker, beginAs } = seeded();
+    const token = beginAs('wc:1', 'doc-a');
+    for (const bad of ['', 42, null, undefined, 'x'.repeat(257), 'a\nb']) {
+      expect(() => broker.retireDoc('wc:1', bad)).toThrowError(/ERR_XREF_ARGUMENT/);
+    }
+    const id = await broker.identify('wc:1', token, LEAF);
+    await expect(broker.read('wc:1', token, id.ticket, 1 << 20)).resolves.toMatchObject({ text: LEAF_TEXT });
   });
 });

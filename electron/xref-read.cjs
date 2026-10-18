@@ -19,6 +19,7 @@
  *   cancel(token)           -> abort the context's in-flight operations
  *   closeContext(token)     -> cancel + retire the context and its tickets
  *   retireOwner(owner)      -> close every context of one window/owner
+ *   retireDoc(owner, docId) -> close one owner's contexts for one document (host tab closed)
  *
  * Contexts and tickets are opaque, main-owned, and bound to the owner
  * (guarded WebContents) that created them; renderer-supplied labels
@@ -604,6 +605,33 @@ function createXrefReadBroker(deps) {
   }
 
   /**
+   * Retire every context of ONE owner begun for ONE document (its host
+   * tab closed): the renderer signals the close with the session's
+   * permanent docId, and only contexts whose recorded docId matches are
+   * closed — other documents of the same owner keep their contexts.
+   * Same revocation semantics as retireOwner (synchronous; in-flight
+   * operations keep their ledger credits until cleanup). Idempotent:
+   * a repeated call retires nothing and returns 0.
+   * @param {string} ownerKey @param {unknown} docId
+   * @returns {number} contexts retired by this call
+   */
+  function retireDoc(ownerKey, docId) {
+    if (typeof docId !== 'string' || !docId || docId.length > 256 || CONTROL_CHARS.test(docId)) throw ERR.argument('a bounded docId label is required');
+    let retired = 0;
+    for (const ctx of [...contexts.values()]) {
+      if (ctx.ownerKey === ownerKey && ctx.docId === docId) {
+        ctx.closed = true;
+        abortContext(ctx);
+        ctx.tickets.clear();
+        contexts.delete(ctx.token);
+        retireOpRecords(ctx);
+        retired += 1;
+      }
+    }
+    return retired;
+  }
+
+  /**
    * Dispose the whole broker (main-process shutdown). Revocation is
    * synchronous; the returned promise resolves once EVERY outstanding
    * operation has drained — including operations whose context was
@@ -634,7 +662,7 @@ function createXrefReadBroker(deps) {
   }
 
   return Object.freeze({
-    beginContext, identify, read, cancel, closeContext, retireOwner, closeAll,
+    beginContext, identify, read, cancel, closeContext, retireOwner, retireDoc, closeAll,
     /** Live counts, for tests and diagnostics. */
     stats: () => {
       let tickets = 0;

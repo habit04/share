@@ -91,6 +91,8 @@ export interface FileBridge {
   cancelXref?(token: string): Promise<boolean>;
   /** Cancel and retire a broker context and all its tickets (tab close, Save As / anchor change, disposal). */
   closeXrefContext?(token: string): Promise<boolean>;
+  /** Retire every broker context this window owns for one document (its host tab closed); returns how many were retired. */
+  retireXrefDocContexts?(docId: string): Promise<{ retired: number }>;
   /** Native picker: no renderer-supplied file path or search root. */
   openShxFont?(): Promise<import('../../render/shx-fonts').ShxResource | null>;
   /** Windows only: licensed installed programs for this PDF plot, never drawing data. */

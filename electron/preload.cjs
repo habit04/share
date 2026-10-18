@@ -73,6 +73,7 @@ contextBridge.exposeInMainWorld('jcad', {
     readXref: (token, ticket, maxBytes) => ipcRenderer.invoke('xref-read', String(token ?? ''), String(ticket ?? ''), typeof maxBytes === 'number' ? maxBytes : -1),
     cancelXref: (token) => ipcRenderer.invoke('xref-cancel', String(token ?? '')),
     closeXrefContext: (token) => ipcRenderer.invoke('xref-close-context', String(token ?? '')),
+    retireXrefDocContexts: (docId) => ipcRenderer.invoke('xref-retire-doc-contexts', String(docId ?? '')),
     openShxFont: () => ipcRenderer.invoke('open-shx-font'),
     dwgExportStatus: () => ipcRenderer.invoke('dwg-export-status'),
     saveDwg: (path, text, admission) => ipcRenderer.invoke('save-dwg', path, text, admission),
