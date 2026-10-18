@@ -134,9 +134,12 @@ Only the outcome, operation count, and token usage are reported.
 No new budgets — the run reuses the transports' existing caps: probe
 64 (OpenAI) / 16 (Anthropic) output tokens, Ask 2,048, Draft/Refine
 4,096; timeouts 15 s (probe) / 30 s (calls). The structural invariant:
-**exactly 4 provider calls in the worst case, 1 in the best (probe
+**at most 4 service attempts in the worst case, 1 in the best (probe
 failure stops the run), zero on refusal; total output bounded by 10,304
-tokens; no retries anywhere.** Harness calls enter the same host queue
+tokens; no retries anywhere.** An attempt counts a service invocation
+even when it is refused or cancelled before any provider transport
+runs, so the report's attempt total is that structural bound on service
+invocations, not a tally of confirmed provider calls. Harness calls enter the same host queue
 as panel requests. Test Connection and a live-checks run are
 independent, user-initiated facilities: neither blocks the other, and
 starting one never refuses or queues the other. Each is individually
@@ -152,8 +155,8 @@ visible in-app and copyable for a review record, and **written nowhere
 else**: no file, no log sink, no telemetry.
 
 Contents: provider + model, run tag, overall status (`pass` / `fail` /
-`refused` / `cancelled`), refusal reason when refused, total provider
-calls, total duration, summed provider-reported token counts; per
+`refused` / `cancelled`), refusal reason when refused, total service
+attempts, total duration, summed provider-reported token counts; per
 check: status, duration, and either a content-free detail (answer
 length + reference count; operation count) or the host error **kind**
 plus the host's already-redacted message (≤ 500 chars). A

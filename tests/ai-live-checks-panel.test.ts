@@ -53,7 +53,7 @@ const passReport: AiLiveChecksReport = {
     { id: 'draft', title: 'Draft generate from the synthetic context', status: 'pass', detail: 'Proposal with 1 operation(s).' },
     { id: 'refine', title: 'Refine the generated plan', status: 'pass', detail: 'Proposal with 1 operation(s).' },
   ],
-  totals: { providerCalls: 4, durationMs: 120, tokens: { inputTokens: 1919, outputTokens: 137 } },
+  totals: { attempts: 4, durationMs: 120, tokens: { inputTokens: 1919, outputTokens: 137 } },
 };
 const cancelledReport: AiLiveChecksReport = {
   ...passReport, status: 'cancelled',
@@ -63,7 +63,7 @@ const cancelledReport: AiLiveChecksReport = {
     { id: 'draft', title: 'Draft generate from the synthetic context', status: 'skipped', detail: 'Run cancelled.' },
     { id: 'refine', title: 'Refine the generated plan', status: 'skipped', detail: 'Run cancelled.' },
   ],
-  totals: { providerCalls: 2, durationMs: 40 },
+  totals: { attempts: 2, durationMs: 40 },
 };
 
 function fakeConnection(report: AiLiveChecksReport = passReport) {
@@ -183,7 +183,7 @@ describe('AiAssistantPanel live provider checks (T13)', () => {
     expect(runLiveChecks).toHaveBeenCalledTimes(1);
     expect(els.liveResultEl.classes.has('hidden')).toBe(false);
     expect(els.liveResultEl.textContent).toContain('JCad live provider checks — OpenAI · gpt-5');
-    expect(els.liveResultEl.textContent).toContain('Result: PASS — 4 provider call(s)');
+    expect(els.liveResultEl.textContent).toContain('Result: PASS — 4 service attempt(s)');
     expect(els.liveResultEl.textContent).toContain('1919 input / 137 output tokens reported');
     expect(els.liveResultEl.textContent).toContain('4. Refine the generated plan — PASS');
     // Controls restore after the run settles.

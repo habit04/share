@@ -84,7 +84,7 @@ function liveChecksReportText(report: AiLiveChecksReport): string {
   const tokens = report.totals.tokens
     ? `, ${report.totals.tokens.inputTokens} input / ${report.totals.tokens.outputTokens} output tokens reported`
     : '';
-  lines.push(`Result: ${verdict} — ${report.totals.providerCalls} provider call(s) in ${report.totals.durationMs} ms${tokens}.`);
+  lines.push(`Result: ${verdict} — ${report.totals.attempts} service attempt(s) in ${report.totals.durationMs} ms${tokens}.`);
   report.checks.forEach((check, index) => {
     const usage = check.usage ? ` [${check.usage.inputTokens ?? '?'} in / ${check.usage.outputTokens ?? '?'} out tokens]` : '';
     lines.push(`${index + 1}. ${check.title} — ${check.status.toUpperCase()}${check.errorKind ? ` (${check.errorKind})` : ''} — ${check.detail ?? ''}${usage}`);

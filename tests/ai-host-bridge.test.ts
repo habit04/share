@@ -62,7 +62,7 @@ function fakeRaw(over: Partial<AiPreloadBridge> = {}): AiPreloadBridge {
       report: {
         kind: 'jcad.ai.live-checks-report', version: 1, runTag: 'bridge-test',
         provider: 'openai', model: 'gpt-5', status: 'pass', refusal: null,
-        checks: [], totals: { providerCalls: 4, durationMs: 10 },
+        checks: [], totals: { attempts: 4, durationMs: 10 },
       },
     }),
     cancelLiveChecks: async () => ({ ok: true, cancelled: true }),
@@ -333,7 +333,7 @@ describe('WindowAiConnection live-checks bridge (docs/AI-LIVE-CHECKS.md)', () =>
     const conn = new WindowAiConnection(fakeRaw());
     const report = await conn.runLiveChecks();
     expect(report).toMatchObject({ kind: 'jcad.ai.live-checks-report', status: 'pass' });
-    expect(report.totals.providerCalls).toBe(4);
+    expect(report.totals.attempts).toBe(4);
     expect(await conn.cancelLiveChecks()).toBe(true);
   });
 

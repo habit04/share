@@ -51,7 +51,7 @@ const { registerAiIpc } = require('../electron/main/ipc-ai.cjs') as {
 interface Report {
   status: string; refusal: string | null; provider: string | null; model: string | null; runTag: string;
   checks: Array<{ id: string; status: string; errorKind?: string }>;
-  totals: { providerCalls: number; tokens?: { inputTokens: number; outputTokens: number } };
+  totals: { attempts: number; tokens?: { inputTokens: number; outputTokens: number } };
 }
 
 const SENTINEL = 'sk-live-checks-sentinel-0000';
@@ -144,7 +144,7 @@ describe('T5 keystone — runner + core against the real corrected service', () 
     expect(report.provider).toBe('openai');
     expect(report.model).toBe('gpt-5');
     expect(report.runTag).toMatch(/^[0-9a-f-]{36}$/);
-    expect(report.totals.providerCalls).toBe(4);
+    expect(report.totals.attempts).toBe(4);
     expect(report.totals.tokens).toEqual({ inputTokens: 1919, outputTokens: 137 });
     expect(report.checks.map((c) => c.status)).toEqual(['pass', 'pass', 'pass', 'pass']);
     expect(runner.isRunning()).toBe(false);
@@ -353,7 +353,7 @@ describe('T11/T12 live-checks channels through the guarded IPC', () => {
     const report = result.report as unknown as Report;
     expect(report.status).toBe('pass');
     expect(report.provider).toBe('openai'); // the payload selected nothing
-    expect(report.totals.providerCalls).toBe(4);
+    expect(report.totals.attempts).toBe(4);
     expect(ipc.fetchCalls).toHaveLength(4);
     expect(JSON.stringify(result)).not.toContain(SENTINEL);
   });

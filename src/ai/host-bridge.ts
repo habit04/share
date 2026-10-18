@@ -72,7 +72,7 @@ export interface AiLiveChecksReport {
   readonly refusal: string | null;
   readonly checks: readonly AiLiveCheckEntry[];
   readonly totals: {
-    readonly providerCalls: number;
+    readonly attempts: number;
     readonly durationMs: number;
     readonly tokens?: { readonly inputTokens: number; readonly outputTokens: number };
   };

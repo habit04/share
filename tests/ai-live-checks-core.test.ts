@@ -18,7 +18,7 @@ interface LiveChecksReport {
   provider: string | null; model: string | null;
   status: string; refusal: string | null;
   checks: LiveCheckEntry[];
-  totals: { providerCalls: number; durationMs: number; tokens?: { inputTokens: number; outputTokens: number } };
+  totals: { attempts: number; durationMs: number; tokens?: { inputTokens: number; outputTokens: number } };
 }
 interface Facade {
   getState: () => Promise<Record<string, unknown>>;
@@ -119,7 +119,7 @@ describe('runLiveChecks — T1 happy path', () => {
     expect(report.provider).toBe('openai');
     expect(report.model).toBe('gpt-5');
     expect(calls).toEqual(['probe', 'ask', 'draft', 'refine']);
-    expect(report.totals.providerCalls).toBe(4);
+    expect(report.totals.attempts).toBe(4);
     expect(report.totals.tokens).toEqual({ inputTokens: 1919, outputTokens: 137 });
     expect(report.checks.map((c) => [c.id, c.status])).toEqual([
       ['probe', 'pass'], ['ask', 'pass'], ['draft', 'pass'], ['refine', 'pass'],
@@ -127,7 +127,7 @@ describe('runLiveChecks — T1 happy path', () => {
     expect(report.checks[1]!.detail).toBe(`Answer of ${ANSWER.length} characters with 1 reference(s).`);
     const text = core.formatReportText(report);
     expect(text).toContain('JCad live provider checks — OpenAI · gpt-5');
-    expect(text).toContain('Result: PASS — 4 provider call(s)');
+    expect(text).toContain('Result: PASS — 4 service attempt(s)');
     expect(text).toContain('1919 input / 137 output tokens reported');
     expect(text).not.toContain(ANSWER);
   });
@@ -155,7 +155,7 @@ describe('runLiveChecks — T2 refusals make zero provider calls', () => {
     const report = await core.runLiveChecks(facade, { runTag: 'core-test-3' });
     expect(report.status).toBe('refused');
     expect(report.refusal).toBe(refusal);
-    expect(report.totals.providerCalls).toBe(0);
+    expect(report.totals.attempts).toBe(0);
     expect(calls).toEqual([]);
     expect(getStateCalls()).toBe(1);
     expect(core.formatReportText(report)).toContain(`Result: REFUSED (${refusal})`);
@@ -175,14 +175,14 @@ describe('runLiveChecks — T2 refusals make zero provider calls', () => {
 });
 
 describe('runLiveChecks — T3 abort on first failure', () => {
-  it('stops after a probe failure with exactly one provider call', async () => {
+  it('stops after a probe failure with exactly one service attempt', async () => {
     const { facade, calls } = fakeFacade({ methods: {
       testConnection: async () => { calls.push('probe'); throw hostError('auth-failed', 'The API key was rejected.'); },
     } });
     const report = await core.runLiveChecks(facade, { runTag: 'core-test-6' });
     expect(report.status).toBe('fail');
     expect(calls).toEqual(['probe']);
-    expect(report.totals.providerCalls).toBe(1);
+    expect(report.totals.attempts).toBe(1);
     expect(report.checks.map((c) => c.status)).toEqual(['fail', 'skipped', 'skipped', 'skipped']);
     expect(report.checks[0]).toMatchObject({ errorKind: 'auth-failed' });
   });
@@ -208,6 +208,26 @@ describe('runLiveChecks — T3 abort on first failure', () => {
   });
 });
 
+describe('runLiveChecks — totals count service attempts, not provider calls (C2)', () => {
+  it('counts a pre-transport refusal as an attempt and never claims a provider call', async () => {
+    const { facade, calls } = fakeFacade({ methods: {
+      ask: async () => { calls.push('ask'); throw hostError('busy', 'Another AI operation is already running.'); },
+    } });
+    const report = await core.runLiveChecks(facade, { runTag: 'core-test-c2' });
+    expect(report.status).toBe('fail');
+    expect(calls).toEqual(['probe', 'ask']);
+    expect(report.checks.map((c) => c.status)).toEqual(['pass', 'fail', 'skipped', 'skipped']);
+    // The probe attempt proceeded; the ask attempt was refused before any
+    // provider transport ran. Both are service attempts, and neither the
+    // report field nor the rendered text may call the total provider calls.
+    expect(report.totals.attempts).toBe(2);
+    expect(JSON.stringify(report)).not.toContain('providerCalls');
+    const text = core.formatReportText(report);
+    expect(text).toContain('2 service attempt(s)');
+    expect(text).not.toContain('provider call');
+  });
+});
+
 describe('runLiveChecks — T4 outcome handling', () => {
   it('fails the draft check on clarification and blocks refine', async () => {
     const { facade, calls } = fakeFacade({
@@ -219,7 +239,7 @@ describe('runLiveChecks — T4 outcome handling', () => {
     expect(report.checks[2]).toMatchObject({ status: 'fail', errorKind: 'clarification' });
     expect(report.checks[2]!.detail).toContain('Which radius do you mean?');
     expect(report.checks[3]).toMatchObject({ id: 'refine', status: 'blocked' });
-    expect(report.totals.providerCalls).toBe(3);
+    expect(report.totals.attempts).toBe(3);
   });
 
   it('fails the run when refine returns unsupported', async () => {

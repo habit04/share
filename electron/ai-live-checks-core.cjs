@@ -331,7 +331,7 @@ function buildRefineRequest({ requestId, provider, model, configGeneration, conf
  * @property {'pass' | 'fail' | 'refused' | 'cancelled'} status
  * @property {string | null} refusal
  * @property {LiveCheckEntry[]} checks
- * @property {{ providerCalls: number, durationMs: number, tokens?: { inputTokens: number, outputTokens: number } }} totals
+ * @property {{ attempts: number, durationMs: number, tokens?: { inputTokens: number, outputTokens: number } }} totals
  */
 
 function normalizeError(cause) {
@@ -420,7 +420,7 @@ async function runLiveChecks(facade, options = {}) {
     status: 'refused',
     refusal: null,
     checks: [],
-    totals: { providerCalls: 0, durationMs: 0 },
+    totals: { attempts: 0, durationMs: 0 },
   };
   const finish = (status) => {
     // Report contract: a run with any blocked check never reports an
@@ -493,7 +493,7 @@ async function runLiveChecks(facade, options = {}) {
     }
     // The Refine request is built before the check runs so that an
     // over-cap envelope (builder returns null) blocks the check locally:
-    // the request is never sent and never counted as a provider call.
+    // the request is never sent and never counted as an attempt.
     let refineRequest = null;
     if (check.id === 'refine') {
       refineRequest = buildRefineRequest({ requestId: requestId(3), provider, model, configGeneration, configKey, draftOutcome });
@@ -509,7 +509,7 @@ async function runLiveChecks(facade, options = {}) {
     /** @type {LiveCheckEntry} */
     const entry = { id: check.id, title: check.title, status: 'fail' };
     try {
-      report.totals.providerCalls += 1;
+      report.totals.attempts += 1;
       if (check.id === 'probe') {
         const probe = await facade.testConnection(signal);
         entry.status = 'pass';
@@ -599,7 +599,7 @@ function formatReportText(report) {
   const tokens = report.totals.tokens
     ? `, ${report.totals.tokens.inputTokens} input / ${report.totals.tokens.outputTokens} output tokens reported`
     : '';
-  lines.push(`Result: ${verdict} — ${report.totals.providerCalls} provider call(s) in ${report.totals.durationMs} ms${tokens}.`);
+  lines.push(`Result: ${verdict} — ${report.totals.attempts} service attempt(s) in ${report.totals.durationMs} ms${tokens}.`);
   report.checks.forEach((check, index) => {
     const usage = check.usage ? ` [${check.usage.inputTokens ?? '?'} in / ${check.usage.outputTokens ?? '?'} out tokens]` : '';
     lines.push(`${index + 1}. ${check.title} — ${check.status.toUpperCase()}${check.errorKind ? ` (${check.errorKind})` : ''} — ${check.detail ?? ''}${usage}`);
