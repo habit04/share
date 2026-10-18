@@ -20,7 +20,10 @@
 //   shared/leaf.dxf            pinned same-length coordinate edit target
 //   mutable.dxf                minimal DXF; pinned growth + coordinate edit
 //   oversized.dxf              exactly 16 MiB + 1 byte
-//   slow.dxf                   exactly 4 MiB (in-flight witness file)
+//   slow.dxf                   exactly 16 MiB (in-flight witness file:
+//                              the largest size the 16 MiB per-read
+//                              allowance admits, so the read stays active
+//                              long enough to witness the 3.3 overlap)
 //   xref-native.jcadproj.json  project listing every fixture DXF; opening
 //                              it through the app's genuine Open Project
 //                              flow is what makes the fixture paths
@@ -119,7 +122,7 @@ const leafBuf = copyAuthored('shared/leaf.dxf', 'leaf.dxf');
 // Gate-only files at the fixture root.
 const mutableBuf = emit('mutable.dxf', minimalDxf('mutable native-refresh fixture: the harness rewrites this file between reads'));
 emit('oversized.dxf', padToExact(minimalDxf('oversized native-refresh fixture'), 16 * 1024 * 1024 + 1));
-emit('slow.dxf', padToExact(minimalDxf('slow native-refresh fixture'), 4 * 1024 * 1024));
+emit('slow.dxf', padToExact(minimalDxf('slow native-refresh fixture'), 16 * 1024 * 1024));
 
 // The project the harness opens through the app's genuine Open Project
 // dialog flow: its listed drawings become the registry-known fixture set.

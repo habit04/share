@@ -104,10 +104,14 @@
 //
 // Architecture note (section 3.5): broker contexts are owned by the
 // WebContents (electron/main/ipc-xrefs.cjs ownerOf hooks did-navigate
-// and destroyed), not by an editor tab. Section 3.5a applies the
-// approved plan's tab-close criterion exactly as written and reports
-// the observed outcome truthfully; 3.5a2 is an ADDITIONAL observation
-// of retirement on page navigation, not a substitute for 3.5a.
+// and destroyed), AND the product additionally retires a document's
+// contexts when its host tab closes, via an explicit renderer->main
+// tab-close signal keyed by the session docId. Section 3.5a therefore
+// begins its context with the host session's own docId, closes the
+// tab, asserts the tab is actually gone, and applies the approved
+// plan's tab-close criterion exactly as written; 3.5a2 is an
+// ADDITIONAL observation of retirement on page navigation, not a
+// substitute for 3.5a.
 import { _electron as electron } from 'playwright';
 import { applicationWindow } from './electron-window.mjs';
 import { build as esbuildBuild } from 'esbuild';
@@ -1045,7 +1049,17 @@ try {
     currentSection = '3.5';
     if (halted) record('skipped', 'section 3.5 (lifecycle)', haltReason);
     else {
-      const ctx = await begin('native-3.5');
+      // 3.5a setup: the context must be bound to the HOST SESSION's
+      // docId - the product's tab-close retire signal fires with that
+      // exact docId, so a harness-label docId would never be retired.
+      const hostSession = await win.evaluate((p) => {
+        const s = window.editor.sessions;
+        const i = s.indexOfPath(p);
+        return i >= 0 ? { index: i, docId: s.list[i].docId, count: s.list.length } : null;
+      }, hostPath);
+      check(hostSession !== null && typeof hostSession.docId === 'string' && hostSession.docId !== '',
+        'host session located for the lifecycle checks (its docId binds the 3.5 context)', JSON.stringify(hostSession));
+      const ctx = hostSession ? await begin(hostSession.docId) : { ok: false };
       const leaf = await identify(ctx.token, fx(leafRel));
       check(leaf.ok, 'context for the lifecycle checks');
       // 3.5a: close the host tab, then try the old ticket (criterion as approved, unmodified).
@@ -1055,8 +1069,14 @@ try {
         if (i >= 0) s.close(i);
       }, hostPath);
       await win.waitForTimeout(300);
+      const tabState = await win.evaluate((p) => {
+        const s = window.editor.sessions;
+        return { count: s.list.length, stillOpen: s.indexOfPath(p) >= 0 };
+      }, hostPath);
+      check(hostSession !== null && tabState.stillOpen === false && tabState.count === hostSession.count - 1,
+        'the host tab is actually removed before the read (sessions list no longer contains the host path, length dropped by one)', JSON.stringify(tabState));
       const afterTab = await read(ctx.token, leaf.ticket, MIB);
-      check(ctx.ok && leaf.ok && !afterTab.ok, 'read on a context whose host tab closed refuses', JSON.stringify(afterTab));
+      check(ctx.ok && leaf.ok && !afterTab.ok && afterTab.code === 'ERR_XREF_CONTEXT', 'read on a context whose host tab closed refuses CONTEXT (doc contexts retired on tab close)', JSON.stringify(afterTab));
       // 3.5a2: ADDITIONAL observation (not a substitute for 3.5a):
       // navigation retires the owner - the trigger the shipped wiring implements.
       await win.reload();
