@@ -57,6 +57,15 @@ function fakeRaw(over: Partial<AiPreloadBridge> = {}): AiPreloadBridge {
     }),
     cancel: async () => ({ ok: true, cancelled: true }),
     usage: async () => ({ ok: true, usage: {} }),
+    runLiveChecks: async () => ({
+      ok: true,
+      report: {
+        kind: 'jcad.ai.live-checks-report', version: 1, runTag: 'bridge-test',
+        provider: 'openai', model: 'gpt-5', status: 'pass', refusal: null,
+        checks: [], totals: { providerCalls: 4, durationMs: 10 },
+      },
+    }),
+    cancelLiveChecks: async () => ({ ok: true, cancelled: true }),
     ...over,
   };
 }
@@ -316,5 +325,31 @@ describe('WindowAiConnection draftRefine bridge (milestone 4)', () => {
     abort.abort();
     await expect(conn.bridge.draftRefine!(refineRequest, abort.signal)).rejects.toMatchObject({ kind: 'cancelled' });
     expect(draftRefine).not.toHaveBeenCalled();
+  });
+});
+
+describe('WindowAiConnection live-checks bridge (docs/AI-LIVE-CHECKS.md)', () => {
+  it('unwraps the report and the cancel result', async () => {
+    const conn = new WindowAiConnection(fakeRaw());
+    const report = await conn.runLiveChecks();
+    expect(report).toMatchObject({ kind: 'jcad.ai.live-checks-report', status: 'pass' });
+    expect(report.totals.providerCalls).toBe(4);
+    expect(await conn.cancelLiveChecks()).toBe(true);
+  });
+
+  it('reports an older preload without live-checks support as host-unavailable', async () => {
+    const raw = fakeRaw();
+    delete (raw as Partial<AiPreloadBridge>).runLiveChecks;
+    delete (raw as Partial<AiPreloadBridge>).cancelLiveChecks;
+    const conn = new WindowAiConnection(raw);
+    await expect(conn.runLiveChecks()).rejects.toMatchObject({ kind: 'host-unavailable' });
+    expect(await conn.cancelLiveChecks()).toBe(false);
+  });
+
+  it('rejects a malformed report payload instead of rendering it', async () => {
+    const conn = new WindowAiConnection(fakeRaw({
+      runLiveChecks: async () => ({ ok: true, report: { status: 42 } }) as never,
+    }));
+    await expect(conn.runLiveChecks()).rejects.toMatchObject({ kind: 'host-unavailable' });
   });
 });
