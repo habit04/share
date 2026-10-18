@@ -11,6 +11,15 @@
  * oracle every expected value below is driven from (structural facts — names, counts — are
  * hardcoded; geometry, extents and attribute positions are read out of the oracle).
  *
+ * Q10 fixture (tests/fixtures/native-dynamic-handbuilt-r2000/) — HANDBUILT lineage, and the
+ * label is binding there too: an AutoCAD 2027 SAVEAS 2000 + DXFOUT v2000 derivative of the
+ * N1 DWG above (never Block-Editor-authored; see PROVENANCE-Q10-HANDBUILT.md in that
+ * folder). AutoCAD reopened each R2000 file and measured it read-only; the three read-back
+ * JSONs (read-source-current / read-R2000-dwg / read-R2000-dxf) are the Q10 oracle. They
+ * report EFFECTIVE identity (the definition as P30_LINEAR_STRETCH for every insert), so
+ * every JCad-side name fact in the J10 tests is asserted from the import, never from
+ * those JSONs.
+ *
  * Recipe r6 section 3.5 map — each J is marked REAL (the reader/writer behavior is exercised
  * and asserted) or INVENTORY (no such capability exists today; the test asserts the concrete
  * negative/structural fact instead of faking coverage):
@@ -31,12 +40,19 @@
  *                   with mixed anchor kinds and the dynamic graph objects retained
  *                   among the raw-anchored nodes — Windows review, 2026-10-17) and
  *                   is asserted per shape in its own test.
- *   J10 TODO      — no R2000 save-down of this fixture is shipped.
+ *   J10 REAL      — Q10 R2000 save-down (the r2000 fixture dir above): AC1015 DXF parse,
+ *                   graph retention and write byte-stability, oracle-exact geometry on both
+ *                   the DXF and DWG paths, *U3 dropped by AutoCAD's save-down.
+ *       INVENTORY — on the DXF path the true name is NOT resolved: the definition arrives
+ *                   keyed *U1 and P30_LINEAR_STRETCH survives only as raw
+ *                   AcDbDynamicBlockTrueName XDATA on *U1's record; no Distance1 value
+ *                   recovery (as J3) — the values live only as baked plate widths.
  *   J11 REAL (absence half) — no JCAD_DYNAMIC carrier is invented for native data.
  *       INVENTORY (statement half) — the import report never states that parameter values
  *                   were unrecovered; asserted as a concrete absence, not papered over.
- * NOT covered by this fixture at all: Block-Editor-authored byte layout, GUI/Properties
- * palette behavior (M0), R2000 save-down (Q10), Q11 third-party re-evaluation, Q12/Q13.
+ * NOT covered by these fixtures at all: Block-Editor-authored byte layout, GUI/Properties
+ * palette behavior (M0), Q11 third-party re-evaluation, Q12/Q13 (recipes proposed; no
+ * Q12/Q13 fixture is built or shipped).
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -361,7 +377,6 @@ describe('p30-linear-stretch-HANDBUILT.dxf: native dynamic definition, DXF impor
     }
   });
 
-  it.todo('J10: R2000 save-down of this fixture — no R2000 writer output of the native fixture is shipped, so there is nothing to reopen and compare');
 });
 
 // ---------------------------------------------------------------- DWG (J9)
@@ -477,8 +492,338 @@ describe('p30-linear-stretch-HANDBUILT.dwg: native DWG import (J9)', () => {
   });
 });
 
-/** DWG def-space geometry: same oracle values as J4, but the two measured losses
- *  (closed flag, ATTDEF default) are asserted in the losses test, not here. */
+// ---------------------------------------------------------------- Q10 oracle
+
+interface PluginEntity {
+  type: string;
+  closed?: boolean;
+  vertices?: number[][];
+  center?: number[];
+  radius?: number;
+  start?: number[];
+  end?: number[];
+  tag?: string;
+  position?: number[];
+  height?: number;
+  default?: string;
+}
+interface PluginInstance {
+  blockName: string;
+  effectiveName: string;
+  isDynamicBlock: boolean;
+  insertion: number[];
+  rotationDeg: number;
+  properties: Array<{ name: string; value: unknown; allowed: unknown[] }>;
+  extents: number[][];
+  attributes: Array<{ tag: string; text: string; position: number[] }>;
+}
+interface PluginRead {
+  blocks: Array<{ name: string; isAnonymous: boolean; isDynamic: boolean; entities: PluginEntity[] }>;
+  instances: PluginInstance[];
+}
+
+const q10Dir = join(__dirname, 'fixtures', 'native-dynamic-handbuilt-r2000');
+const q10RawSource = JSON.parse(readFileSync(join(q10Dir, 'read-source-current.json'), 'utf8')) as Record<string, unknown>;
+const q10RawDwg = JSON.parse(readFileSync(join(q10Dir, 'read-R2000-dwg.json'), 'utf8')) as Record<string, unknown>;
+const q10RawDxf = JSON.parse(readFileSync(join(q10Dir, 'read-R2000-dxf.json'), 'utf8')) as Record<string, unknown>;
+const q10Read = q10RawDxf as unknown as PluginRead;
+
+// The plugin read-backs report effective identity: the definition record is named
+// P30_LINEAR_STRETCH and B/C's record *U2. JCad's R2000 DXF import keys the definition
+// record *U1 instead (asserted below, from the import). The adaptation maps records to
+// JCad keys POSITIONALLY/BY GEOMETRY — the *U1 candidate is the record whose geometry
+// equals the read-back definition geometry — never by trusting the plugin's names.
+const q10DefEntities = q10Read.blocks.find((b) => b.name === 'P30_LINEAR_STRETCH')!.entities as OracleEntity[];
+const q10BakeEntities = q10Read.blocks.find((b) => b.name === '*U2')!.entities as OracleEntity[];
+const q10KeyOf = (pluginName: string) => (pluginName === 'P30_LINEAR_STRETCH' ? '*U1' : '*U2');
+const q10Instances: OracleInstance[] = q10Read.instances.map((inst, i) => ({
+  instance: 'ABC'[i]!,
+  blockName: q10KeyOf(inst.blockName),
+  insertion: inst.insertion,
+  rotationDeg: inst.rotationDeg,
+  properties: inst.properties.map((p) => ({ name: p.name, value: p.value, readOnly: p.name === 'Origin' })),
+  extents: inst.extents,
+  blockEntities: inst.blockName === 'P30_LINEAR_STRETCH' ? q10DefEntities : q10BakeEntities,
+  attributes: inst.attributes,
+}));
+
+const q10DxfText = (name: string) => decodeDxfBytes(readFileSync(join(q10Dir, name))).text;
+const q10Source = q10DxfText('p30-linear-stretch-HANDBUILT-R2000.dxf');
+const q10Imported = readDxf(q10Source);
+const q10Written = writeDxf(q10Imported);
+const q10RoundTripped = readDxf(q10Written);
+
+/** The $ACADVER value of a DXF text, read as a group pair (9 = name, 1 = value). */
+function acadverOf(dxf: string): string | undefined {
+  const lines = dxf.split(/\r\n|\n/);
+  for (let i = 0; i + 3 < lines.length; i += 2) {
+    if (lines[i]!.trim() === '9' && lines[i + 1]!.trim() === '$ACADVER') return lines[i + 3]!.trim();
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------- Q10 DXF
+
+describe('Q10 p30-linear-stretch-HANDBUILT-R2000.dxf: R2000 save-down, DXF import (J10)', () => {
+  it('J10 META: the three AutoCAD read-backs agree in every measured field — the Q10 oracle identity holds', () => {
+    // Only the header fields that necessarily differ are removed: `file` (three
+    // different paths) and `drawingVersion` (AC1032 source vs AC1015 save-downs).
+    // Everything AutoCAD measured — blocks, instances, properties, extents — must be
+    // identical across the source read and both R2000 read-backs (PROVENANCE-Q10).
+    const strip = (j: Record<string, unknown>) => {
+      const { file: _file, drawingVersion: _version, ...rest } = j;
+      return rest;
+    };
+    expect(q10RawSource['drawingVersion']).toBe('AC1032');
+    expect(q10RawDwg['drawingVersion']).toBe('AC1015');
+    expect(q10RawDxf['drawingVersion']).toBe('AC1015');
+    expect(strip(q10RawDwg)).toEqual(strip(q10RawSource));
+    expect(strip(q10RawDxf)).toEqual(strip(q10RawSource));
+  });
+
+  it('J10: the AC1015 DXF parses cleanly; block keys are exactly {*U1, *U2} and the inserts reference *U1/*U2/*U2', () => {
+    expect(acadverOf(q10Source)).toBe('AC1015');
+    expect(Object.keys(q10Imported.blocks).sort()).toEqual(['*U1', '*U2']);
+    expect(insertsOf(q10Imported).map((i) => i.block).sort()).toEqual(['*U1', '*U2', '*U2']);
+    expect(insertsOf(q10Imported).filter((i) => i.block === '*U2')).toHaveLength(2);
+  });
+
+  it('J10: *U1 carries the oracle definition geometry and *U2 the 120 bake — mapped by geometry, not by name', () => {
+    // AutoCAD's read-back names the definition P30_LINEAR_STRETCH; JCad keys it *U1.
+    // The identification is earned here: *U1's imported geometry equals the read-back
+    // DEFINITION geometry (100-wide plate), and *U2's equals the read-back 120 bake.
+    expectBlockGeometry(q10Imported.blocks['*U1']!, q10DefEntities);
+    expectBlockGeometry(q10Imported.blocks['*U2']!, q10BakeEntities);
+  });
+
+  it('J10: world facts are oracle-exact — AABBs, TAG1 positions, rotation, shared *U2', () => {
+    for (const o of q10Instances) expectWorldFacts(q10Imported, o);
+    const [a, b, c] = q10Instances;
+    expect(insertAt(q10Imported, a!.insertion[0]!, a!.insertion[1]!).block).toBe('*U1');
+    expect(insertAt(q10Imported, b!.insertion[0]!, b!.insertion[1]!).block).toBe('*U2');
+    expect(insertAt(q10Imported, c!.insertion[0]!, c!.insertion[1]!).block).toBe('*U2');
+  });
+
+  it('J10: graph retention — schema 1, the five dynamic types among raw-anchored nodes, the parameter node carries Distance1', () => {
+    const graph = q10Imported.cadGraph;
+    expect(graph).toBeDefined();
+    expect(graph!.schema).toBe(1);
+    const first = graph!.nodes[0]!;
+    expect(first.anchor?.kind).toBe('raw');
+    expect(first.type).toBe('HEADER');
+    expect(first.groups[0]).toEqual([9, '$ACADVER']);
+    expect(first.groups[1]).toEqual([1, 'AC1015']);
+    const rawTypes = new Set(graph!.nodes.filter((n) => n.anchor?.kind === 'raw').map((n) => n.type));
+    for (const kind of GRAPH_KINDS) expect(rawTypes.has(kind), kind).toBe(true);
+    // The parameter's NAME survives only inside the retained graph records (see the
+    // no-recovery inventory test below) — retention, not decoding.
+    expect(graph!.nodes.some((n) => n.type === 'BLOCKLINEARPARAMETER' && n.groups.some(([c, v]) => c === 300 && v === 'Distance1'))).toBe(true);
+    // Node counts are deliberately not pinned (293 on this path vs 228 in N1's R2018 DXF).
+  });
+
+  it('J10: graph records are byte-identical after writeDxf, write -> read -> write is byte-stable, and the written $ACADVER stays AC1015', () => {
+    for (const marker of [...GRAPH_KINDS, 'Distance1', 'ACAD_ENHANCEDBLOCK']) {
+      expect(count(q10Written, marker), marker).toBe(count(q10Source, marker));
+    }
+    const expectedCounts: Record<(typeof GRAPH_KINDS)[number], number> = {
+      ACAD_EVALUATION_GRAPH: 1, BLOCKLINEARPARAMETER: 1, BLOCKSTRETCHACTION: 1, BLOCKLINEARGRIP: 1, BLOCKGRIPLOCATIONCOMPONENT: 2,
+    };
+    for (const kind of GRAPH_KINDS) {
+      const fromSource = records(q10Source, kind);
+      expect(fromSource, kind).toHaveLength(expectedCounts[kind]);
+      expect(records(q10Written, kind), kind).toEqual(fromSource);
+    }
+    expect(writeDxf(q10RoundTripped)).toBe(q10Written);
+    expect(Object.keys(q10RoundTripped.blocks).sort()).toEqual(['*U1', '*U2']);
+    for (const o of q10Instances) expectWorldFacts(q10RoundTripped, o);
+    expect(acadverOf(q10Written)).toBe('AC1015');
+  });
+
+  it('J10: *U3 is ABSENT — AutoCAD save-down dropped the unreferenced orphan on this path', () => {
+    // Contrast with N1, where *U3 is an inventory fact of both paths (J7 / J9): the
+    // R2000 files contain no *U3 block key and no graph record for it.
+    expect(q10Imported.blocks['*U3']).toBeUndefined();
+    expect(insertsOf(q10Imported).some((i) => i.block === '*U3')).toBe(false);
+    expect(q10Imported.cadGraph!.nodes.some((n) => n.anchor?.kind === 'table' && n.anchor.name === '*U3')).toBe(false);
+    expect(JSON.stringify(q10Imported.cadGraph)).not.toContain('*U3');
+    expect(q10RoundTripped.blocks['*U3']).toBeUndefined();
+  });
+
+  it('J10: the import report records the graph classes as kept, behavior not simulated', () => {
+    const items = importReportOf(q10Imported)?.items ?? [];
+    for (const kind of GRAPH_KINDS) {
+      const kept = items.filter((i) => i.type === kind);
+      expect(kept.length, kind).toBeGreaterThanOrEqual(1);
+      for (const item of kept) {
+        expect(item.action).toBe('kept');
+        expect(item.reason).toContain('not simulated');
+      }
+    }
+    expect(items.filter((i) => i.type === 'BLOCKGRIPLOCATIONCOMPONENT')).toHaveLength(2);
+  });
+
+  it('J10 INVENTORY: no block is keyed P30_LINEAR_STRETCH — the true name is NOT resolved from its XDATA', () => {
+    expect(q10Imported.blocks['P30_LINEAR_STRETCH']).toBeUndefined();
+    expect(insertsOf(q10Imported).some((i) => i.block === 'P30_LINEAR_STRETCH')).toBe(false);
+    // The name survives only as raw XDATA on *U1's own BLOCK_RECORD — retained, unread.
+    const nodes = q10Imported.cadGraph!.nodes;
+    const u1 = nodes.find((n) => n.type === 'BLOCK_RECORD' && n.anchor?.kind === 'table' && n.anchor.name === '*U1');
+    expect(u1).toBeDefined();
+    const at = u1!.groups.findIndex(([c, v]) => c === 1001 && v === 'AcDbDynamicBlockTrueName');
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(u1!.groups[at + 1]).toEqual([1000, 'P30_LINEAR_STRETCH']);
+    // No resolved link: *U1's inserts carry no reference to the name anywhere.
+    for (const ins of insertsOf(q10Imported).filter((i) => i.block === '*U1')) {
+      expect(ins.dynamic).toBeUndefined();
+      expect(Object.values(ins)).not.toContain('P30_LINEAR_STRETCH');
+    }
+  });
+
+  it('J10 INVENTORY: the *U2 link-back BTag XDATA targets handle 265 — the *U1 record — retained opaquely', () => {
+    const nodes = q10Imported.cadGraph!.nodes;
+    const recordOf = (name: string) => nodes.find((n) => n.type === 'BLOCK_RECORD' && n.anchor?.kind === 'table' && n.anchor.name === name);
+    const u1 = recordOf('*U1')!;
+    const u2 = recordOf('*U2')!;
+    expect(u1.sourceHandle).toBe('265');
+    const at = u2.groups.findIndex(([c, v]) => c === 1001 && v === 'AcDbBlockRepBTag');
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(u2.groups.slice(at).find(([c]) => c === 1005)?.[1]).toBe('265');
+    expect(u2.groups.slice(at).find(([c]) => c === 1005)?.[1]).toBe(u1.sourceHandle);
+  });
+
+  it('J10 INVENTORY: no Distance1 value recovery — the read-back values 100/120/120 live only as baked plate widths; Origin unmodeled', () => {
+    // The AutoCAD read-back STATES the values JCad does not recover.
+    const values = q10Read.instances.map((inst) => inst.properties.find((p) => p.name === 'Distance1')!.value);
+    expect(values).toEqual([100, 120, 120]);
+    for (const block of Object.values(q10Imported.blocks)) {
+      expect(block.dynamic).toBeUndefined();
+      expect(block.dynamicRetained).toBeUndefined();
+    }
+    for (const ins of insertsOf(q10Imported)) {
+      expect(ins.dynamic).toBeUndefined();
+      expect(ins.dynamicRetained).toBeUndefined();
+    }
+    const { cadGraph: _graph, ...model } = q10Imported;
+    expect(JSON.stringify(model)).not.toContain('Distance1');
+    expect(JSON.stringify(model)).not.toContain('Origin');
+    // The values are embodied ONLY in the baked geometry: plate widths 100 (*U1) / 120 (*U2).
+    const widthOf = (name: string) => {
+      const plate = q10Imported.blocks[name]!.entities.find((e): e is PolylineEntity => e.type === 'polyline')!;
+      return Math.max(...plate.points.map((p) => p.x)) - Math.min(...plate.points.map((p) => p.x));
+    };
+    near(widthOf('*U1'), 100, DEF_TOL);
+    near(widthOf('*U2'), 120, DEF_TOL);
+    // Origin (0,30) is exposed by the read-back for every instance and modeled nowhere.
+    for (const inst of q10Read.instances) {
+      expect(inst.properties.find((p) => p.name === 'Origin')!.value).toMatchObject({ X: 0, Y: 30, Z: 0 });
+    }
+  });
+
+  it('J10 INVENTORY: there is no native-instance edit path — the parameter API refuses these inserts atomically', () => {
+    for (const ins of insertsOf(q10Imported)) {
+      const result = setDynamicParameter(q10Imported, ins.id, 'Distance1', 120);
+      expect(result.problem).toBe('no-dynamic-definition');
+      expect(result.state).toBe(q10Imported);
+    }
+  });
+});
+
+// ---------------------------------------------------------------- Q10 DWG
+
+describe('Q10 p30-linear-stretch-HANDBUILT-R2000.dwg: R2000 save-down, DWG import (J10)', () => {
+  let q10Dwg: DrawingState;
+
+  beforeAll(async () => {
+    const { payload } = await readDwgPayload(readFileSync(join(q10Dir, 'p30-linear-stretch-HANDBUILT-R2000.dwg')));
+    q10Dwg = convertDwg(payload as DwgImportPayload).state;
+  }, 60_000);
+
+  it('J10 DWG: the named block KEEPS its name on this path; only *U2 becomes ANON_U2, and there is no ANON_U3', () => {
+    // The DWG path preserves the definition's real name (unlike the DXF path's *U1):
+    // asserted from the import, since the plugin read-backs hide every rename.
+    expect(Object.keys(q10Dwg.blocks).sort()).toEqual(['ANON_U2', 'P30_LINEAR_STRETCH']);
+    expect(insertsOf(q10Dwg).map((i) => i.block).sort()).toEqual(['ANON_U2', 'ANON_U2', 'P30_LINEAR_STRETCH']);
+    expect(q10Dwg.blocks['ANON_U3']).toBeUndefined();
+  });
+
+  it('J10 DWG: geometry is oracle-exact — definition blocks, world AABBs and TAG1 positions', () => {
+    expectBlockGeometryDwg(q10Dwg.blocks['P30_LINEAR_STRETCH']!, q10DefEntities);
+    expectBlockGeometryDwg(q10Dwg.blocks['ANON_U2']!, q10BakeEntities);
+    for (const o of q10Instances) {
+      const ins = insertAt(q10Dwg, o.insertion[0]!, o.insertion[1]!);
+      expect(ins.block).toBe(o.blockName === '*U1' ? 'P30_LINEAR_STRETCH' : 'ANON_U2');
+      near(ins.rotation, (o.rotationDeg * Math.PI) / 180, DEF_TOL);
+      expect(ins.attributes).toEqual({ TAG1: 'P-100' });
+      const bb = worldAabb(q10Dwg, ins);
+      nearPt(bb.min, o.extents[0]![0]!, o.extents[0]![1]!, WORLD_TOL);
+      nearPt(bb.max, o.extents[1]![0]!, o.extents[1]![1]!, WORLD_TOL);
+      const tag = worldTag(q10Dwg, ins);
+      expect(tag.text).toBe('P-100');
+      nearPt(tag.position, o.attributes[0]!.position[0]!, o.attributes[0]!.position[1]!, WORLD_TOL);
+    }
+  });
+
+  it('J10 DWG loss (closed flag): the plate closed flag does not survive the DWG reader', () => {
+    for (const block of Object.values(q10Dwg.blocks)) {
+      const plate = block.entities.find((e): e is PolylineEntity => e.type === 'polyline')!;
+      expect(plate.closed).toBe(false);
+    }
+  });
+
+  it('J10 DWG loss (ATTDEF default): the ATTDEF default "P-100" does not survive the DWG reader', () => {
+    for (const block of Object.values(q10Dwg.blocks)) {
+      expect(block.attributes[0]!.default).toBe('');
+    }
+  });
+
+  it('J10 DWG loss (object graph): absent on the Linux WASM fallback path, raw-preserved on the Windows native path', () => {
+    // Same platform split as J9 (the reader attaches the checked native metadata
+    // projection only on win32), each shape asserted in full. The Linux shape is
+    // measured here; the Windows shape for this AC1015 file is UNMEASURED — it is
+    // encoded by analogy to the accepted N1 J9 Shape B (schema 1, HEADER first with
+    // the file's own $ACADVER, the five dynamic types among raw-anchored nodes, no
+    // omission item) and is verified only by the Windows rerun.
+    const graph = q10Dwg.cadGraph;
+    const items = importReportOf(q10Dwg)?.items ?? [];
+    const omission = items.some((i) => i.type === 'XDATA' && i.action === 'unsupported' && i.reason.includes('dynamic parameters'));
+    if (graph === undefined) {
+      // Shape A — Linux LibreDWG WASM fallback (this platform): no graph, and the
+      // XDATA-omission item is the report trace of the loss (emitted only here).
+      expect(graph).toBeUndefined();
+      expect(omission).toBe(true);
+    } else {
+      // Shape B — Windows native path (BY ANALOGY to N1 correction-2, UNMEASURED for
+      // AC1015): graph present, schema 1, HEADER first ($ACADVER = AC1015), dynamic
+      // graph objects retained among the raw-anchored nodes, no omission item.
+      expect(graph.schema).toBe(1);
+      expect(graph.nodes.length).toBeGreaterThan(0);
+      const first = graph.nodes[0]!;
+      expect(first.anchor?.kind).toBe('raw');
+      expect(first.type).toBe('HEADER');
+      expect(first.groups[0]).toEqual([9, '$ACADVER']);
+      expect(first.groups[1]).toEqual([1, 'AC1015']);
+      const rawTypes = new Set(
+        graph.nodes.filter((n) => n.anchor?.kind === 'raw').map((n) => n.type),
+      );
+      for (const kind of GRAPH_KINDS) expect(rawTypes.has(kind), kind).toBe(true);
+      expect(omission).toBe(false);
+    }
+  });
+
+  it('J10 DWG invariant (dynamic state): the graph, absent or raw-preserved, is never decoded into dynamic state', () => {
+    for (const block of Object.values(q10Dwg.blocks)) {
+      expect(block.dynamic).toBeUndefined();
+      expect(block.dynamicRetained).toBeUndefined();
+    }
+    for (const ins of insertsOf(q10Dwg)) {
+      expect(ins.dynamic).toBeUndefined();
+      expect(ins.dynamicRetained).toBeUndefined();
+    }
+    const { cadGraph: _graph, ...model } = q10Dwg;
+    expect(JSON.stringify(model)).not.toContain('Distance1');
+  });
+});
+
 function expectBlockGeometryDwg(block: BlockDef, oracleEntities: OracleEntity[]) {
   const plate = block.entities.find((e): e is PolylineEntity => e.type === 'polyline');
   const circle = block.entities.find((e): e is CircleEntity => e.type === 'circle');
