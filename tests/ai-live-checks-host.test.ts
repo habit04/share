@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRequire } from 'node:module';
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -134,7 +134,11 @@ describe('T5 keystone — runner + core against the real corrected service', () 
     const { service, received } = makeServiceWorld();
     await service.setKey(SENTINEL, 'session');
     await service.setEnabled(true);
-    const runner = createLiveChecksRunner(service);
+    // Direct runner constructions pass an explicit marker-free env: the
+    // runner refuses when CI/GITHUB_ACTIONS are present (by design), and
+    // these tests must stay deterministic under any ambient environment,
+    // including a real CI runner where both markers are always set.
+    const runner = createLiveChecksRunner(service, { env: {} });
     const report = await runner.run(new AbortController().signal);
     expect(report.status).toBe('pass');
     expect(report.provider).toBe('openai');
@@ -189,7 +193,7 @@ describe('T5 keystone — runner + core against the real corrected service', () 
     await service.setProvider('anthropic');
     await service.setKey(SENTINEL, 'session');
     await service.setEnabled(true);
-    const report = await createLiveChecksRunner(service).run(new AbortController().signal);
+    const report = await createLiveChecksRunner(service, { env: {} }).run(new AbortController().signal);
     expect(report.status).toBe('pass');
     expect(report.provider).toBe('anthropic');
     expect(report.model).toBe('claude-sonnet-5-5');
@@ -203,7 +207,7 @@ describe('T8 no-secret hygiene', () => {
     const { service } = makeServiceWorld();
     await service.setKey(SENTINEL, 'session');
     await service.setEnabled(true);
-    const report = await createLiveChecksRunner(service).run(new AbortController().signal);
+    const report = await createLiveChecksRunner(service, { env: {} }).run(new AbortController().signal);
     expect(report.status).toBe('pass');
     const surfaces = [JSON.stringify(report), core.formatReportText(report)];
     for (const surface of surfaces) {
@@ -320,6 +324,27 @@ async function configureIpc(harness: IpcHarness): Promise<void> {
 }
 
 describe('T11/T12 live-checks channels through the guarded IPC', () => {
+  // registerAiIpc builds the live-checks runner internally with no env
+  // override, so the runner reads the ambient process.env at run time —
+  // and refuses when CI markers are present (by design). GitHub Actions
+  // sets both markers in every job, so snapshot and clear them for this
+  // describe to keep the happy-path tests deterministic under any
+  // ambient environment, and restore them afterwards. The CI-refusal
+  // test below sets CI itself and still sees the refusal.
+  const CI_MARKERS = ['CI', 'GITHUB_ACTIONS'] as const;
+  let savedMarkers: Array<string | undefined> = [];
+  beforeEach(() => {
+    savedMarkers = CI_MARKERS.map((name) => process.env[name]);
+    for (const name of CI_MARKERS) delete process.env[name];
+  });
+  afterEach(() => {
+    CI_MARKERS.forEach((name, index) => {
+      const value = savedMarkers[index];
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    });
+  });
+
   it('runs the fixed sequence end to end, ignoring any payload, and never leaks the key', async () => {
     ipc = makeIpcHarness(liveFetch);
     await configureIpc(ipc);

@@ -137,9 +137,12 @@ No new budgets — the run reuses the transports' existing caps: probe
 **exactly 4 provider calls in the worst case, 1 in the best (probe
 failure stops the run), zero on refusal; total output bounded by 10,304
 tokens; no retries anywhere.** Harness calls enter the same host queue
-as panel requests, and the service's probe slot is shared with Test
-Connection — running one while the other is in flight fails cleanly
-(`busy`-class), never queues a duplicate paid call.
+as panel requests. Test Connection and a live-checks run are
+independent, user-initiated facilities: neither blocks the other, and
+starting one never refuses or queues the other. Each is individually
+bounded — Test Connection probes are capped at 16 concurrent in the
+IPC layer, and live-checks runs are single-flight (a second Run while
+one is active is refused `busy`).
 
 ## Report
 
