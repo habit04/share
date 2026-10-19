@@ -9,9 +9,16 @@
  *     After a failed migration that file makes the NEXT launch take the checkpoint branch
  *     (main.cjs) and never rerun legacyStorage; the marker is written later and the legacy
  *     values are silently abandoned - unless the session happened to end abnormally.
- *  2. A throw landing in the migration block's outer catch in main.cjs (a corrupt checkpoint
- *     read, or the hidden window's construction throwing outside legacyStorage's own try)
+ *  2. A throw landing in the migration block's outer catch in main.cjs (the hidden window's
+ *     construction throwing outside legacyStorage's own try, propagated as its rejection)
  *     never set the failure flag, so the marker could still be written.
+ *
+ * r3 narrows hole 2's fix (lead ruling): the flag means "the legacy-migration LEG failed" -
+ * the extraction resolved { ok: false } or the leg itself threw. A checkpoint-READ failure
+ * (corrupt/symlinked renderer-preferences.json) must NOT set it: with the flag standing,
+ * the close-time checkpoint is skipped, so a permanently corrupt checkpoint would never
+ * be overwritten on a normal close as it always has been - it could never self-heal, and
+ * every launch would log the read error with no recovery copy ever written.
  *
  * What these tests drive, exactly: the REAL legacyStorage (renderer-origin.cjs), the REAL
  * preference store behind the REAL app-data wiring (electron/main/app-data.cjs over a temp
@@ -24,8 +31,9 @@
  * What is mirrored, and why: electron/main.cjs is a side-effecting entry point and cannot be
  * imported. Its three one-line decisions - the gate's branch order (checkpoint read, then
  * marker absence, then extraction when the legacy store exists), the assignment
- * `ctx.legacyMigrationFailed = !outcome.ok`, the catch setting the flag, and the migrated
- * handler's early return - are reproduced in the two glue functions below, and static pins
+ * `ctx.legacyMigrationFailed = !outcome.ok`, the block catch setting the flag only when
+ * the migration leg threw (r3), and the migrated handler's early return - are reproduced
+ * in the two glue functions below, and static pins
  * at the bottom of this file assert main.cjs's actual text carries the same contract, so
  * the glue cannot silently diverge from production.
  */
@@ -193,14 +201,29 @@ function makeRuntime(userData: string, sessionStorage: Record<string, string>): 
 const indexFile = join(tmpdir(), 'jcad-mig-retry-index.html');
 
 async function startupGate(runtime: Runtime, userData: string, migration: { BrowserWindow: new (options: unknown) => unknown; deadlineMs?: number }) {
-  const checkpoint = await runtime.readRendererPreferences();
-  if (checkpoint !== null) return { source: 'checkpoint' as const, outcome: null };
-  if (existsSync(join(userData, 'renderer-origin-migrated'))) return { source: 'marker' as const, outcome: null };
-  const outcome = existsSync(join(userData, 'Local Storage', 'leveldb'))
-    ? await legacyStorage({ BrowserWindow: migration.BrowserWindow, protocol: fakeFileProtocol(), indexFile, deadlineMs: migration.deadlineMs, logError: () => {} })
-    : { values: {}, ok: true };
-  runtime.ctx.legacyMigrationFailed = !outcome.ok;
-  return { source: 'legacy' as const, outcome };
+  // Mirrors main.cjs's block including its catch: a throw is logged there and startup
+  // continues without stored values; the catch sets the failure flag only when the
+  // migration LEG threw (r3 narrowing) - a checkpoint-read throw leaves the flag clear.
+  let migrationLegThrew = false;
+  try {
+    const checkpoint = await runtime.readRendererPreferences();
+    if (checkpoint !== null) return { source: 'checkpoint' as const, outcome: null };
+    if (existsSync(join(userData, 'renderer-origin-migrated'))) return { source: 'marker' as const, outcome: null };
+    let outcome: { values: Record<string, string> | null; ok: boolean };
+    try {
+      outcome = existsSync(join(userData, 'Local Storage', 'leveldb'))
+        ? await legacyStorage({ BrowserWindow: migration.BrowserWindow, protocol: fakeFileProtocol(), indexFile, deadlineMs: migration.deadlineMs, logError: () => {} })
+        : { values: {}, ok: true };
+    } catch (legError) {
+      migrationLegThrew = true;
+      throw legError;
+    }
+    runtime.ctx.legacyMigrationFailed = !outcome.ok;
+    return { source: 'legacy' as const, outcome };
+  } catch {
+    if (migrationLegThrew) runtime.ctx.legacyMigrationFailed = true;
+    return { source: 'threw' as const, outcome: null };
+  }
 }
 
 async function migratedCheckpoint(runtime: Runtime, contents: unknown): Promise<boolean> {
@@ -301,37 +324,50 @@ describe('a failed startup migration survives a normal close (P-MIG r2)', () => 
   });
 });
 
-describe('throws outside legacyStorage still preserve the retry (P-MIG r2, gap 2)', () => {
+describe('migration-leg throws preserve the retry; a checkpoint-read failure does not (P-MIG r2 gap 2, narrowed in r3)', () => {
   it('a BrowserWindow construction throw escapes legacyStorage instead of resolving as a failure', async () => {
     const boom = new Error('window construction boom');
     class ThrowingWindow { constructor() { throw boom; } }
     await expect(legacyStorage({ BrowserWindow: ThrowingWindow as never, protocol: fakeFileProtocol(), indexFile })).rejects.toBe(boom);
-    // In production that rejection lands in the migration block's outer catch, which (r2) sets
-    // the failure flag - pinned statically below. With the flag standing, the completion
-    // checkpoint is refused, so no marker can be written for a migration that never ran.
+    // In production that rejection is a failure of the migration LEG: the gate's inner leg
+    // catch marks it and the block catch sets the failure flag - pinned statically below.
+    // With the flag standing, the completion checkpoint is refused, so no marker can be
+    // written for a migration that never ran.
     const userData = freshUserData();
+    mkdirSync(join(userData, 'Local Storage', 'leveldb'), { recursive: true });
     const runtime = makeRuntime(userData, {});
-    runtime.ctx.legacyMigrationFailed = true;
+    const gate = await startupGate(runtime, userData, { BrowserWindow: ThrowingWindow as never });
+    expect(gate.source).toBe('threw');
+    expect(runtime.ctx.legacyMigrationFailed).toBe(true);
     expect(await migratedCheckpoint(runtime, { session: { flushStorageData: () => {} } })).toBe(false);
     expect(existsSync(join(userData, 'renderer-origin-migrated'))).toBe(false);
     expect(existsSync(join(userData, 'renderer-preferences.json'))).toBe(false);
   });
 
-  it('a corrupt checkpoint read throws, and the failed session\'s close leaves it untouched for the retry', async () => {
+  it('a corrupt checkpoint read throws without setting the flag, and a normal close rewrites the checkpoint (r3)', async () => {
     const userData = freshUserData();
     const checkpointFile = join(userData, 'renderer-preferences.json');
     writeFileSync(checkpointFile, '{ not json');
     const runtime = makeRuntime(userData, { 'jcad.session': 'set during the session' });
-    // The real store read rejects on the corrupt file: in production this is the other throw
-    // that lands in the migration block's outer catch.
+    // Premise: the real store read rejects on the corrupt file. In production that throw
+    // lands in the migration block's catch - which since r3 does NOT set the failure flag
+    // for a read failure (the flag means the migration LEG failed), so the corrupt file
+    // is not protected from the session's normal close.
     await expect(runtime.readRendererPreferences()).rejects.toThrow();
-    runtime.ctx.legacyMigrationFailed = true; // the fixed catch's write (pinned statically below)
+    const gate = await startupGate(runtime, userData, { BrowserWindow: succeedingMigration({}).FakeBrowserWindow, deadlineMs: 50 });
+    expect(gate.source).toBe('threw');
+    expect(runtime.ctx.legacyMigrationFailed).toBe(false);
     await runtime.createWindow();
     await normalClose(runtime);
-    // The close must not overwrite the unread checkpoint with a session snapshot: the next
-    // launch has to see the same state and retry, not a checkpoint that abandons the legacy data.
-    expect(readFileSync(checkpointFile, 'utf8')).toBe('{ not json');
+    // The close checkpoint ran (flag clear): the corrupt bytes are replaced by the session's
+    // snapshot - exactly the self-heal base/r1 always performed on a normal close. The close
+    // checkpoint (migration=false) still never writes the marker.
+    expect(readFileSync(checkpointFile, 'utf8')).not.toBe('{ not json');
+    expect(await runtime.readRendererPreferences()).toEqual({ 'jcad.session': 'set during the session' });
     expect(existsSync(join(userData, 'renderer-origin-migrated'))).toBe(false);
+    // And the migrated completion is not refused on the read failure's account either.
+    expect(await migratedCheckpoint(runtime, runtime.windows[0]!.webContents)).toBe(true);
+    expect(existsSync(join(userData, 'renderer-origin-migrated'))).toBe(true);
   });
 });
 
@@ -344,15 +380,31 @@ describe('startup migration wiring in electron/main.cjs (source pins)', () => {
     expect(main).toContain('ctx.legacyMigrationFailed = !outcome.ok');
   });
 
-  it('the migration block keeps its branch order and its catch sets the failure flag', () => {
+  it('the migration block keeps its branch order', () => {
     const start = main.indexOf('const checkpoint = await readRendererPreferences();');
     expect(start).toBeGreaterThan(-1);
     const block = main.slice(start, main.indexOf('loadPersistedPaths();', start));
     expect(block.indexOf('readRendererPreferences()')).toBeLessThan(block.indexOf('renderer-origin-migrated'));
     expect(block.indexOf('renderer-origin-migrated')).toBeLessThan(block.indexOf('legacyStorage('));
+  });
+
+  it('the block catch sets the failure flag only when the migration leg threw (r3 narrowing)', () => {
+    const start = main.indexOf('if (!DEV_URL) {');
+    expect(start).toBeGreaterThan(-1);
+    const block = main.slice(start, main.indexOf('loadPersistedPaths();', start));
+    // The leg runs under its own marker: a throw out of the extraction await is marked
+    // inside the block, after the extraction call and before the block catch.
+    expect(block).toContain('let migrationLegThrew = false');
+    const legMark = block.indexOf('migrationLegThrew = true');
+    expect(legMark).toBeGreaterThan(block.indexOf('legacyStorage('));
     const catchAt = block.indexOf('} catch (error) {');
     expect(catchAt).toBeGreaterThan(-1);
-    expect(block.slice(catchAt)).toContain('ctx.legacyMigrationFailed = true');
+    expect(legMark).toBeLessThan(catchAt);
+    // Every failure-flag assignment inside the catch is the guarded one, so a throw from
+    // the checkpoint read (which never passes the leg mark) cannot set the flag.
+    const catchLines = block.slice(catchAt).split('\n').filter((line) => line.includes('ctx.legacyMigrationFailed = true'));
+    expect(catchLines.length).toBeGreaterThan(0);
+    for (const line of catchLines) expect(line).toContain('if (migrationLegThrew)');
   });
 
   it('the migrated handler refuses the marker while the flag is set, before any checkpoint', () => {
