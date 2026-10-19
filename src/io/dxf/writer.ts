@@ -105,7 +105,10 @@ export function writeDxf(state: DrawingState): string {
   // when it carries one, the graph path refreshes/inserts the values and a second
   // dictionary must never appear. (A carried variable implies a carried dictionary —
   // the dictionary path is how annotationVariables finds it.)
-  const annotationCarrier = graphAnnotationCarrier(state);
+  // With neither setting present, creation is impossible whatever the graph carries,
+  // so the carrier consult (a full graph pass) is skipped entirely.
+  const annotationSettingPresent = state.header?.cannoscale !== undefined || state.header?.annoAllVisible !== undefined;
+  const annotationCarrier = annotationSettingPresent ? graphAnnotationCarrier(state) : { variables: new Set<string>(), dictionary: false };
   const createCannoVariable = !annotationCarrier.dictionary && state.header?.cannoscale !== undefined && isScaleName(state.header.cannoscale);
   const createAnnoVariable = !annotationCarrier.dictionary && state.header?.annoAllVisible === false;
   // The handles are allocated in the OBJECTS section, NOT here (deviation from the
