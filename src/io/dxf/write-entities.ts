@@ -48,6 +48,12 @@ function writePolyline(w: Writer, e: PolylineEntity, owner: string): void {
   e.points.forEach((p, i) => {
     w.pair(10, p.x);
     w.pair(20, p.y);
+    // Persistent vertex identifier (group 91, Q11 F4): emitted only when the
+    // source vertex carried one — never synthesized. AutoCAD places it
+    // immediately after the vertex point and writes the value right-justified
+    // in a 9-char field; the pre-padded string passes Writer.pair verbatim.
+    const vid = e.vertexIds?.[i];
+    if (vid !== undefined) w.pair(91, String(vid).padStart(9));
     if (e.widths) {
       w.pair(40, e.widths[i]?.start ?? 0);
       w.pair(41, e.widths[i]?.end ?? 0);

@@ -305,14 +305,19 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       const pts: g.Point[] = [];
       const bulges: number[] = [];
       const widths: Array<{ start: number; end: number }> = [];
+      const ids: Array<number | undefined> = [];
       let variableWidth = false;
       for (const p of o.groups) {
         if (p.code === 10) {
           pts.push({ x: Number(p.value), y: NaN });
           bulges.push(0);
           widths.push({ start: 0, end: 0 });
+          ids.push(undefined);
         } else if (p.code === 20 && pts.length) pts[pts.length - 1] = { x: pts[pts.length - 1]!.x, y: Number(p.value) };
         else if (p.code === 42 && bulges.length) bulges[bulges.length - 1] = Number(p.value);
+        // Persistent vertex identifier (group 91): ASSOC geom dependencies
+        // address this vertex by it (Q11 F4) — carry it into the model.
+        else if (p.code === 91 && ids.length) ids[ids.length - 1] = Math.trunc(Number(p.value));
         else if ((p.code === 40 || p.code === 41) && widths.length) {
           variableWidth = true;
           widths[widths.length - 1]![p.code === 40 ? 'start' : 'end'] = flt(p.value);
@@ -320,14 +325,18 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       }
       const closed = (num(o, 70) & 1) === 1;
       const width = num(o, 43, 0);
+      const hasIds = ids.some((v) => v !== undefined);
       // Zero-hole donut (two bulge-1 vertices, constant width = radius): read back as a filled dot.
-      if (!variableWidth && closed && pts.length === 2 && width > 0 && Math.abs((bulges[0] ?? 0) - 1) < 1e-6 && Math.abs((bulges[1] ?? 0) - 1) < 1e-6) {
+      // A vertex-ID-carrying polyline belongs to a constraint web that addresses
+      // its vertices by ID; converting it to a circle would drop those IDs (the
+      // Q11 F4 loss), so the conversion does not apply when IDs are present.
+      if (!hasIds && !variableWidth && closed && pts.length === 2 && width > 0 && Math.abs((bulges[0] ?? 0) - 1) < 1e-6 && Math.abs((bulges[1] ?? 0) - 1) < 1e-6) {
         const c = g.mid(pts[0]!, pts[1]!);
         const r = g.dist(pts[0]!, pts[1]!) / 2 + width / 2;
         return { ...base, type: 'circle', center: c, radius: r, filled: true };
       }
       const hasBulge = bulges.some((b) => Math.abs(b) > 1e-12);
-      return { ...base, type: 'polyline', points: pts, closed, bulges: hasBulge ? bulges : undefined, ...(variableWidth ? { widths } : { width: width !== 0 ? width : undefined }) };
+      return { ...base, type: 'polyline', points: pts, closed, bulges: hasBulge ? bulges : undefined, ...(variableWidth ? { widths } : { width: width !== 0 ? width : undefined }), ...(hasIds ? { vertexIds: ids } : {}) };
     }
     case 'POLYLINE':
       // Old-style POLYLINE with VERTEX children is handled by caller.

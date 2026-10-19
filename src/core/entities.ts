@@ -111,6 +111,14 @@ export interface PolylineEntity extends EntityBase {
   readonly width?: number;
   /** Start/end width of the segment at each vertex (DXF 40/41). Takes precedence over width. */
   readonly widths?: readonly { readonly start: number; readonly end: number }[];
+  /**
+   * Per-vertex persistent identifiers (DXF LWPOLYLINE group 91), parallel to
+   * `points`; an `undefined` entry means that vertex carries no identifier.
+   * Present only when at least one vertex has one. AutoCAD's ASSOC geom
+   * dependencies address vertices by these IDs (Q11 F4), so reader and
+   * writer preserve them verbatim; they are never synthesized or renumbered.
+   */
+  readonly vertexIds?: readonly (number | undefined)[];
   /** Affine display geometry after a nonuniform transform; native block definitions keep their widths. */
   readonly widthFrame?: {
     readonly points: readonly Point[];
