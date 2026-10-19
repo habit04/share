@@ -77,7 +77,10 @@ function setup(count = 1, open = false) {
 }
 
 describe('one parent order for a bounded Windows project calculation', () => {
-  it.each([33, 65, 512])('updates %i small closed drawings without late ordinary orders', async count => {
+  // T-FLAKE: the 512 case measured p99 24.4 s under maxWorkers=2 family load (n=10 runs; solo p50 12.9 s) and
+  // timed out at this shared 15 s budget in every loaded run; it gets its own case below at p99 x 2 rounded up.
+  // The 33/65 cases (loaded p99 <= 3.0 s) keep the existing 15 s budget unchanged.
+  const updatesCase = async (count: number) => {
     const f = setup(count), loaded = await loadProjectSheets(f.editor, { forSave: true });
     expect(f.bridge.issueProjectSaveBatch).toHaveBeenCalledOnce(); expect(f.bridge.issueSaveAdmission).not.toHaveBeenCalled();
     expect(f.events.indexOf(`bind:${count}`)).toBeLessThan(f.events.findIndex(event => event.startsWith('read:')));
@@ -85,7 +88,9 @@ describe('one parent order for a bounded Windows project calculation', () => {
     expect(result?.written).toBe(count); expect(result?.failed).toEqual([]); expect(f.bridge.saveAdmissionResult).toHaveBeenCalledTimes(count);
     expect(f.events.indexOf('begin')).toBeLessThan(f.events.findIndex(event => event.startsWith('write:'))); expect(f.closed()).toBe(true); expect(f.saved).not.toHaveBeenCalled();
     expect(readDxf(f.disk.get(`${f.root}\\closed-${count - 1}.dxf`)!).entities.some(entity => entity.type === 'text' && entity.text === `update-${count - 1}`)).toBe(true);
-  }, 15000);
+  };
+  it.each([33, 65])('updates %i small closed drawings without late ordinary orders', updatesCase, 15000);
+  it('updates 512 small closed drawings without late ordinary orders', () => updatesCase(512), 50000);
   it('awaits the immediately issued parent before touching project/session snapshots', async () => {
     const f = setup(), gate = deferred<string>(), project = f.editor.project;
     f.bridge.issueProjectSaveBatch = vi.fn(() => { f.events.push('issue:delayed'); return gate.promise; });
