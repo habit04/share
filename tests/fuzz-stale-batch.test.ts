@@ -354,6 +354,7 @@ async function batchScenario(rng: Rng, mode: 'synthetic' | 'titleblocks' = 'synt
 let commandWrites = 0;
 
 describe('fuzz: project-wide commands never overwrite newer work', () => {
+  // T-FLAKE: measured p99 4.5 s under maxWorkers=2 family load (n=10 runs; solo p50 1.9 s); budget = p99 x 2 rounded up. Timed out at the 5 s default in full-suite runs.
   it('the generated drawings carry a retained raw 3DFACE record the reader keeps and the writer writes back', () => {
     for (const tb of [false, true]) {
       const dxf = drawingText('SHEET-1', 3, tb);
@@ -362,7 +363,7 @@ describe('fuzz: project-wide commands never overwrite newer work', () => {
       expect(faces(dxf)).toBe(1);
       expect(faces(writeDxf(state))).toBe(1);
     }
-  });
+  }, 10000);
   it('random projects, tabs, disk edits, backups and failures through loadProjectSheets + commitSheets', async () => {
     const runs = await fuzz('stale-batch/commit', 100, (rng) => batchScenario(rng, 'synthetic'));
     expect(runs).toBeGreaterThan(0);
