@@ -13,7 +13,8 @@ import { rawEntitiesOf } from '../import-report';
 import { findLinetype, patternLength, STANDARD_LINETYPES, complexLinetypeProblem, linetypeShapeStyleProblem } from '../../core/linetypes';
 import { Writer, setPaperOwners, emptyExtras, writeTextLike, writeTextStyle, writeEntityCommon } from './write-core';
 import { DEFAULT_HEADER } from '../../core/document';
-import { planLayouts, writeLayoutHeader, extraBlockRecords, layoutHandleOf, writeLayoutContent, writeLayoutObjects } from '../dxf-layouts';
+import { planLayouts, extraBlockRecords, layoutHandleOf, writeLayoutContent, writeLayoutObjects } from '../dxf-layouts';
+import { isScaleName } from '../../core/layouts';
 import type { WriteExtras } from './write-core';
 import * as g from '../../core/geometry';
 import { dimHeaderVars, dimStylesToWrite, dimStyleXdata } from './dimstyles';
@@ -35,7 +36,7 @@ import { entityMTextBackground } from '../../core/mtext-background';
 import { materializePolylineWidthFrames } from './polyline-width-blocks';
 import { LAYER_TRANSPARENCY_APP, transparencyToDxf, validColorName } from '../../core/appearance';
 import { namedCameraDisplayCenter, planarNamedCamera } from '../../core/named-view';
-import { preserveDxfCadGraph } from '../cad-graph-dxf';
+import { graphAnnotationCarrier, preserveDxfCadGraph } from '../cad-graph-dxf';
 
 /** Linetype names referenced anywhere in the drawing (layers, entities, block entities). */
 function usedLinetypes(state: DrawingState): Linetype[] {
@@ -96,6 +97,20 @@ export function writeDxf(state: DrawingState): string {
   // AUDIT reports layers whose plot style handle names no object).
   const plotStyleDictionary = w.nextHandle();
   const normalPlotStyle = w.nextHandle();
+  // Q11 F2 rework: the annotation settings (cannoscale / annoAllVisible) are not HEADER
+  // variables in AutoCAD — they live as DICTIONARYVARs in the AcDbVariableDictionary, at
+  // every DXF version. Emit only what is set (CANNOSCALE when a valid scale name is set;
+  // ANNOALLVISIBLE only when false, as '0' — at the default AutoCAD omits both
+  // everywhere), and create the dictionary only when the retained graph carries none:
+  // when it carries one, the graph path refreshes/inserts the values and a second
+  // dictionary must never appear. (A carried variable implies a carried dictionary —
+  // the dictionary path is how annotationVariables finds it.)
+  const annotationCarrier = graphAnnotationCarrier(state);
+  const createCannoVariable = !annotationCarrier.dictionary && state.header?.cannoscale !== undefined && isScaleName(state.header.cannoscale);
+  const createAnnoVariable = !annotationCarrier.dictionary && state.header?.annoAllVisible === false;
+  const variableDictionary = createCannoVariable || createAnnoVariable ? w.nextHandle() : null;
+  const cannoVariable = createCannoVariable ? w.nextHandle() : null;
+  const annoVariable = createAnnoVariable ? w.nextHandle() : null;
   const MODEL_SPACE = '1F';
   const PAPER_SPACE = '1B';
   const header = state.header ?? DEFAULT_HEADER;
@@ -232,7 +247,8 @@ export function writeDxf(state: DrawingState): string {
   hv('$DIMSTYLE', 2, ds.name);
   for (const [name, code, value] of dimHeaderVars(ds)) if (name !== 'DIMLUNIT') hv(`$${name}`, code, value);
   hv('$DIMLUNIT', 70, ds.lunit);
-  writeLayoutHeader(hv, state, acadVersion);
+  // No $CANNOSCALE / $ANNOALLVISIBLE here: not HEADER variables (Q11 F2 rework) —
+  // they are written as DICTIONARYVARs in OBJECTS below.
   w.pair(0, 'ENDSEC');
 
   // CLASSES: the plot style dictionary's object types, and raster images' when there are images.
@@ -255,6 +271,18 @@ export function writeDxf(state: DrawingState): string {
       cls('IMAGE', 'AcDbRasterImage', 127, true, extras.imageReactors.size);
       cls('IMAGEDEF', 'AcDbRasterImageDef', 0, false, extras.imageDefs.size);
       cls('IMAGEDEF_REACTOR', 'AcDbRasterImageDefReactor', 1, false, extras.imageReactors.size);
+    }
+    if (variableDictionary) {
+      // AutoCAD's specimen registration (the HANDBUILT fixtures): app name
+      // 'ObjectDBX Classes', instance count = the DICTIONARYVARs created below.
+      w.pair(0, 'CLASS');
+      w.pair(1, 'DICTIONARYVAR');
+      w.pair(2, 'AcDbDictionaryVar');
+      w.pair(3, 'ObjectDBX Classes');
+      w.pair(90, 0);
+      if (acadVersion !== 'AC1015') w.pair(91, (cannoVariable ? 1 : 0) + (annoVariable ? 1 : 0));
+      w.pair(280, 0);
+      w.pair(281, 0);
     }
   }
   w.pair(0, 'ENDSEC');
@@ -572,6 +600,11 @@ export function writeDxf(state: DrawingState): string {
     w.pair(3, 'ACAD_IMAGE_DICT');
     w.pair(350, imageDict);
   }
+  if (variableDictionary) {
+    // AutoCAD keeps the variable dictionary as the root dictionary's last entry.
+    w.pair(3, 'AcDbVariableDictionary');
+    w.pair(350, variableDictionary);
+  }
   w.pair(0, 'DICTIONARY');
   w.pair(5, 'D');
   w.pair(330, 'C');
@@ -590,6 +623,29 @@ export function writeDxf(state: DrawingState): string {
   w.pair(0, 'ACDBPLACEHOLDER');
   w.pair(5, normalPlotStyle);
   w.pair(330, plotStyleDictionary);
+  if (variableDictionary) {
+    // The variable dictionary and its DICTIONARYVARs, in AutoCAD's exact shape.
+    w.pair(0, 'DICTIONARY');
+    w.pair(5, variableDictionary);
+    w.pair(330, 'C');
+    w.pair(100, 'AcDbDictionary');
+    w.pair(281, 1);
+    if (cannoVariable) { w.pair(3, 'CANNOSCALE'); w.pair(350, cannoVariable); }
+    if (annoVariable) { w.pair(3, 'ANNOALLVISIBLE'); w.pair(350, annoVariable); }
+    const dictionaryVariable = (handle: string, val: string) => {
+      w.pair(0, 'DICTIONARYVAR');
+      w.pair(5, handle);
+      w.pair(102, '{ACAD_REACTORS');
+      w.pair(330, variableDictionary);
+      w.pair(102, '}');
+      w.pair(330, variableDictionary);
+      w.pair(100, 'DictionaryVariables');
+      w.pair(280, 0);
+      w.pair(1, val);
+    };
+    if (cannoVariable) dictionaryVariable(cannoVariable, state.header!.cannoscale!);
+    if (annoVariable) dictionaryVariable(annoVariable, '0');
+  }
   if (imageDict) {
     w.pair(0, 'DICTIONARY');
     w.pair(5, imageDict);

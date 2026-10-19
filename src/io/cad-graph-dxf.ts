@@ -8,7 +8,7 @@ import type { Pair } from './dxf/groups';
 import { isIntegerText } from './dxf/groups';
 import { isQuietXdataApp } from './dxf/codes';
 import { decodeUnicodeEscapes, shapeStylesOf } from './encoding';
-import { headerVariableAllowed, retainNativeLayoutPaper } from './dxf-layouts';
+import { headerVariableReemittable, retainNativeLayoutPaper } from './dxf-layouts';
 import { DIM_VARIABLES } from '../core/dimension';
 import { isScaleName } from '../core/layouts';
 import { solidCarrierGroups } from './dxf/model3d-carriers';
@@ -204,6 +204,30 @@ function readAnnotationVariables(state: DrawingState, records: readonly RecordDa
   const annoAllVisible = !explicit.has('$ANNOALLVISIBLE') && ['0', '1'].includes(visible ?? '') ? visible === '1' : undefined;
   if (cannoscale === undefined && annoAllVisible === undefined) return state;
   return { ...state, header: { ...(state.header ?? DEFAULT_HEADER), ...(cannoscale !== undefined ? { cannoscale } : {}), ...(annoAllVisible !== undefined ? { annoAllVisible } : {}) } };
+}
+/**
+ * Which annotation settings the attached retained graph already carries (Q11 F2
+ * rework): the recognized DICTIONARYVAR names at AcDbVariableDictionary paths, and
+ * whether an AcDbVariableDictionary dictionary exists there at all. The model
+ * writer consults this before creating anything — it creates a variable only when
+ * the graph carries no variable dictionary (a missing variable beside a retained
+ * dictionary is inserted by preserveDxfCadGraph instead), so a write never
+ * produces a second dictionary. Uses the same path logic as annotationVariables.
+ */
+export function graphAnnotationCarrier(state: DrawingState): { variables: ReadonlySet<string>; dictionary: boolean } {
+  const graph = state.cadGraph;
+  if (!graph) return { variables: new Set<string>(), dictionary: false };
+  const records: RecordData[] = graph.nodes.map(node => {
+    const record: RecordData = { type: node.type, section: node.section, groups: [...node.groups] };
+    const raw = node.type === 'HEADER' || node.type === 'CLASS' ? '' : value(record, node.type === 'DIMSTYLE' ? 105 : 5);
+    if (raw) record.handle = canonicalCadHandle(raw);
+    return record;
+  });
+  const variables = new Set(annotationVariables(records).keys());
+  const paths = dictionaryPaths(records);
+  const dictionary = records.some(record => record.handle && dictionaries.has(record.type)
+    && paths.get(record.handle)?.length === 1 && paths.get(record.handle)?.[0] === 'AcDbVariableDictionary');
+  return { variables, dictionary };
 }
 interface FieldExpansion {
   work: number;
@@ -875,13 +899,6 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       }
     }
     const selected = new Set<number>(), generatedCodes = new Set(record.groups.map(([code]) => code));
-    // Q11 F2: the generated HEADER record's own $ACADVER is the target version for
-    // re-emitting retained header variables.
-    let headerTargetVersion = '';
-    if (node.type === 'HEADER') {
-      const at = record.groups.findIndex(([code, val]) => code === 9 && val === '$ACADVER');
-      if (at >= 0) headerTargetVersion = record.groups[at + 1]?.[1] ?? '';
-    }
     // Regenerate only a proven live clip link. An unexposed source340 remains a
     // retained hard reference and must refuse export rather than disappear.
     const viewportId = node.anchor?.kind === 'viewport' ? node.anchor.id : undefined;
@@ -895,7 +912,7 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     let nesting = 0, selectedApp: string | undefined, keepHeader = false, layoutSubclass = false, retainedLayoutBlock = false;
     const existingVariables = new Set(record.groups.filter(([code]) => code === 9).map(([, name]) => name));
     node.groups.forEach(([code, raw], index) => {
-      if (node.type === 'HEADER') { if (code === 9) keepHeader = !existingVariables.has(raw) && headerVariableAllowed(raw.trim(), headerTargetVersion); if (keepHeader) selected.add(index); return; }
+      if (node.type === 'HEADER') { if (code === 9) keepHeader = !existingVariables.has(raw) && headerVariableReemittable(raw.trim()); if (keepHeader) selected.add(index); return; }
       if (code === 102) {
         if (!nesting) retainedLayoutBlock = node.type === 'LAYOUT' && layoutSubclass && !selectedApp;
         nesting += raw.startsWith('{') ? 1 : raw === '}' ? -1 : 0;
@@ -916,7 +933,7 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     if (record.type === 'HEADER') {
       const existing = new Set(record.groups.filter(([code]) => code === 9).map(([, val]) => val));
       let keep = false;
-      for (const group of retained) { if (group[0] === 9) keep = !existing.has(group[1]) && headerVariableAllowed(group[1].trim(), headerTargetVersion); if (keep) record.groups.push(group); }
+      for (const group of retained) { if (group[0] === 9) keep = !existing.has(group[1]) && headerVariableReemittable(group[1].trim()); if (keep) record.groups.push(group); }
       continue;
     }
     const metadata: CadGroup[] = [], apps = new Set<string>(); let brace = 0, app: string | undefined;
@@ -969,6 +986,36 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       groups.splice(referenceBlockPosition(groups), 0, [330, modelOwner]);
     }
     generated.push({ type: node.type, section: node.section, groups, ...(nodeHandles.has(node.id) ? { handle: nodeHandles.get(node.id) } : {}) });
+  }
+  // Q11 F2 rework (design U4, insertion branch): a recognized variable the editor
+  // set but the retained variable dictionary does not carry is inserted into that
+  // dictionary — entry appended to the retained dictionary record plus a
+  // specimen-shaped DICTIONARYVAR record on a handle from the same allocator — so
+  // the value is never silently dropped on a re-save. When the graph carries no
+  // variable dictionary at all, the model writer has already created one; when it
+  // carries the variable, only the refresh below applies.
+  {
+    const carried = annotationVariables(generated);
+    const wanted: Array<readonly [string, string]> = [];
+    if (state.header?.cannoscale !== undefined && isScaleName(state.header.cannoscale) && !carried.has('CANNOSCALE')) wanted.push(['CANNOSCALE', state.header.cannoscale]);
+    if (state.header?.annoAllVisible !== undefined && !carried.has('ANNOALLVISIBLE')) wanted.push(['ANNOALLVISIBLE', state.header.annoAllVisible ? '1' : '0']);
+    if (wanted.length) {
+      const indexed = generated.map(record => {
+        const raw = record.type === 'HEADER' || record.type === 'CLASS' ? '' : value(record, record.type === 'DIMSTYLE' ? 105 : 5);
+        return { ...record, ...(raw ? { handle: canonicalCadHandle(raw) } : {}) };
+      });
+      const paths = dictionaryPaths(indexed);
+      const at = indexed.findIndex(record => record.handle && dictionaries.has(record.type)
+        && paths.get(record.handle)?.length === 1 && paths.get(record.handle)?.[0] === 'AcDbVariableDictionary');
+      if (at >= 0) {
+        const dictionary = generated[at]!, dictionaryHandle = indexed[at]!.handle!;
+        for (const [name, current] of wanted) {
+          const handle = allocate();
+          dictionary.groups.push([3, name], [350, handle]);
+          generated.push({ type: 'DICTIONARYVAR', section: 'OBJECTS', handle, groups: [[5, handle], [102, '{ACAD_REACTORS'], [330, dictionaryHandle], [102, '}'], [330, dictionaryHandle], [100, 'DictionaryVariables'], [280, '0'], [1, current]] });
+        }
+      }
+    }
   }
   // Current semantic values replace only the corresponding recognized dictionary value.
   // Ownership, reactors, unknown variables and every other raw group remain intact.

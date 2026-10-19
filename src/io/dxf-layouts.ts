@@ -36,7 +36,7 @@ import {
 } from '../core/layouts';
 import type { ImportReportBuilder } from './import-report';
 import { importViewportView } from './viewport-view';
-import { canonicalCadHandle, type CadGraph, type CadGroup } from '../core/cad-graph';
+import { canonicalCadHandle, type CadGroup } from '../core/cad-graph';
 
 /** The graph attachment reports malformed identities; layout lookup keeps valid aliases canonical. */
 function layoutHandleKey(handle: string): string {
@@ -106,31 +106,26 @@ export function planLayouts(state: LayoutHost, w: DxfSink, paperSpaceRecord: str
 }
 
 /**
- * Whether a header variable may be EMITTED into a file of the target DXF version
- * (Q11 F2). $CANNOSCALE / $ANNOALLVISIBLE are AutoCAD 2008+ names (AC1021 and later);
- * AutoCAD reports them as unknown in earlier formats. $LASTSAVEDBY is a provenance
- * stamp naming the last editor: a re-save must never re-emit the SOURCE author's
- * name, at any version. This gates emission only — a retained cadGraph keeps the
- * full source header either way. Version codes are fixed-width, so the string
- * comparison is the numeric one (the same convention the writer uses).
+ * Whether a retained header variable may be RE-EMITTED into the generated HEADER
+ * (Q11 F2 rework; supersedes the F2 version gate, which the lead's gate rejected:
+ * gating by version dropped the settings from every default AC1015 save and never
+ * fixed the AutoCAD warning). Three names never come back, for two distinct
+ * reasons, neither of them version-dependent:
+ * - $LASTSAVEDBY is a provenance stamp naming the last editor: a re-save must
+ *   never re-emit the SOURCE author's name (the one F2 rule that was correct).
+ * - $CANNOSCALE / $ANNOALLVISIBLE are not HEADER variables in AutoCAD at all:
+ *   the annotation settings live as DICTIONARYVARs in the AcDbVariableDictionary
+ *   (AutoCAD reports a HEADER $CANNOSCALE as an unknown variable and ignores it).
+ *   Their values reach the output through state.header -> that dictionary —
+ *   the model writer creates it when the retained graph does not carry one
+ *   (io/dxf/writer.ts) and the graph path refreshes/inserts the values
+ *   (io/cad-graph-dxf.ts) — never through the HEADER.
+ * This gates re-emission only — a retained cadGraph keeps the full source
+ * header either way, and the readers' precedence (explicit legacy HEADER
+ * variable wins, dictionary is the fallback) is unchanged.
  */
-export function headerVariableAllowed(name: string, acadVersion: string): boolean {
-  if (name === '$LASTSAVEDBY') return false;
-  if (name === '$CANNOSCALE' || name === '$ANNOALLVISIBLE') return acadVersion >= 'AC1021';
-  return true;
-}
-
-/** Header variables: $CANNOSCALE / $ANNOALLVISIBLE (AutoCAD 2008+ names; gated per version, Q11 F2). */
-export function writeLayoutHeader(hv: (name: string, code: number, value: string | number) => void, state: { header?: { cannoscale?: string; annoAllVisible?: boolean }; cadGraph?: CadGraph }, acadVersion: string): void {
-  if (headerVariableAllowed('$CANNOSCALE', acadVersion)) hv('$CANNOSCALE', 2, state.header?.cannoscale ?? '1:1');
-  const sourceHeader = state.cadGraph?.nodes.find(node => node.type === 'HEADER' && node.section === 'HEADER');
-  const retained = sourceHeader?.groups.some(([code, value]) => code === 9 && value.trim() === '$ANNOALLVISIBLE');
-  // Undefined still renders with annotation visibility on. Writing that default
-  // into an imported header that never declared it creates a native dictionary
-  // variable on the next DWG save; emit only new, retained or explicit settings.
-  if (headerVariableAllowed('$ANNOALLVISIBLE', acadVersion) && (!sourceHeader || retained || state.header?.annoAllVisible !== undefined)) {
-    hv('$ANNOALLVISIBLE', 70, state.header?.annoAllVisible === false ? 0 : 1);
-  }
+export function headerVariableReemittable(name: string): boolean {
+  return name !== '$LASTSAVEDBY' && name !== '$CANNOSCALE' && name !== '$ANNOALLVISIBLE';
 }
 
 /** Extra BLOCK_RECORD rows for *Paper_Space0.. (the caller writes *Model_Space / *Paper_Space). */
