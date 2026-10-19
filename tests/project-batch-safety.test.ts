@@ -124,6 +124,7 @@ const closed = () => sheetState('3', 300, [ins('HCR1_NC', 3, 8, { TAG1: 'CR100' 
 const base = { projectPath: '/p/p.jcadproj.json', drawings: ['a.dxf', 'b.dxf', 'c.dxf'], activePath: '/p/a.dxf', tabPath: '/p/b.dxf' };
 
 describe('geometry budgets are checked before project batch changes', () => {
+  // T-FLAKE: worst variant ('active') measured p99 3.5 s under maxWorkers=2 family load (n=10 runs; solo p50 1.4 s); budget = p99 x 2 rounded up, shared by the three %s cases. The 'active' case timed out at the 5 s default in a full-suite run.
   it.each(['active', 'session', 'file'] as const)('rejects an excessive %s candidate before changing any drawing, history, active space or file', async (source) => {
     const f = fake({ ...base, files: { '/p/c.dxf': closed() } });
     f.editor.doc.transact((state) => ({ ...state, layouts: [defaultLayout('L1')], space: { layout: 'L1' } }));
@@ -151,7 +152,7 @@ describe('geometry budgets are checked before project batch changes', () => {
     expect(confirmations).toBe(0);
     expect(f.backups).toEqual([]);
     expect(f.writes).toEqual([]);
-  });
+  }, 8000);
 
   it('seals accepted background batch geometry before retaining it and permits its undo', async () => {
     const f = fake({ ...base, files: { '/p/c.dxf': closed() } });
@@ -192,6 +193,7 @@ describe('failed backups stop the write', () => {
     // the open drawings are still updated in their tabs (nothing is written to disk for them)
     expect(f.editor.doc.canUndo()).toBe(true);
   });
+  // T-FLAKE: measured p99 4.8 s under maxWorkers=2 family load (n=10 runs; solo p50 2.8 s); budget = p99 x 2 rounded up. Timed out at the 5 s default in full-suite runs.
   it('the old null answer and a thrown error are failures too', async () => {
     for (const backup of [async (): Promise<LegacyBackupResult> => null, async (): Promise<LegacyBackupResult> => Promise.reject(new Error('EBUSY'))]) {
       noBackupAsked = [];
@@ -201,7 +203,8 @@ describe('failed backups stop the write', () => {
       expect(f.writes).toEqual([]);
     }
     expect(noBackupAsked[0]!.error).toBe('EBUSY');
-  });
+  }, 10000);
+  // T-FLAKE: measured p99 3.7 s under maxWorkers=2 family load (n=10 runs; solo p50 2.1 s); budget = p99 x 2 rounded up. Timed out at the 5 s default in a full-suite run.
   it('"Continue Without Backup" for that file writes it', async () => {
     continueWithoutBackup = true;
     const f = fake({ ...base, files: { '/p/c.dxf': closed() }, backup: async () => ({ ok: false, code: 'ENOSPC', error: 'disk full' }) });
@@ -210,13 +213,14 @@ describe('failed backups stop the write', () => {
     expect(f.logs.join('\n')).toMatch(/c\.dxf: backup failed \(disk full\); written without a backup as chosen/);
     // The write itself must not try the .bak again (a folder or locked file in the way would fail it).
     expect(f.writeOpts).toEqual([{ backup: false }]);
-  });
+  }, 8000);
+  // T-FLAKE: measured p99 5.2 s under maxWorkers=2 family load (n=10 runs; solo p50 2.2 s); budget = p99 x 2 rounded up. Timed out at the 5 s default in a loaded validation run.
   it('a successful backup ({ ok: true } or the old string answer) writes as before', async () => {
     const f = fake({ ...base, files: { '/p/c.dxf': closed() }, backup: async (p) => `${p}.bak` });
     await runProjectXref(f.editor);
     expect(noBackupAsked).toEqual([]);
     expect(f.writes).toEqual(['/p/c.dxf']);
-  });
+  }, 11000);
 });
 
 describe('damaged closed drawings', () => {
@@ -261,6 +265,7 @@ describe('changes apply only to the revision they were calculated from', () => {
     expect(result!.open).toBe(0);
     expect(result!.conflicts).toEqual(['a.dxf (edited while the command ran)']);
   });
+  // T-FLAKE: measured p99 4.4 s under maxWorkers=2 family load (n=10 runs; solo p50 2.1 s) — within 12% of the 5 s default that a sibling test with a lower p99 crossed under the same load; budget = p99 x 2 rounded up.
   it('an open tab edited while the command waits is reported and left alone', async () => {
     const f = fake({ ...base, files: { '/p/c.dxf': closed() } });
     onConfirm = () => {
@@ -278,7 +283,7 @@ describe('changes apply only to the revision they were calculated from', () => {
     expect(f.editor.doc.entities.some((e) => e.type === 'text' && e.text === 'USER EDIT')).toBe(true);
     expect(f.editor.sessions.all[1]!.state.entities.some((e) => e.type === 'text' && e.text === 'OTHER EDIT')).toBe(true);
     expect(r!.written).toBe(1); // the closed file did not change
-  });
+  }, 9000);
   it('a closed file changed on disk since it was read is not overwritten', async () => {
     const f = fake({ ...base, files: { '/p/c.dxf': closed() } });
     const { sheets } = await loadProjectSheets(f.editor);
@@ -371,6 +376,7 @@ describe('drawings are identified by full path', () => {
     expect(sheets.map((s) => `${s.name}:${s.source}`)).toEqual(['A.dxf:active', 'B.dxf:session', 'C.dxf:file']);
     expect(f.reads).toEqual(['C:\\Jobs\\P\\dwg\\C.dxf']);
   });
+  // T-FLAKE: measured p99 6.8 s under maxWorkers=2 family load (n=10 runs; solo p50 3.3 s); budget = p99 x 2 rounded up. Timed out at the 5 s default in family and full-suite runs.
   it('equal file names in different folders are separate drawings with distinct names', async () => {
     const f = fake({
       projectPath: '/jobs/p/p.jcadproj.json',
@@ -386,7 +392,7 @@ describe('drawings are identified by full path', () => {
     const tb = (s: DrawingState) => s.entities.find((e): e is InsertEntity => e.type === 'insert' && e.attributes.SHEET !== undefined)!.attributes.SHEET;
     expect(tb(readDxf(f.disk.get('/jobs/p/line2/a.dxf')!))).toBe('2 OF 2');
     expect(tb(f.editor.doc.snapshot)).toBe('1 OF 2');
-  });
+  }, 14000);
 });
 
 describe('a drawing shown in a layout tab', () => {
@@ -418,6 +424,7 @@ describe('stale-batch fuzzing regressions (tests/fuzz-stale-batch.test.ts)', () 
     const i = sheets.findIndex((s) => s.source === 'file');
     return commitSheets(f.editor, sheets, new Map([[i, { state: { ...sheets[i]!.doc.snapshot, entities: [...sheets[i]!.doc.snapshot.entities, note('BATCH')] }, detail: 'x' }]]), 'T', 'I');
   };
+  // T-FLAKE: measured p99 5.9 s under maxWorkers=2 family load (n=10 runs; solo p50 2.4 s); budget = p99 x 2 rounded up. Timed out at the 5 s default in a family run.
   it('a file changed on disk while "backup failed, continue?" is open is not overwritten (seed 1657033021)', async () => {
     continueWithoutBackup = true;
     const f = fake({ ...base, files: { '/p/c.dxf': closed() }, backup: async () => ({ ok: false, code: 'EACCES', error: 'EACCES' }) });
@@ -430,7 +437,7 @@ describe('stale-batch fuzzing regressions (tests/fuzz-stale-batch.test.ts)', () 
     expect(r!.conflicts).toEqual(['c.dxf (changed on disk since it was read)']);
     expect(f.writes).toEqual([]);
     expect(f.disk.get('/p/c.dxf')).toBe(changed);
-  });
+  }, 12000);
   it('a file opened in a tab while its backup is made is not written under the tab', async () => {
     const f = fake({ ...base, files: { '/p/c.dxf': closed() }, backup: async (p) => {
       f.editor.sessions.add(closed(), '/p/c.dxf');
@@ -440,6 +447,7 @@ describe('stale-batch fuzzing regressions (tests/fuzz-stale-batch.test.ts)', () 
     expect(r!.conflicts).toEqual(['c.dxf (opened in a tab while the command ran)']);
     expect(f.writes).toEqual([]);
   });
+  // T-FLAKE: measured p99 4.0 s under maxWorkers=2 family load (n=10 runs; solo p50 2.2 s); budget = p99 x 2 rounded up. Timed out at the 5 s default in a full-suite run.
   it('closed drawings left unsaved by choice are named in the outcome and the log (seed 2670937247)', async () => {
     projectUi.confirmFiles = async () => ({ files: false, backup: false });
     const f = fake({ ...base, files: { '/p/c.dxf': closed() } });
@@ -449,5 +457,5 @@ describe('stale-batch fuzzing regressions (tests/fuzz-stale-batch.test.ts)', () 
     const g2 = fake({ ...base, files: { '/p/c.dxf': closed() } });
     await runProjectXref(g2.editor);
     expect(g2.logs.join('\n')).toMatch(/Not updated \(closed drawing files were not saved, as chosen\): c\.dxf\./);
-  });
+  }, 9000);
 });
