@@ -124,6 +124,16 @@
 // from a RESOLVED launchApp, so a caller's catch-path
 // closeBounded(qapp) saw undefined for a failed launch and leaked
 // the process; that path is now unreachable for launch failures.
+// Every launch also records a TIMELINE (launchTimelineRecordImpl
+// below): spawn issued, the app object, the first BrowserWindow,
+// did-finish-load, ready-to-show, the jcad:// window the harness
+// sees, and window.editor ready - millisecond offsets from spawn
+// on the one wall clock, persisted per launch in
+// results.launchTimelines. On a failed launch the timeline shows
+// how far the launch got; unreached milestones stay absent (null),
+// never fabricated. `node scripts/e2e-xref-refresh.mjs
+// --self-test-timeline` runs the record builder's regression
+// without Electron.
 //
 //   npm run build
 //   node scripts/xref-native-fixtures.mjs <work-root>/fixtures
@@ -139,6 +149,7 @@
 //   node scripts/e2e-xref-refresh.mjs --self-test-correlation
 //   node scripts/e2e-xref-refresh.mjs --self-test-tab-removal
 //   node scripts/e2e-xref-refresh.mjs --self-test-burst
+//   node scripts/e2e-xref-refresh.mjs --self-test-timeline
 //
 // Exit codes: 0 = every selected check passed and none blocked;
 // 1 = a check failed or a selected criterion is blocked;
@@ -404,6 +415,31 @@ const G2_REASON = 'observer not enabled for this run (no --observer): criterion 
  * @property {XrefObserverSample | null} baseline
  * @property {boolean} usable
  * @property {CorrelationRecord} [correlation]
+ */
+/**
+ * @typedef {Object} LaunchTimelineStamps - absolute wall-clock stamps (Date.now epoch ms) gathered for ONE launch: harness-side marks plus the main-process window clock the launch installs (globalThis.__xrefLaunchClock). Every field but t0 stays null until the launch actually reaches that point.
+ * @property {number} t0 - spawn issued; the relative zero for every event.
+ * @property {number | null} appObjectAt - electron.launch resolved: the ElectronApplication handle exists.
+ * @property {number | null} windowCreatedAt - main-process stamp: the first BrowserWindow was created (or already existed when the clock was installed).
+ * @property {number | null} didFinishLoadAt - main-process stamp: the first window's webContents fired did-finish-load.
+ * @property {number | null} readyToShowAt - main-process stamp: the first window fired ready-to-show.
+ * @property {number | null} windowSeenAt - harness-side: applicationWindow returned the jcad://app page.
+ * @property {number | null} editorReadyAt - harness-side: window.editor appeared in the page.
+ */
+/**
+ * @typedef {Object} LaunchTimelineEvent - one reached launch milestone, as a millisecond offset from spawn.
+ * @property {string} name
+ * @property {number} ms
+ */
+/**
+ * @typedef {Object} LaunchTimelineRecord - launchTimelineRecordImpl's output: one launch's persisted timeline (results.launchTimelines).
+ * @property {string} label
+ * @property {string} mode - 'dev' | 'packaged'.
+ * @property {LaunchTimelineEvent[]} events - reached milestones only, in canonical order.
+ * @property {string} furthestEvent - the last canonical milestone reached ('spawn-issued' if none beyond spawn).
+ * @property {string} outcome - 'ready' | 'failed'.
+ * @property {string | null} failureStage - the launchApp stage that threw (on failure only).
+ * @property {string | null} error - the failure's message (on failure only).
  */
 
 // ------------------------------------------------------------ semantic entity oracle (finding 1)
@@ -885,6 +921,95 @@ if (process.argv.includes('--self-test-burst')) {
   process.exit(okAll ? 0 : 1);
 }
 
+// ------------------------------------------------------------ launch timeline (Stage 2 commission)
+// The ONE builder of a launch's persisted timeline record. Pure: it
+// decides only from the stamps launchApp gathered (harness-side marks
+// plus the main-process window clock). Canonical milestone order:
+//   spawn-issued -> app-object -> browser-window-created ->
+//   did-finish-load -> ready-to-show -> window-seen -> editor-ready
+// The main-process window stamps sit before the harness-side
+// window-seen in the canonical order (the harness can only see the
+// jcad:// page once a window exists and loads); the ms values are
+// reported exactly as measured, so any real-world inversion stays
+// visible in the numbers rather than being sorted away. A milestone
+// whose stamp is missing stays ABSENT from the record - a failed
+// launch's timeline shows how far it got and no further.
+function launchTimelineRecordImpl(input) {
+  const { label, mode, stamps, outcome, failureStage, error } = input;
+  const t0 = stamps.t0;
+  const candidates = [
+    ['spawn-issued', t0],
+    ['app-object', stamps.appObjectAt],
+    ['browser-window-created', stamps.windowCreatedAt],
+    ['did-finish-load', stamps.didFinishLoadAt],
+    ['ready-to-show', stamps.readyToShowAt],
+    ['window-seen', stamps.windowSeenAt],
+    ['editor-ready', stamps.editorReadyAt],
+  ];
+  /** @type {LaunchTimelineEvent[]} */
+  const events = [];
+  let furthestEvent = 'spawn-issued';
+  for (const [name, at] of candidates) {
+    if (typeof at === 'number' && Number.isFinite(at)) {
+      events.push({ name, ms: at - t0 });
+      furthestEvent = name;
+    }
+  }
+  return {
+    label, mode, events, furthestEvent,
+    outcome,
+    failureStage: outcome === 'failed' ? failureStage : null,
+    error: outcome === 'failed' ? error : null,
+  };
+}
+
+// Launch-timeline regression, runnable without Electron:
+//   node scripts/e2e-xref-refresh.mjs --self-test-timeline
+// Exit 0 only if launchTimelineRecordImpl (the very builder launchApp
+// persists) decides: a fully stamped ready launch -> all seven
+// milestones in canonical order with exact relative ms; a launch
+// that failed at the window wait (the Stage 2 quit shape) -> only
+// the reached milestones, furthest=app-object, failure fields kept;
+// a spawn failure -> spawn-issued only; a window that loaded but
+// never fired ready-to-show -> that milestone stays absent.
+if (process.argv.includes('--self-test-timeline')) {
+  const T0 = 1_000_000;
+  const empty = { appObjectAt: null, windowCreatedAt: null, didFinishLoadAt: null, readyToShowAt: null, windowSeenAt: null, editorReadyAt: null };
+  const ready = launchTimelineRecordImpl({
+    label: 'x', mode: 'dev', outcome: 'ready', failureStage: null, error: null,
+    stamps: { t0: T0, appObjectAt: T0 + 250, windowCreatedAt: T0 + 900, didFinishLoadAt: T0 + 2400, readyToShowAt: T0 + 2450, windowSeenAt: T0 + 1000, editorReadyAt: T0 + 5200 },
+  });
+  const winFail = launchTimelineRecordImpl({
+    label: 'x', mode: 'packaged', outcome: 'failed', failureStage: 'window', error: 'The secure application window did not appear before the deadline.',
+    stamps: { t0: T0, ...empty, appObjectAt: T0 + 300 },
+  });
+  const spawnFail = launchTimelineRecordImpl({
+    label: 'x', mode: 'dev', outcome: 'failed', failureStage: 'spawn', error: 'launch failed',
+    stamps: { t0: T0, ...empty },
+  });
+  const partial = launchTimelineRecordImpl({
+    label: 'x', mode: 'dev', outcome: 'failed', failureStage: 'editor', error: 'editor timeout',
+    stamps: { t0: T0, ...empty, appObjectAt: T0 + 10, windowCreatedAt: T0 + 20, didFinishLoadAt: T0 + 30, windowSeenAt: T0 + 25 },
+  });
+  const cases = [
+    ['(a) ready launch: all seven milestones in canonical order', ready.events.map((e) => e.name), ['spawn-issued', 'app-object', 'browser-window-created', 'did-finish-load', 'ready-to-show', 'window-seen', 'editor-ready']],
+    ['(a2) ready launch: relative ms are stamp - t0, as measured', ready.events.map((e) => e.ms), [0, 250, 900, 2400, 2450, 1000, 5200]],
+    ['(a3) ready launch: furthest=editor-ready, no failure fields', [ready.furthestEvent, ready.failureStage, ready.error], ['editor-ready', null, null]],
+    ['(b) window-wait failure: only the reached milestones persist', winFail.events.map((e) => e.name), ['spawn-issued', 'app-object']],
+    ['(b2) window-wait failure: furthest + failure fields kept', [winFail.furthestEvent, winFail.failureStage, winFail.error], ['app-object', 'window', 'The secure application window did not appear before the deadline.']],
+    ['(c) spawn failure: spawn-issued only', [spawnFail.events.length, spawnFail.furthestEvent], [1, 'spawn-issued']],
+    ['(d) loaded but ready-to-show never fired: the absent milestone stays absent', partial.events.map((e) => e.name), ['spawn-issued', 'app-object', 'browser-window-created', 'did-finish-load', 'window-seen']],
+  ];
+  let okAll = true;
+  for (const [name, got, want] of cases) {
+    const ok = JSON.stringify(got) === JSON.stringify(want);
+    okAll = okAll && ok;
+    console.log(`${ok ? 'ok  ' : 'FAIL'} self-test-timeline ${name} (got=${JSON.stringify(got)}, expected=${JSON.stringify(want)})`);
+  }
+  console.log(`self-test-timeline: ${okAll ? 'PASS' : 'FAIL'}`);
+  process.exit(okAll ? 0 : 1);
+}
+
 // ------------------------------------------------------------ setup (fail closed)
 const workRootArg = argOf('--work-root');
 const fixtureArg = argOf('--fixtures');
@@ -1003,7 +1128,7 @@ function failHalt(name, detail = '') {
   halted = true;
   haltReason = `stopped at the first failed PASS criterion: [${currentSection}] ${name}`;
 }
-const results = { header: {}, checks, observer: { mode: observerMode ? 'cli-require via default_app' : 'off', path: observerPath || null, sha256: observerSha256 || null, targetSha256: observerTargetSha || null }, observerSamples: [], observerBaseline: null, correlations: {}, residue: { workRoot, fixtureDir, outDir, tempDir, profiles: [], childExits: [], watchdogFired: false, deleted: 'nothing (residue preserved by design)' } };
+const results = { header: {}, checks, observer: { mode: observerMode ? 'cli-require via default_app' : 'off', path: observerPath || null, sha256: observerSha256 || null, targetSha256: observerTargetSha || null }, observerSamples: [], observerBaseline: null, correlations: {}, launchTimelines: [], residue: { workRoot, fixtureDir, outDir, tempDir, profiles: [], childExits: [], watchdogFired: false, deleted: 'nothing (residue preserved by design)' } };
 // Evidence persistence (finding 5): a run that cannot write its
 // evidence has NOT passed, whatever the checks say. Any write failure
 // is reported explicitly on stderr/stdout and forces exit code 3 at
@@ -1113,6 +1238,23 @@ async function buildBundle() {
 }
 
 // ------------------------------------------------------------ app driving
+// Pull the main-process window clock a launch installed, bounded so
+// a wedged main process cannot hang the harness; stamps the clock
+// never set stay null (absent from the record, never fabricated).
+async function pullLaunchClock(app, stamps) {
+  try {
+    const clock = await Promise.race([
+      app.evaluate(() => globalThis.__xrefLaunchClock ?? null),
+      new Promise((done) => setTimeout(() => done(null), 5_000)),
+    ]);
+    if (clock) {
+      if (typeof clock.windowCreatedAt === 'number') stamps.windowCreatedAt = clock.windowCreatedAt;
+      if (typeof clock.didFinishLoadAt === 'number') stamps.didFinishLoadAt = clock.didFinishLoadAt;
+      if (typeof clock.readyToShowAt === 'number') stamps.readyToShowAt = clock.readyToShowAt;
+    }
+  } catch { /* clock unavailable for this launch; its window stamps stay null */ }
+}
+
 async function launchApp(label) {
   if (packagedMode) log(`launch[${label}]: packaged exe ${packagedExe} (sha256 ${packagedExeSha256.slice(0, 12)}..)`);
   const profile = join(workRoot, `profile-${label}`);
@@ -1124,26 +1266,50 @@ async function launchApp(label) {
       ? ['--require', observerPath, '.', `--user-data-dir=${profile}`]
       : ['.', `--user-data-dir=${profile}`];
   if (process.platform === 'linux') args.push('--no-sandbox');
-  // Packaged launches run with cwd inside the work root: the packaged
-  // tree is evidence, not a working directory (Stage 1 decision C -
-  // driver residue such as NVIDIA umdlogs lands in the cwd).
-  const app = packagedMode
-    ? await electron.launch({ executablePath: packagedExe, args, cwd: workRoot, env: childEnv(), timeout: 90_000 })
-    : await electron.launch({ args, cwd: repo, env: childEnv(), timeout: 60_000 });
-  trackChild(label, app.process());
-  // From here the launch can fail with the app already spawned (the
-  // window wait, the editor wait, the dialog stub, the observer
-  // baseline). launchApp owns that app: on ANY such failure it
-  // closes the partially launched app itself - bounded, tolerant of
-  // the not-fully-launched state - before rethrowing. Callers only
-  // receive the handle from a RESOLVED launchApp, so their
-  // catch-path closeBounded(qapp) saw undefined for a failed launch
-  // and the process leaked (Stage 2 commission).
+  // Launch timeline (Stage 2 commission): one stamps bag per launch,
+  // finalized through launchTimelineRecordImpl on BOTH the ready and
+  // the failed path and persisted in results.launchTimelines.
+  /** @type {LaunchTimelineStamps} */
+  const stamps = { t0: Date.now(), appObjectAt: null, windowCreatedAt: null, didFinishLoadAt: null, readyToShowAt: null, windowSeenAt: null, editorReadyAt: null };
+  let stage = 'spawn';
+  /** @type {import('playwright').ElectronApplication | undefined} */
+  let app;
   try {
+    // Packaged launches run with cwd inside the work root: the packaged
+    // tree is evidence, not a working directory (Stage 1 decision C -
+    // driver residue such as NVIDIA umdlogs lands in the cwd).
+    app = packagedMode
+      ? await electron.launch({ executablePath: packagedExe, args, cwd: workRoot, env: childEnv(), timeout: 90_000 })
+      : await electron.launch({ args, cwd: repo, env: childEnv(), timeout: 60_000 });
+    stamps.appObjectAt = Date.now();
+    trackChild(label, app.process());
+    // Main-process window clock: installed immediately, so even a
+    // launch that never shows a window leaves its (empty) clock
+    // behind as evidence of how far main got. Instrumentation only -
+    // a failure to install it never fails the launch.
+    try {
+      await app.evaluate(({ BrowserWindow, app: electronApp }) => {
+        const g = globalThis;
+        const clock = { windowCreatedAt: /** @type {number | null} */ (null), didFinishLoadAt: /** @type {number | null} */ (null), readyToShowAt: /** @type {number | null} */ (null) };
+        g.__xrefLaunchClock = clock;
+        const hook = (w) => {
+          if (clock.windowCreatedAt === null) clock.windowCreatedAt = Date.now();
+          try { w.webContents.on('did-finish-load', () => { if (clock.didFinishLoadAt === null) clock.didFinishLoadAt = Date.now(); }); } catch { /* window may already be gone */ }
+          try { w.once('ready-to-show', () => { if (clock.readyToShowAt === null) clock.readyToShowAt = Date.now(); }); } catch { /* window may already be gone */ }
+        };
+        for (const w of BrowserWindow.getAllWindows()) hook(w);
+        electronApp.on('browser-window-created', (_event, w) => hook(w));
+      });
+    } catch { /* timeline clock unavailable for this launch; its window stamps stay null */ }
+    stage = 'window';
     const win = await applicationWindow(app);
+    stamps.windowSeenAt = Date.now();
     const pageErrors = [];
     win.on('pageerror', (e) => pageErrors.push(String(e.message)));
+    stage = 'editor';
     await win.waitForFunction(() => !!window.editor, null, { timeout: 30_000 });
+    stamps.editorReadyAt = Date.now();
+    stage = 'dialog-stub';
     await app.evaluate(({ dialog }) => {
       const g = globalThis;
       g.__xrefOpenPaths = [];
@@ -1158,6 +1324,7 @@ async function launchApp(label) {
     /** @type {LaunchObserverState | null} */
     let observer = null;
     if (observerMode) {
+      stage = 'observer-baseline';
       const baseline = await sampleObserver(app, `baseline:${label}`);
       const bs = baseline?.stats;
       const usable = Boolean(baseline && baseline.captured && baseline.factoryCalls === 1 && !baseline.invalidated && bs
@@ -1166,9 +1333,22 @@ async function launchApp(label) {
       log(`observer[${label}]: baseline ${JSON.stringify(baseline)} usable=${usable}`);
       if (!usable) log(`observer[${label}]: WARNING - baseline not a clean zero capture; stats-derived criteria for THIS launch will be BLOCKED`);
     }
+    await pullLaunchClock(app, stamps);
+    const record = launchTimelineRecordImpl({ label, mode: packagedMode ? 'packaged' : 'dev', stamps, outcome: 'ready', failureStage: null, error: null });
+    results.launchTimelines.push(record);
+    log(`launch[${label}]: timeline ready - ${record.events.map((e) => `${e.name}@${e.ms}ms`).join(' ')}`);
     return { app, win, pageErrors, profile, observer };
   } catch (error) {
-    try { await closeBounded(app); } catch { /* bounded already */ }
+    if (app) await pullLaunchClock(app, stamps);
+    const record = launchTimelineRecordImpl({ label, mode: packagedMode ? 'packaged' : 'dev', stamps, outcome: 'failed', failureStage: stage, error: String(error && error.message || error) });
+    results.launchTimelines.push(record);
+    log(`launch[${label}]: timeline FAILED at stage ${stage} (furthest=${record.furthestEvent}) - ${record.events.map((e) => `${e.name}@${e.ms}ms`).join(' ')} error=${record.error}`);
+    // A failed launch still OWNS its app (Stage 2 commission): the
+    // callers receive the handle only from a RESOLVED launchApp, so
+    // their catch-path closeBounded(qapp) saw undefined and the
+    // process leaked. Close it here - bounded, and tolerant of the
+    // not-fully-launched state - before rethrowing.
+    if (app) { try { await closeBounded(app); } catch { /* bounded already */ } }
     throw error;
   }
 }
