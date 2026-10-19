@@ -422,6 +422,36 @@ describe('p30-constraint-width-HANDBUILT.dxf: constraint-parameter fixture, DXF 
     expect(rtFirst.groups[1]).toEqual([1, 'AC1032']);
   });
 
+  it('F1 (REAL, Q11) writer *D sharing: the 24 written DIMENSIONs reference exactly 12 distinct synthesized *D blocks', () => {
+    // Content-key dedup (Q11 F1): dimensions whose generated pictures are identical
+    // share one *D block — 8 distinct graphics in the named record plus 4 new ones at
+    // Width1 = 120; the radius and the *U records' line dimensions share across
+    // records. AutoCAD's own file carries 18 (its count also depends on evaluation
+    // history and is deliberately NOT the target); before the fix JCad wrote 24.
+    const dims = records(written, 'DIMENSION');
+    expect(dims).toHaveLength(24);
+    const refs = dims.map((r) => r.find(([code]) => code === 2)?.[1]);
+    expect(new Set(refs).size).toBe(12);
+    const blockNames = records(written, 'BLOCK_RECORD')
+      .map((r) => r.find(([code]) => code === 2)?.[1] ?? '')
+      .filter((n) => /^\*D\d+$/.test(n));
+    expect(blockNames).toHaveLength(12);
+    expect(new Set(blockNames)).toEqual(new Set(refs));
+  });
+
+  it('F2 (REAL, Q11) header emission: the written header never re-emits the retained $LASTSAVEDBY; the 2008+ names follow the target version', () => {
+    // The retained graph keeps the source's $LASTSAVEDBY verbatim — retention is not
+    // emission: after a JCad save JCad is the last saver, so the source author's name
+    // is never written back, at any version (Q11 F2).
+    const headerNode = imported.cadGraph!.nodes.find((n) => n.type === 'HEADER' && n.section === 'HEADER')!;
+    expect(headerNode.groups).toContainEqual([9, '$LASTSAVEDBY']);
+    expect(written).not.toContain('$LASTSAVEDBY');
+    // This file writes at AC1032, where the AutoCAD 2008+ names are legal and stay
+    // (their suppression at AC1015/AC1018 is pinned in tests/dxf-layouts.test.ts and
+    // tests/layout-native-page-settings.test.ts).
+    expect(written).toContain('$CANNOSCALE');
+  });
+
   it('J1 (REAL) the retained Width1 parameter node carries the full native encoding: name, points, value set', () => {
     const params = imported.cadGraph!.nodes.filter((n) => n.type === 'BLOCKHORIZONTALCONSTRAINTPARAMETER');
     expect(params).toHaveLength(1);
