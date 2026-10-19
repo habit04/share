@@ -64,6 +64,31 @@ function usedLinetypes(state: DrawingState): Linetype[] {
   return out;
 }
 
+/**
+ * Content key for a dimension's generated picture (Q11 F1): the canonical serialization of
+ * the parts exactly as the *D block writer emits them (including its ByLayer -> 0 color
+ * mapping), with identity fields removed (part ids embed the owning dimension's id) and
+ * numbers at write precision (write-core fmt rounds to 10 decimals). Equal keys therefore
+ * mean byte-identical picture bodies; unequal keys can still render alike only through
+ * fields the writer never emits, never the reverse.
+ */
+function dimensionPictureKey(d: DimensionEntity): string {
+  const canonical = (value: unknown): unknown => {
+    if (typeof value === 'number') return Number.isFinite(value) ? Number(value.toFixed(10)) : 0;
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value !== null && typeof value === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const key of Object.keys(value).sort()) {
+        if (key === 'id' || key === 'cadIdentity') continue;
+        out[key] = canonical((value as Record<string, unknown>)[key]);
+      }
+      return out;
+    }
+    return value;
+  };
+  return JSON.stringify(dimensionParts(d).map((part) => canonical({ ...part, color: part.color === 'ByLayer' ? 0 : part.color })));
+}
+
 export function writeDxf(state: DrawingState): string {
   state = materializePolylineWidthFrames(state);
   const w = new Writer();
@@ -79,23 +104,35 @@ export function writeDxf(state: DrawingState): string {
   // Pre-assign a BLOCK_RECORD handle per block; block entities use it as their owner (330).
   const blockRecordHandles = new Map<string, string>();
   for (const b of blockList) blockRecordHandles.set(b.name, w.nextHandle());
-  // Anonymous *D blocks that carry each dimension's picture.
+  // Anonymous *D blocks that carry each dimension's picture. Dimensions whose generated
+  // pictures are identical share one block, named in first-appearance order (Q11 F1):
+  // AutoCAD shares *D graphics across a drawing's records, and one block per distinct
+  // content is the reproducible part of that behavior (AutoCAD's own count also depends
+  // on its evaluation history, so it is not the target).
   const dimBlocks = new Map<string, string>();
+  const dimPictures: Array<{ name: string; dimension: DimensionEntity }> = [];
   const layoutPlan = planLayouts(state, w, PAPER_SPACE);
   setPaperOwners(layoutPlan.paperOwners);
   // Dimensions inside block definitions get their picture block too (a DIMENSION naming no block
   // is invalid).
   const dimEntities = [...state.entities, ...layoutPlan.entities, ...blockList.flatMap((b) => b.entities)].filter((e): e is DimensionEntity => e.type === 'dimension');
-  dimEntities.forEach((d, i) => {
-    const name = `*D${i + 1}`;
+  const pictureByKey = new Map<string, string>();
+  for (const d of dimEntities) {
+    const key = dimensionPictureKey(d);
+    let name = pictureByKey.get(key);
+    if (name === undefined) {
+      name = `*D${dimPictures.length + 1}`;
+      pictureByKey.set(key, name);
+      dimPictures.push({ name, dimension: d });
+      blockRecordHandles.set(name, w.nextHandle());
+    }
     dimBlocks.set(d.id, name);
-    blockRecordHandles.set(name, w.nextHandle());
-  });
+  }
   // Experimental true 3D dimensions: a picture block each, numbered after the 2D dimensions'.
   const dims3d = state.model3d?.dimensions ?? [];
   const dim3dBlocks = new Map<string, string>();
   dims3d.forEach((d, i) => {
-    const name = `*D${dimEntities.length + i + 1}`;
+    const name = `*D${dimPictures.length + i + 1}`;
     dim3dBlocks.set(d.id, name);
     const handle = w.nextHandle();
     blockRecordHandles.set(name, handle);
@@ -480,11 +517,10 @@ export function writeDxf(state: DrawingState): string {
       for (const part of tableParts(t)) writeEntity(w, part, owner, state.blocks, undefined, extras);
     });
   }
-  for (const d of dimEntities) {
-    const name = dimBlocks.get(d.id)!;
+  for (const { name, dimension } of dimPictures) {
     const owner = blockRecordHandles.get(name)!;
     blockShell(owner, name, { x: 0, y: 0 }, 1, undefined, () => {
-      for (const part of dimensionParts(d)) writeEntity(w, { ...part, color: part.color === 'ByLayer' ? 0 : part.color } as Entity, owner, state.blocks);
+      for (const part of dimensionParts(dimension)) writeEntity(w, { ...part, color: part.color === 'ByLayer' ? 0 : part.color } as Entity, owner, state.blocks);
     });
   }
   for (const d of dims3d) {
