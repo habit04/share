@@ -162,7 +162,12 @@
 //   Packaged section-3.5 quit launches are preconditioned by
 //   a real direct first launch on their own profile, so they
 //   run as the relaunch they intend - see
-//   preconditionPackagedProfile below.
+//   preconditionPackagedProfile below. Launchfix r5: the
+//   precondition child is a tracked harness child closed via
+//   the harness's own child path; a failed precondition
+//   BLOCKs its scenario (the launch never proceeds); a quit
+//   launch's timeline t0 is the real Playwright spawn, with
+//   the precondition duration in profilePreconditionMs.
 //   Test B (launchfix r2): --quit-launch-repeat <n> (default 1) runs
 //   the section-3.5 quit-launch block n times in one process -
 //   e.g. `--sections 3.5 --quit-launch-repeat 10` for ten quit
@@ -455,7 +460,8 @@ const G2_REASON = 'observer not enabled for this run (no --observer): criterion 
  * @property {number | null} editorReadyAt - harness-side: window.editor appeared in the page.
  * @property {number | null} mainWindowObservedAt - packaged launches only: the harness's main-process probe first saw a BrowserWindow whose webContents URL was already committed under jcad://app/ (the window existed in main while Playwright's page enumeration had not yet yielded it). Null in dev mode.
  * @property {number} releasedTargets - packaged launches only: how many non-main pages the packaged window wait's CDP release sends completed for (launchfix r4). Counts completed SENDS, not confirmed unblocks - local probes show the release does not clear the auto-attach hold (see applicationWindowPackaged). 0 in dev mode.
- * @property {string | null} profilePrecondition - packaged section-3.5 quit launches only: the profile preconditioning outcome ('product-committed' | 'already-committed' | 'timeout'), stamped by launchApp from preconditionPackagedProfile. Null for every other launch.
+ * @property {string | null} profilePrecondition - packaged section-3.5 quit launches only: the profile preconditioning outcome ('product-committed' | 'already-committed' | 'timeout' | 'exited-early' | 'not-gone'), stamped by launchApp from preconditionPackagedProfile. Null for every other launch.
+ * @property {number | null} profilePreconditionMs - packaged section-3.5 quit launches only: wall-clock duration of the precondition phase (launchfix r5). The phase is represented by this field alone: t0 stays the real Playwright spawn moment (see launchApp), so no event offset ever includes precondition time. Null when no precondition ran.
  * @property {Record<string, boolean>} preExisting - milestone keys ('appReady', 'windowCreated', 'didStartNavigation', 'didNavigate', 'domReady', 'didFinishLoad', 'readyToShow', 'renderProcessGone') the clock found already reached at install time; those milestones appear in the record with ms null and preExisting true.
  */
 /**
@@ -490,6 +496,7 @@ const G2_REASON = 'observer not enabled for this run (no --observer): criterion 
  * @property {number | null} mainWindowObservedMs - packaged launches: ms offset from spawn of the main-process probe's first committed-jcad:// window observation (stamps.mainWindowObservedAt - t0), or null when the probe never observed one. The builder sets it whenever the observation happened; it is not conditioned on windowSeenAt. Not an event: it never advances furthestEvent.
  * @property {number} releasedTargets - packaged launches: stamps.releasedTargets carried through (completed CDP release sends against non-main pages; see the stamps typedef). 0 when the wait never ran or released nothing.
  * @property {string | null} profilePrecondition - packaged section-3.5 quit launches: stamps.profilePrecondition carried through; null for every other launch.
+ * @property {number | null} profilePreconditionMs - packaged section-3.5 quit launches: stamps.profilePreconditionMs carried through (the precondition phase's own duration; event offsets never include it - they measure from the spawn t0). Null when no precondition ran.
  */
 
 // ------------------------------------------------------------ semantic entity oracle (finding 1)
@@ -1048,6 +1055,8 @@ function launchTimelineRecordImpl(input) {
     releasedTargets: typeof stamps.releasedTargets === 'number' && Number.isFinite(stamps.releasedTargets)
       ? stamps.releasedTargets : 0,
     profilePrecondition: typeof stamps.profilePrecondition === 'string' ? stamps.profilePrecondition : null,
+    profilePreconditionMs: typeof stamps.profilePreconditionMs === 'number' && Number.isFinite(stamps.profilePreconditionMs)
+      ? stamps.profilePreconditionMs : null,
   };
 }
 
@@ -1075,7 +1084,16 @@ function launchTimelineRecordImpl(input) {
 // the wait; a session factory that always fails is retried
 // across cadences and stays invisible to the verdict; a page at
 // the success URL is returned untouched) and the builder's
-// releasedTargets / profilePrecondition passthrough.
+// releasedTargets / profilePrecondition passthrough. The r5
+// cases drive the precondition decision functions launchApp
+// consults before any quit-scenario spawn
+// (preconditionOutcomeImpl / preconditionBlockReasonImpl: a
+// timeout, an early exit, or a committed-but-still-running
+// instance blocks with its reason and no launch proceeds; only
+// an actually-gone instance is 'product-committed') and the
+// builder's profilePreconditionMs passthrough with the
+// spawn-moment t0 shape (event offsets exclude precondition
+// time entirely).
 if (process.argv.includes('--self-test-timeline')) {
   const T0 = 1_000_000;
   const empty = { appObjectAt: null, windowCreatedAt: null, didFinishLoadAt: null, readyToShowAt: null, windowSeenAt: null, editorReadyAt: null };
@@ -1231,6 +1249,31 @@ if (process.argv.includes('--self-test-timeline')) {
     ['(l7) a page at the success URL is returned untouched', mainGot === mainPage, true],
     ['(m) builder: releasedTargets + profilePrecondition pass through', [relRec.releasedTargets, relRec.profilePrecondition], [2, 'product-committed']],
     ['(m2) builder: release fields default when the stamps never carried them', [ready.releasedTargets, ready.profilePrecondition], [0, null]],
+  );
+  // Launchfix r5: the precondition verdict/outcome functions and
+  // the builder's spawn-t0 / duration-field shape (see the header
+  // comment). launchApp itself needs Electron; these are the
+  // exact functions it consults before spawning (the Impl
+  // pattern), so a blocked verdict here is the shipped decision.
+  const preRec = launchTimelineRecordImpl({
+    label: 'x', mode: 'packaged', outcome: 'failed', failureStage: 'precondition', error: 'boom',
+    stamps: { t0: T0 + 5_000, ...empty, profilePrecondition: 'timeout', profilePreconditionMs: 30_250 },
+  });
+  const spawnRec = launchTimelineRecordImpl({
+    label: 'x', mode: 'packaged', outcome: 'ready', failureStage: null, error: null,
+    stamps: { t0: T0 + 5_000, ...empty, appObjectAt: T0 + 5_120, profilePrecondition: 'product-committed', profilePreconditionMs: 2_750 },
+  });
+  cases.push(
+    ['(n1) precondition verdict: timeout blocks with its reason - no scenario launch proceeds', preconditionBlockReasonImpl('timeout', null), 'profile precondition timed out: product did not commit checkpoint+marker within 30 s'],
+    ['(n2) precondition verdict: early exit blocks, naming the exit code', preconditionBlockReasonImpl('exited-early', 3), 'profile precondition failed: product exited (code 3) before committing checkpoint+marker'],
+    ['(n3) precondition verdict: committed but still running blocks', preconditionBlockReasonImpl('not-gone', null), 'profile precondition failed: product committed checkpoint+marker but the precondition instance did not exit after the close path'],
+    ['(n4) precondition verdict: product-committed / already-committed / no precondition proceed (null reason)', [preconditionBlockReasonImpl('product-committed', 0), preconditionBlockReasonImpl('already-committed', null), preconditionBlockReasonImpl(null, null)], [null, null, null]],
+    ['(n5) precondition outcome: committed + instance actually gone is product-committed', preconditionOutcomeImpl({ committed: true, died: false, childGone: true }), 'product-committed'],
+    ['(n6) precondition outcome: committed + instance alive is not-gone (never product-committed)', preconditionOutcomeImpl({ committed: true, died: false, childGone: false }), 'not-gone'],
+    ['(n7) precondition outcome: uncommitted + died is exited-early', preconditionOutcomeImpl({ committed: false, died: true, childGone: true }), 'exited-early'],
+    ['(n8) precondition outcome: uncommitted + alive at the deadline is timeout', preconditionOutcomeImpl({ committed: false, died: false, childGone: false }), 'timeout'],
+    ['(o) builder: profilePreconditionMs passes through; a precondition-failed record reaches no milestone past spawn', [preRec.profilePreconditionMs, preRec.events.map((e) => e.name), preRec.furthestEvent], [30_250, ['spawn-issued'], 'spawn-issued']],
+    ['(o2) builder: offsets measure from the spawn t0; precondition time lives only in profilePreconditionMs', [spawnRec.events.find((e) => e.name === 'app-object')?.ms, spawnRec.profilePreconditionMs, ready.profilePreconditionMs], [120, 2_750, null]],
   );
   let okAll = true;
   for (const [name, got, want] of cases) {
@@ -1720,16 +1763,7 @@ async function applicationWindowPackaged(app, stamps, timeout = 60_000) {
 // presence takes every later launch past the gate
 // (electron/main.cjs:189-192) - then closed. The harness never
 // writes, copies, or fabricates checkpoint/marker content; it
-// only observes files the product wrote. The precondition
-// process is a harness-spawned child: tracked by pid here,
-// awaited to exit before the scenario launch begins, escalated
-// only if it lingers after commit + settle. Outcomes:
-// 'already-committed' (a reused profile already carries both
-// files; no spawn needed), 'product-committed', or 'timeout'
-// (30 s without both files, or the process died first - the
-// scenario launch then proceeds on the unpreconditioned profile
-// and its own evidence will show what happened; preconditioning
-// never fabricates state and never fails a launch by itself).
+// only observes files the product wrote.
 // Local mechanics evidence (probes, Linux/xvfb, the repo's app
 // through direct spawn on virgin profiles): the product
 // committed checkpoint+marker in 1.5-2.3 s (4/4), exited 0 on
@@ -1737,22 +1771,114 @@ async function applicationWindowPackaged(app, stamps, timeout = 60_000) {
 // preconditioned profile reached the jcad:// window in ~0.3 s
 // with the migration window never appearing (4/4) - against a
 // 2/8 held rate for virgin profiles in the baseline probes.
+//
+// Launchfix r5 (lead Fable conditions on r4): the precondition
+// child is a first-class harness child - registered with
+// trackChild, so the watchdog's kill sweep covers it and its
+// exit lands in results.residue.childExits like every app
+// child's - and it is closed through the harness's established
+// child path (graceful kill attempt, then the tracked killChild
+// escalation: taskkill /T /F on Windows), mirroring
+// closeBounded's shape for app children. A SIGTERM is the
+// graceful attempt: the product answers it with a clean exit 0
+// (r4 probes); a purpose-built WM_CLOSE would need native
+// tooling this harness does not carry for raw children, and
+// child.kill() on Windows is already TerminateProcess, so the
+// killChild path is the honest escalation there. Outcomes:
+// 'already-committed' (a reused profile already carries both
+// files; no spawn needed), 'product-committed' (the product
+// committed AND the precondition instance is actually gone -
+// claimed only then), 'timeout' (30 s without both files),
+// 'exited-early' (the child exited before committing), or
+// 'not-gone' (committed, but the instance did not exit after
+// the close path). r4 let the scenario launch proceed on a
+// 'timeout'; r5 does NOT: launchApp turns every non-committed
+// outcome into a PreconditionError, and the quit scenarios
+// record BLOCKED with the reason (preconditionBlockReasonImpl).
+// The scenario's intended measurement - quit behaviour against
+// a product-written relaunch profile - was never performed, so
+// PASS would fabricate success and FAIL would attribute an
+// unmeasured failure; BLOCKED is this harness's existing honest
+// state for an unmet precondition (the stats BLOCKED-by-design
+// vocabulary), and run-level verdict rules operate on the
+// record.
+
+/** A failed profile precondition: launchApp throws this so the quit scenarios can BLOCK (not FAIL) the scenario - see the section comment above. */
+class PreconditionError extends Error {
+  /** @param {string} reason - the blocked record's reason (preconditionBlockReasonImpl's text). */
+  constructor(reason) {
+    super(reason);
+    this.name = 'PreconditionError';
+    this.reason = reason;
+  }
+}
+
+/**
+ * The precondition outcome vocabulary from the three facts the
+ * close path establishes. Pure; --self-test-timeline drives it.
+ * @param {{ committed: boolean, died: boolean, childGone: boolean }} facts
+ * @returns {string} 'product-committed' | 'timeout' | 'exited-early' | 'not-gone'
+ */
+function preconditionOutcomeImpl({ committed, died, childGone }) {
+  if (!committed) return died ? 'exited-early' : 'timeout';
+  return childGone ? 'product-committed' : 'not-gone';
+}
+
+/**
+ * Whether a quit scenario may proceed to its Playwright launch:
+ * null = proceed; otherwise the BLOCKED reason launchApp throws
+ * as a PreconditionError. Pure; --self-test-timeline drives it.
+ * @param {string | null} outcome - preconditionPackagedProfile's outcome.
+ * @param {number | null} exitCode - the precondition child's exit code, when it exited on its own before committing.
+ * @returns {string | null}
+ */
+function preconditionBlockReasonImpl(outcome, exitCode) {
+  switch (outcome) {
+    case 'timeout': return 'profile precondition timed out: product did not commit checkpoint+marker within 30 s';
+    case 'exited-early': return `profile precondition failed: product exited (code ${exitCode ?? 'unknown'}) before committing checkpoint+marker`;
+    case 'not-gone': return 'profile precondition failed: product committed checkpoint+marker but the precondition instance did not exit after the close path';
+    default: return null;
+  }
+}
+
+/**
+ * @typedef {Object} PreconditionResult - preconditionPackagedProfile's result.
+ * @property {string} outcome - 'already-committed' | 'product-committed' | 'timeout' | 'exited-early' | 'not-gone'.
+ * @property {number | null} exitCode - the precondition child's exit code when it exited on its own before committing ('exited-early'); otherwise null.
+ * @property {number} ms - wall-clock duration of the whole precondition phase.
+ */
+
+/**
+ * @param {string} label
+ * @param {string} profile
+ * @returns {Promise<PreconditionResult>}
+ */
 async function preconditionPackagedProfile(label, profile) {
+  const startedAt = Date.now();
   const checkpointPath = join(profile, 'renderer-preferences.json');
   const markerPath = join(profile, 'renderer-origin-migrated');
   const committed = () => existsSync(checkpointPath) && existsSync(markerPath);
   if (committed()) {
     log(`precondition[${label}]: profile already carries the product's checkpoint+marker - no direct launch needed`);
-    return 'already-committed';
+    return { outcome: 'already-committed', exitCode: null, ms: Date.now() - startedAt };
   }
   log(`precondition[${label}]: direct first launch of the packaged exe on this profile (no Playwright) until the product commits checkpoint+marker`);
   const child = spawn(packagedExe, [`--user-data-dir=${profile}`], { cwd: workRoot, env: childEnv(), stdio: 'ignore' });
-  const exited = new Promise((done) => { child.once('exit', () => done(true)); child.once('error', () => done(true)); });
+  // First-class harness child (r5): the watchdog sweep and
+  // results.residue.childExits cover this process exactly like a
+  // Playwright app child, so a watchdog firing, a budget
+  // exhaustion, or an interrupted run cannot orphan a JCad
+  // instance, and its exit is part of the run's residue evidence.
+  trackChild(`precondition:${label}`, child);
+  let spawnFailed = false;
+  child.once('error', () => { spawnFailed = true; });
+  const childGone = () => child.exitCode !== null || child.signalCode !== null;
   let ok = false;
+  let died = false;
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     if (committed()) { ok = true; break; }
-    if (child.exitCode !== null) break;
+    if (spawnFailed || childGone()) { died = true; break; }
     await new Promise((done) => setTimeout(done, 250));
   }
   if (ok) {
@@ -1761,14 +1887,26 @@ async function preconditionPackagedProfile(label, profile) {
     // process, and no file write of ours is involved at all.
     await new Promise((done) => setTimeout(done, 1_000));
   }
-  try { child.kill(); } catch { /* already gone */ }
-  const graceful = await Promise.race([exited, new Promise((done) => setTimeout(() => done(false), 5_000))]);
-  if (!graceful) {
-    try { child.kill('SIGKILL'); } catch { /* already gone */ }
-    await Promise.race([exited, new Promise((done) => setTimeout(() => done(null), 2_000))]);
+  // Close through the harness's established child path (r5),
+  // mirroring closeBounded's shape for app children: a graceful
+  // attempt first (child.kill() - SIGTERM on POSIX, which the
+  // product answers with a clean exit), then the tracked
+  // killChild escalation (taskkill /T /F on Windows) if the
+  // process lingers, each step bounded by waitForExit.
+  if (!childGone()) {
+    try { child.kill(); } catch { /* already gone */ }
+    await waitForExit(child, 5_000);
   }
-  log(`precondition[${label}]: ${ok ? 'product committed checkpoint+marker; precondition process closed' : 'TIMEOUT - the product did not commit checkpoint+marker within 30 s; the scenario launch proceeds unpreconditioned'}`);
-  return ok ? 'product-committed' : 'timeout';
+  if (!childGone()) {
+    for (const entry of children) if (entry.child === child) killChild(entry);
+    await waitForExit(child, 5_000);
+  }
+  const outcome = preconditionOutcomeImpl({ committed: ok, died, childGone: childGone() });
+  if (outcome === 'product-committed') log(`precondition[${label}]: product committed checkpoint+marker; precondition instance exited (code ${child.exitCode}) and its exit is recorded`);
+  else if (outcome === 'timeout') log(`precondition[${label}]: TIMEOUT - the product did not commit checkpoint+marker within 30 s${childGone() ? '; precondition instance closed' : '; precondition instance STILL RUNNING after the close path (tracked; the watchdog sweep owns it) - the scenario will BLOCK'}`);
+  else if (outcome === 'exited-early') log(`precondition[${label}]: product exited (code ${child.exitCode}) before committing checkpoint+marker - the scenario will BLOCK`);
+  else log(`precondition[${label}]: product committed checkpoint+marker but the precondition instance did not exit after the close path - the scenario will BLOCK`);
+  return { outcome, exitCode: died ? child.exitCode : null, ms: Date.now() - startedAt };
 }
 
 // One timeline event as the per-launch log lines print it: a
@@ -1802,6 +1940,7 @@ async function launchApp(label) {
     didFinishLoadAt: null, didFailLoadAt: null, readyToShowAt: null,
     renderProcessGoneAt: null, windowSeenAt: null, editorReadyAt: null,
     mainWindowObservedAt: null, releasedTargets: 0, profilePrecondition: null,
+    profilePreconditionMs: null,
     preExisting: {},
   };
   // Profile honesty (r4): packaged section-3.5 quit launches are
@@ -1812,13 +1951,31 @@ async function launchApp(label) {
   // launches never enter the migration gate (DEV_URL set) and
   // every other packaged launch is a genuine first launch - both
   // are left exactly as they were.
-  if (packagedMode && label.startsWith('quit-')) {
-    stamps.profilePrecondition = await preconditionPackagedProfile(label, profile);
-  }
   let stage = 'spawn';
   /** @type {import('playwright').ElectronApplication | undefined} */
   let app;
   try {
+  if (packagedMode && label.startsWith('quit-')) {
+    stage = 'precondition';
+    const pre = await preconditionPackagedProfile(label, profile);
+    stamps.profilePrecondition = pre.outcome;
+    stamps.profilePreconditionMs = pre.ms;
+    // Verdict-visible precondition failure (r5): a scenario whose
+    // precondition did not produce the product-written relaunch
+    // profile was never measured. Throw BEFORE any Playwright
+    // spawn; the catch below persists this launch's timeline
+    // (failureStage 'precondition', the outcome and its duration
+    // on the record) and the quit scenarios turn the
+    // PreconditionError into a BLOCKED record with this reason.
+    const blockReason = preconditionBlockReasonImpl(pre.outcome, pre.exitCode);
+    if (blockReason) throw new PreconditionError(blockReason);
+    // Timeline t0 (r5): the event offsets measure the Playwright
+    // launch itself, so t0 is taken NOW, at the real spawn - the
+    // precondition phase is over, and it is represented by
+    // stamps.profilePreconditionMs alone, never by an earlier t0.
+    stamps.t0 = Date.now();
+    stage = 'spawn';
+  }
     // Packaged launches run with cwd inside the work root: the packaged
     // tree is evidence, not a working directory (Stage 1 decision C -
     // driver residue such as NVIDIA umdlogs lands in the cwd).
@@ -2747,7 +2904,12 @@ if (sections.includes('3.5')) {
       const code = await waitForExit(child, 30_000);
       check(code === 0, `app quits cleanly from the ${scenario} state (process exit evidence only, not a drain proof)`, `exit code ${code}`);
     } catch (error) {
-      check(false, `quit scenario ${scenario}${qNameSuffix}`, String(error && error.message || error));
+      // Launchfix r5: a failed profile precondition means the
+      // scenario's intended measurement was never performed -
+      // BLOCKED with the precondition's own reason, never a FAIL
+      // (see preconditionBlockReasonImpl).
+      if (error instanceof PreconditionError) blocked(`quit scenario ${scenario}${qNameSuffix}`, error.reason);
+      else check(false, `quit scenario ${scenario}${qNameSuffix}`, String(error && error.message || error));
       try { await closeBounded(qapp); } catch { /* bounded already */ }
     }
   }
@@ -2801,7 +2963,11 @@ if (sections.includes('3.5')) {
       else if (!witnessed) blocked(inflightName, `insufficient witness at quit initiation: ${JSON.stringify(sample)}`);
       else check(code === 0, inflightName, `exit code ${code}, sample=${JSON.stringify(sample.stats)} seq=${sample.seq}`);
     } catch (error) {
-      check(false, `quit scenario inflight${qNameSuffix}`, String(error && error.message || error));
+      // Launchfix r5: as in the idle/after-limit loop above - a
+      // failed profile precondition BLOCKs the scenario with the
+      // precondition's reason instead of failing it.
+      if (error instanceof PreconditionError) blocked(`quit scenario inflight${qNameSuffix}`, error.reason);
+      else check(false, `quit scenario inflight${qNameSuffix}`, String(error && error.message || error));
       try { await closeBounded(qapp); } catch { /* bounded already */ }
     }
   }
