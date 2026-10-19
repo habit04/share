@@ -994,7 +994,9 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   // the value is never silently dropped on a re-save. When the graph carries no
   // variable dictionary at all, the model writer has already created one; when it
   // carries the variable, only the refresh below applies.
-  {
+  // The pass over the generated records only runs when a setting exists at all:
+  // with neither header field set, `wanted` below is empty by construction.
+  if (state.header?.cannoscale !== undefined || state.header?.annoAllVisible !== undefined) {
     const carried = annotationVariables(generated);
     const wanted: Array<readonly [string, string]> = [];
     if (state.header?.cannoscale !== undefined && isScaleName(state.header.cannoscale) && !carried.has('CANNOSCALE')) wanted.push(['CANNOSCALE', state.header.cannoscale]);
