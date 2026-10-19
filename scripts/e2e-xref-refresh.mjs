@@ -1093,7 +1093,8 @@ function launchTimelineRecordImpl(input) {
 // an actually-gone instance is 'product-committed') and the
 // builder's profilePreconditionMs passthrough with the
 // spawn-moment t0 shape (event offsets exclude precondition
-// time entirely).
+// time entirely). The r5.1 cases pin the precondition close
+// order by platform (preconditionCloseOrderImpl).
 if (process.argv.includes('--self-test-timeline')) {
   const T0 = 1_000_000;
   const empty = { appObjectAt: null, windowCreatedAt: null, didFinishLoadAt: null, readyToShowAt: null, windowSeenAt: null, editorReadyAt: null };
@@ -1272,6 +1273,8 @@ if (process.argv.includes('--self-test-timeline')) {
     ['(n6) precondition outcome: committed + instance alive is not-gone (never product-committed)', preconditionOutcomeImpl({ committed: true, died: false, childGone: false }), 'not-gone'],
     ['(n7) precondition outcome: uncommitted + died is exited-early', preconditionOutcomeImpl({ committed: false, died: true, childGone: true }), 'exited-early'],
     ['(n8) precondition outcome: uncommitted + alive at the deadline is timeout', preconditionOutcomeImpl({ committed: false, died: false, childGone: false }), 'timeout'],
+    ['(n9) precondition close order: win32 takes the tree kill (taskkill /T /F) first - TerminateProcess on the browser process alone leaves its child processes orphaned', preconditionCloseOrderImpl('win32'), ['tree-kill', 'graceful-kill']],
+    ['(n10) precondition close order: POSIX takes the graceful SIGTERM first, tree kill as the escalation', [preconditionCloseOrderImpl('linux'), preconditionCloseOrderImpl('darwin')], [['graceful-kill', 'tree-kill'], ['graceful-kill', 'tree-kill']]],
     ['(o) builder: profilePreconditionMs passes through; a precondition-failed record reaches no milestone past spawn', [preRec.profilePreconditionMs, preRec.events.map((e) => e.name), preRec.furthestEvent], [30_250, ['spawn-issued'], 'spawn-issued']],
     ['(o2) builder: offsets measure from the spawn t0; precondition time lives only in profilePreconditionMs', [spawnRec.events.find((e) => e.name === 'app-object')?.ms, spawnRec.profilePreconditionMs, ready.profilePreconditionMs], [120, 2_750, null]],
   );
@@ -1777,14 +1780,20 @@ async function applicationWindowPackaged(app, stamps, timeout = 60_000) {
 // trackChild, so the watchdog's kill sweep covers it and its
 // exit lands in results.residue.childExits like every app
 // child's - and it is closed through the harness's established
-// child path (graceful kill attempt, then the tracked killChild
-// escalation: taskkill /T /F on Windows), mirroring
-// closeBounded's shape for app children. A SIGTERM is the
-// graceful attempt: the product answers it with a clean exit 0
+// child path, mirroring closeBounded's shape for app children:
+// a graceful kill attempt plus the tracked killChild
+// escalation, in the platform's order
+// (preconditionCloseOrderImpl). A SIGTERM is the graceful
+// attempt on POSIX: the product answers it with a clean exit 0
 // (r4 probes); a purpose-built WM_CLOSE would need native
-// tooling this harness does not carry for raw children, and
-// child.kill() on Windows is already TerminateProcess, so the
-// killChild path is the honest escalation there. Outcomes:
+// tooling this harness does not carry for raw children.
+// Launchfix r5.1 (lead r5 review, MED-narrow): on Windows
+// child.kill() is TerminateProcess on the browser process
+// ONLY: attempted first it succeeds - so the killChild
+// escalation (taskkill /T /F) would never run - while
+// orphaning the instance's child processes. The tree kill
+// therefore goes first on win32; the POSIX order (graceful
+// SIGTERM, then escalation) is unchanged. Outcomes:
 // 'already-committed' (a reused profile already carries both
 // files; no spawn needed), 'product-committed' (the product
 // committed AND the precondition instance is actually gone -
@@ -1842,6 +1851,25 @@ function preconditionBlockReasonImpl(outcome, exitCode) {
 }
 
 /**
+ * The precondition close path's step order, by platform. Pure;
+ * --self-test-timeline drives it. 'graceful-kill' is
+ * child.kill() (SIGTERM on POSIX); 'tree-kill' is the tracked
+ * killChild entry (taskkill /T /F on Windows, SIGKILL
+ * elsewhere). On win32 child.kill() is TerminateProcess on
+ * the browser process only: attempted first it succeeds - so
+ * the tree kill would never run - while orphaning the
+ * instance's child processes; the tree kill therefore goes
+ * first there. Everywhere else the graceful signal goes
+ * first (the product answers SIGTERM with a clean exit 0 -
+ * r4 probes) and the tree kill is the escalation (r5.1).
+ * @param {string} platform - a process.platform value.
+ * @returns {string[]} the close actions in the order to attempt them.
+ */
+function preconditionCloseOrderImpl(platform) {
+  return platform === 'win32' ? ['tree-kill', 'graceful-kill'] : ['graceful-kill', 'tree-kill'];
+}
+
+/**
  * @typedef {Object} PreconditionResult - preconditionPackagedProfile's result.
  * @property {string} outcome - 'already-committed' | 'product-committed' | 'timeout' | 'exited-early' | 'not-gone'.
  * @property {number | null} exitCode - the precondition child's exit code when it exited on its own before committing ('exited-early'); otherwise null.
@@ -1888,17 +1916,21 @@ async function preconditionPackagedProfile(label, profile) {
     await new Promise((done) => setTimeout(done, 1_000));
   }
   // Close through the harness's established child path (r5),
-  // mirroring closeBounded's shape for app children: a graceful
-  // attempt first (child.kill() - SIGTERM on POSIX, which the
-  // product answers with a clean exit), then the tracked
-  // killChild escalation (taskkill /T /F on Windows) if the
-  // process lingers, each step bounded by waitForExit.
-  if (!childGone()) {
-    try { child.kill(); } catch { /* already gone */ }
-    await waitForExit(child, 5_000);
-  }
-  if (!childGone()) {
-    for (const entry of children) if (entry.child === child) killChild(entry);
+  // mirroring closeBounded's shape for app children, in the
+  // platform's order (preconditionCloseOrderImpl, r5.1):
+  // POSIX takes the graceful attempt first (child.kill() -
+  // SIGTERM, which the product answers with a clean exit),
+  // then the tracked killChild escalation if the process
+  // lingers; Windows takes killChild (taskkill /T /F, the
+  // tree kill) FIRST, because child.kill() there is
+  // TerminateProcess on the browser process only - it
+  // succeeds, so an escalation after it would never run,
+  // while orphaning the instance's child processes. Each
+  // step bounded by waitForExit.
+  for (const action of preconditionCloseOrderImpl(process.platform)) {
+    if (childGone()) break;
+    if (action === 'graceful-kill') { try { child.kill(); } catch { /* already gone */ } }
+    else for (const entry of children) if (entry.child === child) killChild(entry);
     await waitForExit(child, 5_000);
   }
   const outcome = preconditionOutcomeImpl({ committed: ok, died, childGone: childGone() });
