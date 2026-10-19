@@ -439,17 +439,24 @@ describe('p30-constraint-width-HANDBUILT.dxf: constraint-parameter fixture, DXF 
     expect(new Set(blockNames)).toEqual(new Set(refs));
   });
 
-  it('F2 (REAL, Q11) header emission: the written header never re-emits the retained $LASTSAVEDBY; the 2008+ names follow the target version', () => {
+  it('F2 (REAL, Q11) header emission: the written header never re-emits the retained $LASTSAVEDBY, and $CANNOSCALE rides the variable dictionary, never the header', () => {
     // The retained graph keeps the source's $LASTSAVEDBY verbatim — retention is not
     // emission: after a JCad save JCad is the last saver, so the source author's name
-    // is never written back, at any version (Q11 F2).
+    // is never written back, at any version (Q11 F2; the rework keeps this rule).
     const headerNode = imported.cadGraph!.nodes.find((n) => n.type === 'HEADER' && n.section === 'HEADER')!;
     expect(headerNode.groups).toContainEqual([9, '$LASTSAVEDBY']);
     expect(written).not.toContain('$LASTSAVEDBY');
-    // This file writes at AC1032, where the AutoCAD 2008+ names are legal and stay
-    // (their suppression at AC1015/AC1018 is pinned in tests/dxf-layouts.test.ts and
-    // tests/layout-native-page-settings.test.ts).
-    expect(written).toContain('$CANNOSCALE');
+    // Q11 F2 rework: $CANNOSCALE is not a HEADER variable at any version — the F2
+    // round's version gate left it in this AC1032 header, and the lead's Windows
+    // gate showed AutoCAD still printing "Unknown header variable $CANNOSCALE
+    // ignored" (AutoCAD stores the scale as a DICTIONARYVAR). The written HEADER
+    // below carries neither annotation name; the fixture's retained variable
+    // dictionary carries the value, and the read-back state recovers it.
+    const writtenHeader = written.slice(0, written.indexOf('ENDSEC'));
+    expect(writtenHeader).not.toContain('$CANNOSCALE');
+    expect(writtenHeader).not.toContain('$ANNOALLVISIBLE');
+    expect(written.match(/AcDbVariableDictionary/g)).toHaveLength(1);
+    expect(roundTripped.header?.cannoscale).toBe('1:1');
   });
 
   it('J1 (REAL) the retained Width1 parameter node carries the full native encoding: name, points, value set', () => {
