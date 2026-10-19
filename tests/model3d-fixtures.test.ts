@@ -227,6 +227,9 @@ describe('committed 3D fixtures', () => {
       expect(manifest.files).toContain(fixturePath(name));
     });
 
+    // T-FLAKE: schematic-with-solids measured loaded p99 4.3 s (n=10 family runs; solo p50 2.4 s on this base,
+    // solo up to 6.2 s recorded under load on the P30 tree) and timed out at the 5 s default in full-suite runs;
+    // its budget = p99 x 2 rounded up, applied to that fixture only (the others stay on the default).
     it(`${name}: reads with complete identities, without losses, within budget and reaches a byte fixed point`, () => {
       const { text, state } = read(name);
       expect(importReportOf(state)).toBeUndefined();
@@ -242,7 +245,7 @@ describe('committed 3D fixtures', () => {
         // Booleans come back welded: welding again changes nothing.
         expect(meshTriangleCount(weldVertices(s.mesh, 0)), s.id).toBe(meshTriangleCount(s.mesh));
       }
-    });
+    }, name === 'schematic-with-solids' ? 9000 : undefined);
   }
 });
 
