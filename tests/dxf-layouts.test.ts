@@ -71,7 +71,13 @@ describe('DXF layouts: round trip', () => {
     const links = p.filter(([c]) => c === 340).map(([, v]) => v).filter((h) => layoutHandles.has(h));
     expect(links).toHaveLength(3);
     expect(p.filter(([c, v]) => c === 67 && v === '1').length).toBeGreaterThan(5);
-    expect(p.some(([c, v]) => c === 9 && v === '$CANNOSCALE')).toBe(true);
+    // Q11 F2: this fixture writes at the AC1015 floor, where the AutoCAD 2008+ header
+    // names $CANNOSCALE / $ANNOALLVISIBLE must not be emitted (AutoCAD reports them as
+    // unknown there); they are emitted from AC1021 on (see the round-trip test below).
+    const verAt = p.findIndex(([c, v]) => c === 9 && v === '$ACADVER');
+    expect(p[verAt + 1]).toEqual([1, 'AC1015']);
+    expect(p.some(([c, v]) => c === 9 && v === '$CANNOSCALE')).toBe(false);
+    expect(p.some(([c, v]) => c === 9 && v === '$ANNOALLVISIBLE')).toBe(false);
     expect(p.some(([c, v]) => c === 1001 && v === 'AcadAnnotative')).toBe(true);
   });
   it('reads layouts back: names, order, paper, margins, plot settings', () => {
@@ -122,8 +128,14 @@ describe('DXF layouts: round trip', () => {
     expect(c.center.x).toBeCloseTo(100, 9);
   });
   it('keeps CANNOSCALE, ANNOALLVISIBLE, annotative flags and no-plot layers', () => {
-    expect(back.header?.cannoscale).toBe('1:4');
-    expect(back.header?.annoAllVisible).toBe(false);
+    // Q11 F2: the shared fixture writes at AC1015, where the 2008+ header names are
+    // not emitted, so the header values are asserted on an AC1024 write of the same
+    // state (a transparent layer raises the format); the entity/layer facts below
+    // still read from the AC1015 round trip.
+    const hi = { ...state, layers: state.layers.map((l) => l.name === 'WIRES' ? { ...l, transparency: 64 } : l) };
+    const hiBack = readDxf(writeDxf(hi));
+    expect(hiBack.header?.cannoscale).toBe('1:4');
+    expect(hiBack.header?.annoAllVisible).toBe(false);
     expect(back.entities.find((e) => e.type === 'text')?.annotative).toBe(true);
     expect(back.layers.find((l) => l.name === 'VIEWPORTS')?.plot).toBe(false);
   });

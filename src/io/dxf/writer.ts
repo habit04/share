@@ -195,7 +195,7 @@ export function writeDxf(state: DrawingState): string {
   hv('$DIMSTYLE', 2, ds.name);
   for (const [name, code, value] of dimHeaderVars(ds)) if (name !== 'DIMLUNIT') hv(`$${name}`, code, value);
   hv('$DIMLUNIT', 70, ds.lunit);
-  writeLayoutHeader(hv, state);
+  writeLayoutHeader(hv, state, acadVersion);
   w.pair(0, 'ENDSEC');
 
   // CLASSES: the plot style dictionary's object types, and raster images' when there are images.

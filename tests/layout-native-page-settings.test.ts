@@ -74,7 +74,14 @@ function dto(text: string): DwgImportPayload {
 
 describe('native layout physical page setup', () => {
   it('keeps new-drawing annotation visibility defaults', () => {
-    expect(headerVariable(readDxf(writeDxf(new Drawing().snapshot)), '$ANNOALLVISIBLE')).toEqual([[70, '1']]);
+    // Q11 F2: a new drawing writes at the AC1015 floor, where $ANNOALLVISIBLE /
+    // $CANNOSCALE (AutoCAD 2008+ names) must not be emitted; the annotation
+    // visibility default (on) is expressed by their absence, so the read-back
+    // header carries neither variable and annoAllVisible stays undefined.
+    const back = readDxf(writeDxf(new Drawing().snapshot));
+    expect(headerVariable(back, '$ANNOALLVISIBLE')).toEqual([]);
+    expect(headerVariable(back, '$CANNOSCALE')).toEqual([]);
+    expect(back.header!.annoAllVisible).toBeUndefined();
   });
 
   it('does not materialize an absent annotation default through an authored retained-header import/rewrite', () => {
@@ -127,9 +134,20 @@ describe('native layout physical page setup', () => {
   });
 
   it.each([true, false])('keeps retained annotation values and explicit%s edits, with undo/redo', visible => {
-    const present = readDxf(reference().replace(/\$ANNOALLVISIBLE\r\n70\r\n1\r\n/, `$ANNOALLVISIBLE\r\n70\r\n${visible ? 1 : 0}\r\n`));
+    // Q11 F2: $ANNOALLVISIBLE may only be emitted into AC1021+ files, so these
+    // retained-value round trips run on an AC1021 authored reference that declares
+    // the variable (the shared reference() writes at the AC1015 floor, which no
+    // longer carries it).
+    const authored = (value: string) => {
+      const pairs = tokenize(reference());
+      const ver = pairs.findIndex(pair => pair.code === 9 && pair.value === '$ACADVER');
+      pairs[ver + 1] = { code: 1, value: 'AC1021' };
+      pairs.splice(ver + 2, 0, { code: 9, value: '$ANNOALLVISIBLE' }, { code: 70, value });
+      return pairs.flatMap(pair => [String(pair.code), pair.value]).join('\r\n') + '\r\n';
+    };
+    const present = readDxf(authored(visible ? '1' : '0'));
     expect(headerVariable(readDxf(writeDxf(present)), '$ANNOALLVISIBLE')).toEqual([[70, visible ? '1' : '0']]);
-    const doc = new Drawing(readDxf(withoutAnnotationDefault(reference()))), before = doc.snapshot;
+    const doc = new Drawing(readDxf(withoutAnnotationDefault(authored('1')))), before = doc.snapshot;
     doc.transact(state => ({ ...state, header: { ...state.header!, annoAllVisible: visible } }));
     const edited = doc.snapshot, text = writeDxf(edited), back = readDxf(text);
     expect(headerVariable(back, '$ANNOALLVISIBLE')).toEqual([[70, visible ? '1' : '0']]);

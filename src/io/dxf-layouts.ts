@@ -105,15 +105,30 @@ export function planLayouts(state: LayoutHost, w: DxfSink, paperSpaceRecord: str
   return plan;
 }
 
-/** Header variables: $CANNOSCALE / $ANNOALLVISIBLE (AutoCAD 2008+ names; older readers skip them). */
-export function writeLayoutHeader(hv: (name: string, code: number, value: string | number) => void, state: { header?: { cannoscale?: string; annoAllVisible?: boolean }; cadGraph?: CadGraph }): void {
-  hv('$CANNOSCALE', 2, state.header?.cannoscale ?? '1:1');
+/**
+ * Whether a header variable may be EMITTED into a file of the target DXF version
+ * (Q11 F2). $CANNOSCALE / $ANNOALLVISIBLE are AutoCAD 2008+ names (AC1021 and later);
+ * AutoCAD reports them as unknown in earlier formats. $LASTSAVEDBY is a provenance
+ * stamp naming the last editor: a re-save must never re-emit the SOURCE author's
+ * name, at any version. This gates emission only — a retained cadGraph keeps the
+ * full source header either way. Version codes are fixed-width, so the string
+ * comparison is the numeric one (the same convention the writer uses).
+ */
+export function headerVariableAllowed(name: string, acadVersion: string): boolean {
+  if (name === '$LASTSAVEDBY') return false;
+  if (name === '$CANNOSCALE' || name === '$ANNOALLVISIBLE') return acadVersion >= 'AC1021';
+  return true;
+}
+
+/** Header variables: $CANNOSCALE / $ANNOALLVISIBLE (AutoCAD 2008+ names; gated per version, Q11 F2). */
+export function writeLayoutHeader(hv: (name: string, code: number, value: string | number) => void, state: { header?: { cannoscale?: string; annoAllVisible?: boolean }; cadGraph?: CadGraph }, acadVersion: string): void {
+  if (headerVariableAllowed('$CANNOSCALE', acadVersion)) hv('$CANNOSCALE', 2, state.header?.cannoscale ?? '1:1');
   const sourceHeader = state.cadGraph?.nodes.find(node => node.type === 'HEADER' && node.section === 'HEADER');
   const retained = sourceHeader?.groups.some(([code, value]) => code === 9 && value.trim() === '$ANNOALLVISIBLE');
   // Undefined still renders with annotation visibility on. Writing that default
   // into an imported header that never declared it creates a native dictionary
   // variable on the next DWG save; emit only new, retained or explicit settings.
-  if (!sourceHeader || retained || state.header?.annoAllVisible !== undefined) {
+  if (headerVariableAllowed('$ANNOALLVISIBLE', acadVersion) && (!sourceHeader || retained || state.header?.annoAllVisible !== undefined)) {
     hv('$ANNOALLVISIBLE', 70, state.header?.annoAllVisible === false ? 0 : 1);
   }
 }

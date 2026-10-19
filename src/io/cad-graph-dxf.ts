@@ -8,7 +8,7 @@ import type { Pair } from './dxf/groups';
 import { isIntegerText } from './dxf/groups';
 import { isQuietXdataApp } from './dxf/codes';
 import { decodeUnicodeEscapes, shapeStylesOf } from './encoding';
-import { retainNativeLayoutPaper } from './dxf-layouts';
+import { headerVariableAllowed, retainNativeLayoutPaper } from './dxf-layouts';
 import { DIM_VARIABLES } from '../core/dimension';
 import { isScaleName } from '../core/layouts';
 import { solidCarrierGroups } from './dxf/model3d-carriers';
@@ -875,6 +875,13 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       }
     }
     const selected = new Set<number>(), generatedCodes = new Set(record.groups.map(([code]) => code));
+    // Q11 F2: the generated HEADER record's own $ACADVER is the target version for
+    // re-emitting retained header variables.
+    let headerTargetVersion = '';
+    if (node.type === 'HEADER') {
+      const at = record.groups.findIndex(([code, val]) => code === 9 && val === '$ACADVER');
+      if (at >= 0) headerTargetVersion = record.groups[at + 1]?.[1] ?? '';
+    }
     // Regenerate only a proven live clip link. An unexposed source340 remains a
     // retained hard reference and must refuse export rather than disappear.
     const viewportId = node.anchor?.kind === 'viewport' ? node.anchor.id : undefined;
@@ -888,7 +895,7 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     let nesting = 0, selectedApp: string | undefined, keepHeader = false, layoutSubclass = false, retainedLayoutBlock = false;
     const existingVariables = new Set(record.groups.filter(([code]) => code === 9).map(([, name]) => name));
     node.groups.forEach(([code, raw], index) => {
-      if (node.type === 'HEADER') { if (code === 9) keepHeader = !existingVariables.has(raw); if (keepHeader) selected.add(index); return; }
+      if (node.type === 'HEADER') { if (code === 9) keepHeader = !existingVariables.has(raw) && headerVariableAllowed(raw.trim(), headerTargetVersion); if (keepHeader) selected.add(index); return; }
       if (code === 102) {
         if (!nesting) retainedLayoutBlock = node.type === 'LAYOUT' && layoutSubclass && !selectedApp;
         nesting += raw.startsWith('{') ? 1 : raw === '}' ? -1 : 0;
@@ -909,7 +916,7 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     if (record.type === 'HEADER') {
       const existing = new Set(record.groups.filter(([code]) => code === 9).map(([, val]) => val));
       let keep = false;
-      for (const group of retained) { if (group[0] === 9) keep = !existing.has(group[1]); if (keep) record.groups.push(group); }
+      for (const group of retained) { if (group[0] === 9) keep = !existing.has(group[1]) && headerVariableAllowed(group[1].trim(), headerTargetVersion); if (keep) record.groups.push(group); }
       continue;
     }
     const metadata: CadGroup[] = [], apps = new Set<string>(); let brace = 0, app: string | undefined;
