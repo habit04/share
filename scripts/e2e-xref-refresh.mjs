@@ -150,10 +150,11 @@
 //     --packaged-exe <path to the unpacked test build's executable>
 //   to target the packaged app (the `npm run dist:test` output) instead
 //   of the development electron. Every check and verdict is unchanged.
-//   Packaged launches mirror the Chromium switch set Playwright's
-//   dev-mode loader would have appended (launchfix r2 - see
-//   PACKAGED_LOADER_SWITCHES below), and the packaged window wait
-//   also probes the main process for a committed window.
+//   Packaged launches carry only the dispositioned coupling
+//   subset of the switches Playwright's dev-mode loader would
+//   have appended (launchfix r2.1 - see PACKAGED_COUPLING_SWITCHES
+//   below and SWITCH-DISPOSITION.md), and the packaged window
+//   wait also probes the main process for a committed window.
 //   Test B (launchfix r2): --quit-launch-repeat <n> (default 1) runs
 //   the section-3.5 quit-launch block n times in one process -
 //   e.g. `--sections 3.5 --quit-launch-repeat 10` for ten quit
@@ -1441,61 +1442,48 @@ async function captureFailureSnapshot(app) {
 // auto-attach with waitForDebuggerOnStart (coreBundle.js:38371).
 // Test A (lead, Windows): the same packaged exe launched directly
 // 10/10 titled in <=1 s - the product starts cleanly; the §3.5
-// packaged failures live in this coupling. The r2 fix mirrors what
-// argv can mirror: the loader's exact effective switch set, passed
-// to the packaged exe as launch args (below). The ready GATE cannot
+// packaged failures live in this coupling. The ready GATE cannot
 // be mirrored by argv (nothing in the packaged binary will hold
-// its own whenReady for us); it is answered instead by the
-// dual-path window wait (applicationWindowPackaged) and by the
-// timeline's failure snapshot, which together keep the 60 s
-// deadline measuring the app rather than the attach.
-// Transcribed from loader.js (playwright-core 1.63.0): the
-// chromiumSwitches() list at :38-88 in order, with the
-// --disable-features value composed at :57 from disabledFeatures
-// (:7-37, 15 entries). The env-conditional slots resolve as the
-// loader resolves them for THIS harness: childEnv's whitelist never
-// passes PLAYWRIGHT_LEGACY_SCREENSHOT, so the loader takes the
-// CDPScreenshotNewSurface branch (:58), and options.android is
-// unset, so --disable-sync is included (:87). The duplicate
-// --disable-search-engine-choice-screen (:76, :85) is appended
-// twice by the loader and is collapsed to one here (appendSwitch
-// of the same switch is idempotent).
-const PACKAGED_LOADER_SWITCHES = [
-  '--disable-field-trial-config',
-  '--disable-background-networking',
+// its own whenReady for us); it is answered by the dual-path
+// window wait (applicationWindowPackaged) and by the timeline's
+// failure snapshot, which together keep the 60 s deadline
+// measuring the app rather than the attach. That leg is
+// switch-independent: it stands even if the switches below do
+// not move Test B, and it is what locates the stall to a leg on
+// its next occurrence.
+//
+// r2.1 SECURITY-SCOPE CORRECTION - supersedes the r2 full mirror.
+// r2 led the packaged args with the loader's ENTIRE effective
+// switch set (transcribed from loader.js, playwright-core
+// 1.63.0: chromiumSwitches() at :38-88, the --disable-features
+// compound composed at :57 from disabledFeatures at :7-37),
+// arguing that dev mode proves every switch against this app.
+// That inverted the burden: the loader's set is Playwright's
+// choice for launches it owns, but ADDING a switch to the
+// packaged launch surface is a producer decision, and the set
+// contains switches that switch protections OFF -
+// --disable-client-side-phishing-detection,
+// --disable-ipc-flooding-protection,
+// --unsafely-disable-devtools-self-xss-warnings, and a
+// --disable-features compound carrying HttpsUpgrades and
+// ThirdPartyStoragePartitioning, among others. Under the
+// standing NO SECURITY WEAKENING rule those are inadmissible
+// here regardless of their dev-mode pedigree. The set below is
+// therefore ONLY the entries dispositioned MIRROR in
+// SWITCH-DISPOSITION.md (repo root of this harness's Stage 2
+// work): the anti-backgrounding / anti-throttling / paint
+// family with a plausible role in the packaged first-show
+// stall, in loader order. Every other loader entry is
+// dispositioned EXCLUDE there, switch by switch - protection
+// entries by name, the rest for want of any coupling relevance;
+// the --disable-features compound is excluded AS a compound and
+// only its PaintHolding member is carried, as the single-entry
+// composition below.
+const PACKAGED_COUPLING_SWITCHES = [
   '--disable-background-timer-throttling',
   '--disable-backgrounding-occluded-windows',
-  '--disable-back-forward-cache',
-  '--disable-breakpad',
-  '--disable-client-side-phishing-detection',
-  '--disable-component-extensions-with-background-pages',
-  '--disable-component-update',
-  '--no-default-browser-check',
-  '--disable-default-apps',
-  '--disable-dev-shm-usage',
-  '--disable-edgeupdater',
-  '--disable-extensions',
-  '--disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion',
-  '--enable-features=CDPScreenshotNewSurface',
-  '--allow-pre-commit-input',
-  '--disable-hang-monitor',
-  '--disable-ipc-flooding-protection',
-  '--disable-popup-blocking',
-  '--disable-prompt-on-repost',
+  '--disable-features=PaintHolding',
   '--disable-renderer-backgrounding',
-  '--disable-updater-scheduler',
-  '--force-color-profile=srgb',
-  '--metrics-recording-only',
-  '--no-first-run',
-  '--password-store=basic',
-  '--use-mock-keychain',
-  '--no-service-autorun',
-  '--export-tagged-pdf',
-  '--disable-search-engine-choice-screen',
-  '--unsafely-disable-devtools-self-xss-warnings',
-  '--edge-skip-compat-layer-relaunch',
-  '--disable-infobars',
-  '--disable-sync',
 ];
 
 // Packaged window wait: the SAME 60 s deadline and the SAME success
@@ -1533,7 +1521,7 @@ async function launchApp(label) {
   mkdirSync(profile, { recursive: true });
   results.residue.profiles.push(profile);
   const args = packagedMode
-    ? [...PACKAGED_LOADER_SWITCHES, ...(observerMode ? ['--require', observerPath] : []), `--user-data-dir=${profile}`]
+    ? [...PACKAGED_COUPLING_SWITCHES, ...(observerMode ? ['--require', observerPath] : []), `--user-data-dir=${profile}`]
     : observerMode
       ? ['--require', observerPath, '.', `--user-data-dir=${profile}`]
       : ['.', `--user-data-dir=${profile}`];
