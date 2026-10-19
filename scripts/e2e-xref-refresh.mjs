@@ -115,6 +115,16 @@
 // `node scripts/e2e-xref-refresh.mjs --self-test-tab-removal` runs
 // its regression without Electron.
 //
+// Launch lifecycle (Stage 2 commission, 2026-10-18): launchApp OWNS
+// the app it spawns. If any step after electron.launch fails - the
+// shape of the Stage 2 packaged quit-launch failures, where the
+// 60 s window wait timed out - launchApp closes the partially
+// launched app itself (bounded, tolerant of the not-fully-launched
+// state) before rethrowing. Callers destructure the app handle only
+// from a RESOLVED launchApp, so a caller's catch-path
+// closeBounded(qapp) saw undefined for a failed launch and leaked
+// the process; that path is now unreachable for launch failures.
+//
 //   npm run build
 //   node scripts/xref-native-fixtures.mjs <work-root>/fixtures
 //   node --experimental-strip-types scripts/e2e-xref-refresh.mjs \
@@ -1121,33 +1131,46 @@ async function launchApp(label) {
     ? await electron.launch({ executablePath: packagedExe, args, cwd: workRoot, env: childEnv(), timeout: 90_000 })
     : await electron.launch({ args, cwd: repo, env: childEnv(), timeout: 60_000 });
   trackChild(label, app.process());
-  const win = await applicationWindow(app);
-  const pageErrors = [];
-  win.on('pageerror', (e) => pageErrors.push(String(e.message)));
-  await win.waitForFunction(() => !!window.editor, null, { timeout: 30_000 });
-  await app.evaluate(({ dialog }) => {
-    const g = globalThis;
-    g.__xrefOpenPaths = [];
-    dialog.showOpenDialog = async () => {
-      const p = g.__xrefOpenPaths.shift();
-      return p ? { canceled: false, filePaths: [p] } : { canceled: true, filePaths: [] };
-    };
-  });
-  // Per-instance observer coverage (finding 2): EVERY launch captures
-  // its OWN zero baseline immediately after window-ready, before any
-  // begin on this instance. Coverage is never borrowed from another app.
-  /** @type {LaunchObserverState | null} */
-  let observer = null;
-  if (observerMode) {
-    const baseline = await sampleObserver(app, `baseline:${label}`);
-    const bs = baseline?.stats;
-    const usable = Boolean(baseline && baseline.captured && baseline.factoryCalls === 1 && !baseline.invalidated && bs
-      && bs.contexts === 0 && bs.tickets === 0 && bs.activeOps === 0 && bs.retiredActiveOps === 0 && bs.reservedRawBytes === 0 && bs.disposed === false);
-    observer = { baseline, usable };
-    log(`observer[${label}]: baseline ${JSON.stringify(baseline)} usable=${usable}`);
-    if (!usable) log(`observer[${label}]: WARNING - baseline not a clean zero capture; stats-derived criteria for THIS launch will be BLOCKED`);
+  // From here the launch can fail with the app already spawned (the
+  // window wait, the editor wait, the dialog stub, the observer
+  // baseline). launchApp owns that app: on ANY such failure it
+  // closes the partially launched app itself - bounded, tolerant of
+  // the not-fully-launched state - before rethrowing. Callers only
+  // receive the handle from a RESOLVED launchApp, so their
+  // catch-path closeBounded(qapp) saw undefined for a failed launch
+  // and the process leaked (Stage 2 commission).
+  try {
+    const win = await applicationWindow(app);
+    const pageErrors = [];
+    win.on('pageerror', (e) => pageErrors.push(String(e.message)));
+    await win.waitForFunction(() => !!window.editor, null, { timeout: 30_000 });
+    await app.evaluate(({ dialog }) => {
+      const g = globalThis;
+      g.__xrefOpenPaths = [];
+      dialog.showOpenDialog = async () => {
+        const p = g.__xrefOpenPaths.shift();
+        return p ? { canceled: false, filePaths: [p] } : { canceled: true, filePaths: [] };
+      };
+    });
+    // Per-instance observer coverage (finding 2): EVERY launch captures
+    // its OWN zero baseline immediately after window-ready, before any
+    // begin on this instance. Coverage is never borrowed from another app.
+    /** @type {LaunchObserverState | null} */
+    let observer = null;
+    if (observerMode) {
+      const baseline = await sampleObserver(app, `baseline:${label}`);
+      const bs = baseline?.stats;
+      const usable = Boolean(baseline && baseline.captured && baseline.factoryCalls === 1 && !baseline.invalidated && bs
+        && bs.contexts === 0 && bs.tickets === 0 && bs.activeOps === 0 && bs.retiredActiveOps === 0 && bs.reservedRawBytes === 0 && bs.disposed === false);
+      observer = { baseline, usable };
+      log(`observer[${label}]: baseline ${JSON.stringify(baseline)} usable=${usable}`);
+      if (!usable) log(`observer[${label}]: WARNING - baseline not a clean zero capture; stats-derived criteria for THIS launch will be BLOCKED`);
+    }
+    return { app, win, pageErrors, profile, observer };
+  } catch (error) {
+    try { await closeBounded(app); } catch { /* bounded already */ }
+    throw error;
   }
-  return { app, win, pageErrors, profile, observer };
 }
 
 // ------------------------------------------------------------ G2 observer sampling
