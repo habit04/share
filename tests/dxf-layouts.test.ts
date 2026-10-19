@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readDxf, writeDxf } from '../src/io/dxf';
+import { annotationScaleRatio } from '../src/io/cad-graph-dxf';
 import { Drawing, type DrawingState } from '../src/core/document';
 import type { Entity, TextEntity, InsertEntity, MTextEntity } from '../src/core/entities';
 import { defaultLayout, paperFor, sheetSize, isScaleName, VIEWPORT_LAYER, type Layout } from '../src/core/layouts';
@@ -263,6 +264,41 @@ describe('DXF layouts: round trip', () => {
     const freshHi = classRecord(writeDxf(hiVer));
     expect(freshHi).toBeDefined();
     expect(freshHi).toContainEqual([91, '2']);
+  });
+  it('creates the ACAD_SCALELIST entry for the current scale on a fresh graph-less write (Q11 F2 r2 review C1)', () => {
+    // Review C1: the (c) legs above start from read-back states, so their
+    // writes exercise the preserve pass, which creates the list there; the
+    // MODEL writer's own creation (writer.ts, graph-less state) had no
+    // committed pin — disabling it failed nothing. The describe-level `text`
+    // is exactly that write: the shared fixture state carries no cadGraph.
+    expect(state.cadGraph).toBeUndefined();
+    const p = pairs(text), records: Array<[number, string]>[] = [];
+    for (const pair of p) {
+      if (pair[0] === 0) records.push([pair]);
+      else records.at(-1)?.push(pair);
+    }
+    const scales = records.filter(r => r[0]![1] === 'SCALE');
+    expect(scales).toHaveLength(1);
+    expect(scales[0]).toContainEqual([300, '1:4']);
+    expect(scales[0]).toContainEqual([140, '1.0']);
+    expect(scales[0]).toContainEqual([141, '4.0']);
+    expect(scales[0]).toContainEqual([290, '0']);
+    expect(p.filter(([c, v]) => c === 3 && v === 'ACAD_SCALELIST')).toHaveLength(1);
+  });
+  it('annotationScaleRatio parses only plain positive N:M names (Q11 F2 r2 review C2)', () => {
+    // Review C2: the parser is the sole guard between an isScaleName-valid
+    // cannoscale and a fabricated SCALE entry; pin its contract directly.
+    expect(annotationScaleRatio('1:4')).toEqual({ numerator: '1.0', denominator: '4.0', unit: false });
+    expect(annotationScaleRatio('1:1')).toEqual({ numerator: '1.0', denominator: '1.0', unit: true });
+    expect(annotationScaleRatio('3:8')).toEqual({ numerator: '3.0', denominator: '8.0', unit: false });
+    expect(annotationScaleRatio('1:2.5')).toEqual({ numerator: '1.0', denominator: '2.5', unit: false });
+    expect(annotationScaleRatio('1=4')).toBeNull();
+    expect(annotationScaleRatio('1/4')).toBeNull();
+    expect(annotationScaleRatio('0:4')).toBeNull();
+    expect(annotationScaleRatio('1:0')).toBeNull();
+    expect(annotationScaleRatio('1/8" = 1\'-0"')).toBeNull();
+    expect(annotationScaleRatio('')).toBeNull();
+    expect(annotationScaleRatio('abc')).toBeNull();
   });
   it('a second round trip is stable', () => {
     const again = readDxf(writeDxf(back));
