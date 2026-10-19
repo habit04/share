@@ -24,12 +24,22 @@
 // byte-identical to git blob 8f0c2454. Any other drift throws —
 // the double fails loud rather than silently testing the wrong
 // code.
+//
+// Cleanup: the materialized temp dir is removed when the
+// importing test file's run completes. Removal is armed on first
+// materialization via a vitest afterAll hook registered from
+// this module itself (the import happens during the test file's
+// collection, so the hook binds to that file), with a process-
+// exit fallback if no vitest context is active. Removal is
+// best-effort and silent: a still-locked file at teardown (the
+// Windows case) must never fail a run over housekeeping.
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import { createRequire } from 'node:module';
 import * as os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { afterAll } from 'vitest';
 
 const require = createRequire(import.meta.url);
 
@@ -45,6 +55,34 @@ export interface UnfixedIdentityModule {
 }
 
 let cached: UnfixedIdentityModule | null = null;
+let materializedDir: string | null = null;
+let cleanupArmed = false;
+
+// Best-effort removal of the materialized temp dir. Housekeeping
+// must never become a test result, so any failure (e.g. a locked
+// file on Windows) is swallowed here.
+function removeMaterializedDir(): void {
+  if (!materializedDir) return;
+  const dir = materializedDir;
+  materializedDir = null;
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // Intentionally ignored — see the header's Cleanup note.
+  }
+}
+
+function armCleanup(): void {
+  if (cleanupArmed) return;
+  cleanupArmed = true;
+  try {
+    afterAll(removeMaterializedDir);
+  } catch {
+    // No vitest run context is active (e.g. a direct import
+    // outside a test file): fall back to process exit.
+    process.once('exit', removeMaterializedDir);
+  }
+}
 
 export function loadUnfixedIdentityModule(): UnfixedIdentityModule {
   if (cached) return cached;
@@ -57,6 +95,8 @@ export function loadUnfixedIdentityModule(): UnfixedIdentityModule {
     );
   }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jcad-enoent-unfixed-'));
+  materializedDir = dir;
+  armCleanup();
   const modulePath = path.join(dir, 'windows-path-identity.cjs');
   fs.writeFileSync(modulePath, stripped, 'utf8');
   cached = require(modulePath) as UnfixedIdentityModule;
