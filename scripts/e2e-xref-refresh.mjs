@@ -150,6 +150,14 @@
 //     --packaged-exe <path to the unpacked test build's executable>
 //   to target the packaged app (the `npm run dist:test` output) instead
 //   of the development electron. Every check and verdict is unchanged.
+//   Packaged launches mirror the Chromium switch set Playwright's
+//   dev-mode loader would have appended (launchfix r2 - see
+//   PACKAGED_LOADER_SWITCHES below), and the packaged window wait
+//   also probes the main process for a committed window.
+//   Test B (launchfix r2): --quit-launch-repeat <n> (default 1) runs
+//   the section-3.5 quit-launch block n times in one process -
+//   e.g. `--sections 3.5 --quit-launch-repeat 10` for ten quit
+//   cycles; iterations after the first suffix labels and names.
 //   node scripts/e2e-xref-refresh.mjs --self-test-oracle
 //   node scripts/e2e-xref-refresh.mjs --self-test-correlation
 //   node scripts/e2e-xref-refresh.mjs --self-test-tab-removal
@@ -1155,6 +1163,19 @@ if (packagedMode) {
   if (!existsSync(packagedExe)) setupFail('--packaged-exe file does not exist');
   packagedExeSha256 = fileSha(packagedExe);
 }
+// Test B support (Stage 2 launchfix r2, additive, default off):
+// --quit-launch-repeat <n> runs the section-3.5 quit-launch block n
+// times in one harness process (fresh profile per launch, as always),
+// so the lead can measure the packaged quit-launch failure rate over
+// 10 identical cycles without 10 full setups. Iterations after the
+// first suffix their launch labels, observer tags and check names
+// (-r2, -r3, ...). With the default (1) the block runs exactly once
+// and every label and name is byte-for-byte today's.
+const quitRepeatArg = argOf('--quit-launch-repeat');
+const quitLaunchRepeat = quitRepeatArg === '' ? 1 : Number(quitRepeatArg);
+if (!Number.isInteger(quitLaunchRepeat) || quitLaunchRepeat < 1 || quitLaunchRepeat > 50) {
+  setupFail('--quit-launch-repeat must be an integer between 1 and 50');
+}
 if (!workRootArg) setupFail('--work-root is required (fixtures, out, profiles and TEMP are confined under it)');
 if (!fixtureArg) setupFail('--fixtures is required');
 if (!outArg) setupFail('--out is required');
@@ -1399,17 +1420,125 @@ async function captureFailureSnapshot(app) {
   } catch { return null; }
 }
 
+// ------------------------------------------------------------ packaged launch coupling (Stage 2 launchfix r2)
+// In DEV mode Playwright resolves the electron binary itself and
+// prepends '-r .../playwright-core/lib/server/electron/loader.js'
+// to the launch (playwright-core 1.63.0, lib/coreBundle.js:44277 -
+// the unshift happens ONLY in the no-executablePath branch,
+// :44262-44278). The loader does two things before the app's own
+// code runs: it appends Playwright's full Chromium switch set via
+// app.commandLine.appendSwitch (loader.js:92-95, list at
+// loader.js:38-88 with the feature list at :7-37), and it gates
+// app readiness - app.isReady() forced false, app.whenReady()
+// replaced, the 'ready' event swallowed - until Playwright's
+// ElectronApplication.initialize() evaluates __playwright_run()
+// (loader.js:96-116; coreBundle.js:44202-44205). A PACKAGED launch
+// (executablePath) gets NEITHER: the app self-boots from spawn with
+// Chromium's default renderer backgrounding / timer throttling /
+// paint-holding, while Playwright attaches after the fact by
+// scraping the --inspect=0 / --remote-debugging-port=0 debugger
+// lines from stdout (coreBundle.js:44315-44319) and arming CDP
+// auto-attach with waitForDebuggerOnStart (coreBundle.js:38371).
+// Test A (lead, Windows): the same packaged exe launched directly
+// 10/10 titled in <=1 s - the product starts cleanly; the §3.5
+// packaged failures live in this coupling. The r2 fix mirrors what
+// argv can mirror: the loader's exact effective switch set, passed
+// to the packaged exe as launch args (below). The ready GATE cannot
+// be mirrored by argv (nothing in the packaged binary will hold
+// its own whenReady for us); it is answered instead by the
+// dual-path window wait (applicationWindowPackaged) and by the
+// timeline's failure snapshot, which together keep the 60 s
+// deadline measuring the app rather than the attach.
+// Transcribed from loader.js (playwright-core 1.63.0): the
+// chromiumSwitches() list at :38-88 in order, with the
+// --disable-features value composed at :57 from disabledFeatures
+// (:7-37, 15 entries). The env-conditional slots resolve as the
+// loader resolves them for THIS harness: childEnv's whitelist never
+// passes PLAYWRIGHT_LEGACY_SCREENSHOT, so the loader takes the
+// CDPScreenshotNewSurface branch (:58), and options.android is
+// unset, so --disable-sync is included (:87). The duplicate
+// --disable-search-engine-choice-screen (:76, :85) is appended
+// twice by the loader and is collapsed to one here (appendSwitch
+// of the same switch is idempotent).
+const PACKAGED_LOADER_SWITCHES = [
+  '--disable-field-trial-config',
+  '--disable-background-networking',
+  '--disable-background-timer-throttling',
+  '--disable-backgrounding-occluded-windows',
+  '--disable-back-forward-cache',
+  '--disable-breakpad',
+  '--disable-client-side-phishing-detection',
+  '--disable-component-extensions-with-background-pages',
+  '--disable-component-update',
+  '--no-default-browser-check',
+  '--disable-default-apps',
+  '--disable-dev-shm-usage',
+  '--disable-edgeupdater',
+  '--disable-extensions',
+  '--disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion',
+  '--enable-features=CDPScreenshotNewSurface',
+  '--allow-pre-commit-input',
+  '--disable-hang-monitor',
+  '--disable-ipc-flooding-protection',
+  '--disable-popup-blocking',
+  '--disable-prompt-on-repost',
+  '--disable-renderer-backgrounding',
+  '--disable-updater-scheduler',
+  '--force-color-profile=srgb',
+  '--metrics-recording-only',
+  '--no-first-run',
+  '--password-store=basic',
+  '--use-mock-keychain',
+  '--no-service-autorun',
+  '--export-tagged-pdf',
+  '--disable-search-engine-choice-screen',
+  '--unsafely-disable-devtools-self-xss-warnings',
+  '--edge-skip-compat-layer-relaunch',
+  '--disable-infobars',
+  '--disable-sync',
+];
+
+// Packaged window wait: the SAME 60 s deadline and the SAME success
+// criterion as applicationWindow (a live Playwright Page at
+// jcad://app/index.html) - plus a main-process probe on the channel
+// the launch clock already uses. In the Stage 2 failure shape the
+// window existed in main (processes alive, navigation committed)
+// while Playwright's page enumeration through the auto-attach never
+// yielded it; the probe records that moment in
+// stamps.mainWindowObservedAt so the timeline can show the window
+// was THERE and the enumeration was the missing leg. The probe
+// never satisfies the wait by itself: callers need the Page.
+async function applicationWindowPackaged(app, stamps, timeout = 60_000) {
+  const deadline = Date.now() + timeout;
+  let nextProbe = 0;
+  while (Date.now() < deadline) {
+    const page = app.windows().find((candidate) => !candidate.isClosed() && candidate.url().startsWith('jcad://app/index.html'));
+    if (page) return page;
+    if (stamps.mainWindowObservedAt === null && Date.now() >= nextProbe) {
+      nextProbe = Date.now() + 500;
+      try {
+        const urls = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => { try { return w.webContents.getURL(); } catch { return ''; } }));
+        if (Array.isArray(urls) && urls.some((u) => typeof u === 'string' && u.startsWith('jcad://app/'))) {
+          stamps.mainWindowObservedAt = Date.now();
+        }
+      } catch { /* main not answerable yet; the page poll continues */ }
+    }
+    await new Promise((done) => setTimeout(done, 100));
+  }
+  throw new Error('The secure application window did not appear before the deadline.');
+}
+
 async function launchApp(label) {
-  if (packagedMode) log(`launch[${label}]: packaged exe ${packagedExe} (sha256 ${packagedExeSha256.slice(0, 12)}..)`);
   const profile = join(workRoot, `profile-${label}`);
   mkdirSync(profile, { recursive: true });
   results.residue.profiles.push(profile);
   const args = packagedMode
-    ? [...(observerMode ? ['--require', observerPath] : []), `--user-data-dir=${profile}`]
+    ? [...PACKAGED_LOADER_SWITCHES, ...(observerMode ? ['--require', observerPath] : []), `--user-data-dir=${profile}`]
     : observerMode
       ? ['--require', observerPath, '.', `--user-data-dir=${profile}`]
       : ['.', `--user-data-dir=${profile}`];
   if (process.platform === 'linux') args.push('--no-sandbox');
+  if (packagedMode) log(`launch[${label}]: packaged exe ${packagedExe} (sha256 ${packagedExeSha256.slice(0, 12)}..) args=${JSON.stringify(args)}`);
   // Launch timeline (Stage 2 commission): one stamps bag per launch,
   // finalized through launchTimelineRecordImpl on BOTH the ready and
   // the failed path and persisted in results.launchTimelines.
@@ -1510,7 +1639,7 @@ async function launchApp(label) {
       });
     } catch { /* timeline clock unavailable for this launch; its window stamps stay null */ }
     stage = 'window';
-    const win = await applicationWindow(app);
+    const win = packagedMode ? await applicationWindowPackaged(app, stamps) : await applicationWindow(app);
     stamps.windowSeenAt = Date.now();
     const pageErrors = [];
     win.on('pageerror', (e) => pageErrors.push(String(e.message)));
@@ -2287,10 +2416,18 @@ try {
 // evidence only - NOT a completed-drain proof.
 if (sections.includes('3.5')) {
   currentSection = '3.5-quit';
+  // --quit-launch-repeat (Test B support, default 1): iterations
+  // after the first suffix every launch label, observer tag and
+  // check name, so one run can hold n independent quit-launch
+  // cycles without collisions. With the default the suffixes are
+  // empty and this block is exactly the pre-r2 block.
+  for (let qIter = 0; qIter < quitLaunchRepeat; qIter++) {
+  const qSuffix = qIter === 0 ? '' : `-r${qIter + 1}`;
+  const qNameSuffix = qIter === 0 ? '' : ` [repeat ${qIter + 1}]`;
   for (const scenario of ['idle', 'after-limit']) {
     let qapp; let qwin;
     try {
-      const qLaunch = await launchApp(`quit-${scenario}`);
+      const qLaunch = await launchApp(`quit-${scenario}${qSuffix}`);
       ({ app: qapp, win: qwin } = qLaunch);
       const qState = qLaunch.observer; // THIS launch's own coverage
       await openProjectAndHost(qapp, qwin);
@@ -2299,7 +2436,7 @@ if (sections.includes('3.5')) {
       // Same-broker correlation for THIS quit launch (round 3, group 2),
       // with its own short-lived context, before the scenario's own
       // context work: gates this launch's stats-derived checks.
-      await runCorrelation(`quit-${scenario}`, qLaunch);
+      await runCorrelation(`quit-${scenario}${qSuffix}`, qLaunch);
       const ctx = await qwin.evaluate(async () => {
         const b = await /** @type {XrefPageWindow} */ (window).__xref.begin('native-quit');
         if (b.ok) /** @type {XrefPageWindow} */ (window).__xrefToken = b.token;
@@ -2318,8 +2455,8 @@ if (sections.includes('3.5')) {
         // stats must return to THIS launch's own baseline.
         const closed = await qwin.evaluate(() => /** @type {XrefPageWindow} */ (window).__xref.close(/** @type {XrefPageWindow} */ (window).__xrefToken));
         if (!closed.ok) throw new Error(`explicit context close failed: ${JSON.stringify(closed)}`);
-        const settleName = 'observer: after-limit launch returns to ITS OWN baseline after the explicit context close (activeOps / reservedRawBytes zero; contexts / tickets / retiredActiveOps at baseline)';
-        const s = await sampleObserver(qapp, 'quit-after-limit-settled');
+        const settleName = `observer: after-limit launch returns to ITS OWN baseline after the explicit context close (activeOps / reservedRawBytes zero; contexts / tickets / retiredActiveOps at baseline)${qNameSuffix}`;
+        const s = await sampleObserver(qapp, `quit-after-limit-settled${qSuffix}`);
         if (!qState?.correlation?.ok) blocked(settleName, correlationBlockReason(qState));
         else if (!observerUsable(qState, s)) blocked(settleName, observerBlockReason(qState, s));
         else {
@@ -2334,8 +2471,8 @@ if (sections.includes('3.5')) {
         // alone no longer suffice - the proof passes only when this
         // launch's correlation holds, on its own baseline/factory
         // evidence (begin observed at baseline+1, closed back).
-        const proofName = 'observer same-broker correlation proof for the quit-idle launch (own zero baseline; real begin observed at contexts = baseline+1 with no active/reserved work; close returns contexts/tickets to baseline; factoryCalls === 1)';
-        const s = await sampleObserver(qapp, 'quit-idle-pre-quit');
+        const proofName = `observer same-broker correlation proof for the quit-idle launch (own zero baseline; real begin observed at contexts = baseline+1 with no active/reserved work; close returns contexts/tickets to baseline; factoryCalls === 1)${qNameSuffix}`;
+        const s = await sampleObserver(qapp, `quit-idle-pre-quit${qSuffix}`);
         if (!qState.correlation?.ok) blocked(proofName, correlationBlockReason(qState));
         else if (!observerUsable(qState, s)) blocked(proofName, observerBlockReason(qState, s));
         else check(true, proofName, `baseline seq=${qState.baseline.seq}, correlation seq ${qState.correlation.afterBeginSeq} -> ${qState.correlation.afterCloseSeq}, pre-quit seq=${s.seq}`);
@@ -2345,7 +2482,7 @@ if (sections.includes('3.5')) {
       const code = await waitForExit(child, 30_000);
       check(code === 0, `app quits cleanly from the ${scenario} state (process exit evidence only, not a drain proof)`, `exit code ${code}`);
     } catch (error) {
-      check(false, `quit scenario ${scenario}`, String(error && error.message || error));
+      check(false, `quit scenario ${scenario}${qNameSuffix}`, String(error && error.message || error));
       try { await closeBounded(qapp); } catch { /* bounded already */ }
     }
   }
@@ -2353,13 +2490,13 @@ if (sections.includes('3.5')) {
   // sample taken in the SAME main callback that invokes the genuine
   // app.quit() - no intervening await, never a sleep. Without a valid
   // witness the criterion is BLOCKED (insufficient witness), not passed.
-  const inflightName = 'app quits cleanly from the inflight state with a proven active read (sample+quit in one main callback; exit is exit evidence, not drain proof)';
+  const inflightName = `app quits cleanly from the inflight state with a proven active read (sample+quit in one main callback; exit is exit evidence, not drain proof)${qNameSuffix}`;
   if (!observerMode) {
     blocked(inflightName);
   } else {
     let qapp; let qwin;
     try {
-      const qLaunch = await launchApp('quit-inflight');
+      const qLaunch = await launchApp(`quit-inflight${qSuffix}`);
       ({ app: qapp, win: qwin } = qLaunch);
       const qState = qLaunch.observer; // THIS launch's own coverage
       await openProjectAndHost(qapp, qwin);
@@ -2368,7 +2505,7 @@ if (sections.includes('3.5')) {
       // Same-broker correlation for the inflight launch (round 3,
       // group 2), BEFORE the held read starts: if it fails, the
       // inflight criterion is BLOCKED regardless of the quit sample.
-      await runCorrelation('quit-inflight', qLaunch);
+      await runCorrelation(`quit-inflight${qSuffix}`, qLaunch);
       const started = await qwin.evaluate(async (p) => {
         const b = await /** @type {XrefPageWindow} */ (window).__xref.begin('native-quit-inflight');
         if (!b.ok) return b;
@@ -2386,7 +2523,7 @@ if (sections.includes('3.5')) {
         a.quit();
         return s;
       });
-      results.observerSamples.push({ tag: 'quit-inflight', sample });
+      results.observerSamples.push({ tag: `quit-inflight${qSuffix}`, sample });
       const code = await waitForExit(child, 30_000);
       const slowBytes = fixtureMeta.files['slow.dxf'].bytes;
       // The witness must satisfy THIS launch's own one-instance proof
@@ -2399,9 +2536,10 @@ if (sections.includes('3.5')) {
       else if (!witnessed) blocked(inflightName, `insufficient witness at quit initiation: ${JSON.stringify(sample)}`);
       else check(code === 0, inflightName, `exit code ${code}, sample=${JSON.stringify(sample.stats)} seq=${sample.seq}`);
     } catch (error) {
-      check(false, 'quit scenario inflight', String(error && error.message || error));
+      check(false, `quit scenario inflight${qNameSuffix}`, String(error && error.message || error));
       try { await closeBounded(qapp); } catch { /* bounded already */ }
     }
+  }
   }
 }
 
