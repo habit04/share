@@ -14,7 +14,7 @@
  * @property {Electron.BrowserWindow | null} mainWindow  the application window (window.cjs creates it)
  * @property {Set<string>} handedOverProjects  one-use project grants made only by OS hand-over or the native Recent menu
  * @property {boolean} openFilesReady  the page asked for the files handed over (take-open-files); false while a new page loads
- * @property {boolean} legacyMigrationFailed  the startup legacy-storage migration did not complete (P-MIG: it timed out or threw, or the migration block's read/construction threw): the migration must not be marked complete this launch - neither by the migrated checkpoint nor by a close-time checkpoint - so the next launch retries the extraction
+ * @property {boolean} legacyMigrationFailed  the startup legacy-storage migration leg failed (P-MIG: the extraction timed out or resolved not-ok, or the leg itself threw; a checkpoint-read failure does not set it): the migration must not be marked complete this launch - neither by the migrated checkpoint nor by a close-time checkpoint - so the next launch retries the extraction
  * @property {ReturnType<typeof import('./save-order.cjs').registerSaveOrder>|null} [saveOrder] Windows drawing/export owner and ordering service, registered before plot handlers
  */
 module.exports = {};

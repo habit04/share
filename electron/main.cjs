@@ -189,20 +189,33 @@ app.whenReady().then(async () => {
   installPermissionHandlers(session.defaultSession, () => (ctx.mainWindow && !ctx.mainWindow.isDestroyed() ? ctx.mainWindow.webContents : null));
   installAssetHandler({ protocol, net, root: path.join(__dirname, '..', 'dist') });
   if (!DEV_URL) {
+    // P-MIG: the failure flag means "the legacy-migration LEG failed" - the extraction
+    // resolved { ok: false } (assigned below), or the leg itself threw: the hidden
+    // window's construction throws outside legacyStorage's own handling and propagates
+    // as its rejection. A throw anywhere else in this block does NOT set it - in
+    // particular a checkpoint-READ failure: with the flag standing, the close-time
+    // checkpoint is skipped, so a permanently corrupt checkpoint would never be
+    // overwritten on a normal close as it always has been, and could never self-heal.
+    let migrationLegThrew = false;
     try {
       const checkpoint = await readRendererPreferences();
       if (checkpoint !== null) rendererStorage = { values: checkpoint, source: 'checkpoint' };
       else if (!fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated'))) {
-        const outcome = fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')) ? await legacyStorage({ BrowserWindow, protocol, indexFile: path.join(__dirname, '..', 'dist', 'index.html'), logError: logMainError }) : { values: {}, ok: true };
+        let outcome;
+        try {
+          outcome = fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')) ? await legacyStorage({ BrowserWindow, protocol, indexFile: path.join(__dirname, '..', 'dist', 'index.html'), logError: logMainError }) : { values: {}, ok: true };
+        } catch (legError) {
+          migrationLegThrew = true;
+          throw legError;
+        }
         ctx.legacyMigrationFailed = !outcome.ok;
         rendererStorage = outcome.values === null ? null : { values: outcome.values, source: 'legacy' };
       }
     } catch (error) {
-      // An unreadable/corrupt checkpoint must not fall back to stale legacy values. The
-      // migration did not complete - the checkpoint read threw, or the hidden window's
-      // construction threw outside legacyStorage's own handling - so keep the retry:
-      // the failure flag covers the whole block, not just a settled extraction outcome.
-      ctx.legacyMigrationFailed = true;
+      // An unreadable/corrupt checkpoint must not fall back to stale legacy values.
+      // Only a failed migration leg keeps the retry (see above); every throw is
+      // logged exactly as before.
+      if (migrationLegThrew) ctx.legacyMigrationFailed = true;
       logMainError('renderer preference migration', error);
     }
   }

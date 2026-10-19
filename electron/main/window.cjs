@@ -87,9 +87,10 @@ function createWindows(ctx, devUrl, allowInspection = !app.isPackaged) {
       // later launch - the legacy values silently abandoned. Skip only the checkpoint write
       // (the flush below writes no preference file): a normal close after a failed migration
       // then leaves the next launch exactly what an abnormal end leaves, no checkpoint, and
-      // the extraction is retried. The failed session's own preference changes are lost, as
-      // on the Close Without Saving path below; a checkpoint snapshotted in a session that
-      // never received the legacy values would do active harm, not merely omit them.
+      // the extraction is retried. What is forgone is only this session's refresh of that
+      // recovery copy: the session's live preferences live in the renderer's jcad://
+      // localStorage and are not lost; and a snapshot taken in a session that never
+      // received the legacy values would do active harm, not merely omit them.
       if (!ctx.legacyMigrationFailed) await checkpointRendererPreferences(win.webContents);
       flushRendererPreferences(win.webContents);
       return true;
