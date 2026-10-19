@@ -477,7 +477,7 @@ const G2_REASON = 'observer not enabled for this run (no --observer): criterion 
  * @property {string | null} failureStage - the launchApp stage that threw (on failure only).
  * @property {string | null} error - the failure's message (on failure only).
  * @property {LaunchFailureSnapshot | null} failureSnapshot - the failure-time main-process snapshot (failed launches only).
- * @property {number | null} mainWindowObservedMs - packaged launches: ms offset of the main-process probe's first committed-jcad:// window observation, when it preceded windowSeenAt; otherwise null. Not an event: it never advances furthestEvent.
+ * @property {number | null} mainWindowObservedMs - packaged launches: ms offset from spawn of the main-process probe's first committed-jcad:// window observation (stamps.mainWindowObservedAt - t0), or null when the probe never observed one. The builder sets it whenever the observation happened; it is not conditioned on windowSeenAt. Not an event: it never advances furthestEvent.
  */
 
 // ------------------------------------------------------------ semantic entity oracle (finding 1)
@@ -980,6 +980,21 @@ if (process.argv.includes('--self-test-burst')) {
 // A failed record also carries the failure-time main-process
 // snapshot launchApp captured (failureSnapshot); a ready record
 // carries null.
+//
+// Bound for ONE main-process probe inside the packaged window wait
+// (launchfix r3): the probe races this timeout, mirroring the
+// bounded app.evaluate races in pullLaunchClock /
+// captureFailureSnapshot (5 s there; 2 s here - the probe is a poll
+// on a 500 ms cadence, not a one-shot read). r2 awaited the probe
+// unbounded: with a wedged main process the await never resolved,
+// the wait loop never re-checked its deadline, and only the
+// 10-minute watchdog bounded the launch - the 60 s deadline was
+// not honoured. A timed-out probe is a missed observation for that
+// iteration only: nothing is stamped, the loop continues, and the
+// deadline check at the loop head runs on schedule. Declared here
+// (before the --self-test-timeline block) so the self-test can
+// drive the wait against stub apps.
+const PACKAGED_PROBE_TIMEOUT_MS = 2_000;
 function launchTimelineRecordImpl(input) {
   const { label, mode, stamps, outcome, failureStage, error } = input;
   const t0 = stamps.t0;
@@ -1035,7 +1050,11 @@ function launchTimelineRecordImpl(input) {
 // ms; a failed load terminating at did-fail-load; milestones that
 // predate the clock present with ms null + preExisting true (never
 // backdated); the failure snapshot carried verbatim on failed
-// records only.
+// records only. It also drives applicationWindowPackaged against
+// stub apps: a never-resolving main-process probe still hits the
+// (shortened) deadline as a FAIL with the exact error (r3), and a
+// probe that observes a committed window never satisfies the wait
+// by itself.
 if (process.argv.includes('--self-test-timeline')) {
   const T0 = 1_000_000;
   const empty = { appObjectAt: null, windowCreatedAt: null, didFinishLoadAt: null, readyToShowAt: null, windowSeenAt: null, editorReadyAt: null };
@@ -1105,6 +1124,43 @@ if (process.argv.includes('--self-test-timeline')) {
     ['(h2) failure snapshot: a ready record carries null even if one was supplied', launchTimelineRecordImpl({ label: 'x', mode: 'dev', outcome: 'ready', failureStage: null, error: null, failureSnapshot: snap, stamps: { t0: T0, ...empty } }).failureSnapshot, null],
     ['(i) render-process-gone: present with its ms, and furthest when it is last', [gone.events.map((e) => e.name), gone.furthestEvent], [['spawn-issued', 'app-object', 'browser-window-created', 'did-finish-load', 'window-seen', 'editor-ready', 'render-process-gone'], 'render-process-gone']],
   ];
+  // Launchfix r3: the packaged window wait's probe bound, driven
+  // against stub apps (no Electron). (j) a main process whose
+  // evaluate NEVER resolves (wedged main): the wait must still
+  // reject with the exact deadline error, in deadline + at most
+  // one probe race, having stamped nothing. (k) a probe that DOES
+  // observe a committed jcad:// window while page enumeration
+  // never yields it: the observation is stamped, but the probe
+  // never satisfies the wait - the wait still fails at the
+  // deadline (the success criterion is unchanged). Top-level
+  // await keeps module evaluation paused here until the scenarios
+  // settle, so the fail-closed setup below never runs under this
+  // flag; applicationWindowPackaged is a hoisted declaration and
+  // PACKAGED_PROBE_TIMEOUT_MS is initialised above this block.
+  const wedgedStamps = { mainWindowObservedAt: null };
+  let wedgedProbeCalls = 0;
+  const wedgedApp = {
+    windows: () => [],
+    evaluate: () => { wedgedProbeCalls += 1; return new Promise(() => { /* wedged main: never settles */ }); },
+  };
+  const wedgedStart = Date.now();
+  let wedgedError = '';
+  try { await applicationWindowPackaged(wedgedApp, wedgedStamps, 400); } catch (error) { wedgedError = String(error && error.message || error); }
+  const wedgedElapsed = Date.now() - wedgedStart;
+  const observedStamps = { mainWindowObservedAt: null };
+  const observedApp = {
+    windows: () => [],
+    evaluate: async () => ['jcad://app/index.html'],
+  };
+  let observedError = '';
+  try { await applicationWindowPackaged(observedApp, observedStamps, 600); } catch (error) { observedError = String(error && error.message || error); }
+  cases.push(
+    ['(j) wedged main (probe never resolves): the wait still rejects with the exact deadline error', wedgedError, 'The secure application window did not appear before the deadline.'],
+    ['(j2) wedged main: elapsed is bounded by the deadline + one probe race (2 s), nowhere near the 10-min watchdog', wedgedElapsed >= 400 && wedgedElapsed < 400 + 2_000 + 1_500, true],
+    ['(j3) wedged main: the probe ran, and its non-resolution stamped nothing', [wedgedProbeCalls >= 1, wedgedStamps.mainWindowObservedAt], [true, null]],
+    ['(k) probe observes a committed window, page never enumerates: the wait still rejects with the exact deadline error', observedError, 'The secure application window did not appear before the deadline.'],
+    ['(k2) probe observes: the observation is stamped even though the wait failed', typeof observedStamps.mainWindowObservedAt === 'number', true],
+  );
   let okAll = true;
   for (const [name, got, want] of cases) {
     const ok = JSON.stringify(got) === JSON.stringify(want);
@@ -1496,6 +1552,10 @@ const PACKAGED_COUPLING_SWITCHES = [
 // stamps.mainWindowObservedAt so the timeline can show the window
 // was THERE and the enumeration was the missing leg. The probe
 // never satisfies the wait by itself: callers need the Page.
+// Each probe is raced against PACKAGED_PROBE_TIMEOUT_MS (r3): a
+// wedged main cannot hold the loop past its deadline - a timed-out
+// probe is a missed observation for that iteration, the loop
+// continues, and the deadline check runs on schedule.
 async function applicationWindowPackaged(app, stamps, timeout = 60_000) {
   const deadline = Date.now() + timeout;
   let nextProbe = 0;
@@ -1505,7 +1565,10 @@ async function applicationWindowPackaged(app, stamps, timeout = 60_000) {
     if (stamps.mainWindowObservedAt === null && Date.now() >= nextProbe) {
       nextProbe = Date.now() + 500;
       try {
-        const urls = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => { try { return w.webContents.getURL(); } catch { return ''; } }));
+        const urls = await Promise.race([
+          app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => { try { return w.webContents.getURL(); } catch { return ''; } })),
+          new Promise((done) => setTimeout(() => done(null), PACKAGED_PROBE_TIMEOUT_MS)),
+        ]);
         if (Array.isArray(urls) && urls.some((u) => typeof u === 'string' && u.startsWith('jcad://app/'))) {
           stamps.mainWindowObservedAt = Date.now();
         }
@@ -1514,6 +1577,16 @@ async function applicationWindowPackaged(app, stamps, timeout = 60_000) {
     await new Promise((done) => setTimeout(done, 100));
   }
   throw new Error('The secure application window did not appear before the deadline.');
+}
+
+// One timeline event as the per-launch log lines print it: a
+// milestone with a measured offset prints 'name@<ms>ms'; a
+// milestone that predates the clock has no truthful offset and
+// prints 'name@pre-existing' (r3 cosmetic fix - the r2 form
+// concatenated the bare 'pre' marker with the unconditional 'ms'
+// suffix, producing e.g. 'app-ready@prems').
+function timelineEventToken(e) {
+  return e.ms === null ? `${e.name}@pre-existing` : `${e.name}@${e.ms}ms`;
 }
 
 async function launchApp(label) {
@@ -1661,14 +1734,14 @@ async function launchApp(label) {
     await pullLaunchClock(app, stamps);
     const record = launchTimelineRecordImpl({ label, mode: packagedMode ? 'packaged' : 'dev', stamps, outcome: 'ready', failureStage: null, error: null });
     results.launchTimelines.push(record);
-    log(`launch[${label}]: timeline ready - ${record.events.map((e) => `${e.name}@${e.ms === null ? 'pre' : e.ms}ms`).join(' ')}`);
+    log(`launch[${label}]: timeline ready - ${record.events.map(timelineEventToken).join(' ')}`);
     return { app, win, pageErrors, profile, observer };
   } catch (error) {
     if (app) await pullLaunchClock(app, stamps);
     const failureSnapshot = app ? await captureFailureSnapshot(app) : null;
     const record = launchTimelineRecordImpl({ label, mode: packagedMode ? 'packaged' : 'dev', stamps, outcome: 'failed', failureStage: stage, error: String(error && error.message || error), failureSnapshot });
     results.launchTimelines.push(record);
-    log(`launch[${label}]: timeline FAILED at stage ${stage} (furthest=${record.furthestEvent}) - ${record.events.map((e) => `${e.name}@${e.ms === null ? 'pre' : e.ms}ms`).join(' ')} error=${record.error} snapshot=${record.failureSnapshot ? JSON.stringify(record.failureSnapshot) : 'none'}`);
+    log(`launch[${label}]: timeline FAILED at stage ${stage} (furthest=${record.furthestEvent}) - ${record.events.map(timelineEventToken).join(' ')} error=${record.error} snapshot=${record.failureSnapshot ? JSON.stringify(record.failureSnapshot) : 'none'}`);
     // A failed launch still OWNS its app (Stage 2 commission): the
     // callers receive the handle only from a RESOLVED launchApp, so
     // their catch-path closeBounded(qapp) saw undefined and the
