@@ -108,9 +108,17 @@ export function writeDxf(state: DrawingState): string {
   const annotationCarrier = graphAnnotationCarrier(state);
   const createCannoVariable = !annotationCarrier.dictionary && state.header?.cannoscale !== undefined && isScaleName(state.header.cannoscale);
   const createAnnoVariable = !annotationCarrier.dictionary && state.header?.annoAllVisible === false;
-  const variableDictionary = createCannoVariable || createAnnoVariable ? w.nextHandle() : null;
-  const cannoVariable = createCannoVariable ? w.nextHandle() : null;
-  const annoVariable = createAnnoVariable ? w.nextHandle() : null;
+  // The handles are allocated in the OBJECTS section, NOT here (deviation from the
+  // design's plan-time allocation, found in validation): allocating them here shifts
+  // every later handle in the file, and on drawings with retained 3D carriers a
+  // shifted temporary handle can coincide with a retained SOURCE handle that
+  // preserveDxfCadGraph's structuralKeys reads as an owner — the false owner edge
+  // chains through the face records and the embedded slot keys grow exponentially
+  // (heap OOM on tests/fixtures/3d/enclosure.dxf). Allocating last keeps every
+  // other handle at its pre-rework value.
+  let variableDictionary: string | null = null;
+  let cannoVariable: string | null = null;
+  let annoVariable: string | null = null;
   const MODEL_SPACE = '1F';
   const PAPER_SPACE = '1B';
   const header = state.header ?? DEFAULT_HEADER;
@@ -583,6 +591,11 @@ export function writeDxf(state: DrawingState): string {
   w.pair(0, 'ENDSEC');
 
   // OBJECTS: root dictionary with the mandatory ACAD_GROUP entry
+  if (createCannoVariable || createAnnoVariable) {
+    variableDictionary = w.nextHandle();
+    if (createCannoVariable) cannoVariable = w.nextHandle();
+    if (createAnnoVariable) annoVariable = w.nextHandle();
+  }
   w.pair(0, 'SECTION');
   w.pair(2, 'OBJECTS');
   w.pair(0, 'DICTIONARY');
