@@ -284,6 +284,7 @@ describe('changes apply only to the revision they were calculated from', () => {
     expect(f.editor.sessions.all[1]!.state.entities.some((e) => e.type === 'text' && e.text === 'OTHER EDIT')).toBe(true);
     expect(r!.written).toBe(1); // the closed file did not change
   }, 9000);
+  // T-FLAKE (addendum): measured p99 2.9 s under maxWorkers=2 family load (n=10 runs; solo p50 1.9 s); budget = p99 x 2 rounded up. Timed out at the 5 s default in PR #24's push CI run.
   it('a closed file changed on disk since it was read is not overwritten', async () => {
     const f = fake({ ...base, files: { '/p/c.dxf': closed() } });
     const { sheets } = await loadProjectSheets(f.editor);
@@ -294,7 +295,8 @@ describe('changes apply only to the revision they were calculated from', () => {
     expect(r!.conflicts).toEqual(['c.dxf (changed on disk since it was read)']);
     expect(f.writes).toEqual([]);
     expect(f.disk.get('/p/c.dxf')).toBe(changed);
-  });
+  }, 6000);
+  // T-FLAKE (addendum): measured p99 2.9 s under maxWorkers=2 family load (n=10 runs; solo p50 1.4 s); budget = p99 x 2 rounded up. Timed out at the 5 s default in PR #24's push CI run.
   it('a closed file opened in a tab meanwhile is not written under it', async () => {
     const f = fake({ ...base, files: { '/p/c.dxf': closed() } });
     const { sheets } = await loadProjectSheets(f.editor);
@@ -304,7 +306,7 @@ describe('changes apply only to the revision they were calculated from', () => {
     const r = await commitSheets(f.editor, sheets, new Map([[i, { state: sheets[i]!.doc.snapshot, detail: 'x' }]]), 'T', 'I');
     expect(r!.conflicts).toEqual(['c.dxf (opened in a tab while the command ran)']);
     expect(f.writes).toEqual([]);
-  });
+  }, 6000);
   it('a newer save of the same file wins over the batch write (save queue revision)', async () => {
     const f = fake({ ...base, files: { '/p/c.dxf': closed() } });
     const { sheets } = await loadProjectSheets(f.editor);
