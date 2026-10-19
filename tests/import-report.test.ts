@@ -286,6 +286,7 @@ describe('project-wide rewrite keeps the retained records', () => {
     projectUi.confirmFiles = orig;
   });
 
+  // T-FLAKE: measured p99 8.3 s under maxWorkers=2 family load (n=10 runs; solo p50 3.1 s); budget = p99 x 2 rounded up. Timed out at the 5 s default in full-suite runs.
   it('a closed drawing rewritten by a project command still has its unknown records', async () => {
     const active = new Drawing();
     active.load(newFromTemplate(SHEET_SIZES[0]!, {}), '/p/a.dxf');
@@ -321,7 +322,7 @@ describe('project-wide rewrite keeps the retained records', () => {
     expect(tb.attributes.TITLE).toBe('CONTROL');
     expect(entityKinds(after).slice(-2)).toEqual(['3DFACE', '3DSOLID']);
     expect(rawEntitiesOf(back).map((r) => r.groups)).toEqual(rawEntitiesOf(state).map((r) => r.groups));
-  });
+  }, 17000);
 
   it('withoutUnusedLibraryBlocks (the save path) keeps them', () => {
     const extra: Entity = { id: newId(), layer: '0', color: 'ByLayer', type: 'line', a: { x: 0, y: 0 }, b: { x: 1, y: 0 } };
