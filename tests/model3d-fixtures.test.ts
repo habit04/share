@@ -9,9 +9,10 @@
  *   when comparing independently built documents.
  * - Reading them back gives the expected solids: counts, ids, closed meshes, analytic volumes.
  * - Rewrites retain every original handle and other pair, permitting only the qualified native
- *   text defaults, the INSERT-owner corrections and (Q11 F2 rework) the one root-dictionary
- *   addition that migrates the committed files' fabricated HEADER annotation scale into the
- *   variable dictionary on first re-save. All three reach an exact second-save byte fixed point.
+ *   text defaults, the INSERT-owner corrections and (Q11 F2 rework) the root-dictionary
+ *   additions that migrate the committed files' fabricated HEADER annotation scale into the
+ *   variable dictionary on first re-save — joined in F2 round 2 (Item 1) by the ACAD_SCALELIST
+ *   entry for that same scale. All three reach an exact second-save byte fixed point.
  *   Fixture CRLF stays pinned by -text.
  * - The 2D entities of the mixed fixture come back exactly as they do without the solids.
  */
@@ -232,23 +233,44 @@ function retainedPairs(text: string, rewritten: string, state: DrawingState): vo
     }
     if (record.type === 'DICTIONARY' && record.groups.some(pair => pair[0] === 330 && pair[1] === '0')
       && !record.groups.some(pair => pair[0] === 3 && pair[1] === 'AcDbVariableDictionary')
-      && groups.length === record.groups.length + 2) {
+      && !record.groups.some(pair => pair[0] === 3 && pair[1] === 'ACAD_SCALELIST')
+      && (groups.length === record.groups.length + 2 || groups.length === record.groups.length + 4)) {
       // Q11 F2 rework qualified exception (same standing as the TEXT-defaults and
       // ATTRIB-owner exceptions above): re-saving a file whose annotation scale lives
       // only in its HEADER adds exactly one root-dictionary entry — AcDbVariableDictionary
       // pointing at a dictionary whose CANNOSCALE DICTIONARYVAR carries the source's
-      // declared header value. The added pair and its target chain are asserted, not
-      // waved; every other pair must still match the source exactly below.
-      const tail = groups.slice(-2);
-      const dictionary = tail.length === 2 && tail[0]![0] === 3 && tail[0]![1] === 'AcDbVariableDictionary' && tail[1]![0] === 350
-        ? target.get(canonicalCadHandle(tail[1]![1])) : undefined;
-      const entryAt = dictionary ? dictionary.groups.findIndex(pair => pair[0] === 3 && pair[1] === 'CANNOSCALE') : -1;
-      const variableHandle = entryAt >= 0 && dictionary!.groups[entryAt + 1]?.[0] === 350 ? dictionary!.groups[entryAt + 1]![1] : undefined;
-      const variable = variableHandle ? target.get(canonicalCadHandle(variableHandle)) : undefined;
-      if (dictionary?.type === 'DICTIONARY' && variable?.type === 'DICTIONARYVAR'
-        && variable.groups.some(pair => pair[0] === 1 && pair[1] === state.header?.cannoscale)) {
-        groups = groups.slice(0, -2);
-      }
+      // declared header value. F2 round 2 (Item 1) qualifies the second entry the same
+      // re-save now adds beside it: ACAD_SCALELIST pointing at a dictionary whose SCALE
+      // record carries the same declared scale (300 the name, 140/141 its ratio in
+      // AutoCAD's dotted form, 290 the unit flag) — without it AutoCAD resolves the
+      // migrated CANNOSCALE to 1:1. The added pairs and their target chains are
+      // asserted, not waved; every other pair must still match the source exactly below.
+      const added = groups.slice(record.groups.length);
+      const entries: [string, string][] = [];
+      for (let i = 0; i + 1 < added.length; i += 2) if (added[i]![0] === 3 && added[i + 1]![0] === 350) entries.push([added[i]![1], added[i + 1]![1]]);
+      const scaleName = state.header?.cannoscale ?? '';
+      const ratio = /^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/.exec(scaleName);
+      const dotted = (part: string) => part.includes('.') ? String(Number(part)) : `${part}.0`;
+      const chainOk = ([name, handle]: [string, string]): boolean => {
+        const dictionary = target.get(canonicalCadHandle(handle));
+        if (dictionary?.type !== 'DICTIONARY') return false;
+        if (name === 'AcDbVariableDictionary') {
+          const entryAt = dictionary.groups.findIndex(pair => pair[0] === 3 && pair[1] === 'CANNOSCALE');
+          const variableHandle = entryAt >= 0 && dictionary.groups[entryAt + 1]?.[0] === 350 ? dictionary.groups[entryAt + 1]![1] : undefined;
+          const variable = variableHandle ? target.get(canonicalCadHandle(variableHandle)) : undefined;
+          return variable?.type === 'DICTIONARYVAR' && variable.groups.some(pair => pair[0] === 1 && pair[1] === scaleName);
+        }
+        if (name === 'ACAD_SCALELIST' && ratio) {
+          const scales = dictionary.groups.flatMap((pair, i) => pair[0] === 3 && dictionary.groups[i + 1]?.[0] === 350 ? [target.get(canonicalCadHandle(dictionary.groups[i + 1]![1]))] : []);
+          return scales.some(scale => scale?.type === 'SCALE'
+            && scale.groups.some(pair => pair[0] === 300 && pair[1] === scaleName)
+            && scale.groups.some(pair => pair[0] === 140 && pair[1] === dotted(ratio[1]!))
+            && scale.groups.some(pair => pair[0] === 141 && pair[1] === dotted(ratio[2]!))
+            && scale.groups.some(pair => pair[0] === 290 && pair[1] === (ratio[1] === ratio[2] ? '1' : '0')));
+        }
+        return false;
+      };
+      if (entries.length * 2 === added.length && entries.every(chainOk)) groups = groups.slice(0, record.groups.length);
     }
     expect(groups, `${record.type} ${handle}: unmodeled or native source pairs changed`).toEqual(record.groups);
   }
