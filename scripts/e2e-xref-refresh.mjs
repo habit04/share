@@ -125,15 +125,20 @@
 // closeBounded(qapp) saw undefined for a failed launch and leaked
 // the process; that path is now unreachable for launch failures.
 // Every launch also records a TIMELINE (launchTimelineRecordImpl
-// below): spawn issued, the app object, the first BrowserWindow,
-// did-finish-load, ready-to-show, the jcad:// window the harness
-// sees, and window.editor ready - millisecond offsets from spawn
-// on the one wall clock, persisted per launch in
+// below): spawn issued, the app object, app-ready, the first
+// BrowserWindow, its navigation lifecycle (did-start-navigation,
+// did-navigate, dom-ready, did-finish-load / did-fail-load),
+// ready-to-show, the jcad:// window the harness sees,
+// window.editor ready, render-process-gone - millisecond offsets
+// from spawn on the one wall clock, persisted per launch in
 // results.launchTimelines. On a failed launch the timeline shows
-// how far the launch got; unreached milestones stay absent (null),
-// never fabricated. `node scripts/e2e-xref-refresh.mjs
-// --self-test-timeline` runs the record builder's regression
-// without Electron.
+// how far the launch got, plus a failure-time main-process
+// snapshot (app.isReady + per-window URL/loading/crashed/visible);
+// unreached milestones stay absent (null), never fabricated, and
+// milestones the clock found already reached at install time are
+// marked preExisting with no invented time. `node
+// scripts/e2e-xref-refresh.mjs --self-test-timeline` runs the
+// record builder's regression without Electron.
 //
 //   npm run build
 //   node scripts/xref-native-fixtures.mjs <work-root>/fixtures
@@ -417,19 +422,41 @@ const G2_REASON = 'observer not enabled for this run (no --observer): criterion 
  * @property {CorrelationRecord} [correlation]
  */
 /**
- * @typedef {Object} LaunchTimelineStamps - absolute wall-clock stamps (Date.now epoch ms) gathered for ONE launch: harness-side marks plus the main-process window clock the launch installs (globalThis.__xrefLaunchClock). Every field but t0 stays null until the launch actually reaches that point.
+ * @typedef {Object} LaunchTimelineStamps - absolute wall-clock stamps (Date.now epoch ms) gathered for ONE launch: harness-side marks plus the main-process window clock the launch installs (globalThis.__xrefLaunchClock). Every field but t0 stays null until the launch actually reaches that point. A milestone the clock found ALREADY reached at install time (a window that predates the clock, an app already ready) is never backdated: its stamp stays null and its key is set in preExisting instead - the record shows it happened, with no invented time.
  * @property {number} t0 - spawn issued; the relative zero for every event.
  * @property {number | null} appObjectAt - electron.launch resolved: the ElectronApplication handle exists.
- * @property {number | null} windowCreatedAt - main-process stamp: the first BrowserWindow was created (or already existed when the clock was installed).
+ * @property {number | null} appReadyAt - main-process stamp: the app 'ready' event fired after the clock was installed (electronApp.once('ready')). If the app was already ready at install, the key 'appReady' is set in preExisting instead.
+ * @property {number | null} windowCreatedAt - main-process stamp: the first BrowserWindow was created after the clock was installed. A window that already existed at install sets 'windowCreated' in preExisting instead.
+ * @property {number | null} didStartNavigationAt - main-process stamp: the first window's webContents fired did-start-navigation.
+ * @property {number | null} didNavigateAt - main-process stamp: the first window's webContents fired did-navigate (the navigation committed).
+ * @property {number | null} domReadyAt - main-process stamp: the first window's webContents fired dom-ready.
  * @property {number | null} didFinishLoadAt - main-process stamp: the first window's webContents fired did-finish-load.
+ * @property {number | null} didFailLoadAt - main-process stamp: the first window's webContents fired did-fail-load.
  * @property {number | null} readyToShowAt - main-process stamp: the first window fired ready-to-show.
- * @property {number | null} windowSeenAt - harness-side: applicationWindow returned the jcad://app page.
+ * @property {number | null} renderProcessGoneAt - main-process stamp: the first window's webContents fired render-process-gone.
+ * @property {number | null} windowSeenAt - harness-side: the window wait returned the jcad://app page.
  * @property {number | null} editorReadyAt - harness-side: window.editor appeared in the page.
+ * @property {number | null} mainWindowObservedAt - packaged launches only: the harness's main-process probe first saw a BrowserWindow whose webContents URL was already committed under jcad://app/ (the window existed in main while Playwright's page enumeration had not yet yielded it). Null in dev mode.
+ * @property {Record<string, boolean>} preExisting - milestone keys ('appReady', 'windowCreated', 'didStartNavigation', 'didNavigate', 'domReady', 'didFinishLoad', 'readyToShow', 'renderProcessGone') the clock found already reached at install time; those milestones appear in the record with ms null and preExisting true.
  */
 /**
- * @typedef {Object} LaunchTimelineEvent - one reached launch milestone, as a millisecond offset from spawn.
+ * @typedef {Object} LaunchTimelineEvent - one reached launch milestone, as a millisecond offset from spawn. A milestone that predates the clock has ms null and preExisting true (it happened; no truthful offset exists).
  * @property {string} name
- * @property {number} ms
+ * @property {number | null} ms
+ * @property {boolean} [preExisting]
+ */
+/**
+ * @typedef {Object} LaunchWindowSnapshot - one BrowserWindow's state at a failed launch's failure time, read in the main process.
+ * @property {string} url - webContents.getURL().
+ * @property {boolean} isLoading - webContents.isLoading().
+ * @property {boolean} isWaitingForResponse - webContents.isWaitingForResponse().
+ * @property {boolean} isCrashed - webContents.isCrashed().
+ * @property {boolean} isVisible - window.isVisible().
+ */
+/**
+ * @typedef {Object} LaunchFailureSnapshot - the failure-time main-process snapshot persisted on a failed launch's timeline record (null on success, and null when the snapshot itself could not be taken).
+ * @property {boolean} appReady - app.isReady() at failure time.
+ * @property {LaunchWindowSnapshot[]} windows - one entry per BrowserWindow then existing.
  */
 /**
  * @typedef {Object} LaunchTimelineRecord - launchTimelineRecordImpl's output: one launch's persisted timeline (results.launchTimelines).
@@ -440,6 +467,8 @@ const G2_REASON = 'observer not enabled for this run (no --observer): criterion 
  * @property {string} outcome - 'ready' | 'failed'.
  * @property {string | null} failureStage - the launchApp stage that threw (on failure only).
  * @property {string | null} error - the failure's message (on failure only).
+ * @property {LaunchFailureSnapshot | null} failureSnapshot - the failure-time main-process snapshot (failed launches only).
+ * @property {number | null} mainWindowObservedMs - packaged launches: ms offset of the main-process probe's first committed-jcad:// window observation, when it preceded windowSeenAt; otherwise null. Not an event: it never advances furthestEvent.
  */
 
 // ------------------------------------------------------------ semantic entity oracle (finding 1)
@@ -925,33 +954,50 @@ if (process.argv.includes('--self-test-burst')) {
 // The ONE builder of a launch's persisted timeline record. Pure: it
 // decides only from the stamps launchApp gathered (harness-side marks
 // plus the main-process window clock). Canonical milestone order:
-//   spawn-issued -> app-object -> browser-window-created ->
-//   did-finish-load -> ready-to-show -> window-seen -> editor-ready
-// The main-process window stamps sit before the harness-side
-// window-seen in the canonical order (the harness can only see the
-// jcad:// page once a window exists and loads); the ms values are
-// reported exactly as measured, so any real-world inversion stays
-// visible in the numbers rather than being sorted away. A milestone
-// whose stamp is missing stays ABSENT from the record - a failed
-// launch's timeline shows how far it got and no further.
+//   spawn-issued -> app-object -> app-ready ->
+//   browser-window-created -> did-start-navigation -> did-navigate ->
+//   dom-ready -> did-finish-load -> did-fail-load -> ready-to-show ->
+//   window-seen -> editor-ready -> render-process-gone
+// The main-process stamps sit before the harness-side window-seen in
+// the canonical order (the harness can only see the jcad:// page
+// once a window exists and loads); the ms values are reported
+// exactly as measured, so any real-world inversion stays visible in
+// the numbers rather than being sorted away. A milestone whose
+// stamp is missing stays ABSENT from the record - a failed launch's
+// timeline shows how far it got and no further. A milestone the
+// clock found ALREADY reached at install time (its key set in
+// stamps.preExisting) is present with ms null and preExisting true:
+// it happened, but no truthful offset exists, and none is invented.
+// A failed record also carries the failure-time main-process
+// snapshot launchApp captured (failureSnapshot); a ready record
+// carries null.
 function launchTimelineRecordImpl(input) {
   const { label, mode, stamps, outcome, failureStage, error } = input;
   const t0 = stamps.t0;
+  const pre = stamps.preExisting ?? {};
   const candidates = [
-    ['spawn-issued', t0],
-    ['app-object', stamps.appObjectAt],
-    ['browser-window-created', stamps.windowCreatedAt],
-    ['did-finish-load', stamps.didFinishLoadAt],
-    ['ready-to-show', stamps.readyToShowAt],
-    ['window-seen', stamps.windowSeenAt],
-    ['editor-ready', stamps.editorReadyAt],
+    ['app-object', stamps.appObjectAt, null],
+    ['app-ready', stamps.appReadyAt, 'appReady'],
+    ['browser-window-created', stamps.windowCreatedAt, 'windowCreated'],
+    ['did-start-navigation', stamps.didStartNavigationAt, 'didStartNavigation'],
+    ['did-navigate', stamps.didNavigateAt, 'didNavigate'],
+    ['dom-ready', stamps.domReadyAt, 'domReady'],
+    ['did-finish-load', stamps.didFinishLoadAt, 'didFinishLoad'],
+    ['did-fail-load', stamps.didFailLoadAt, null],
+    ['ready-to-show', stamps.readyToShowAt, 'readyToShow'],
+    ['window-seen', stamps.windowSeenAt, null],
+    ['editor-ready', stamps.editorReadyAt, null],
+    ['render-process-gone', stamps.renderProcessGoneAt, 'renderProcessGone'],
   ];
   /** @type {LaunchTimelineEvent[]} */
-  const events = [];
+  const events = [{ name: 'spawn-issued', ms: 0 }];
   let furthestEvent = 'spawn-issued';
-  for (const [name, at] of candidates) {
+  for (const [name, at, preKey] of candidates) {
     if (typeof at === 'number' && Number.isFinite(at)) {
       events.push({ name, ms: at - t0 });
+      furthestEvent = name;
+    } else if (preKey && pre[preKey]) {
+      events.push({ name, ms: null, preExisting: true });
       furthestEvent = name;
     }
   }
@@ -960,6 +1006,9 @@ function launchTimelineRecordImpl(input) {
     outcome,
     failureStage: outcome === 'failed' ? failureStage : null,
     error: outcome === 'failed' ? error : null,
+    failureSnapshot: outcome === 'failed' ? (input.failureSnapshot ?? null) : null,
+    mainWindowObservedMs: typeof stamps.mainWindowObservedAt === 'number' && Number.isFinite(stamps.mainWindowObservedAt)
+      ? stamps.mainWindowObservedAt - t0 : null,
   };
 }
 
@@ -967,11 +1016,17 @@ function launchTimelineRecordImpl(input) {
 //   node scripts/e2e-xref-refresh.mjs --self-test-timeline
 // Exit 0 only if launchTimelineRecordImpl (the very builder launchApp
 // persists) decides: a fully stamped ready launch -> all seven
-// milestones in canonical order with exact relative ms; a launch
-// that failed at the window wait (the Stage 2 quit shape) -> only
-// the reached milestones, furthest=app-object, failure fields kept;
-// a spawn failure -> spawn-issued only; a window that loaded but
-// never fired ready-to-show -> that milestone stays absent.
+// original milestones in canonical order with exact relative ms; a
+// launch that failed at the window wait (the Stage 2 quit shape) ->
+// only the reached milestones, furthest=app-object, failure fields
+// kept; a spawn failure -> spawn-issued only; a window that loaded
+// but never fired ready-to-show -> that milestone stays absent; the
+// amended event set (app-ready, navigation/commit, dom-ready,
+// did-fail-load, render-process-gone) in canonical order with exact
+// ms; a failed load terminating at did-fail-load; milestones that
+// predate the clock present with ms null + preExisting true (never
+// backdated); the failure snapshot carried verbatim on failed
+// records only.
 if (process.argv.includes('--self-test-timeline')) {
   const T0 = 1_000_000;
   const empty = { appObjectAt: null, windowCreatedAt: null, didFinishLoadAt: null, readyToShowAt: null, windowSeenAt: null, editorReadyAt: null };
@@ -991,6 +1046,39 @@ if (process.argv.includes('--self-test-timeline')) {
     label: 'x', mode: 'dev', outcome: 'failed', failureStage: 'editor', error: 'editor timeout',
     stamps: { t0: T0, ...empty, appObjectAt: T0 + 10, windowCreatedAt: T0 + 20, didFinishLoadAt: T0 + 30, windowSeenAt: T0 + 25 },
   });
+  const full = launchTimelineRecordImpl({
+    label: 'x', mode: 'packaged', outcome: 'ready', failureStage: null, error: null,
+    stamps: {
+      t0: T0, appObjectAt: T0 + 100, appReadyAt: T0 + 150, windowCreatedAt: T0 + 200,
+      didStartNavigationAt: T0 + 210, didNavigateAt: T0 + 260, domReadyAt: T0 + 400,
+      didFinishLoadAt: T0 + 500, didFailLoadAt: null, readyToShowAt: T0 + 520,
+      windowSeenAt: T0 + 300, editorReadyAt: T0 + 900, renderProcessGoneAt: null,
+      mainWindowObservedAt: T0 + 280, preExisting: {},
+    },
+  });
+  const failLoad = launchTimelineRecordImpl({
+    label: 'x', mode: 'packaged', outcome: 'failed', failureStage: 'window', error: 'The secure application window did not appear before the deadline.',
+    stamps: {
+      t0: T0, ...empty, appObjectAt: T0 + 100, windowCreatedAt: T0 + 200,
+      didStartNavigationAt: T0 + 210, didNavigateAt: T0 + 260, didFailLoadAt: T0 + 800,
+    },
+  });
+  const preWin = launchTimelineRecordImpl({
+    label: 'x', mode: 'packaged', outcome: 'failed', failureStage: 'window', error: 'The secure application window did not appear before the deadline.',
+    stamps: {
+      t0: T0, ...empty, appObjectAt: T0 + 4000,
+      preExisting: { appReady: true, windowCreated: true, didNavigate: true, domReady: true, didFinishLoad: true },
+    },
+  });
+  const snap = { appReady: true, windows: [{ url: 'jcad://app/index.html', isLoading: true, isWaitingForResponse: false, isCrashed: false, isVisible: false }] };
+  const withSnap = launchTimelineRecordImpl({
+    label: 'x', mode: 'packaged', outcome: 'failed', failureStage: 'window', error: 'boom', failureSnapshot: snap,
+    stamps: { t0: T0, ...empty, appObjectAt: T0 + 10 },
+  });
+  const gone = launchTimelineRecordImpl({
+    label: 'x', mode: 'dev', outcome: 'failed', failureStage: 'editor', error: 'editor timeout',
+    stamps: { t0: T0, ...empty, appObjectAt: T0 + 10, windowCreatedAt: T0 + 20, didFinishLoadAt: T0 + 30, windowSeenAt: T0 + 25, editorReadyAt: T0 + 40, renderProcessGoneAt: T0 + 50 },
+  });
   const cases = [
     ['(a) ready launch: all seven milestones in canonical order', ready.events.map((e) => e.name), ['spawn-issued', 'app-object', 'browser-window-created', 'did-finish-load', 'ready-to-show', 'window-seen', 'editor-ready']],
     ['(a2) ready launch: relative ms are stamp - t0, as measured', ready.events.map((e) => e.ms), [0, 250, 900, 2400, 2450, 1000, 5200]],
@@ -999,6 +1087,14 @@ if (process.argv.includes('--self-test-timeline')) {
     ['(b2) window-wait failure: furthest + failure fields kept', [winFail.furthestEvent, winFail.failureStage, winFail.error], ['app-object', 'window', 'The secure application window did not appear before the deadline.']],
     ['(c) spawn failure: spawn-issued only', [spawnFail.events.length, spawnFail.furthestEvent], [1, 'spawn-issued']],
     ['(d) loaded but ready-to-show never fired: the absent milestone stays absent', partial.events.map((e) => e.name), ['spawn-issued', 'app-object', 'browser-window-created', 'did-finish-load', 'window-seen']],
+    ['(e) full new event set: all reached milestones in canonical order', full.events.map((e) => e.name), ['spawn-issued', 'app-object', 'app-ready', 'browser-window-created', 'did-start-navigation', 'did-navigate', 'dom-ready', 'did-finish-load', 'ready-to-show', 'window-seen', 'editor-ready']],
+    ['(e2) full new event set: exact ms, and mainWindowObservedMs passes through as a field (not an event)', [full.events.map((e) => e.ms), full.mainWindowObservedMs, full.failureSnapshot], [[0, 100, 150, 200, 210, 260, 400, 500, 520, 300, 900], 280, null]],
+    ['(f) load failed: did-fail-load is the terminus, did-finish-load stays absent', [failLoad.events.map((e) => e.name), failLoad.furthestEvent], [['spawn-issued', 'app-object', 'browser-window-created', 'did-start-navigation', 'did-navigate', 'did-fail-load'], 'did-fail-load']],
+    ['(g) pre-existing window: milestones present with ms null + preExisting true, never backdated', preWin.events, [{ name: 'spawn-issued', ms: 0 }, { name: 'app-object', ms: 4000 }, { name: 'app-ready', ms: null, preExisting: true }, { name: 'browser-window-created', ms: null, preExisting: true }, { name: 'did-navigate', ms: null, preExisting: true }, { name: 'dom-ready', ms: null, preExisting: true }, { name: 'did-finish-load', ms: null, preExisting: true }]],
+    ['(g2) pre-existing window: furthest advances through the pre-existing milestones', preWin.furthestEvent, 'did-finish-load'],
+    ['(h) failure snapshot: carried verbatim on a failed record', withSnap.failureSnapshot, snap],
+    ['(h2) failure snapshot: a ready record carries null even if one was supplied', launchTimelineRecordImpl({ label: 'x', mode: 'dev', outcome: 'ready', failureStage: null, error: null, failureSnapshot: snap, stamps: { t0: T0, ...empty } }).failureSnapshot, null],
+    ['(i) render-process-gone: present with its ms, and furthest when it is last', [gone.events.map((e) => e.name), gone.furthestEvent], [['spawn-issued', 'app-object', 'browser-window-created', 'did-finish-load', 'window-seen', 'editor-ready', 'render-process-gone'], 'render-process-gone']],
   ];
   let okAll = true;
   for (const [name, got, want] of cases) {
@@ -1240,7 +1336,10 @@ async function buildBundle() {
 // ------------------------------------------------------------ app driving
 // Pull the main-process window clock a launch installed, bounded so
 // a wedged main process cannot hang the harness; stamps the clock
-// never set stay null (absent from the record, never fabricated).
+// never set stay null (absent from the record, never fabricated),
+// and milestones the clock marked pre-existing (already reached at
+// install time) land in stamps.preExisting - present in the record
+// with no invented time.
 async function pullLaunchClock(app, stamps) {
   try {
     const clock = await Promise.race([
@@ -1248,11 +1347,56 @@ async function pullLaunchClock(app, stamps) {
       new Promise((done) => setTimeout(() => done(null), 5_000)),
     ]);
     if (clock) {
+      if (typeof clock.appReadyAt === 'number') stamps.appReadyAt = clock.appReadyAt;
       if (typeof clock.windowCreatedAt === 'number') stamps.windowCreatedAt = clock.windowCreatedAt;
+      if (typeof clock.didStartNavigationAt === 'number') stamps.didStartNavigationAt = clock.didStartNavigationAt;
+      if (typeof clock.didNavigateAt === 'number') stamps.didNavigateAt = clock.didNavigateAt;
+      if (typeof clock.domReadyAt === 'number') stamps.domReadyAt = clock.domReadyAt;
       if (typeof clock.didFinishLoadAt === 'number') stamps.didFinishLoadAt = clock.didFinishLoadAt;
+      if (typeof clock.didFailLoadAt === 'number') stamps.didFailLoadAt = clock.didFailLoadAt;
       if (typeof clock.readyToShowAt === 'number') stamps.readyToShowAt = clock.readyToShowAt;
+      if (typeof clock.renderProcessGoneAt === 'number') stamps.renderProcessGoneAt = clock.renderProcessGoneAt;
+      if (clock.appReadyPre === true) stamps.preExisting.appReady = true;
+      if (clock.windowCreatedPre === true) stamps.preExisting.windowCreated = true;
+      if (clock.didStartNavigationPre === true) stamps.preExisting.didStartNavigation = true;
+      if (clock.didNavigatePre === true) stamps.preExisting.didNavigate = true;
+      if (clock.domReadyPre === true) stamps.preExisting.domReady = true;
+      if (clock.didFinishLoadPre === true) stamps.preExisting.didFinishLoad = true;
+      if (clock.readyToShowPre === true) stamps.preExisting.readyToShow = true;
+      if (clock.renderProcessGonePre === true) stamps.preExisting.renderProcessGone = true;
     }
   } catch { /* clock unavailable for this launch; its window stamps stay null */ }
+}
+
+// Failure-time snapshot (Stage 2 launchfix r2): when a launch fails,
+// read the main process's own view of that moment - app.isReady()
+// plus, per BrowserWindow, its webContents URL / loading / waiting /
+// crashed state and the window's visibility. This is what locates a
+// stall the r1 stamps could not: a window can exist in main with a
+// committed URL while the harness's page enumeration never yields
+// it. Bounded like the clock pull; any failure yields null (the
+// record then says the snapshot itself could not be taken).
+async function captureFailureSnapshot(app) {
+  try {
+    const snap = await Promise.race([
+      app.evaluate(({ app: electronApp, BrowserWindow }) => ({
+        appReady: electronApp.isReady(),
+        windows: BrowserWindow.getAllWindows().map((w) => {
+          const wc = w.webContents;
+          const one = (/** @type {() => unknown} */ fn) => { try { return fn(); } catch { return null; } };
+          return {
+            url: /** @type {string} */ (one(() => wc.getURL()) ?? ''),
+            isLoading: /** @type {boolean} */ (one(() => wc.isLoading()) ?? false),
+            isWaitingForResponse: /** @type {boolean} */ (one(() => wc.isWaitingForResponse()) ?? false),
+            isCrashed: /** @type {boolean} */ (one(() => wc.isCrashed()) ?? false),
+            isVisible: /** @type {boolean} */ (one(() => w.isVisible()) ?? false),
+          };
+        }),
+      })),
+      new Promise((done) => setTimeout(() => done(null), 5_000)),
+    ]);
+    return snap ?? null;
+  } catch { return null; }
 }
 
 async function launchApp(label) {
@@ -1270,7 +1414,13 @@ async function launchApp(label) {
   // finalized through launchTimelineRecordImpl on BOTH the ready and
   // the failed path and persisted in results.launchTimelines.
   /** @type {LaunchTimelineStamps} */
-  const stamps = { t0: Date.now(), appObjectAt: null, windowCreatedAt: null, didFinishLoadAt: null, readyToShowAt: null, windowSeenAt: null, editorReadyAt: null };
+  const stamps = {
+    t0: Date.now(), appObjectAt: null, appReadyAt: null, windowCreatedAt: null,
+    didStartNavigationAt: null, didNavigateAt: null, domReadyAt: null,
+    didFinishLoadAt: null, didFailLoadAt: null, readyToShowAt: null,
+    renderProcessGoneAt: null, windowSeenAt: null, editorReadyAt: null,
+    mainWindowObservedAt: null, preExisting: {},
+  };
   let stage = 'spawn';
   /** @type {import('playwright').ElectronApplication | undefined} */
   let app;
@@ -1290,15 +1440,73 @@ async function launchApp(label) {
     try {
       await app.evaluate(({ BrowserWindow, app: electronApp }) => {
         const g = globalThis;
-        const clock = { windowCreatedAt: /** @type {number | null} */ (null), didFinishLoadAt: /** @type {number | null} */ (null), readyToShowAt: /** @type {number | null} */ (null) };
-        g.__xrefLaunchClock = clock;
-        const hook = (w) => {
-          if (clock.windowCreatedAt === null) clock.windowCreatedAt = Date.now();
-          try { w.webContents.on('did-finish-load', () => { if (clock.didFinishLoadAt === null) clock.didFinishLoadAt = Date.now(); }); } catch { /* window may already be gone */ }
-          try { w.once('ready-to-show', () => { if (clock.readyToShowAt === null) clock.readyToShowAt = Date.now(); }); } catch { /* window may already be gone */ }
+        /** @type {Record<string, number | boolean | null>} */
+        const clock = {
+          appReadyAt: null, appReadyPre: false,
+          windowCreatedAt: null, windowCreatedPre: false,
+          didStartNavigationAt: null, didStartNavigationPre: false,
+          didNavigateAt: null, didNavigatePre: false,
+          domReadyAt: null, domReadyPre: false,
+          didFinishLoadAt: null, didFinishLoadPre: false,
+          didFailLoadAt: null,
+          readyToShowAt: null, readyToShowPre: false,
+          renderProcessGoneAt: null, renderProcessGonePre: false,
         };
-        for (const w of BrowserWindow.getAllWindows()) hook(w);
-        electronApp.on('browser-window-created', (_event, w) => hook(w));
+        g.__xrefLaunchClock = clock;
+        // app-ready: stamp the REAL flip if it is still ahead of us.
+        // If the app is already ready (the packaged shape: no loader
+        // gate holds it, so it is ready before Playwright connects),
+        // mark it pre-existing - never backdate it to install time.
+        if (electronApp.isReady()) clock.appReadyPre = true;
+        else electronApp.once('ready', () => { if (clock.appReadyAt === null) clock.appReadyAt = Date.now(); });
+        const stamp = (/** @type {string} */ key) => {
+          if (clock[`${key}At`] === null && !clock[`${key}Pre`]) clock[`${key}At`] = Date.now();
+        };
+        let firstContentsHooked = false;
+        const hookContents = (/** @type {Electron.WebContents} */ wc) => {
+          try { wc.on('did-start-navigation', () => stamp('didStartNavigation')); } catch { /* contents may already be gone */ }
+          try { wc.on('did-navigate', () => stamp('didNavigate')); } catch { /* contents may already be gone */ }
+          try { wc.on('dom-ready', () => stamp('domReady')); } catch { /* contents may already be gone */ }
+          try { wc.on('did-finish-load', () => stamp('didFinishLoad')); } catch { /* contents may already be gone */ }
+          try { wc.on('did-fail-load', () => stamp('didFailLoad')); } catch { /* contents may already be gone */ }
+          try { wc.on('render-process-gone', () => stamp('renderProcessGone')); } catch { /* contents may already be gone */ }
+        };
+        const hookWindow = (/** @type {Electron.BrowserWindow} */ w, /** @type {boolean} */ preExisting) => {
+          if (preExisting) { if (clock.windowCreatedAt === null) clock.windowCreatedPre = true; }
+          else stamp('windowCreated');
+          // ready-to-show and the load lifecycle are FIRST-window
+          // stamps (the window applicationWindow waits for).
+          if (firstContentsHooked) return;
+          firstContentsHooked = true;
+          const wc = w.webContents;
+          if (preExisting) {
+            // Truthful backfill for a window that predates the
+            // clock: mark pre-existing ONLY what its current state
+            // proves already happened; anything still in flight is
+            // left for the live hooks below. No time is invented.
+            let url = '';
+            try { url = wc.getURL(); } catch { /* contents may already be gone */ }
+            const committed = typeof url === 'string' && url !== '' && url !== 'about:blank';
+            if (committed) { clock.didStartNavigationPre = true; clock.didNavigatePre = true; }
+            let crashed = false;
+            try { crashed = wc.isCrashed(); } catch { /* contents may already be gone */ }
+            if (crashed) clock.renderProcessGonePre = true;
+            else if (committed) {
+              let loading = true;
+              try { loading = wc.isLoading(); } catch { /* contents may already be gone */ }
+              if (!loading) { clock.domReadyPre = true; clock.didFinishLoadPre = true; }
+            }
+            let visible = false;
+            try { visible = w.isVisible(); } catch { /* window may already be gone */ }
+            if (visible) clock.readyToShowPre = true;
+            else { try { w.once('ready-to-show', () => stamp('readyToShow')); } catch { /* window may already be gone */ } }
+          } else {
+            try { w.once('ready-to-show', () => stamp('readyToShow')); } catch { /* window may already be gone */ }
+          }
+          hookContents(wc);
+        };
+        for (const w of BrowserWindow.getAllWindows()) hookWindow(w, true);
+        electronApp.on('browser-window-created', (_event, w) => hookWindow(w, false));
       });
     } catch { /* timeline clock unavailable for this launch; its window stamps stay null */ }
     stage = 'window';
@@ -1336,13 +1544,14 @@ async function launchApp(label) {
     await pullLaunchClock(app, stamps);
     const record = launchTimelineRecordImpl({ label, mode: packagedMode ? 'packaged' : 'dev', stamps, outcome: 'ready', failureStage: null, error: null });
     results.launchTimelines.push(record);
-    log(`launch[${label}]: timeline ready - ${record.events.map((e) => `${e.name}@${e.ms}ms`).join(' ')}`);
+    log(`launch[${label}]: timeline ready - ${record.events.map((e) => `${e.name}@${e.ms === null ? 'pre' : e.ms}ms`).join(' ')}`);
     return { app, win, pageErrors, profile, observer };
   } catch (error) {
     if (app) await pullLaunchClock(app, stamps);
-    const record = launchTimelineRecordImpl({ label, mode: packagedMode ? 'packaged' : 'dev', stamps, outcome: 'failed', failureStage: stage, error: String(error && error.message || error) });
+    const failureSnapshot = app ? await captureFailureSnapshot(app) : null;
+    const record = launchTimelineRecordImpl({ label, mode: packagedMode ? 'packaged' : 'dev', stamps, outcome: 'failed', failureStage: stage, error: String(error && error.message || error), failureSnapshot });
     results.launchTimelines.push(record);
-    log(`launch[${label}]: timeline FAILED at stage ${stage} (furthest=${record.furthestEvent}) - ${record.events.map((e) => `${e.name}@${e.ms}ms`).join(' ')} error=${record.error}`);
+    log(`launch[${label}]: timeline FAILED at stage ${stage} (furthest=${record.furthestEvent}) - ${record.events.map((e) => `${e.name}@${e.ms === null ? 'pre' : e.ms}ms`).join(' ')} error=${record.error} snapshot=${record.failureSnapshot ? JSON.stringify(record.failureSnapshot) : 'none'}`);
     // A failed launch still OWNS its app (Stage 2 commission): the
     // callers receive the handle only from a RESOLVED launchApp, so
     // their catch-path closeBounded(qapp) saw undefined and the
