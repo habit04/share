@@ -69,6 +69,9 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'jcad', privileges: { standard: 
 const DEV_URL = require('./inspection-policy.cjs').developmentServerUrl(app.isPackaged, process.env.VITE_DEV_SERVER_URL);
 /** @type {{ values: Record<string, string>, source: 'checkpoint' | 'legacy' } | null} */
 let rendererStorage = null;
+/** Set when the startup legacy-storage migration timed out or threw (P-MIG): the migration must
+ * not be marked complete for this launch, so the next launch retries the extraction. */
+let legacyMigrationFailed = false;
 let startingMainWindow = true;
 
 // Every IPC listener checks its caller: only the application page in the main window's top
@@ -189,8 +192,9 @@ app.whenReady().then(async () => {
       const checkpoint = await readRendererPreferences();
       if (checkpoint !== null) rendererStorage = { values: checkpoint, source: 'checkpoint' };
       else if (!fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated'))) {
-        const values = fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')) ? await legacyStorage({ BrowserWindow, protocol, indexFile: path.join(__dirname, '..', 'dist', 'index.html') }) : {};
-        rendererStorage = values === null ? null : { values, source: 'legacy' };
+        const outcome = fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')) ? await legacyStorage({ BrowserWindow, protocol, indexFile: path.join(__dirname, '..', 'dist', 'index.html'), logError: logMainError }) : { values: {}, ok: true };
+        legacyMigrationFailed = !outcome.ok;
+        rendererStorage = outcome.values === null ? null : { values: outcome.values, source: 'legacy' };
       }
     } catch (error) {
       // An unreadable/corrupt checkpoint must not fall back to stale legacy values.
@@ -219,6 +223,10 @@ ipcMain.on('renderer-storage-migration', (event) => {
 });
 ipcMain.handle('renderer-storage-migrated', async (event) => {
   try {
+    // A failed startup migration (P-MIG) must not be marked complete: this checkpoint is the
+    // only write of the migration marker file, and it would also make the next launch take the
+    // checkpoint branch and never retry the legacy extraction. Skip it; the next launch retries.
+    if (legacyMigrationFailed) return false;
     const values = await checkpointRendererPreferences(event.sender, true);
     rendererStorage = { values, source: 'checkpoint' };
     flushRendererPreferences(event.sender);
