@@ -69,9 +69,6 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'jcad', privileges: { standard: 
 const DEV_URL = require('./inspection-policy.cjs').developmentServerUrl(app.isPackaged, process.env.VITE_DEV_SERVER_URL);
 /** @type {{ values: Record<string, string>, source: 'checkpoint' | 'legacy' } | null} */
 let rendererStorage = null;
-/** Set when the startup legacy-storage migration timed out or threw (P-MIG): the migration must
- * not be marked complete for this launch, so the next launch retries the extraction. */
-let legacyMigrationFailed = false;
 let startingMainWindow = true;
 
 // Every IPC listener checks its caller: only the application page in the main window's top
@@ -109,7 +106,11 @@ function senderWindow(/** @type {Electron.IpcMainInvokeEvent} */ ev) {
  * check paths - and the main window.
  * @type {import('./main/context.cjs').MainContext}
  */
-const ctx = { ipcMain, rejections, registry, pathPolicy, senderWindow, mainWindow: null, openFilesReady: false, handedOverProjects: new Set() };
+const ctx = { ipcMain, rejections, registry, pathPolicy, senderWindow, mainWindow: null, openFilesReady: false, handedOverProjects: new Set(),
+  // Set when the startup legacy-storage migration did not complete (P-MIG): the migration must
+  // not be marked complete for this launch - neither by the migrated checkpoint below nor by a
+  // close-time checkpoint (electron/main/window.cjs) - so the next launch retries the extraction.
+  legacyMigrationFailed: false };
 ipcMain.handle('gpu-diagnostics', () => gpuCollector.get());
 
 function loadPersistedPaths() {
@@ -193,11 +194,15 @@ app.whenReady().then(async () => {
       if (checkpoint !== null) rendererStorage = { values: checkpoint, source: 'checkpoint' };
       else if (!fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated'))) {
         const outcome = fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')) ? await legacyStorage({ BrowserWindow, protocol, indexFile: path.join(__dirname, '..', 'dist', 'index.html'), logError: logMainError }) : { values: {}, ok: true };
-        legacyMigrationFailed = !outcome.ok;
+        ctx.legacyMigrationFailed = !outcome.ok;
         rendererStorage = outcome.values === null ? null : { values: outcome.values, source: 'legacy' };
       }
     } catch (error) {
-      // An unreadable/corrupt checkpoint must not fall back to stale legacy values.
+      // An unreadable/corrupt checkpoint must not fall back to stale legacy values. The
+      // migration did not complete - the checkpoint read threw, or the hidden window's
+      // construction threw outside legacyStorage's own handling - so keep the retry:
+      // the failure flag covers the whole block, not just a settled extraction outcome.
+      ctx.legacyMigrationFailed = true;
       logMainError('renderer preference migration', error);
     }
   }
@@ -226,7 +231,7 @@ ipcMain.handle('renderer-storage-migrated', async (event) => {
     // A failed startup migration (P-MIG) must not be marked complete: this checkpoint is the
     // only write of the migration marker file, and it would also make the next launch take the
     // checkpoint branch and never retry the legacy extraction. Skip it; the next launch retries.
-    if (legacyMigrationFailed) return false;
+    if (ctx.legacyMigrationFailed) return false;
     const values = await checkpointRendererPreferences(event.sender, true);
     rendererStorage = { values, source: 'checkpoint' };
     flushRendererPreferences(event.sender);

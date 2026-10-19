@@ -81,7 +81,16 @@ function createWindows(ctx, devUrl, allowInspection = !app.isPackaged) {
     if (!win || win.isDestroyed() || win.webContents.isDestroyed() || win.webContents.isCrashed() || forceClose.has(win)) return true;
     if (devUrl) return true;
     try {
-      await checkpointRendererPreferences(win.webContents);
+      // A failed startup migration (P-MIG) must not be marked complete by this checkpoint
+      // either: renderer-preferences.json would make the next launch take the checkpoint
+      // branch and never retry the legacy extraction, and the marker would follow on that
+      // later launch - the legacy values silently abandoned. Skip only the checkpoint write
+      // (the flush below writes no preference file): a normal close after a failed migration
+      // then leaves the next launch exactly what an abnormal end leaves, no checkpoint, and
+      // the extraction is retried. The failed session's own preference changes are lost, as
+      // on the Close Without Saving path below; a checkpoint snapshotted in a session that
+      // never received the legacy values would do active harm, not merely omit them.
+      if (!ctx.legacyMigrationFailed) await checkpointRendererPreferences(win.webContents);
       flushRendererPreferences(win.webContents);
       return true;
     } catch (error) {
