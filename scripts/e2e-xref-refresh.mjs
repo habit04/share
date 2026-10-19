@@ -1014,6 +1014,31 @@ if (process.argv.includes('--self-test-burst')) {
 // (before the --self-test-timeline block) so the self-test can
 // drive the wait against stub apps.
 const PACKAGED_PROBE_TIMEOUT_MS = 2_000;
+// Bound for the launch-clock INSTALL (launchfix r5.2): the
+// install is a ONE-SHOT app.evaluate that launchApp awaits right
+// after electron.launch, BEFORE the window wait is entered.
+// Through r5.1 it was the last unbounded evaluate on the launch
+// path (Codex whole-chain static review): a main process that
+// stops answering after launch never settles it, so the launch
+// never enters the bounded 60 s wait, never reaches the failure
+// catch (no 0002 cleanup, no timeline record), and only the
+// 10-minute watchdog ends it. The r3 probe bound does not cover
+// it - that probe lives INSIDE the wait. 5 s, the bound the
+// file's other one-shot evaluates already use (pullLaunchClock /
+// captureFailureSnapshot): the 2 s probe bound is calibrated for
+// a poll on a 500 ms cadence whose miss is retried on the next
+// iteration, while the install runs once, so it takes the
+// one-shot bound instead. A timed-out install is an honestly
+// unavailable clock: launchApp proceeds into the window wait on
+// schedule, nothing is stamped or fabricated, and
+// pullLaunchClock later reports whatever the clock holds (a
+// late-landing install still records main's own stamps whenever
+// they were taken - the race bounds the WAIT for the install,
+// not the install's own truth). The install never fails the
+// launch, never delays it beyond this bound, and never alters
+// its outcome. Declared here, beside the probe bound, so the
+// self-test can reference it.
+const CLOCK_INSTALL_TIMEOUT_MS = 5_000;
 function launchTimelineRecordImpl(input) {
   const { label, mode, stamps, outcome, failureStage, error } = input;
   const t0 = stamps.t0;
@@ -1094,7 +1119,13 @@ function launchTimelineRecordImpl(input) {
 // builder's profilePreconditionMs passthrough with the
 // spawn-moment t0 shape (event offsets exclude precondition
 // time entirely). The r5.1 cases pin the precondition close
-// order by platform (preconditionCloseOrderImpl).
+// order by platform (preconditionCloseOrderImpl). The r5.2
+// cases drive installLaunchClock - the real install launchApp
+// awaits before the window wait - against stub apps: a
+// never-resolving install evaluate returns unavailable within
+// its bound and the flow proceeds into the window wait; an
+// answering main installs; a rejecting evaluate is unavailable,
+// never thrown into the launch.
 if (process.argv.includes('--self-test-timeline')) {
   const T0 = 1_000_000;
   const empty = { appObjectAt: null, windowCreatedAt: null, didFinishLoadAt: null, readyToShowAt: null, windowSeenAt: null, editorReadyAt: null };
@@ -1277,6 +1308,43 @@ if (process.argv.includes('--self-test-timeline')) {
     ['(n10) precondition close order: POSIX takes the graceful SIGTERM first, tree kill as the escalation', [preconditionCloseOrderImpl('linux'), preconditionCloseOrderImpl('darwin')], [['graceful-kill', 'tree-kill'], ['graceful-kill', 'tree-kill']]],
     ['(o) builder: profilePreconditionMs passes through; a precondition-failed record reaches no milestone past spawn', [preRec.profilePreconditionMs, preRec.events.map((e) => e.name), preRec.furthestEvent], [30_250, ['spawn-issued'], 'spawn-issued']],
     ['(o2) builder: offsets measure from the spawn t0; precondition time lives only in profilePreconditionMs', [spawnRec.events.find((e) => e.name === 'app-object')?.ms, spawnRec.profilePreconditionMs, ready.profilePreconditionMs], [120, 2_750, null]],
+  );
+  // Launchfix r5.2: the launch-clock install bound, driven
+  // through the REAL installLaunchClock (a hoisted declaration;
+  // CLOCK_INSTALL_TIMEOUT_MS is initialised above this block)
+  // against stub apps, with a shortened bound like the r3 wait
+  // scenarios. (p) a main process whose evaluate NEVER resolves
+  // (it stopped answering after electron.launch): through r5.1
+  // the install awaited that evaluate unbounded, before
+  // stage='window' - the launch never entered the bounded wait,
+  // never reached the failure catch, and only the 10-minute
+  // watchdog ended it. Now the install must return unavailable
+  // (false - the existing representation: no clock in main, the
+  // window stamps stay null) within its bound. (p2) the flow
+  // then PROCEEDS: the same wedged app enters the packaged
+  // window wait, which behaves exactly as (j) pinned. (p3) an
+  // answering main installs (true). (p4) a rejecting evaluate is
+  // unavailable (false), never thrown into the launch - the
+  // pre-r5.2 catch's disposition, kept.
+  let installCalls = 0;
+  const installWedgedApp = {
+    windows: () => [],
+    evaluate: () => { installCalls += 1; return new Promise(() => { /* main stopped answering: never settles */ }); },
+  };
+  const installStart = Date.now();
+  const installGot = await installLaunchClock(installWedgedApp, 300);
+  const installElapsed = Date.now() - installStart;
+  const installCallsAtReturn = installCalls;
+  const installStamps = { mainWindowObservedAt: null, releasedTargets: 0 };
+  let afterInstallError = '';
+  try { await applicationWindowPackaged(installWedgedApp, installStamps, 400); } catch (error) { afterInstallError = String(error && error.message || error); }
+  const installOkGot = await installLaunchClock({ windows: () => [], evaluate: async () => undefined }, 300);
+  const installBadGot = await installLaunchClock({ windows: () => [], evaluate: async () => { throw new Error('main gone'); } }, 300);
+  cases.push(
+    ['(p) clock install, wedged main (evaluate never resolves): returns unavailable within its bound (300 ms shortened), nowhere near the 10-min watchdog', [installGot, installElapsed >= 250 && installElapsed < 300 + 1_500, installCallsAtReturn], [false, true, 1]],
+    ['(p2) flow proceeds after the bounded install: the same wedged app enters the window wait and rejects with the exact deadline error', afterInstallError, 'The secure application window did not appear before the deadline.'],
+    ['(p3) clock install, main answers: installed', installOkGot, true],
+    ['(p4) clock install, evaluate rejects: unavailable, never thrown into the launch', installBadGot, false],
   );
   let okAll = true;
   for (const [name, got, want] of cases) {
@@ -1529,6 +1597,102 @@ async function buildBundle() {
 }
 
 // ------------------------------------------------------------ app driving
+// Install the main-process window clock for a launch (moved out of
+// launchApp verbatim, launchfix r5.2, and BOUNDED - see
+// CLOCK_INSTALL_TIMEOUT_MS): resolves true when the install
+// evaluate settled, false when it rejected, threw, or did not
+// settle within the bound. Never throws. False is the harness's
+// existing unavailable-clock outcome: no __xrefLaunchClock in
+// main for pullLaunchClock to find, so the launch's window
+// stamps stay null and its unreached milestones stay absent
+// from the record - nothing is fabricated. launchApp ignores
+// the return value, exactly as it ignored the install's success
+// when the evaluate was inline; the value exists for the
+// self-test. Runs for every launch (dev and packaged alike -
+// one call site in launchApp) under the same disposition.
+/**
+ * @param {number} [timeoutMs]
+ * @returns {Promise<boolean>}
+ */
+async function installLaunchClock(app, timeoutMs = CLOCK_INSTALL_TIMEOUT_MS) {
+  try {
+    const settled = await Promise.race([
+      app.evaluate(({ BrowserWindow, app: electronApp }) => {
+        const g = globalThis;
+        /** @type {Record<string, number | boolean | null>} */
+        const clock = {
+          appReadyAt: null, appReadyPre: false,
+          windowCreatedAt: null, windowCreatedPre: false,
+          didStartNavigationAt: null, didStartNavigationPre: false,
+          didNavigateAt: null, didNavigatePre: false,
+          domReadyAt: null, domReadyPre: false,
+          didFinishLoadAt: null, didFinishLoadPre: false,
+          didFailLoadAt: null,
+          readyToShowAt: null, readyToShowPre: false,
+          renderProcessGoneAt: null, renderProcessGonePre: false,
+        };
+        g.__xrefLaunchClock = clock;
+        // app-ready: stamp the REAL flip if it is still ahead of us.
+        // If the app is already ready (the packaged shape: no loader
+        // gate holds it, so it is ready before Playwright connects),
+        // mark it pre-existing - never backdate it to install time.
+        if (electronApp.isReady()) clock.appReadyPre = true;
+        else electronApp.once('ready', () => { if (clock.appReadyAt === null) clock.appReadyAt = Date.now(); });
+        const stamp = (/** @type {string} */ key) => {
+          if (clock[`${key}At`] === null && !clock[`${key}Pre`]) clock[`${key}At`] = Date.now();
+        };
+        let firstContentsHooked = false;
+        const hookContents = (/** @type {Electron.WebContents} */ wc) => {
+          try { wc.on('did-start-navigation', () => stamp('didStartNavigation')); } catch { /* contents may already be gone */ }
+          try { wc.on('did-navigate', () => stamp('didNavigate')); } catch { /* contents may already be gone */ }
+          try { wc.on('dom-ready', () => stamp('domReady')); } catch { /* contents may already be gone */ }
+          try { wc.on('did-finish-load', () => stamp('didFinishLoad')); } catch { /* contents may already be gone */ }
+          try { wc.on('did-fail-load', () => stamp('didFailLoad')); } catch { /* contents may already be gone */ }
+          try { wc.on('render-process-gone', () => stamp('renderProcessGone')); } catch { /* contents may already be gone */ }
+        };
+        const hookWindow = (/** @type {Electron.BrowserWindow} */ w, /** @type {boolean} */ preExisting) => {
+          if (preExisting) { if (clock.windowCreatedAt === null) clock.windowCreatedPre = true; }
+          else stamp('windowCreated');
+          // ready-to-show and the load lifecycle are FIRST-window
+          // stamps (the window applicationWindow waits for).
+          if (firstContentsHooked) return;
+          firstContentsHooked = true;
+          const wc = w.webContents;
+          if (preExisting) {
+            // Truthful backfill for a window that predates the
+            // clock: mark pre-existing ONLY what its current state
+            // proves already happened; anything still in flight is
+            // left for the live hooks below. No time is invented.
+            let url = '';
+            try { url = wc.getURL(); } catch { /* contents may already be gone */ }
+            const committed = typeof url === 'string' && url !== '' && url !== 'about:blank';
+            if (committed) { clock.didStartNavigationPre = true; clock.didNavigatePre = true; }
+            let crashed = false;
+            try { crashed = wc.isCrashed(); } catch { /* contents may already be gone */ }
+            if (crashed) clock.renderProcessGonePre = true;
+            else if (committed) {
+              let loading = true;
+              try { loading = wc.isLoading(); } catch { /* contents may already be gone */ }
+              if (!loading) { clock.domReadyPre = true; clock.didFinishLoadPre = true; }
+            }
+            let visible = false;
+            try { visible = w.isVisible(); } catch { /* window may already be gone */ }
+            if (visible) clock.readyToShowPre = true;
+            else { try { w.once('ready-to-show', () => stamp('readyToShow')); } catch { /* window may already be gone */ } }
+          } else {
+            try { w.once('ready-to-show', () => stamp('readyToShow')); } catch { /* window may already be gone */ }
+          }
+          hookContents(wc);
+        };
+        for (const w of BrowserWindow.getAllWindows()) hookWindow(w, true);
+        electronApp.on('browser-window-created', (_event, w) => hookWindow(w, false));
+      }).then(() => true),
+      new Promise((done) => setTimeout(() => done(false), timeoutMs)),
+    ]);
+    return settled;
+  } catch { return false; }
+}
+
 // Pull the main-process window clock a launch installed, bounded so
 // a wedged main process cannot hang the harness; stamps the clock
 // never set stay null (absent from the record, never fabricated),
@@ -2019,79 +2183,11 @@ async function launchApp(label) {
     // Main-process window clock: installed immediately, so even a
     // launch that never shows a window leaves its (empty) clock
     // behind as evidence of how far main got. Instrumentation only -
-    // a failure to install it never fails the launch.
-    try {
-      await app.evaluate(({ BrowserWindow, app: electronApp }) => {
-        const g = globalThis;
-        /** @type {Record<string, number | boolean | null>} */
-        const clock = {
-          appReadyAt: null, appReadyPre: false,
-          windowCreatedAt: null, windowCreatedPre: false,
-          didStartNavigationAt: null, didStartNavigationPre: false,
-          didNavigateAt: null, didNavigatePre: false,
-          domReadyAt: null, domReadyPre: false,
-          didFinishLoadAt: null, didFinishLoadPre: false,
-          didFailLoadAt: null,
-          readyToShowAt: null, readyToShowPre: false,
-          renderProcessGoneAt: null, renderProcessGonePre: false,
-        };
-        g.__xrefLaunchClock = clock;
-        // app-ready: stamp the REAL flip if it is still ahead of us.
-        // If the app is already ready (the packaged shape: no loader
-        // gate holds it, so it is ready before Playwright connects),
-        // mark it pre-existing - never backdate it to install time.
-        if (electronApp.isReady()) clock.appReadyPre = true;
-        else electronApp.once('ready', () => { if (clock.appReadyAt === null) clock.appReadyAt = Date.now(); });
-        const stamp = (/** @type {string} */ key) => {
-          if (clock[`${key}At`] === null && !clock[`${key}Pre`]) clock[`${key}At`] = Date.now();
-        };
-        let firstContentsHooked = false;
-        const hookContents = (/** @type {Electron.WebContents} */ wc) => {
-          try { wc.on('did-start-navigation', () => stamp('didStartNavigation')); } catch { /* contents may already be gone */ }
-          try { wc.on('did-navigate', () => stamp('didNavigate')); } catch { /* contents may already be gone */ }
-          try { wc.on('dom-ready', () => stamp('domReady')); } catch { /* contents may already be gone */ }
-          try { wc.on('did-finish-load', () => stamp('didFinishLoad')); } catch { /* contents may already be gone */ }
-          try { wc.on('did-fail-load', () => stamp('didFailLoad')); } catch { /* contents may already be gone */ }
-          try { wc.on('render-process-gone', () => stamp('renderProcessGone')); } catch { /* contents may already be gone */ }
-        };
-        const hookWindow = (/** @type {Electron.BrowserWindow} */ w, /** @type {boolean} */ preExisting) => {
-          if (preExisting) { if (clock.windowCreatedAt === null) clock.windowCreatedPre = true; }
-          else stamp('windowCreated');
-          // ready-to-show and the load lifecycle are FIRST-window
-          // stamps (the window applicationWindow waits for).
-          if (firstContentsHooked) return;
-          firstContentsHooked = true;
-          const wc = w.webContents;
-          if (preExisting) {
-            // Truthful backfill for a window that predates the
-            // clock: mark pre-existing ONLY what its current state
-            // proves already happened; anything still in flight is
-            // left for the live hooks below. No time is invented.
-            let url = '';
-            try { url = wc.getURL(); } catch { /* contents may already be gone */ }
-            const committed = typeof url === 'string' && url !== '' && url !== 'about:blank';
-            if (committed) { clock.didStartNavigationPre = true; clock.didNavigatePre = true; }
-            let crashed = false;
-            try { crashed = wc.isCrashed(); } catch { /* contents may already be gone */ }
-            if (crashed) clock.renderProcessGonePre = true;
-            else if (committed) {
-              let loading = true;
-              try { loading = wc.isLoading(); } catch { /* contents may already be gone */ }
-              if (!loading) { clock.domReadyPre = true; clock.didFinishLoadPre = true; }
-            }
-            let visible = false;
-            try { visible = w.isVisible(); } catch { /* window may already be gone */ }
-            if (visible) clock.readyToShowPre = true;
-            else { try { w.once('ready-to-show', () => stamp('readyToShow')); } catch { /* window may already be gone */ } }
-          } else {
-            try { w.once('ready-to-show', () => stamp('readyToShow')); } catch { /* window may already be gone */ }
-          }
-          hookContents(wc);
-        };
-        for (const w of BrowserWindow.getAllWindows()) hookWindow(w, true);
-        electronApp.on('browser-window-created', (_event, w) => hookWindow(w, false));
-      });
-    } catch { /* timeline clock unavailable for this launch; its window stamps stay null */ }
+    // a failure to install it never fails the launch, and the
+    // install await itself is bounded (r5.2, installLaunchClock):
+    // a main process that stops answering here cannot hold the
+    // launch before the bounded window wait is even entered.
+    await installLaunchClock(app);
     stage = 'window';
     const win = packagedMode ? await applicationWindowPackaged(app, stamps) : await applicationWindow(app);
     stamps.windowSeenAt = Date.now();
