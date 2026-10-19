@@ -150,11 +150,19 @@
 //     --packaged-exe <path to the unpacked test build's executable>
 //   to target the packaged app (the `npm run dist:test` output) instead
 //   of the development electron. Every check and verdict is unchanged.
-//   Packaged launches carry only the dispositioned coupling
-//   subset of the switches Playwright's dev-mode loader would
-//   have appended (launchfix r2.1 - see PACKAGED_COUPLING_SWITCHES
-//   below and SWITCH-DISPOSITION.md), and the packaged window
-//   wait also probes the main process for a committed window.
+//   Packaged launches carry NO added Chromium switches
+//   (launchfix r4 final composition: the r2/r2.1 switch sets
+//   were removed after Test B refuted them - see the packaged
+//   launch coupling section below and SWITCH-DISPOSITION.md).
+//   The packaged window wait probes the main process for a
+//   committed window and attempts a bounded CDP release of any
+//   non-main page the attach may be holding (disclosed in that
+//   section: local probes show the release does NOT clear this
+//   hold; it is counted, verdict-invisible, not load-bearing).
+//   Packaged section-3.5 quit launches are preconditioned by
+//   a real direct first launch on their own profile, so they
+//   run as the relaunch they intend - see
+//   preconditionPackagedProfile below.
 //   Test B (launchfix r2): --quit-launch-repeat <n> (default 1) runs
 //   the section-3.5 quit-launch block n times in one process -
 //   e.g. `--sections 3.5 --quit-launch-repeat 10` for ten quit
@@ -191,7 +199,7 @@
 import { _electron as electron } from 'playwright';
 import { applicationWindow } from './electron-window.mjs';
 import { build as esbuildBuild } from 'esbuild';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -446,6 +454,8 @@ const G2_REASON = 'observer not enabled for this run (no --observer): criterion 
  * @property {number | null} windowSeenAt - harness-side: the window wait returned the jcad://app page.
  * @property {number | null} editorReadyAt - harness-side: window.editor appeared in the page.
  * @property {number | null} mainWindowObservedAt - packaged launches only: the harness's main-process probe first saw a BrowserWindow whose webContents URL was already committed under jcad://app/ (the window existed in main while Playwright's page enumeration had not yet yielded it). Null in dev mode.
+ * @property {number} releasedTargets - packaged launches only: how many non-main pages the packaged window wait's CDP release sends completed for (launchfix r4). Counts completed SENDS, not confirmed unblocks - local probes show the release does not clear the auto-attach hold (see applicationWindowPackaged). 0 in dev mode.
+ * @property {string | null} profilePrecondition - packaged section-3.5 quit launches only: the profile preconditioning outcome ('product-committed' | 'already-committed' | 'timeout'), stamped by launchApp from preconditionPackagedProfile. Null for every other launch.
  * @property {Record<string, boolean>} preExisting - milestone keys ('appReady', 'windowCreated', 'didStartNavigation', 'didNavigate', 'domReady', 'didFinishLoad', 'readyToShow', 'renderProcessGone') the clock found already reached at install time; those milestones appear in the record with ms null and preExisting true.
  */
 /**
@@ -478,6 +488,8 @@ const G2_REASON = 'observer not enabled for this run (no --observer): criterion 
  * @property {string | null} error - the failure's message (on failure only).
  * @property {LaunchFailureSnapshot | null} failureSnapshot - the failure-time main-process snapshot (failed launches only).
  * @property {number | null} mainWindowObservedMs - packaged launches: ms offset from spawn of the main-process probe's first committed-jcad:// window observation (stamps.mainWindowObservedAt - t0), or null when the probe never observed one. The builder sets it whenever the observation happened; it is not conditioned on windowSeenAt. Not an event: it never advances furthestEvent.
+ * @property {number} releasedTargets - packaged launches: stamps.releasedTargets carried through (completed CDP release sends against non-main pages; see the stamps typedef). 0 when the wait never ran or released nothing.
+ * @property {string | null} profilePrecondition - packaged section-3.5 quit launches: stamps.profilePrecondition carried through; null for every other launch.
  */
 
 // ------------------------------------------------------------ semantic entity oracle (finding 1)
@@ -1033,6 +1045,9 @@ function launchTimelineRecordImpl(input) {
     failureSnapshot: outcome === 'failed' ? (input.failureSnapshot ?? null) : null,
     mainWindowObservedMs: typeof stamps.mainWindowObservedAt === 'number' && Number.isFinite(stamps.mainWindowObservedAt)
       ? stamps.mainWindowObservedAt - t0 : null,
+    releasedTargets: typeof stamps.releasedTargets === 'number' && Number.isFinite(stamps.releasedTargets)
+      ? stamps.releasedTargets : 0,
+    profilePrecondition: typeof stamps.profilePrecondition === 'string' ? stamps.profilePrecondition : null,
   };
 }
 
@@ -1054,7 +1069,13 @@ function launchTimelineRecordImpl(input) {
 // stub apps: a never-resolving main-process probe still hits the
 // (shortened) deadline as a FAIL with the exact error (r3), and a
 // probe that observes a committed window never satisfies the wait
-// by itself.
+// by itself. The r4 cases cover the held-target release
+// bookkeeping (a non-main page gets exactly one release attempt,
+// counted in releasedTargets, and the release never satisfies
+// the wait; a session factory that always fails is retried
+// across cadences and stays invisible to the verdict; a page at
+// the success URL is returned untouched) and the builder's
+// releasedTargets / profilePrecondition passthrough.
 if (process.argv.includes('--self-test-timeline')) {
   const T0 = 1_000_000;
   const empty = { appObjectAt: null, windowCreatedAt: null, didFinishLoadAt: null, readyToShowAt: null, windowSeenAt: null, editorReadyAt: null };
@@ -1160,6 +1181,56 @@ if (process.argv.includes('--self-test-timeline')) {
     ['(j3) wedged main: the probe ran, and its non-resolution stamped nothing', [wedgedProbeCalls >= 1, wedgedStamps.mainWindowObservedAt], [true, null]],
     ['(k) probe observes a committed window, page never enumerates: the wait still rejects with the exact deadline error', observedError, 'The secure application window did not appear before the deadline.'],
     ['(k2) probe observes: the observation is stamped even though the wait failed', typeof observedStamps.mainWindowObservedAt === 'number', true],
+  );
+  // Launchfix r4: the wait's held-target release bookkeeping,
+  // driven against stub apps like the r3 scenarios above.
+  const relSends = [];
+  let relSessions = 0;
+  const relPage = {
+    isClosed: () => false,
+    url: () => 'file:///app/dist/index.html',
+    context: () => ({
+      newCDPSession: async () => {
+        relSessions += 1;
+        return { send: async (/** @type {string} */ method) => { relSends.push(method); }, detach: async () => {} };
+      },
+    }),
+  };
+  const relStamps = { mainWindowObservedAt: null, releasedTargets: 0 };
+  const relApp = { windows: () => [relPage], evaluate: async () => [] };
+  let relError = '';
+  try { await applicationWindowPackaged(relApp, relStamps, 900); } catch (error) { relError = String(error && error.message || error); }
+  let failSessions = 0;
+  const failPage = {
+    isClosed: () => false,
+    url: () => 'file:///app/dist/index.html',
+    context: () => ({ newCDPSession: async () => { failSessions += 1; throw new Error('session refused'); } }),
+  };
+  const failStamps = { mainWindowObservedAt: null, releasedTargets: 0 };
+  const failApp = { windows: () => [failPage], evaluate: async () => [] };
+  let failError = '';
+  try { await applicationWindowPackaged(failApp, failStamps, 1_200); } catch (error) { failError = String(error && error.message || error); }
+  const mainPage = {
+    isClosed: () => false,
+    url: () => 'jcad://app/index.html',
+    context: () => { throw new Error('the release must not touch the main page'); },
+  };
+  const mainApp = { windows: () => [mainPage], evaluate: async () => [] };
+  const mainGot = await applicationWindowPackaged(mainApp, { mainWindowObservedAt: null, releasedTargets: 0 }, 900);
+  const relRec = launchTimelineRecordImpl({
+    label: 'x', mode: 'packaged', outcome: 'failed', failureStage: 'window', error: 'boom',
+    stamps: { t0: T0, ...empty, releasedTargets: 2, profilePrecondition: 'product-committed' },
+  });
+  cases.push(
+    ['(l) release fires but never satisfies the wait: the deadline error stands', relError, 'The secure application window did not appear before the deadline.'],
+    ['(l2) release bookkeeping: exactly one session, Runtime.enable then Runtime.runIfWaitingForDebugger', [relSessions, relSends], [1, ['Runtime.enable', 'Runtime.runIfWaitingForDebugger']]],
+    ['(l3) release bookkeeping: the completed send is counted in stamps.releasedTargets', relStamps.releasedTargets, 1],
+    ['(l4) release factory always throws: the wait still rejects at the deadline', failError, 'The secure application window did not appear before the deadline.'],
+    ['(l5) release factory always throws: attempts repeat across cadences', failSessions >= 2, true],
+    ['(l6) release factory always throws: nothing is counted', failStamps.releasedTargets, 0],
+    ['(l7) a page at the success URL is returned untouched', mainGot === mainPage, true],
+    ['(m) builder: releasedTargets + profilePrecondition pass through', [relRec.releasedTargets, relRec.profilePrecondition], [2, 'product-committed']],
+    ['(m2) builder: release fields default when the stamps never carried them', [ready.releasedTargets, ready.profilePrecondition], [0, null]],
   );
   let okAll = true;
   for (const [name, got, want] of cases) {
@@ -1477,91 +1548,145 @@ async function captureFailureSnapshot(app) {
   } catch { return null; }
 }
 
-// ------------------------------------------------------------ packaged launch coupling (Stage 2 launchfix r2)
+// ------------------------------------------------------------ packaged launch coupling (Stage 2 launchfix r2 -> r4 final)
 // In DEV mode Playwright resolves the electron binary itself and
 // prepends '-r .../playwright-core/lib/server/electron/loader.js'
 // to the launch (playwright-core 1.63.0, lib/coreBundle.js:44277 -
 // the unshift happens ONLY in the no-executablePath branch,
-// :44262-44278). The loader does two things before the app's own
-// code runs: it appends Playwright's full Chromium switch set via
-// app.commandLine.appendSwitch (loader.js:92-95, list at
-// loader.js:38-88 with the feature list at :7-37), and it gates
-// app readiness - app.isReady() forced false, app.whenReady()
-// replaced, the 'ready' event swallowed - until Playwright's
-// ElectronApplication.initialize() evaluates __playwright_run()
-// (loader.js:96-116; coreBundle.js:44202-44205). A PACKAGED launch
-// (executablePath) gets NEITHER: the app self-boots from spawn with
-// Chromium's default renderer backgrounding / timer throttling /
-// paint-holding, while Playwright attaches after the fact by
-// scraping the --inspect=0 / --remote-debugging-port=0 debugger
-// lines from stdout (coreBundle.js:44315-44319) and arming CDP
-// auto-attach with waitForDebuggerOnStart (coreBundle.js:38371).
-// Test A (lead, Windows): the same packaged exe launched directly
-// 10/10 titled in <=1 s - the product starts cleanly; the §3.5
-// packaged failures live in this coupling. The ready GATE cannot
-// be mirrored by argv (nothing in the packaged binary will hold
-// its own whenReady for us); it is answered by the dual-path
-// window wait (applicationWindowPackaged) and by the timeline's
-// failure snapshot, which together keep the 60 s deadline
-// measuring the app rather than the attach. That leg is
-// switch-independent: it stands even if the switches below do
-// not move Test B, and it is what locates the stall to a leg on
-// its next occurrence.
+// :44262-44278). The loader appends Playwright's Chromium switch
+// set (loader.js:92-95) and gates app readiness until
+// ElectronApplication.initialize() evaluates __playwright_run().
+// A PACKAGED launch (executablePath) gets NEITHER: the app
+// self-boots from spawn while Playwright attaches after the fact
+// by scraping the --inspect=0 / --remote-debugging-port=0
+// debugger lines from stdout (coreBundle.js:44315-44319) and
+// arming CDP auto-attach with waitForDebuggerOnStart
+// (coreBundle.js:38371).
 //
-// r2.1 SECURITY-SCOPE CORRECTION - supersedes the r2 full mirror.
-// r2 led the packaged args with the loader's ENTIRE effective
-// switch set (transcribed from loader.js, playwright-core
-// 1.63.0: chromiumSwitches() at :38-88, the --disable-features
-// compound composed at :57 from disabledFeatures at :7-37),
-// arguing that dev mode proves every switch against this app.
-// That inverted the burden: the loader's set is Playwright's
-// choice for launches it owns, but ADDING a switch to the
-// packaged launch surface is a producer decision, and the set
-// contains switches that switch protections OFF -
-// --disable-client-side-phishing-detection,
-// --disable-ipc-flooding-protection,
-// --unsafely-disable-devtools-self-xss-warnings, and a
-// --disable-features compound carrying HttpsUpgrades and
-// ThirdPartyStoragePartitioning, among others. Under the
-// standing NO SECURITY WEAKENING rule those are inadmissible
-// here regardless of their dev-mode pedigree. The set below is
-// therefore ONLY the entries dispositioned MIRROR in
-// SWITCH-DISPOSITION.md (repo root of this harness's Stage 2
-// work): the anti-backgrounding / anti-throttling / paint
-// family with a plausible role in the packaged first-show
-// stall, in loader order. Every other loader entry is
-// dispositioned EXCLUDE there, switch by switch - protection
-// entries by name, the rest for want of any coupling relevance;
-// the --disable-features compound is excluded AS a compound and
-// only its PaintHolding member is carried, as the single-entry
-// composition below.
-const PACKAGED_COUPLING_SWITCHES = [
-  '--disable-background-timer-throttling',
-  '--disable-backgrounding-occluded-windows',
-  '--disable-features=PaintHolding',
-  '--disable-renderer-backgrounding',
-];
+// WHAT THE STALL ACTUALLY WAS (established after r2/r2.1, see
+// MIGRATION-STALL-READ.md and the lead's Test B / Test C): on a
+// profile with no renderer-preferences checkpoint and no
+// migration marker, packaged startup runs the product's
+// legacy-storage migration (electron/main.cjs:185-202) in a
+// hidden devTools:false window, and the migration's extraction
+// executeJavaScript (electron/renderer-origin.cjs:124) is
+// frozen when the attach's waitForDebuggerOnStart hold lands on
+// that window's target and Playwright's per-target resume does
+// not take effect for it. The app creates the trigger itself
+// (the defaultSession touch at main.cjs:186 creates Local
+// Storage/leveldb lines before the gate at :192), so virgin
+// profiles are exposed on every launch, not just reused ones.
+// Test A: direct launches 10/10 clean. Test C: the product
+// migrates in ~50 ms without Playwright (seeded unmigrated
+// profiles 8/8 clean) - the migration is sound; the stall is
+// attach-coupled. Test B REFUTED the switch leg: before
+// (no 0005) 22/30 quit launches no-showed, after (+0005 full
+// mirror) 20/25 - no causal role.
+//
+// FINAL COMPOSITION (launchfix r4, lead ruling after Test B/C):
+// - ZERO added Chromium switches. r2 mirrored the loader's full
+//   set; r2.1 dispositioned it to four entries
+//   (SWITCH-DISPOSITION.md, kept as the historical record);
+//   Test B refuted the entire leg and the lead ruled no added
+//   switches are admitted to the packaged launch, so the switch
+//   set is REMOVED, not merely trimmed. Playwright's own launch
+//   defaults are Playwright's, not the harness's.
+// - The dual-path window wait below stands (0005's wait + r3's
+//   probe bound): same 60 s deadline, same success criterion,
+//   plus the main-process probe and the failure snapshot, which
+//   are what located the stall.
+// - PROFILE HONESTY is the load-bearing fix: packaged
+//   section-3.5 quit launches are preconditioned by a real
+//   direct first launch on their own profile
+//   (preconditionPackagedProfile, below), so they run against
+//   the post-first-launch profile the product itself wrote.
+// - The wait additionally attempts a bounded CDP RELEASE of
+//   held non-main pages (below). It is NOT load-bearing and is
+//   shipped with its probe result disclosed.
 
 // Packaged window wait: the SAME 60 s deadline and the SAME success
 // criterion as applicationWindow (a live Playwright Page at
 // jcad://app/index.html) - plus a main-process probe on the channel
-// the launch clock already uses. In the Stage 2 failure shape the
-// window existed in main (processes alive, navigation committed)
-// while Playwright's page enumeration through the auto-attach never
-// yielded it; the probe records that moment in
+// the launch clock already uses, and the held-target release
+// attempt. The probe records a committed window in
 // stamps.mainWindowObservedAt so the timeline can show the window
-// was THERE and the enumeration was the missing leg. The probe
-// never satisfies the wait by itself: callers need the Page.
-// Each probe is raced against PACKAGED_PROBE_TIMEOUT_MS (r3): a
-// wedged main cannot hold the loop past its deadline - a timed-out
-// probe is a missed observation for that iteration, the loop
-// continues, and the deadline check runs on schedule.
+// was THERE while enumeration had not yielded it; neither the
+// probe nor a release ever satisfies the wait by itself: callers
+// need the Page. Each probe is raced against
+// PACKAGED_PROBE_TIMEOUT_MS (r3): a wedged main cannot hold the
+// loop past its deadline. Release attempts are fire-and-forget
+// under the same bound (see below), so the loop's deadline
+// discipline is exactly r3's.
+//
+// HELD-TARGET RELEASE (r4) - mechanism and DISCLOSED probe result.
+// Once per 500 ms cadence, every page app.windows() shows that is
+// not the main jcad:// page and has not been released yet gets ONE
+// release attempt: a page-level CDP session
+// (page.context().newCDPSession(page)), then Runtime.enable and
+// Runtime.runIfWaitingForDebugger on it, then detach. From the
+// bundle: CRBrowserContext.newCDPSession resolves the page's
+// targetId and returns rootSession.attachToTarget(targetId)
+// (coreBundle.js:38778-38791), and CRSession.attachToTarget sends
+// Target.attachToTarget { targetId, flatten: true }
+// (coreBundle.js:35071-35072) - i.e. a NEW flat session on the
+// SAME target the browser-level auto-attach (coreBundle.js:38371)
+// is holding. Whether that session's resume reaches the hold was
+// an empirical question, and local mechanics probes answered it
+// (Linux/xvfb, this host, the repo's app through the real
+// executablePath flow on virgin profiles - mechanics evidence,
+// not Windows acceptance): baseline 8 launches with no release:
+// 6 reached, 2 held (the file:// migration page persisting past
+// 10 s). In both held attempts the release sends COMPLETED and
+// the launch stayed held >= 6 s afterwards (0/2 unblocked). The
+// hold evidently clears only on the holding session - Playwright's
+// own CRPage session, whose designed resume is the last send of
+// FrameSession._initialize (coreBundle.js:37670) - and no public
+// API exposes that session. The release is therefore shipped as
+// a bounded, counted (stamps.releasedTargets counts completed
+// SENDS, not confirmed unblocks), verdict-invisible attempt - it
+// can only ever resume a target, never create a PASS - and the
+// design does NOT rely on it. Profile honesty is the fix.
 async function applicationWindowPackaged(app, stamps, timeout = 60_000) {
   const deadline = Date.now() + timeout;
   let nextProbe = 0;
+  let nextRelease = 0;
+  // Release bookkeeping: Page objects whose release sends completed,
+  // and pages with an attempt currently in flight. Identity-keyed:
+  // Playwright returns the same Page object for a target across
+  // windows() polls (probe-verified in every local attempt).
+  const releasedPages = new Set();
+  const releasesInFlight = new Set();
+  if (typeof stamps.releasedTargets !== 'number') stamps.releasedTargets = 0;
   while (Date.now() < deadline) {
-    const page = app.windows().find((candidate) => !candidate.isClosed() && candidate.url().startsWith('jcad://app/index.html'));
+    const pages = app.windows();
+    const page = pages.find((candidate) => !candidate.isClosed() && candidate.url().startsWith('jcad://app/index.html'));
     if (page) return page;
+    if (Date.now() >= nextRelease) {
+      nextRelease = Date.now() + 500;
+      for (const candidate of pages) {
+        if (candidate.isClosed() || releasedPages.has(candidate) || releasesInFlight.has(candidate)) continue;
+        let url = '';
+        try { url = candidate.url(); } catch { continue; }
+        if (!url || url.startsWith('jcad://app/index.html')) continue;
+        releasesInFlight.add(candidate);
+        const attempt = (async () => {
+          const session = await candidate.context().newCDPSession(candidate);
+          await session.send('Runtime.enable');
+          await session.send('Runtime.runIfWaitingForDebugger');
+          try { await session.detach(); } catch { /* detach is hygiene only; the sends are the attempt */ }
+          return true;
+        })();
+        Promise.race([attempt, new Promise((done) => setTimeout(() => done(false), PACKAGED_PROBE_TIMEOUT_MS))])
+          .then((sent) => {
+            releasesInFlight.delete(candidate);
+            if (sent && !releasedPages.has(candidate)) {
+              releasedPages.add(candidate);
+              stamps.releasedTargets += 1;
+            }
+          })
+          .catch(() => { releasesInFlight.delete(candidate); });
+      }
+    }
     if (stamps.mainWindowObservedAt === null && Date.now() >= nextProbe) {
       nextProbe = Date.now() + 500;
       try {
@@ -1579,6 +1704,73 @@ async function applicationWindowPackaged(app, stamps, timeout = 60_000) {
   throw new Error('The secure application window did not appear before the deadline.');
 }
 
+// ------------------------------------------------------------ profile honesty (Stage 2 launchfix r4, the load-bearing leg)
+// The section-3.5 quit scenarios (quit-idle, quit-after-limit,
+// quit-inflight) launch the app to observe its QUIT behaviour on
+// an established session - they are relaunch scenarios. Only the
+// harness's one-virgin-profile-per-launch allocation made them
+// first launches, and a first packaged launch must cross the
+// legacy-storage migration gate, which the CDP attach can hold
+// indefinitely (see the coupling section above). Preconditioning
+// gives the scenario the profile state it actually intends: a
+// REAL first launch of the packaged exe, spawned directly with
+// NO Playwright attached, left running until the PRODUCT ITSELF
+// commits both renderer-preferences.json (the checkpoint) and
+// renderer-origin-migrated (the marker) - the two files whose
+// presence takes every later launch past the gate
+// (electron/main.cjs:189-192) - then closed. The harness never
+// writes, copies, or fabricates checkpoint/marker content; it
+// only observes files the product wrote. The precondition
+// process is a harness-spawned child: tracked by pid here,
+// awaited to exit before the scenario launch begins, escalated
+// only if it lingers after commit + settle. Outcomes:
+// 'already-committed' (a reused profile already carries both
+// files; no spawn needed), 'product-committed', or 'timeout'
+// (30 s without both files, or the process died first - the
+// scenario launch then proceeds on the unpreconditioned profile
+// and its own evidence will show what happened; preconditioning
+// never fabricates state and never fails a launch by itself).
+// Local mechanics evidence (probes, Linux/xvfb, the repo's app
+// through direct spawn on virgin profiles): the product
+// committed checkpoint+marker in 1.5-2.3 s (4/4), exited 0 on
+// SIGTERM (4/4), and the subsequent attached launch on each
+// preconditioned profile reached the jcad:// window in ~0.3 s
+// with the migration window never appearing (4/4) - against a
+// 2/8 held rate for virgin profiles in the baseline probes.
+async function preconditionPackagedProfile(label, profile) {
+  const checkpointPath = join(profile, 'renderer-preferences.json');
+  const markerPath = join(profile, 'renderer-origin-migrated');
+  const committed = () => existsSync(checkpointPath) && existsSync(markerPath);
+  if (committed()) {
+    log(`precondition[${label}]: profile already carries the product's checkpoint+marker - no direct launch needed`);
+    return 'already-committed';
+  }
+  log(`precondition[${label}]: direct first launch of the packaged exe on this profile (no Playwright) until the product commits checkpoint+marker`);
+  const child = spawn(packagedExe, [`--user-data-dir=${profile}`], { cwd: workRoot, env: childEnv(), stdio: 'ignore' });
+  const exited = new Promise((done) => { child.once('exit', () => done(true)); child.once('error', () => done(true)); });
+  let ok = false;
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (committed()) { ok = true; break; }
+    if (child.exitCode !== null) break;
+    await new Promise((done) => setTimeout(done, 250));
+  }
+  if (ok) {
+    // Settle briefly: both files are already the product's
+    // committed state; nothing else needs to happen in that
+    // process, and no file write of ours is involved at all.
+    await new Promise((done) => setTimeout(done, 1_000));
+  }
+  try { child.kill(); } catch { /* already gone */ }
+  const graceful = await Promise.race([exited, new Promise((done) => setTimeout(() => done(false), 5_000))]);
+  if (!graceful) {
+    try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    await Promise.race([exited, new Promise((done) => setTimeout(() => done(null), 2_000))]);
+  }
+  log(`precondition[${label}]: ${ok ? 'product committed checkpoint+marker; precondition process closed' : 'TIMEOUT - the product did not commit checkpoint+marker within 30 s; the scenario launch proceeds unpreconditioned'}`);
+  return ok ? 'product-committed' : 'timeout';
+}
+
 // One timeline event as the per-launch log lines print it: a
 // milestone with a measured offset prints 'name@<ms>ms'; a
 // milestone that predates the clock has no truthful offset and
@@ -1594,7 +1786,7 @@ async function launchApp(label) {
   mkdirSync(profile, { recursive: true });
   results.residue.profiles.push(profile);
   const args = packagedMode
-    ? [...PACKAGED_COUPLING_SWITCHES, ...(observerMode ? ['--require', observerPath] : []), `--user-data-dir=${profile}`]
+    ? [...(observerMode ? ['--require', observerPath] : []), `--user-data-dir=${profile}`]
     : observerMode
       ? ['--require', observerPath, '.', `--user-data-dir=${profile}`]
       : ['.', `--user-data-dir=${profile}`];
@@ -1609,8 +1801,20 @@ async function launchApp(label) {
     didStartNavigationAt: null, didNavigateAt: null, domReadyAt: null,
     didFinishLoadAt: null, didFailLoadAt: null, readyToShowAt: null,
     renderProcessGoneAt: null, windowSeenAt: null, editorReadyAt: null,
-    mainWindowObservedAt: null, preExisting: {},
+    mainWindowObservedAt: null, releasedTargets: 0, profilePrecondition: null,
+    preExisting: {},
   };
+  // Profile honesty (r4): packaged section-3.5 quit launches are
+  // relaunch scenarios on a virgin profile only because the harness
+  // allocates one profile per launch; precondition theirs with a
+  // real direct first launch so the scenario runs against the
+  // post-first-launch profile the product itself wrote. Dev
+  // launches never enter the migration gate (DEV_URL set) and
+  // every other packaged launch is a genuine first launch - both
+  // are left exactly as they were.
+  if (packagedMode && label.startsWith('quit-')) {
+    stamps.profilePrecondition = await preconditionPackagedProfile(label, profile);
+  }
   let stage = 'spawn';
   /** @type {import('playwright').ElectronApplication | undefined} */
   let app;
