@@ -275,6 +275,26 @@ function records(dxf: string, kind: string): Array<Array<[number, string]>> {
   return out;
 }
 
+/**
+ * Vertex group sequence of every LWPOLYLINE in DXF text: per polyline, the
+ * (code, RAW value) pairs of the vertex groups 10/20/91/40/41/42 in order.
+ * Values stay raw (untrimmed) so group-91 value formatting is assertable (Q11 F4).
+ */
+function lwVertexGroups(dxf: string): Array<Array<[number, string]>> {
+  const lines = dxf.split(/\r\n|\n/);
+  const out: Array<Array<[number, string]>> = [];
+  let cur: Array<[number, string]> | null = null;
+  for (let i = 0; i + 1 < lines.length; i += 2) {
+    const code = parseInt(lines[i]!.trim(), 10);
+    const value = lines[i + 1]!;
+    if (code === 0) {
+      cur = value.trim() === 'LWPOLYLINE' ? [] : null;
+      if (cur) out.push(cur);
+    } else if (cur && (code === 10 || code === 20 || code === 91 || code === 40 || code === 41 || code === 42)) cur.push([code, value]);
+  }
+  return out;
+}
+
 /** Trimmed values of one group code on a cad-graph node (numeric groups ride as padded strings). */
 const groupVals = (node: Pick<CadNode, 'groups'>, code: number): string[] =>
   node.groups.filter(([c]) => c === code).map(([, v]) => v.trim());
@@ -457,6 +477,42 @@ describe('p30-constraint-width-HANDBUILT.dxf: constraint-parameter fixture, DXF 
     expect(writtenHeader).not.toContain('$ANNOALLVISIBLE');
     expect(written.match(/AcDbVariableDictionary/g)).toHaveLength(1);
     expect(roundTripped.header?.cannoscale).toBe('1:1');
+  });
+
+  it('F4 (REAL, Q11) vertex IDs: the control\u2019s 12 LWPOLYLINE group-91 persistent vertex identifiers round-trip in position and formatting', () => {
+    // Proven on Windows by the lead's necessity/sufficiency probes: the group-91
+    // vertex IDs are what the retained ASSOC geom dependencies address (the
+    // AcDbAssocEdgePersSubentId pairs 1->2, 2->3, 3->4, 4->1 per plate). Pre-fix
+    // JCad dropped all 12 — the reader never parsed group 91 and the model had
+    // no vertex-ID concept — so a property set updated the variable but the
+    // solver could not reach the plate and the geometry stayed at the old
+    // Width1. The model now carries the IDs (PolylineEntity.vertexIds) and the
+    // writer re-emits them; nothing is synthesized for vertices that had none.
+    for (const sp of INSTANCES) {
+      const plate = imported.blocks[sp.dxfRecord]!.entities.find((e): e is PolylineEntity => e.type === 'polyline')!;
+      expect(plate.vertexIds).toEqual([1, 2, 3, 4]);
+    }
+    const src = lwVertexGroups(sourceText);
+    const out = lwVertexGroups(written);
+    expect(src).toHaveLength(3);
+    expect(out).toHaveLength(3);
+    // Same vertex group sequence per polyline: every 91 sits immediately after
+    // its vertex's 10/20, exactly where the control carries it (group codes are
+    // compared as parsed codes, as everywhere in this file — JCad writes all
+    // group codes unpadded).
+    expect(out.map((lw) => lw.map(([c]) => c))).toEqual(src.map((lw) => lw.map(([c]) => c)));
+    // The 12 group-91 pairs themselves are byte-identical: same RAW values —
+    // AutoCAD's 9-char right-justified field — in the same positions, and the
+    // written file carries exactly the source's 12 (no fabrication).
+    const idsOf = (lws: Array<Array<[number, string]>>) =>
+      lws.flatMap((lw, li) => lw.map(([c, v], vi) => (c === 91 ? `${li}:${vi}:${v}` : null)).filter((x): x is string => x !== null));
+    expect(idsOf(src)).toHaveLength(12);
+    expect(idsOf(out)).toEqual(idsOf(src));
+    // The re-read model carries them too (the written file is itself a source).
+    for (const sp of INSTANCES) {
+      const plate = roundTripped.blocks[sp.dxfRecord]!.entities.find((e): e is PolylineEntity => e.type === 'polyline')!;
+      expect(plate.vertexIds).toEqual([1, 2, 3, 4]);
+    }
   });
 
   it('J1 (REAL) the retained Width1 parameter node carries the full native encoding: name, points, value set', () => {
