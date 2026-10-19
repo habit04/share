@@ -2,9 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readDxf, writeDxf } from '../src/io/dxf';
-import { tokenize } from '../src/io/dxf/groups';
 import { Drawing, type DrawingState } from '../src/core/document';
-import type { Entity, TextEntity, InsertEntity } from '../src/core/entities';
+import type { Entity, TextEntity, InsertEntity, MTextEntity } from '../src/core/entities';
 import { defaultLayout, paperFor, sheetSize, isScaleName, VIEWPORT_LAYER, type Layout } from '../src/core/layouts';
 import { TITLE_BLOCK } from '../src/electrical/templates';
 
@@ -154,6 +153,15 @@ describe('DXF layouts: round trip', () => {
     // keeps both through JCad save -> JCad read at the AC1015 floor and at AC1032,
     // with the values carried by DICTIONARYVAR records in the variable dictionary,
     // never by HEADER pairs, and the second save byte-identical.
+    // F2 round 2: the AC1032 leg is a GENUINELY WRITTEN AC1032 output. The earlier
+    // leg spliced the $ACADVER token of an AC1015 write up to AC1032; the Windows
+    // gate found AutoCAD rejects that file ('Group 91 ... expected ... discarded')
+    // because every other version-shaped structure (the CLASS instance counts
+    // above all) still says AC1015. Here an MTEXT with a text-frame background
+    // (flags 16 — the content feature that requires AC1032) raises the seed write
+    // itself, so writeDxf produces a coherent AC1032 file end to end; the extra
+    // MTEXT exists only in that leg's seed state. The legs also pin the Item 1
+    // scale list: exactly one ACAD_SCALELIST holding the '1:4' SCALE entry.
     const variableValues = (written: string): Record<string, string> => {
       const p = pairs(written), records: { type: string; groups: Array<[number, string]> }[] = [];
       for (const [code, value] of p) {
@@ -178,19 +186,43 @@ describe('DXF layouts: round trip', () => {
       }
       return values;
     };
-    const asVersion = (written: string, version: string) => {
-      const p = tokenize(written);
-      const ver = p.findIndex(pair => pair.code === 9 && pair.value === '$ACADVER');
-      p[ver + 1] = { code: 1, value: version };
-      return p.flatMap(pair => [String(pair.code), pair.value]).join('\r\n') + '\r\n';
+    const scaleListEntries = (written: string): Array<{ name: string; paper: string; drawing: string; unit: string }> => {
+      const p = pairs(written), records: { type: string; groups: Array<[number, string]> }[] = [];
+      for (const [code, value] of p) {
+        if (code === 0) records.push({ type: value, groups: [] });
+        else records.at(-1)?.groups.push([code, value]);
+      }
+      const byHandle = new Map(records.map(r => [r.groups.find(([c]) => c === 5)?.[1], r]));
+      const entriesOf = (record: { groups: Array<[number, string]> }): Array<[string, string]> => {
+        const entries: Array<[string, string]> = [];
+        for (let i = 0; i + 1 < record.groups.length; i += 1) {
+          if (record.groups[i]![0] === 3 && record.groups[i + 1]![0] === 350) entries.push([record.groups[i]![1], record.groups[i + 1]![1]]);
+        }
+        return entries;
+      };
+      const root = records.find(r => r.type === 'DICTIONARY' && entriesOf(r).some(([name]) => name === 'ACAD_SCALELIST'));
+      const dictionaryHandle = root ? entriesOf(root).find(([name]) => name === 'ACAD_SCALELIST')?.[1] : undefined;
+      const dictionary = dictionaryHandle ? byHandle.get(dictionaryHandle) : undefined;
+      const entries: Array<{ name: string; paper: string; drawing: string; unit: string }> = [];
+      if (dictionary?.type === 'DICTIONARY') for (const [, handle] of entriesOf(dictionary)) {
+        const scale = byHandle.get(handle);
+        if (scale?.type === 'SCALE') entries.push({
+          name: scale.groups.find(([c]) => c === 300)?.[1] ?? '',
+          paper: scale.groups.find(([c]) => c === 140)?.[1] ?? '',
+          drawing: scale.groups.find(([c]) => c === 141)?.[1] ?? '',
+          unit: scale.groups.find(([c]) => c === 290)?.[1] ?? '',
+        });
+      }
+      return entries;
     };
     // Both legs start from a read-back state (one save/read in), so the byte fixed
     // point asserted below is the graph-path invariant the rest of the suite pins;
     // the model-write -> graph-write transition itself has a pre-existing,
     // unrelated layer-table asymmetry (an extra BORDER layer record) at the base.
+    const framed: MTextEntity = { id: 'm3', layer: '0', color: 'ByLayer', type: 'mtext', position: { x: 30, y: 30 }, text: 'NOTE', height: 0.25, width: 10, rotation: 0, attachment: 1, lineSpacing: 1, background: { flags: 16, scale: 1.5, color: 'ByLayer' } };
     const legs: Array<[string, DrawingState]> = [
       ['AC1015', readDxf(writeDxf(state))],
-      ['AC1032', readDxf(asVersion(writeDxf(state), 'AC1032'))],
+      ['AC1032', readDxf(writeDxf({ ...state, entities: [...state.entities, framed] }))],
     ];
     for (const [version, source] of legs) {
       const written = writeDxf(source), writtenPairs = pairs(written), writtenBack = readDxf(written);
@@ -199,6 +231,8 @@ describe('DXF layouts: round trip', () => {
       expect(writtenPairs.some(([c, v]) => c === 9 && v === '$CANNOSCALE')).toBe(false);
       expect(writtenPairs.some(([c, v]) => c === 9 && v === '$ANNOALLVISIBLE')).toBe(false);
       expect(variableValues(written)).toEqual({ CANNOSCALE: '1:4', ANNOALLVISIBLE: '0' });
+      expect(writtenPairs.filter(([c, v]) => c === 3 && v === 'ACAD_SCALELIST')).toHaveLength(1);
+      expect(scaleListEntries(written)).toEqual([{ name: '1:4', paper: '1.0', drawing: '4.0', unit: '0' }]);
       expect(writtenBack.header?.cannoscale).toBe('1:4');
       expect(writtenBack.header?.annoAllVisible).toBe(false);
       expect(writeDxf(writtenBack)).toBe(written);
