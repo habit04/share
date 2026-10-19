@@ -204,6 +204,32 @@ describe('DXF layouts: round trip', () => {
       expect(writeDxf(writtenBack)).toBe(written);
     }
   });
+  it('registers the DICTIONARYVAR CLASS record on a fresh write that creates variables (Q11 F2 rework C1)', () => {
+    // C1: the model writer's CLASSES registration was keyed on the variable
+    // dictionary handle, which is only allocated later in OBJECTS — dead code
+    // on fresh writes. Pin the record's presence and specimen shape on a
+    // genuine fresh (model-path) write of the shared fixture state: group 91
+    // (instance count) is omitted at AC1015 and carries the created-variable
+    // count above it (here driven to AC1024 by a transparent layer, the same
+    // device the companion round-trip test above uses).
+    const classRecord = (written: string) => {
+      const p = pairs(written), records: Array<[number, string]>[] = [];
+      for (const pair of p) {
+        if (pair[0] === 0) records.push([pair]);
+        else records.at(-1)?.push(pair);
+      }
+      return records.find(r => r.some(([c, v]) => c === 1 && v === 'DICTIONARYVAR'));
+    };
+    const fresh = classRecord(text);
+    expect(fresh).toBeDefined();
+    expect(fresh).toContainEqual([2, 'AcDbDictionaryVar']);
+    expect(fresh).toContainEqual([3, 'ObjectDBX Classes']);
+    expect(fresh!.some(([c]) => c === 91)).toBe(false);
+    const hiVer: DrawingState = { ...state, layers: state.layers.map((l) => l.name === 'WIRES' ? { ...l, transparency: 64 } : l) };
+    const freshHi = classRecord(writeDxf(hiVer));
+    expect(freshHi).toBeDefined();
+    expect(freshHi).toContainEqual([91, '2']);
+  });
   it('a second round trip is stable', () => {
     const again = readDxf(writeDxf(back));
     const strip = (l: Layout) => ({ ...l, entities: l.entities.map((e) => ({ ...e, id: '', cadIdentity: '' })), viewports: l.viewports.map((v) => ({ ...v, id: '' })) });

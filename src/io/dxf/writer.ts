@@ -283,15 +283,19 @@ export function writeDxf(state: DrawingState): string {
       cls('IMAGEDEF', 'AcDbRasterImageDef', 0, false, extras.imageDefs.size);
       cls('IMAGEDEF_REACTOR', 'AcDbRasterImageDefReactor', 1, false, extras.imageReactors.size);
     }
-    if (variableDictionary) {
+    if (createCannoVariable || createAnnoVariable) {
       // AutoCAD's specimen registration (the HANDBUILT fixtures): app name
       // 'ObjectDBX Classes', instance count = the DICTIONARYVARs created below.
+      // Keyed on the creation booleans (known at plan time): the dictionary
+      // handle is only allocated in OBJECTS, after CLASSES is emitted, so
+      // keying on it made this block unreachable on fresh writes (Q11 F2
+      // rework C1).
       w.pair(0, 'CLASS');
       w.pair(1, 'DICTIONARYVAR');
       w.pair(2, 'AcDbDictionaryVar');
       w.pair(3, 'ObjectDBX Classes');
       w.pair(90, 0);
-      if (acadVersion !== 'AC1015') w.pair(91, (cannoVariable ? 1 : 0) + (annoVariable ? 1 : 0));
+      if (acadVersion !== 'AC1015') w.pair(91, (createCannoVariable ? 1 : 0) + (createAnnoVariable ? 1 : 0));
       w.pair(280, 0);
       w.pair(281, 0);
     }
