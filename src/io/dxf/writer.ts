@@ -36,7 +36,7 @@ import { entityMTextBackground } from '../../core/mtext-background';
 import { materializePolylineWidthFrames } from './polyline-width-blocks';
 import { LAYER_TRANSPARENCY_APP, transparencyToDxf, validColorName } from '../../core/appearance';
 import { namedCameraDisplayCenter, planarNamedCamera } from '../../core/named-view';
-import { graphAnnotationCarrier, preserveDxfCadGraph } from '../cad-graph-dxf';
+import { annotationScaleRatio, graphAnnotationCarrier, preserveDxfCadGraph } from '../cad-graph-dxf';
 
 /** Linetype names referenced anywhere in the drawing (layers, entities, block entities). */
 function usedLinetypes(state: DrawingState): Linetype[] {
@@ -108,9 +108,20 @@ export function writeDxf(state: DrawingState): string {
   // With neither setting present, creation is impossible whatever the graph carries,
   // so the carrier consult (a full graph pass) is skipped entirely.
   const annotationSettingPresent = state.header?.cannoscale !== undefined || state.header?.annoAllVisible !== undefined;
-  const annotationCarrier = annotationSettingPresent ? graphAnnotationCarrier(state) : { variables: new Set<string>(), dictionary: false };
+  const annotationCarrier = annotationSettingPresent ? graphAnnotationCarrier(state) : { variables: new Set<string>(), dictionary: false, scaleList: { dictionary: false, names: new Set<string>() } };
   const createCannoVariable = !annotationCarrier.dictionary && state.header?.cannoscale !== undefined && isScaleName(state.header.cannoscale);
   const createAnnoVariable = !annotationCarrier.dictionary && state.header?.annoAllVisible === false;
+  // F2 round 2 (Item 1): AutoCAD resolves CANNOSCALE to 1:1 when the drawing has no
+  // ACAD_SCALELIST entry for the named scale (the F2 gate verified AutoCAD reads
+  // 1:4 where the entry exists — N1 AC1032, Q10 AC1015), so a write that creates
+  // the variable dictionary for a drawing whose graph carries no scale list at
+  // all also creates the list, holding ONLY the entry for the current scale. When
+  // the graph carries a scale list (or the variable dictionary) but lacks the
+  // entry, preserveDxfCadGraph adds it there instead. Only plain 'N:M' scale
+  // names produce an entry — the ratio is parsed from the name; other names
+  // invent no geometry and get no entry (the dictionary variable still writes).
+  const scaleRatio = state.header?.cannoscale !== undefined ? annotationScaleRatio(state.header.cannoscale) : null;
+  const createScaleList = createCannoVariable && scaleRatio !== null && !annotationCarrier.scaleList.dictionary;
   // The handles are allocated in the OBJECTS section, NOT here (deviation from the
   // design's plan-time allocation, found in validation): allocating them here shifts
   // every later handle in the file, and on drawings with retained 3D carriers a
@@ -122,6 +133,8 @@ export function writeDxf(state: DrawingState): string {
   let variableDictionary: string | null = null;
   let cannoVariable: string | null = null;
   let annoVariable: string | null = null;
+  let scaleListDictionary: string | null = null;
+  let scaleObject: string | null = null;
   const MODEL_SPACE = '1F';
   const PAPER_SPACE = '1B';
   const header = state.header ?? DEFAULT_HEADER;
@@ -296,6 +309,19 @@ export function writeDxf(state: DrawingState): string {
       w.pair(3, 'ObjectDBX Classes');
       w.pair(90, 0);
       if (acadVersion !== 'AC1015') w.pair(91, (createCannoVariable ? 1 : 0) + (createAnnoVariable ? 1 : 0));
+      w.pair(280, 0);
+      w.pair(281, 0);
+    }
+    if (createScaleList) {
+      // Specimen registration (N1/Q10/Q12 HANDBUILT fixtures): SCALE / AcDbScale,
+      // app name 'ObjectDBX Classes', class version 1153, one created instance;
+      // group 91 omitted at AC1015, exactly like the registration above.
+      w.pair(0, 'CLASS');
+      w.pair(1, 'SCALE');
+      w.pair(2, 'AcDbScale');
+      w.pair(3, 'ObjectDBX Classes');
+      w.pair(90, 1153);
+      if (acadVersion !== 'AC1015') w.pair(91, 1);
       w.pair(280, 0);
       w.pair(281, 0);
     }
@@ -603,6 +629,11 @@ export function writeDxf(state: DrawingState): string {
     if (createCannoVariable) cannoVariable = w.nextHandle();
     if (createAnnoVariable) annoVariable = w.nextHandle();
   }
+  // Allocated here too — never at plan time (the structuralKeys invariant above).
+  if (createScaleList) {
+    scaleListDictionary = w.nextHandle();
+    scaleObject = w.nextHandle();
+  }
   w.pair(0, 'SECTION');
   w.pair(2, 'OBJECTS');
   w.pair(0, 'DICTIONARY');
@@ -616,6 +647,10 @@ export function writeDxf(state: DrawingState): string {
   w.pair(350, layoutPlan.dictionary);
   w.pair(3, 'ACAD_PLOTSTYLENAME');
   w.pair(350, plotStyleDictionary);
+  if (scaleListDictionary) {
+    w.pair(3, 'ACAD_SCALELIST');
+    w.pair(350, scaleListDictionary);
+  }
   if (imageDict) {
     w.pair(3, 'ACAD_IMAGE_DICT');
     w.pair(350, imageDict);
@@ -665,6 +700,33 @@ export function writeDxf(state: DrawingState): string {
     };
     if (cannoVariable) dictionaryVariable(cannoVariable, state.header!.cannoscale!);
     if (annoVariable) dictionaryVariable(annoVariable, '0');
+  }
+  if (scaleListDictionary && scaleObject && scaleRatio) {
+    // Specimen shape (N1 AC1032 / Q10 AC1015 / Q12 AC1032 HANDBUILT fixtures): a
+    // plain DICTIONARY owned by the root named-objects dictionary, its single
+    // entry keyed 'A0' — the first key of AutoCAD's A0..D2 sequence — pointing at
+    // the SCALE object for the current annotation scale. Groups 140/141 carry
+    // the ratio parsed from the scale name (paper units / drawing units,
+    // formatted as AutoCAD writes them); group 290 marks the unit scale 1:1.
+    w.pair(0, 'DICTIONARY');
+    w.pair(5, scaleListDictionary);
+    w.pair(330, 'C');
+    w.pair(100, 'AcDbDictionary');
+    w.pair(281, 1);
+    w.pair(3, 'A0');
+    w.pair(350, scaleObject);
+    w.pair(0, 'SCALE');
+    w.pair(5, scaleObject);
+    w.pair(102, '{ACAD_REACTORS');
+    w.pair(330, scaleListDictionary);
+    w.pair(102, '}');
+    w.pair(330, scaleListDictionary);
+    w.pair(100, 'AcDbScale');
+    w.pair(70, 0);
+    w.pair(300, state.header!.cannoscale!);
+    w.pair(140, scaleRatio.numerator);
+    w.pair(141, scaleRatio.denominator);
+    w.pair(290, scaleRatio.unit ? 1 : 0);
   }
   if (imageDict) {
     w.pair(0, 'DICTIONARY');

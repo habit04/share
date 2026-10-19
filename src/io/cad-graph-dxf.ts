@@ -206,6 +206,44 @@ function readAnnotationVariables(state: DrawingState, records: readonly RecordDa
   return { ...state, header: { ...(state.header ?? DEFAULT_HEADER), ...(cannoscale !== undefined ? { cannoscale } : {}), ...(annoAllVisible !== undefined ? { annoAllVisible } : {}) } };
 }
 /**
+ * The ratio a SCALE record carries for a plain 'N:M' annotation scale name, with
+ * groups 140/141 (paper units / drawing units) formatted the way AutoCAD writes
+ * them in the HANDBUILT specimens — always with a decimal point ('1.0', '4.0',
+ * '12.0'; '0.0078125' for a fractional part). Names that are not a plain positive
+ * ratio (imperial names like '1/8" = 1'-0"', bare factors) return null: no
+ * geometry is invented for them (Q11 F2 round 2, Item 1).
+ */
+export function annotationScaleRatio(name: string): { numerator: string; denominator: string; unit: boolean } | null {
+  const match = /^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/.exec(name.trim());
+  if (!match) return null;
+  const numerator = Number(match[1]), denominator = Number(match[2]);
+  if (!(numerator > 0) || !(denominator > 0)) return null;
+  const format = (part: number) => Number.isInteger(part) ? `${part}.0` : String(part);
+  return { numerator: format(numerator), denominator: format(denominator), unit: numerator === denominator };
+}
+/**
+ * The retained ACAD_SCALELIST: the root named-objects dictionary, its scale-list
+ * dictionary (the root's ACAD_SCALELIST entry) when one exists, the SCALE records
+ * that dictionary holds keyed by scale name (group 300), and the entry keys in
+ * use. Specimen shape: N1/Q10/Q12 HANDBUILT fixtures — the list is a plain
+ * DICTIONARY under the root, its entries keyed 'A0'..'D2' in AutoCAD's sequence.
+ */
+function scaleListOf(records: readonly RecordData[]): { root: RecordData; dictionary?: RecordData; entries: ReadonlyMap<string, RecordData>; keys: ReadonlySet<string> } | undefined {
+  const paths = dictionaryPaths(records);
+  const root = records.find(record => record.handle && paths.get(record.handle)?.length === 0);
+  if (!root) return undefined;
+  const dictionary = records.find(record => record.handle && dictionaries.has(record.type)
+    && paths.get(record.handle)?.length === 1 && paths.get(record.handle)?.[0] === 'ACAD_SCALELIST');
+  const entries = new Map<string, RecordData>(), keys = new Set<string>();
+  if (dictionary) for (const record of records) {
+    const path = record.handle ? paths.get(record.handle) : undefined;
+    if (path?.length !== 2 || path[0] !== 'ACAD_SCALELIST') continue;
+    keys.add(path[1]!);
+    if (record.type === 'SCALE') { const name = decodeUnicodeEscapes(value(record, 300)); if (name) entries.set(name, record); }
+  }
+  return { root, ...(dictionary ? { dictionary } : {}), entries, keys };
+}
+/**
  * Which annotation settings the attached retained graph already carries (Q11 F2
  * rework): the recognized DICTIONARYVAR names at AcDbVariableDictionary paths, and
  * whether an AcDbVariableDictionary dictionary exists there at all. The model
@@ -213,10 +251,12 @@ function readAnnotationVariables(state: DrawingState, records: readonly RecordDa
  * the graph carries no variable dictionary (a missing variable beside a retained
  * dictionary is inserted by preserveDxfCadGraph instead), so a write never
  * produces a second dictionary. Uses the same path logic as annotationVariables.
+ * F2 round 2 (Item 1) adds the scale-list half: whether an ACAD_SCALELIST
+ * dictionary exists and which scale names its SCALE entries already carry.
  */
-export function graphAnnotationCarrier(state: DrawingState): { variables: ReadonlySet<string>; dictionary: boolean } {
+export function graphAnnotationCarrier(state: DrawingState): { variables: ReadonlySet<string>; dictionary: boolean; scaleList: { dictionary: boolean; names: ReadonlySet<string> } } {
   const graph = state.cadGraph;
-  if (!graph) return { variables: new Set<string>(), dictionary: false };
+  if (!graph) return { variables: new Set<string>(), dictionary: false, scaleList: { dictionary: false, names: new Set<string>() } };
   const records: RecordData[] = graph.nodes.map(node => {
     const record: RecordData = { type: node.type, section: node.section, groups: [...node.groups] };
     const raw = node.type === 'HEADER' || node.type === 'CLASS' ? '' : value(record, node.type === 'DIMSTYLE' ? 105 : 5);
@@ -227,7 +267,8 @@ export function graphAnnotationCarrier(state: DrawingState): { variables: Readon
   const paths = dictionaryPaths(records);
   const dictionary = records.some(record => record.handle && dictionaries.has(record.type)
     && paths.get(record.handle)?.length === 1 && paths.get(record.handle)?.[0] === 'AcDbVariableDictionary');
-  return { variables, dictionary };
+  const scaleList = scaleListOf(records);
+  return { variables, dictionary, scaleList: { dictionary: scaleList?.dictionary !== undefined, names: new Set(scaleList?.entries.keys() ?? []) } };
 }
 interface FieldExpansion {
   work: number;
@@ -1015,6 +1056,53 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
           const handle = allocate();
           dictionary.groups.push([3, name], [350, handle]);
           generated.push({ type: 'DICTIONARYVAR', section: 'OBJECTS', handle, groups: [[5, handle], [102, '{ACAD_REACTORS'], [330, dictionaryHandle], [102, '}'], [330, dictionaryHandle], [100, 'DictionaryVariables'], [280, '0'], [1, current]] });
+        }
+      }
+    }
+  }
+  // Q11 F2 round 2 (Item 1): AutoCAD resolves CANNOSCALE to 1:1 when the drawing
+  // carries no ACAD_SCALELIST entry for the named scale (the F2 gate verified
+  // AutoCAD reads 1:4 where the entry exists — N1 AC1032, Q10 AC1015), so a merged
+  // write whose graph lacks the entry for the current annotation scale gains it
+  // here — the graph-side counterpart of the model writer's creation, which runs
+  // only when the graph carries neither a variable dictionary nor a scale list.
+  // Handles come from the merge-time allocator (after ENTITIES), exactly like the
+  // variable insertion above. An existing entry is left untouched, so a second
+  // write changes nothing. Plain 'N:M' names only: other names invent no ratio.
+  if (state.header?.cannoscale !== undefined && isScaleName(state.header.cannoscale)) {
+    const ratio = annotationScaleRatio(state.header.cannoscale);
+    if (ratio) {
+      const indexed = generated.map(record => {
+        const handle = value(record, 5);
+        return handle && record.type !== 'HEADER' ? { ...record, handle: canonicalCadHandle(handle) } : record;
+      });
+      const list = scaleListOf(indexed);
+      if (list && !list.entries.has(state.header.cannoscale)) {
+        const scaleRecord = (handle: string, dictionaryHandle: string): RecordData => ({
+          type: 'SCALE', section: 'OBJECTS', handle,
+          groups: [[5, handle], [102, '{ACAD_REACTORS'], [330, dictionaryHandle], [102, '}'], [330, dictionaryHandle], [100, 'AcDbScale'], [70, '0'], [300, state.header!.cannoscale!], [140, ratio.numerator], [141, ratio.denominator], [290, ratio.unit ? '1' : '0']],
+        });
+        if (list.dictionary) {
+          const scaleHandle = allocate(), dictionaryHandle = list.dictionary.handle!;
+          const used = new Set([...list.keys].map(key => key.toUpperCase()));
+          let key = '';
+          for (let index = 0; ; index++) {
+            const candidate = index < 260 ? `${String.fromCharCode(65 + Math.floor(index / 10))}${index % 10}` : `S${index}`;
+            if (!used.has(candidate.toUpperCase())) { key = candidate; break; }
+          }
+          generated[indexed.indexOf(list.dictionary)]!.groups.push([3, key], [350, scaleHandle]);
+          generated.push(scaleRecord(scaleHandle, dictionaryHandle));
+        } else {
+          const dictionaryHandle = allocate(), scaleHandle = allocate();
+          generated[indexed.indexOf(list.root)]!.groups.push([3, 'ACAD_SCALELIST'], [350, dictionaryHandle]);
+          generated.push({ type: 'DICTIONARY', section: 'OBJECTS', handle: dictionaryHandle, groups: [[5, dictionaryHandle], [330, list.root.handle!], [100, 'AcDbDictionary'], [281, '1'], [3, 'A0'], [350, scaleHandle]] });
+          generated.push(scaleRecord(scaleHandle, dictionaryHandle));
+        }
+        if (!generated.some(record => record.type === 'CLASS' && identifierValue(record, 1).toUpperCase() === 'SCALE')) {
+          const header = generated.find(record => record.type === 'HEADER');
+          const versionAt = header?.groups.findIndex(([code, name]) => code === 9 && name.trim() === '$ACADVER') ?? -1;
+          const version = versionAt >= 0 ? header!.groups[versionAt + 1]?.[1].trim() : undefined;
+          generated.push({ type: 'CLASS', section: 'CLASSES', groups: [[1, 'SCALE'], [2, 'AcDbScale'], [3, 'ObjectDBX Classes'], [90, '1153'], ...(version !== 'AC1015' ? [[91, '1'] as CadGroup] : []), [280, '0'], [281, '0']] });
         }
       }
     }
