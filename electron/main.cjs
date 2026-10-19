@@ -12,6 +12,7 @@
  *   ipc-plot.cjs      plot to PDF, vector PDF, print
  *   ipc-stores.cjs    autosave, user library, plugins, catalog packs
  *   ipc-shx.cjs       explicit Windows SHX font / shape selection, read-only
+ *   startup-migration.cjs  the startup legacy-storage migration gate (P-MIG)
  *   updates.cjs       app info, external links, update checks and status
  *   handover.cjs      files handed over by the OS and by a second launch
  */
@@ -46,6 +47,7 @@ const { registerPlotIpc } = require('./main/ipc-plot.cjs');
 const { registerStoreIpc } = require('./main/ipc-stores.cjs');
 const { registerXrefIpc } = require('./main/ipc-xrefs.cjs');
 const { registerShxIpc } = require('./main/ipc-shx.cjs');
+const { runStartupMigration } = require('./main/startup-migration.cjs');
 const { registerUpdatesIpc } = require('./main/updates.cjs');
 const { createHandover } = require('./main/handover.cjs');
 const { createFontMetricsHost } = require('./font-metrics-host.cjs');
@@ -189,35 +191,18 @@ app.whenReady().then(async () => {
   installPermissionHandlers(session.defaultSession, () => (ctx.mainWindow && !ctx.mainWindow.isDestroyed() ? ctx.mainWindow.webContents : null));
   installAssetHandler({ protocol, net, root: path.join(__dirname, '..', 'dist') });
   if (!DEV_URL) {
-    // P-MIG: the failure flag means "the legacy-migration LEG failed" - the extraction
-    // resolved { ok: false } (assigned below), or the leg itself threw: the hidden
-    // window's construction throws outside legacyStorage's own handling and propagates
-    // as its rejection. A throw anywhere else in this block does NOT set it - in
-    // particular a checkpoint-READ failure: with the flag standing, the close-time
-    // checkpoint is skipped, so a permanently corrupt checkpoint would never be
-    // overwritten on a normal close as it always has been, and could never self-heal.
-    let migrationLegThrew = false;
-    try {
-      const checkpoint = await readRendererPreferences();
-      if (checkpoint !== null) rendererStorage = { values: checkpoint, source: 'checkpoint' };
-      else if (!fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated'))) {
-        let outcome;
-        try {
-          outcome = fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')) ? await legacyStorage({ BrowserWindow, protocol, indexFile: path.join(__dirname, '..', 'dist', 'index.html'), logError: logMainError }) : { values: {}, ok: true };
-        } catch (legError) {
-          migrationLegThrew = true;
-          throw legError;
-        }
-        ctx.legacyMigrationFailed = !outcome.ok;
-        rendererStorage = outcome.values === null ? null : { values: outcome.values, source: 'legacy' };
-      }
-    } catch (error) {
-      // An unreadable/corrupt checkpoint must not fall back to stale legacy values.
-      // Only a failed migration leg keeps the retry (see above); every throw is
-      // logged exactly as before.
-      if (migrationLegThrew) ctx.legacyMigrationFailed = true;
-      logMainError('renderer preference migration', error);
-    }
+    // The startup legacy-storage migration gate (P-MIG) lives in
+    // electron/main/startup-migration.cjs: it decides the startup storage and writes
+    // ctx.legacyMigrationFailed (only a failed migration LEG sets it - see that module),
+    // binding the real units here.
+    rendererStorage = await runStartupMigration({
+      ctx,
+      readCheckpoint: readRendererPreferences,
+      markerExists: () => fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated')),
+      legacyStoreExists: () => fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')),
+      runLegacy: () => legacyStorage({ BrowserWindow, protocol, indexFile: path.join(__dirname, '..', 'dist', 'index.html'), logError: logMainError }),
+      logError: logMainError,
+    });
   }
   loadPersistedPaths();
   handOverFiles(drawingArgs(process.argv, process.cwd()));
