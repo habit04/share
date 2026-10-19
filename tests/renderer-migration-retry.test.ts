@@ -20,22 +20,27 @@
  * be overwritten on a normal close as it always has been - it could never self-heal, and
  * every launch would log the read error with no recovery copy ever written.
  *
- * What these tests drive, exactly: the REAL legacyStorage (renderer-origin.cjs), the REAL
- * preference store behind the REAL app-data wiring (electron/main/app-data.cjs over a temp
- * userData), and the REAL window module (electron/main/window.cjs) including its real close
- * event flow and persistBeforeClose - loaded under a doubled Electron, following the
- * source-loading idiom of tests/shipping-startup-settings-evidence.test.ts. The shared
- * context object is the same wiring main.cjs uses: the failure flag lives on it, written by
- * the startup gate and read by both the migrated handler and the close path.
+ * P-MIG-T removes the mirrored-glue fidelity gap the r3 review disclosed: the gate's
+ * decisions used to be reproduced as test-local glue because electron/main.cjs is a
+ * side-effecting entry point and cannot be imported. The decision now lives in
+ * electron/main/startup-migration.cjs, an Electron-free module main.cjs actually calls,
+ * and these tests drive THAT module, wired to the real units exactly as main.cjs wires it.
  *
- * What is mirrored, and why: electron/main.cjs is a side-effecting entry point and cannot be
- * imported. Its three one-line decisions - the gate's branch order (checkpoint read, then
- * marker absence, then extraction when the legacy store exists), the assignment
- * `ctx.legacyMigrationFailed = !outcome.ok`, the block catch setting the flag only when
- * the migration leg threw (r3), and the migrated handler's early return - are reproduced
- * in the two glue functions below, and static pins
- * at the bottom of this file assert main.cjs's actual text carries the same contract, so
- * the glue cannot silently diverge from production.
+ * What these tests drive, exactly: the REAL startup gate (electron/main/startup-migration.cjs),
+ * the REAL legacyStorage (renderer-origin.cjs), the REAL preference store behind the REAL
+ * app-data wiring (electron/main/app-data.cjs over a temp userData), and the REAL window
+ * module (electron/main/window.cjs) including its real close event flow and
+ * persistBeforeClose - loaded under a doubled Electron, following the source-loading idiom
+ * of tests/shipping-startup-settings-evidence.test.ts. The shared context object is the
+ * same wiring main.cjs uses: the failure flag lives on it, written by the startup gate and
+ * read by both the migrated handler and the close path.
+ *
+ * What is still mirrored, and why: only the 'renderer-storage-migrated' handler's one-line
+ * early return in main.cjs (refuse the checkpoint while the flag stands) - that handler
+ * remains inline in the entry point. It is reproduced in migratedCheckpoint below, and a
+ * static pin asserts main.cjs's handler text carries the same contract. The gate itself
+ * needs no mirror and no fidelity pins: the tests execute the production module, and the
+ * remaining pins assert main.cjs delegates to it (no inline shadow copy of the decision).
  */
 import { afterAll, describe, expect, it } from 'vitest';
 import { EventEmitter } from 'node:events';
@@ -54,6 +59,18 @@ const { legacyStorage } = requireHere('../electron/renderer-origin.cjs') as {
     deadlineMs?: number;
     logError?: (kind: string, error: unknown) => void;
   }): Promise<{ values: Record<string, string> | null; ok: boolean }>;
+};
+
+type StartupStorage = { values: Record<string, string>; source: 'checkpoint' | 'legacy' } | null;
+const { runStartupMigration } = requireHere('../electron/main/startup-migration.cjs') as {
+  runStartupMigration(deps: {
+    ctx: { legacyMigrationFailed: boolean };
+    readCheckpoint(): Promise<Record<string, string> | null>;
+    markerExists(): boolean;
+    legacyStoreExists(): boolean;
+    runLegacy(): Promise<{ values: Record<string, string> | null; ok: boolean }>;
+    logError(kind: string, error: unknown): void;
+  }): Promise<StartupStorage>;
 };
 
 // ---- a small CommonJS loader: real main-process modules under a doubled Electron ------------
@@ -119,6 +136,8 @@ interface Runtime {
   readRendererPreferences(): Promise<Record<string, string> | null>;
   checkpointRendererPreferences(contents: unknown, migration?: boolean): Promise<Record<string, string>>;
   flushRendererPreferences(contents: unknown): boolean;
+  /** Block-level migration errors the gate logged (production passes logMainError here). */
+  blockLogs: Array<{ kind: string; error: unknown }>;
   createWindow(): Promise<void>;
   windows: Array<{
     webContents: FakeWebContents;
@@ -188,44 +207,35 @@ function makeRuntime(userData: string, sessionStorage: Record<string, string>): 
     readRendererPreferences: appData.readRendererPreferences,
     checkpointRendererPreferences: appData.checkpointRendererPreferences,
     flushRendererPreferences: appData.flushRendererPreferences,
+    blockLogs: [],
     createWindow,
     windows,
   };
 }
 
-// ---- glue mirroring electron/main.cjs's startup gate and migrated handler ----------------------
-// Branch order and flag writes are main.cjs's own (whenReady block and the
-// 'renderer-storage-migrated' handler); the units they compose are the real ones above.
-// Static pins below hold main.cjs's text to the same contract.
+// ---- the startup gate: the REAL module, wired as main.cjs wires it -----------------------------
+// runStartupMigration (electron/main/startup-migration.cjs) is the production decision; this
+// helper only supplies its dependencies from the real units above - the real preference
+// store read, on-disk existence checks against the scenario's userData, and the real
+// legacyStorage with its window arguments bound, as main.cjs binds them. Block-level errors
+// are recorded (production passes logMainError) so tests can pin the logging contract.
 
 const indexFile = join(tmpdir(), 'jcad-mig-retry-index.html');
 
-async function startupGate(runtime: Runtime, userData: string, migration: { BrowserWindow: new (options: unknown) => unknown; deadlineMs?: number }) {
-  // Mirrors main.cjs's block including its catch: a throw is logged there and startup
-  // continues without stored values; the catch sets the failure flag only when the
-  // migration LEG threw (r3 narrowing) - a checkpoint-read throw leaves the flag clear.
-  let migrationLegThrew = false;
-  try {
-    const checkpoint = await runtime.readRendererPreferences();
-    if (checkpoint !== null) return { source: 'checkpoint' as const, outcome: null };
-    if (existsSync(join(userData, 'renderer-origin-migrated'))) return { source: 'marker' as const, outcome: null };
-    let outcome: { values: Record<string, string> | null; ok: boolean };
-    try {
-      outcome = existsSync(join(userData, 'Local Storage', 'leveldb'))
-        ? await legacyStorage({ BrowserWindow: migration.BrowserWindow, protocol: fakeFileProtocol(), indexFile, deadlineMs: migration.deadlineMs, logError: () => {} })
-        : { values: {}, ok: true };
-    } catch (legError) {
-      migrationLegThrew = true;
-      throw legError;
-    }
-    runtime.ctx.legacyMigrationFailed = !outcome.ok;
-    return { source: 'legacy' as const, outcome };
-  } catch {
-    if (migrationLegThrew) runtime.ctx.legacyMigrationFailed = true;
-    return { source: 'threw' as const, outcome: null };
-  }
+async function startupGate(runtime: Runtime, userData: string, migration: { BrowserWindow: new (options: unknown) => unknown; deadlineMs?: number }): Promise<StartupStorage> {
+  return runStartupMigration({
+    ctx: runtime.ctx,
+    readCheckpoint: runtime.readRendererPreferences,
+    markerExists: () => existsSync(join(userData, 'renderer-origin-migrated')),
+    legacyStoreExists: () => existsSync(join(userData, 'Local Storage', 'leveldb')),
+    runLegacy: () => legacyStorage({ BrowserWindow: migration.BrowserWindow, protocol: fakeFileProtocol(), indexFile, deadlineMs: migration.deadlineMs, logError: () => {} }),
+    logError: (kind, error) => { runtime.blockLogs.push({ kind, error }); },
+  });
 }
 
+// The one decision still mirrored: the 'renderer-storage-migrated' handler in main.cjs
+// refuses the checkpoint while the flag stands. The handler stays inline in the entry
+// point, so its early return is reproduced here and pinned statically below.
 async function migratedCheckpoint(runtime: Runtime, contents: unknown): Promise<boolean> {
   if (runtime.ctx.legacyMigrationFailed) return false;
   await runtime.checkpointRendererPreferences(contents, true);
@@ -275,9 +285,11 @@ describe('a failed startup migration survives a normal close (P-MIG r2)', () => 
     const first = makeRuntime(userData, { 'jcad.session': 'set during the failed session' });
     const hanging = hangingMigration();
     const gate1 = await startupGate(first, userData, { BrowserWindow: hanging.FakeBrowserWindow, deadlineMs: 50 });
-    expect(gate1.source).toBe('legacy');
-    expect(gate1.outcome).toEqual({ values: {}, ok: false });
+    expect(gate1).toEqual({ values: {}, source: 'legacy' });
     expect(first.ctx.legacyMigrationFailed).toBe(true);
+    // A settled { ok: false } outcome is not a block throw: the gate itself logs nothing
+    // (the extraction's own logging happens inside legacyStorage, not driven here).
+    expect(first.blockLogs).toEqual([]);
     expect(hanging.state.destroyed).toBe(true);
 
     // The preload's completion invoke is refused while the flag stands: no checkpoint, no marker.
@@ -296,10 +308,10 @@ describe('a failed startup migration survives a normal close (P-MIG r2)', () => 
     const second = makeRuntime(userData, { 'legacy.pref': 'kept' });
     const succeeding = succeedingMigration({ 'legacy.pref': 'kept' });
     const gate2 = await startupGate(second, userData, { BrowserWindow: succeeding.FakeBrowserWindow, deadlineMs: 50 });
-    expect(gate2.source).toBe('legacy');
+    expect(gate2).toEqual({ values: { 'legacy.pref': 'kept' }, source: 'legacy' });
     expect(succeeding.state.loadCalls).toBe(1);
-    expect(gate2.outcome).toEqual({ values: { 'legacy.pref': 'kept' }, ok: true });
     expect(second.ctx.legacyMigrationFailed).toBe(false);
+    expect(second.blockLogs).toEqual([]);
 
     await second.createWindow();
     expect(await migratedCheckpoint(second, second.windows[0]!.webContents)).toBe(true);
@@ -313,8 +325,9 @@ describe('a failed startup migration survives a normal close (P-MIG r2)', () => 
     mkdirSync(join(userData, 'Local Storage', 'leveldb'), { recursive: true });
     const runtime = makeRuntime(userData, { 'jcad.session': 'set during the session' });
     const gate = await startupGate(runtime, userData, { BrowserWindow: succeedingMigration({}).FakeBrowserWindow, deadlineMs: 50 });
-    expect(gate.outcome).toEqual({ values: {}, ok: true });
+    expect(gate).toEqual({ values: {}, source: 'legacy' });
     expect(runtime.ctx.legacyMigrationFailed).toBe(false);
+    expect(runtime.blockLogs).toEqual([]);
     await runtime.createWindow();
     await normalClose(runtime);
     // The close checkpoint (migration=false) writes preferences but never the marker.
@@ -329,16 +342,17 @@ describe('migration-leg throws preserve the retry; a checkpoint-read failure doe
     const boom = new Error('window construction boom');
     class ThrowingWindow { constructor() { throw boom; } }
     await expect(legacyStorage({ BrowserWindow: ThrowingWindow as never, protocol: fakeFileProtocol(), indexFile })).rejects.toBe(boom);
-    // In production that rejection is a failure of the migration LEG: the gate's inner leg
-    // catch marks it and the block catch sets the failure flag - pinned statically below.
-    // With the flag standing, the completion checkpoint is refused, so no marker can be
-    // written for a migration that never ran.
+    // In production that rejection is a failure of the migration LEG: the real gate marks
+    // it, sets the failure flag, and logs the throw once at block level. With the flag
+    // standing, the completion checkpoint is refused, so no marker can be written for a
+    // migration that never ran.
     const userData = freshUserData();
     mkdirSync(join(userData, 'Local Storage', 'leveldb'), { recursive: true });
     const runtime = makeRuntime(userData, {});
     const gate = await startupGate(runtime, userData, { BrowserWindow: ThrowingWindow as never });
-    expect(gate.source).toBe('threw');
+    expect(gate).toBeNull();
     expect(runtime.ctx.legacyMigrationFailed).toBe(true);
+    expect(runtime.blockLogs).toEqual([{ kind: 'renderer preference migration', error: boom }]);
     expect(await migratedCheckpoint(runtime, { session: { flushStorageData: () => {} } })).toBe(false);
     expect(existsSync(join(userData, 'renderer-origin-migrated'))).toBe(false);
     expect(existsSync(join(userData, 'renderer-preferences.json'))).toBe(false);
@@ -350,13 +364,16 @@ describe('migration-leg throws preserve the retry; a checkpoint-read failure doe
     writeFileSync(checkpointFile, '{ not json');
     const runtime = makeRuntime(userData, { 'jcad.session': 'set during the session' });
     // Premise: the real store read rejects on the corrupt file. In production that throw
-    // lands in the migration block's catch - which since r3 does NOT set the failure flag
+    // lands in the startup gate's catch - which since r3 does NOT set the failure flag
     // for a read failure (the flag means the migration LEG failed), so the corrupt file
     // is not protected from the session's normal close.
     await expect(runtime.readRendererPreferences()).rejects.toThrow();
     const gate = await startupGate(runtime, userData, { BrowserWindow: succeedingMigration({}).FakeBrowserWindow, deadlineMs: 50 });
-    expect(gate.source).toBe('threw');
+    expect(gate).toBeNull();
     expect(runtime.ctx.legacyMigrationFailed).toBe(false);
+    // The read failure is still logged exactly once at block level - only the flag is withheld.
+    expect(runtime.blockLogs.length).toBe(1);
+    expect(runtime.blockLogs[0]!.kind).toBe('renderer preference migration');
     await runtime.createWindow();
     await normalClose(runtime);
     // The close checkpoint ran (flag clear): the corrupt bytes are replaced by the session's
@@ -371,40 +388,83 @@ describe('migration-leg throws preserve the retry; a checkpoint-read failure doe
   });
 });
 
-// ---- static pins: electron/main.cjs's own text carries the contract the glue mirrors -----------
+describe('the startup gate branches that never run the extraction (P-MIG-T: the real module)', () => {
+  it('a committed checkpoint is the startup storage and the extraction never runs', async () => {
+    const userData = freshUserData();
+    mkdirSync(join(userData, 'Local Storage', 'leveldb'), { recursive: true });
+    const runtime = makeRuntime(userData, { 'jcad.session': 'earlier' });
+    // A previous session committed its snapshot through the real store.
+    await runtime.createWindow();
+    await runtime.checkpointRendererPreferences(runtime.windows[0]!.webContents, false);
+    const succeeding = succeedingMigration({});
+    const gate = await startupGate(runtime, userData, { BrowserWindow: succeeding.FakeBrowserWindow, deadlineMs: 50 });
+    expect(gate).toEqual({ values: { 'jcad.session': 'earlier' }, source: 'checkpoint' });
+    expect(succeeding.state.loadCalls).toBe(0);
+    expect(runtime.ctx.legacyMigrationFailed).toBe(false);
+    expect(runtime.blockLogs).toEqual([]);
+  });
 
-describe('startup migration wiring in electron/main.cjs (source pins)', () => {
+  it('an existing migration marker means no startup storage and the extraction never runs', async () => {
+    const userData = freshUserData();
+    mkdirSync(join(userData, 'Local Storage', 'leveldb'), { recursive: true });
+    writeFileSync(join(userData, 'renderer-origin-migrated'), '1');
+    const runtime = makeRuntime(userData, {});
+    const succeeding = succeedingMigration({});
+    const gate = await startupGate(runtime, userData, { BrowserWindow: succeeding.FakeBrowserWindow, deadlineMs: 50 });
+    expect(gate).toBeNull();
+    expect(succeeding.state.loadCalls).toBe(0);
+    expect(runtime.ctx.legacyMigrationFailed).toBe(false);
+    expect(runtime.blockLogs).toEqual([]);
+  });
+});
+
+// ---- static pins: main.cjs delegates to the module; the handler and close path keep theirs -----
+
+describe('startup migration wiring (source pins)', () => {
   const main = readSource('electron/main.cjs');
+  const gate = readSource('electron/main/startup-migration.cjs');
 
-  it('the gate assigns the failure flag from the extraction outcome on the shared context', () => {
-    expect(main).toContain('ctx.legacyMigrationFailed = !outcome.ok');
-  });
-
-  it('the migration block keeps its branch order', () => {
-    const start = main.indexOf('const checkpoint = await readRendererPreferences();');
-    expect(start).toBeGreaterThan(-1);
-    const block = main.slice(start, main.indexOf('loadPersistedPaths();', start));
-    expect(block.indexOf('readRendererPreferences()')).toBeLessThan(block.indexOf('renderer-origin-migrated'));
-    expect(block.indexOf('renderer-origin-migrated')).toBeLessThan(block.indexOf('legacyStorage('));
-  });
-
-  it('the block catch sets the failure flag only when the migration leg threw (r3 narrowing)', () => {
+  it('main.cjs delegates the gate to the module and keeps no inline shadow of the decision', () => {
     const start = main.indexOf('if (!DEV_URL) {');
     expect(start).toBeGreaterThan(-1);
     const block = main.slice(start, main.indexOf('loadPersistedPaths();', start));
-    // The leg runs under its own marker: a throw out of the extraction await is marked
-    // inside the block, after the extraction call and before the block catch.
-    expect(block).toContain('let migrationLegThrew = false');
-    const legMark = block.indexOf('migrationLegThrew = true');
-    expect(legMark).toBeGreaterThan(block.indexOf('legacyStorage('));
-    const catchAt = block.indexOf('} catch (error) {');
+    expect(block).toContain('runStartupMigration(');
+    expect(block).toContain('rendererStorage = await runStartupMigration(');
+    // The decision itself - branch conditions, leg marking, flag writes - lives only in
+    // the module now; none of its text may survive inline in the entry point's gate
+    // region. (Binding the extraction's arguments in the deps wiring is not the decision.)
+    expect(block).not.toContain('if (checkpoint !== null)');
+    expect(block).not.toContain('migrationLegThrew');
+    expect(block).not.toContain('!outcome.ok');
+    expect(block).not.toContain('legacyMigrationFailed =');
+    expect(main).toContain("require('./main/startup-migration.cjs')");
+  });
+
+  it('the module assigns the failure flag from the extraction outcome on the shared context', () => {
+    expect(gate).toContain('ctx.legacyMigrationFailed = !outcome.ok');
+  });
+
+  it('the module keeps the gate branch order: checkpoint, marker, extraction', () => {
+    const read = gate.indexOf('await readCheckpoint()');
+    expect(read).toBeGreaterThan(-1);
+    expect(read).toBeLessThan(gate.indexOf('markerExists()'));
+    expect(gate.indexOf('markerExists()')).toBeLessThan(gate.indexOf('runLegacy()'));
+  });
+
+  it('the module catch sets the failure flag only when the migration leg threw (r3 narrowing)', () => {
+    expect(gate).toContain('let migrationLegThrew = false');
+    const legMark = gate.indexOf('migrationLegThrew = true');
+    expect(legMark).toBeGreaterThan(gate.indexOf('runLegacy()'));
+    const catchAt = gate.indexOf('} catch (error) {');
     expect(catchAt).toBeGreaterThan(-1);
     expect(legMark).toBeLessThan(catchAt);
     // Every failure-flag assignment inside the catch is the guarded one, so a throw from
     // the checkpoint read (which never passes the leg mark) cannot set the flag.
-    const catchLines = block.slice(catchAt).split('\n').filter((line) => line.includes('ctx.legacyMigrationFailed = true'));
+    const catchLines = gate.slice(catchAt).split('\n').filter((line) => line.includes('ctx.legacyMigrationFailed = true'));
     expect(catchLines.length).toBeGreaterThan(0);
     for (const line of catchLines) expect(line).toContain('if (migrationLegThrew)');
+    // And every throw is logged once, at the catch, with the production kind string.
+    expect(gate.slice(catchAt)).toContain("logError('renderer preference migration', error)");
   });
 
   it('the migrated handler refuses the marker while the flag is set, before any checkpoint', () => {
