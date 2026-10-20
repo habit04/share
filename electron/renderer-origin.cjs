@@ -366,7 +366,8 @@ async function clearPartitionBounded(partitionSession) {
  * had closed moments earlier (and whose recovery path can wipe it). The
  * original is only ever touched by bounded main-process file I/O here.
  * Round 7 (R6-2): the copy arrives STARTED — `copy` is the handle from
- * beginLegacyMigration, begun at the top of the ready callback. Round 7
+ * beginLegacyMigration; round 8 (R8-A) moved the begin to right after
+ * the single-instance lock, before whenReady and any session. Round 7
  * (R6-6): it is awaited BEFORE the partition session is created — the
  * lead's Windows gate showed fromPartition opens the partition's leveldb
  * immediately, and a copy written into that live directory fails with
