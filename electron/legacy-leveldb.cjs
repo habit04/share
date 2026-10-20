@@ -25,7 +25,9 @@
 // Integrity: log record CRCs (masked CRC-32C) are verified. A
 // corrupt or torn record ENDS that log's replay (Chromium recovery
 // semantics — a crashed writer's tail must not lose the batches
-// before it). MANIFEST corruption instead throws: the descriptor
+// before it). MANIFEST corruption instead throws (only a final
+// record truncated by the end of the file is dropped, as leveldb
+// does — round 12b, R12-3): the descriptor
 // decides which tables are live, and guessing there could serve
 // deleted data. Any other parse failure throws, and the caller
 // takes the existing failed-leg path (no marker, retry next
@@ -102,7 +104,9 @@ function readLengthPrefixed(buffer, offset) {
 // Logical records from a leveldb log file (data .log and MANIFEST
 // alike). Stops at the first corrupt/torn record and returns what
 // was assembled before it (Chromium recovery semantics); with
-// `strict` it throws instead (MANIFEST use).
+// `strict` it throws instead (MANIFEST use) — except for a final
+// record truncated by the end of the file, which leveldb itself
+// treats as EOF (round 12b, R12-3).
 function readLogRecords(buffer, { strict = false } = {}) {
   const records = [];
   let fragments = null;
@@ -121,7 +125,18 @@ function readLogRecords(buffer, { strict = false } = {}) {
     // 11-byte header; the CRC then covers type + log number + payload.
     const recyclable = type >= 5 && type <= 8;
     const headerSize = recyclable ? 11 : 7;
-    if (offset + headerSize + length > buffer.length) { if (!fail('torn record at end of file')) break; }
+    const recordEnd = offset + headerSize + length;
+    const blockEnd = offset + blockRemaining;
+    // Round 12b (R12-3): a record cut off by the END OF THE FILE (the
+    // writer died mid-append, inside the file's last, partial block)
+    // is dropped, together with any unfinished fragmented record, in
+    // BOTH modes — leveldb's log reader reports this as EOF, not as
+    // corruption, so the strict MANIFEST read tolerates it too. A
+    // record that overruns its 32 KiB block while the file goes on (or
+    // ends exactly at that block's boundary) is a malformed length
+    // (leveldb: "bad record length"), and fails.
+    if (recordEnd > buffer.length && buffer.length < blockEnd) break;
+    if (recordEnd > blockEnd) { if (!fail('record overruns its block')) break; }
     const payload = buffer.subarray(offset + headerSize, offset + headerSize + length);
     const storedCrc = buffer.readUInt32LE(offset);
     const crcInput = recyclable

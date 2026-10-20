@@ -69,6 +69,90 @@ describe('legacy leveldb reader — real Chromium stores (round 12)', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  // Round 12b (R12-3): the strict MANIFEST read tolerates ONLY a final
+  // record cut off by the end of the file (the writer died mid-append;
+  // leveldb's log reader reports that as EOF). A CRC mismatch, or a
+  // record that overruns its block while the file goes on, still throws.
+  describe('strict MANIFEST read: only an EOF-truncated final record is tolerated (round 12b, R12-3)', () => {
+    const logRecord = (payload: Buffer, type = 1) => {
+      const header = Buffer.alloc(7);
+      header.writeUInt16LE(payload.length, 4);
+      header[6] = type;
+      header.writeUInt32LE(_internals.maskCrc(_internals.crc32c(Buffer.concat([Buffer.from([type]), payload]))), 0);
+      return Buffer.concat([header, payload]);
+    };
+    // A valid VersionEdit: comparator (tag 1) = `length` bytes of 'x'.
+    const comparatorEdit = (length: number) => {
+      const varint: number[] = [];
+      for (let n = length; ; n >>>= 7) { if (n < 0x80) { varint.push(n); break; } varint.push((n & 0x7f) | 0x80); }
+      return Buffer.concat([Buffer.from([1, ...varint]), Buffer.alloc(length, 0x78)]);
+    };
+    const withManifest = (tail: (manifest: Buffer) => Buffer, check: (dir: string) => void) => {
+      const root = mkdtempSync(join(tmpdir(), 'jcad-leveldb-r12-3-'));
+      try {
+        const dir = join(root, 'leveldb');
+        mkdirSync(dir, { recursive: true });
+        for (const name of readdirSync(fixtureDir('simple'))) copyFileSync(join(fixtureDir('simple'), name), join(dir, name));
+        const manifest = readFileSync(join(dir, 'MANIFEST-000001'));
+        writeFileSync(join(dir, 'MANIFEST-000001'), tail(manifest));
+        check(dir);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    };
+
+    it('drops a final record truncated by the end of the file', () => {
+      withManifest((m) => Buffer.concat([m, logRecord(comparatorEdit(40)).subarray(0, 7 + 12)]), (dir) => {
+        expect({ ...readLegacyLocalStorage(dir) }).toEqual(expected('simple'));
+      });
+    });
+
+    it('drops a final header truncated by the end of the file', () => {
+      withManifest((m) => Buffer.concat([m, logRecord(comparatorEdit(40)).subarray(0, 4)]), (dir) => {
+        expect({ ...readLegacyLocalStorage(dir) }).toEqual(expected('simple'));
+      });
+    });
+
+    it('drops an unfinished fragmented final record (FIRST, then the end of the file)', () => {
+      withManifest((m) => Buffer.concat([m, logRecord(comparatorEdit(40), 2)]), (dir) => {
+        expect({ ...readLegacyLocalStorage(dir) }).toEqual(expected('simple'));
+      });
+    });
+
+    it('a CRC mismatch in the final, complete record still throws', () => {
+      withManifest((m) => {
+        const record = logRecord(comparatorEdit(40));
+        record[record.length - 1] = (record[record.length - 1] ?? 0) ^ 0x01;
+        return Buffer.concat([m, record]);
+      }, (dir) => {
+        expect(() => readLegacyLocalStorage(dir)).toThrow(/record CRC mismatch/);
+      });
+    });
+
+    it('a record that overruns its 32 KiB block while the file goes on still throws (truncation not at EOF)', () => {
+      // The second record starts after the 41-byte fixture record and
+      // claims 10 bytes more than its block holds; its CRC is valid and
+      // its payload is a well-formed VersionEdit, so only the block
+      // bound can refuse it. The file continues into the next block.
+      withManifest((m) => {
+        const room = 32_768 - m.length - 7;
+        const record = logRecord(comparatorEdit(room + 10 - 4)); // 1 tag + 3 varint bytes
+        expect(record.length).toBe(7 + room + 10);
+        return Buffer.concat([m, record, Buffer.alloc(100)]);
+      }, (dir) => {
+        expect(() => readLegacyLocalStorage(dir)).toThrow(/overruns its block/);
+      });
+    });
+
+    it('a block-overrunning record still throws when the file ends exactly at the block boundary', () => {
+      withManifest((m) => {
+        const room = 32_768 - m.length - 7;
+        const record = logRecord(comparatorEdit(room + 10 - 4));
+        return Buffer.concat([m, record]).subarray(0, 32_768);
+      }, (dir) => {
+        expect(() => readLegacyLocalStorage(dir)).toThrow(/overruns its block/);
+      });
+    });
+  });
+
   it('a MANIFEST naming a table file that is not on disk fails the leg', () => {
     // Hand-build a MANIFEST whose VersionEdit adds one live table,
     // with a correct masked CRC so the failure is the missing file,
