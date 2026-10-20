@@ -90,6 +90,12 @@ describe('closeApplication outcome contract', () => {
     const result = await closeApplication(app, 1_000);
     expect(result.outcome).toBe('rejected');
     expect(attempts).toEqual(expectedKill(4243));
+    // r4 F3 (assertion added round 9): the bounded exit wait means the
+    // child has EXITED by the time closeApplication returns — a caller
+    // proceeding on 'rejected' never races a still-dying process. (The
+    // harness child dies 5 ms after the kill; without the wait this
+    // return would still see exitCode null.)
+    expect(child.exitCode).toBe(0);
   });
 
   it('reports rejected without killing a process that already exited', async () => {
