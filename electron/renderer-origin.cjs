@@ -159,14 +159,17 @@ function snapshotCopyState(leveldbDir) {
   return { ldbFiles, manifestMax };
 }
 
-/** The head of the partition leveldb's LOG (never LOG.old: at open, Chromium
- * rotates the previous session's log aside and starts a fresh one, so LOG
- * carries THIS open's record). 'Creating DB' is written at the start of a
- * fresh log, so a bounded head read suffices. Null when unreadable. */
-function readCopyLogHead(leveldbDir) {
+/** The head of one of the partition leveldb's log files (LOG or LOG.old —
+ * both are checked, round 8, R8-C): at open, Chromium rotates the previous
+ * session's log to LOG.old and starts a fresh LOG, so a recreation's
+ * 'Creating DB' can sit in either — the round-6 gate found one ONLY in
+ * LOG.old after a later open rotated the fresh log aside. 'Creating DB'
+ * is written at the start of a fresh log, so a bounded head read suffices.
+ * Null when unreadable. */
+function readCopyLogHead(leveldbDir, name) {
   let fd;
   try {
-    fd = fsSync.openSync(path.join(leveldbDir, 'LOG'), 'r');
+    fd = fsSync.openSync(path.join(leveldbDir, name), 'r');
     const buffer = Buffer.alloc(256 * 1024);
     const read = fsSync.readSync(fd, buffer, 0, buffer.length, 0);
     return buffer.toString('utf8', 0, read);
@@ -183,9 +186,10 @@ function readCopyLogHead(leveldbDir) {
  * creation, every copied table file is gone with none left afterwards, or
  * the MANIFEST numbering went down — a recreation restarts all three. */
 function assertCopyNotRecreated(leveldbDir, before) {
-  const log = readCopyLogHead(leveldbDir);
-  if (log !== null && log.includes('Creating DB')) {
-    throw new Error('Legacy storage copy was recreated during the migration read (LOG records Creating DB); refusing to acknowledge the migration');
+  const log = readCopyLogHead(leveldbDir, 'LOG');
+  const oldLog = readCopyLogHead(leveldbDir, 'LOG.old');
+  if ((log !== null && log.includes('Creating DB')) || (oldLog !== null && oldLog.includes('Creating DB'))) {
+    throw new Error('Legacy storage copy was recreated during the migration read (its log records Creating DB); refusing to acknowledge the migration');
   }
   const after = snapshotCopyState(leveldbDir);
   // Clause (b), narrowed in round 8 (R7-1): a HEALTHY open can delete
@@ -204,12 +208,18 @@ function assertCopyNotRecreated(leveldbDir, before) {
   }
 }
 
-/** Copy the legacy leveldb (minus LOCK) into the partition's leveldb
- * directory, replacing any stale copy. Main-process file I/O only — with
- * this copy in place, Chromium never opens the original leveldb in this
- * process. The copy itself is synchronous (a handful of small files, once);
- * only the contention wait between attempts is asynchronous. */
-async function copyLeveldbToPartition(sourceDir, destDir) {
+/** Copy the legacy leveldb (minus LOCK, LOG and LOG.old) into the
+ * partition's leveldb directory, replacing any stale copy. LOCK belongs
+ * to whoever holds the store open; the logs are leveldb's own journals —
+ * the reader does not need them, and the original's LOG.old can carry its
+ * own historical 'Creating DB', which must not be imported into the
+ * partition the recreate guard inspects (round 8, R8-C). Main-process
+ * file I/O only — with this copy in place, Chromium never opens the
+ * original leveldb in this process. The copy itself is synchronous (a
+ * handful of small files, once); only the contention wait between
+ * attempts is asynchronous. */
+const COPY_SKIP_NAMES = new Set(['LOCK', 'LOG', 'LOG.old']);
+async function copyLeveldbToPartition(sourceDir, destDir, waitMs = LEGACY_COPY_WAIT_MS) {
   await withBoundedContentionWait(() => {
     fsSync.rmSync(destDir, { recursive: true, force: true });
     let names;
@@ -217,10 +227,10 @@ async function copyLeveldbToPartition(sourceDir, destDir) {
     catch (error) { if (error?.code === 'ENOENT') return; throw error; }
     fsSync.mkdirSync(destDir, { recursive: true });
     for (const name of names) {
-      if (name === 'LOCK') continue;
+      if (COPY_SKIP_NAMES.has(name)) continue;
       fsSync.cpSync(path.join(sourceDir, name), path.join(destDir, name), { recursive: true });
     }
-  });
+  }, waitMs);
 }
 
 /** The migration partition's storage directory, derived from the user-data
@@ -233,18 +243,72 @@ function legacyPartitionDir(userDataDir) {
   return path.join(userDataDir, 'Partitions', LEGACY_MIGRATION_PARTITION.replace(/^persist:/, ''));
 }
 
+/** Names and sizes of the regular files in a leveldb directory — the
+ * stability listing for the copy (round 8, R8-A). A missing directory
+ * lists empty; a file that vanishes mid-listing is skipped, which the
+ * before/after comparison reads as change — the safe direction. */
+function listStoreFiles(dir) {
+  let names;
+  try { names = fsSync.readdirSync(dir); }
+  catch { return []; }
+  const listing = [];
+  for (const name of names) {
+    try {
+      const stat = fsSync.statSync(path.join(dir, name));
+      if (stat.isFile()) listing.push([name, stat.size]);
+    } catch { /* vanished mid-listing — the comparison sees a change */ }
+  }
+  return listing.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+}
+
+function sameListing(a, b) {
+  return a.length === b.length && a.every((entry, index) => entry[0] === b[index][0] && entry[1] === b[index][1]);
+}
+
+/** The copied CURRENT must name a MANIFEST that travelled with it (round
+ * 8, R8-A): a copy whose CURRENT points at a missing MANIFEST makes
+ * Chromium recreate the partition DB on open — the exact failure R6-1
+ * guards — so fail the leg here, before any window opens. A copy with no
+ * CURRENT (an empty store) has nothing to verify. */
+function assertCopiedManifestPresent(leveldbDir) {
+  let current;
+  try { current = fsSync.readFileSync(path.join(leveldbDir, 'CURRENT'), 'utf8'); }
+  catch { return; }
+  const manifestName = current.split('\n')[0].trim();
+  if (!/^MANIFEST-\d+$/.test(manifestName) || !fsSync.existsSync(path.join(leveldbDir, manifestName))) {
+    throw new Error(`Legacy storage copy is missing the MANIFEST its CURRENT names (${manifestName || 'unreadable CURRENT'}); refusing to acknowledge the migration`);
+  }
+}
+
 /** Start the partition copy NOW and return its handle (round 7, R6-2 +
- * R6-6): session-free main-process file I/O, begun at the top of the ready
- * callback, long before legacyStorage creates the partition session — so
- * the copy is settled before any live database can hold the directory, and
- * nothing ever writes into a directory a live session holds. The promise
- * resolves to the copy-side state (R6-1) once the copy lands; the 2 s
- * contention bound stays on the copy only. Never throws synchronously. */
+ * R6-6; round 8, R8-A): session-free main-process file I/O, begun in
+ * main.cjs right after the single-instance lock — BEFORE whenReady, so
+ * the first (synchronous) copy attempt precedes default-session
+ * creation entirely: the gate's instrumented runs showed the default
+ * session opening the ORIGINAL leveldb ~14 ms into the copy once ready
+ * fires, and a larger store could compact mid-copy and tear it. The
+ * copy is verified stable (the original's names+sizes identical before
+ * and after; a change recopies within the SAME 2 s bound, and a store
+ * that never stabilises fails the leg) and coherent (its CURRENT names
+ * a MANIFEST present in the copy). The promise resolves to the
+ * copy-side state (R6-1) once the copy lands; the 2 s bound covers the
+ * copy only. Never throws synchronously. */
 function startLegacyStorageCopy({ userDataDir }) {
   const partitionDir = legacyPartitionDir(userDataDir);
   const leveldbDir = path.join(partitionDir, 'Local Storage', 'leveldb');
   const promise = (async () => {
-    await copyLeveldbToPartition(path.join(userDataDir, 'Local Storage', 'leveldb'), leveldbDir);
+    const sourceDir = path.join(userDataDir, 'Local Storage', 'leveldb');
+    const deadline = Date.now() + LEGACY_COPY_WAIT_MS;
+    for (;;) {
+      const before = listStoreFiles(sourceDir);
+      await copyLeveldbToPartition(sourceDir, leveldbDir, Math.max(0, deadline - Date.now()));
+      if (sameListing(before, listStoreFiles(sourceDir))) break;
+      if (Date.now() >= deadline) {
+        throw new Error('Legacy storage kept changing while it was being copied; refusing to acknowledge the migration');
+      }
+      await contentionWait(Math.min(25, Math.max(0, deadline - Date.now())));
+    }
+    assertCopiedManifestPresent(leveldbDir);
     return snapshotCopyState(leveldbDir);
   })();
   void promise.catch(() => {}); // Observed via the await in legacyStorage; startup must not see it unhandled first.

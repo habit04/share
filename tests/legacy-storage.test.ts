@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -307,9 +308,9 @@ describe('owned bounded legacy-origin storage read', () => {
 });
 
 describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, round 7)', () => {
-  it('copies the leveldb minus LOCK into the partition before the window loads; the original is untouched', async () => {
+  it('copies the leveldb minus LOCK, LOG and LOG.old into the partition before the window loads; the original is untouched', async () => {
     const h = harness();
-    const files = { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'manifest-bytes', '000003.log': 'log-bytes-Δ', LOG: 'info log', LOCK: '' };
+    const files = { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'manifest-bytes', '000003.log': 'log-bytes-Δ', LOG: 'info log', 'LOG.old': 'old log', LOCK: '' };
     seedLeveldb(h.originalDir, files);
     const before = Object.fromEntries(Object.keys(files).map((name) => [name, readFileSync(join(h.originalDir, name))]));
     let partitionAtLoad: Record<string, Buffer> | null = null;
@@ -318,18 +319,20 @@ describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, roun
     });
     h.contents.executeJavaScript.mockResolvedValue(Object.assign(Object.create(null), { k: 'v' }));
     await expect(h.read()).resolves.toEqual({ k: 'v' });
-    // The copy (minus LOCK) was already in the partition when the window loaded.
+    // The copy (minus LOCK, LOG and LOG.old — R8-C: the logs are leveldb's
+    // own journals and the original's LOG.old can carry its own historical
+    // 'Creating DB') was already in the partition when the window loaded.
     const atLoad = partitionAtLoad!;
-    expect(Object.keys(atLoad).sort()).toEqual(['000003.log', 'CURRENT', 'LOG', 'MANIFEST-000001']);
+    expect(Object.keys(atLoad).sort()).toEqual(['000003.log', 'CURRENT', 'MANIFEST-000001']);
     for (const name of Object.keys(atLoad)) expect(atLoad[name]!.equals(before[name]!)).toBe(true);
-    // The original is byte-identical, LOCK included, with no file added or lost.
+    // The original is byte-identical, LOCK and logs included, with no file added or lost.
     expect(readdirSync(h.originalDir).sort()).toEqual(Object.keys(files).sort());
     for (const name of Object.keys(files)) expect(readFileSync(join(h.originalDir, name)).equals(before[name]!)).toBe(true);
     expect(h.clearStorageData).toHaveBeenCalledOnce();
   });
 
   it('clears the partition even when the read itself fails', async () => {
-    const h = harness(); seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n' });
+    const h = harness(); seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm' });
     h.contents.executeJavaScript.mockRejectedValue(new Error('Controlled read failure'));
     await expect(h.read()).rejects.toThrow(/Controlled read failure/);
     expect(h.clearStorageData).toHaveBeenCalledOnce();
@@ -370,6 +373,21 @@ describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, roun
     seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table' });
     h.contents.executeJavaScript.mockImplementation(async () => {
       writeFileSync(join(h.partitionLeveldb, 'LOG'), '2026/10/20-00:00:00.000 Creating DB /Local Storage/leveldb since it was missing\n');
+      return Object.assign(Object.create(null), {});
+    });
+    await expect(h.read()).rejects.toThrow(/Creating DB|recreated/i);
+    expect(h.clearStorageData).toHaveBeenCalledOnce();
+  });
+
+  // R8-C: a later open can rotate a recreated DB's fresh LOG to LOG.old —
+  // the round-6 gate found a rebuild's 'Creating DB' ONLY there. Both
+  // logs are checked.
+  it('refuses (R6-1, R8-C) when only the copy LOG.old records a recreation (Creating DB)', async () => {
+    const h = harness();
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table' });
+    h.contents.executeJavaScript.mockImplementation(async () => {
+      writeFileSync(join(h.partitionLeveldb, 'LOG'), 'Recovering log #3\n');
+      writeFileSync(join(h.partitionLeveldb, 'LOG.old'), '2026/10/20-00:00:00.000 Creating DB /Local Storage/leveldb since it was missing\n');
       return Object.assign(Object.create(null), {});
     });
     await expect(h.read()).rejects.toThrow(/Creating DB|recreated/i);
@@ -524,12 +542,12 @@ describe('round 7: copy start (R6-2) and marker partition removal (R6-4)', () =>
 
   it('starts the copy when the marker is absent', async () => {
     const h = harness();
-    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', '000005.ldb': 'table' });
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table' });
     const markerPath = join(h.userDataDir, 'renderer-origin-migrated');
     const result = beginLegacyMigration({ userDataDir: h.userDataDir, markerPath });
     expect(result).not.toBeNull();
-    await expect(result!.promise).resolves.toEqual({ ldbFiles: ['000005.ldb'], manifestMax: null });
-    expect(readdirSync(h.partitionLeveldb).sort()).toEqual(['000005.ldb', 'CURRENT']);
+    await expect(result!.promise).resolves.toEqual({ ldbFiles: ['000005.ldb'], manifestMax: 1 });
+    expect(readdirSync(h.partitionLeveldb).sort()).toEqual(['000005.ldb', 'CURRENT', 'MANIFEST-000001']);
   });
 });
 
@@ -568,6 +586,54 @@ describe('round 8: bounded, non-refusing partition clear (R7-2)', () => {
     h.window.destroy.mockImplementation(() => { throw first; });
     await expect(h.read()).rejects.toBe(first);
     expect(h.clearStorageData).toHaveBeenCalledOnce();
+  });
+});
+
+describe('round 8: stable, coherent copy (R8-A)', () => {
+  it('recopies when the original changes during the copy, within the same bound', async () => {
+    const h = harness();
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table' });
+    const realCpSync = fs.cpSync;
+    let calls = 0;
+    const spy = vi.spyOn(fs, 'cpSync').mockImplementation(((...args: Parameters<typeof fs.cpSync>) => {
+      calls += 1;
+      if (calls === 1) writeFileSync(join(h.originalDir, '000005.ldb'), 'table-grown-longer');
+      return (realCpSync as (...a: Parameters<typeof fs.cpSync>) => void)(...args);
+    }) as typeof fs.cpSync);
+    try {
+      const state = await h.start().promise;
+      // The first attempt copied three files; the changed listing forced a recopy.
+      expect(calls).toBeGreaterThan(3);
+      expect(readFileSync(join(h.partitionLeveldb, '000005.ldb'), 'utf8')).toBe('table-grown-longer');
+      expect(state.ldbFiles).toEqual(['000005.ldb']);
+      expect(state.manifestMax).toBe(1);
+    } finally { spy.mockRestore(); }
+  });
+
+  it('fails the leg when the original never stabilises inside the copy bound', async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table' });
+    const realCpSync = fs.cpSync;
+    let n = 0;
+    const spy = vi.spyOn(fs, 'cpSync').mockImplementation(((...args: Parameters<typeof fs.cpSync>) => {
+      n += 1;
+      writeFileSync(join(h.originalDir, '000005.ldb'), 'x'.repeat(n + 5));
+      return (realCpSync as (...a: Parameters<typeof fs.cpSync>) => void)(...args);
+    }) as typeof fs.cpSync);
+    try {
+      const pending = observe(h.start().promise);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await pending.done;
+      expect(pending.state.error).toBeInstanceOf(Error);
+      expect(String((pending.state.error as Error).message)).toMatch(/kept changing/);
+    } finally { spy.mockRestore(); }
+  });
+
+  it('fails the leg when the copied CURRENT names a MANIFEST missing from the copy', async () => {
+    const h = harness();
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000777\n', '000005.ldb': 'table' });
+    await expect(h.start().promise).rejects.toThrow(/MANIFEST/);
   });
 });
 
