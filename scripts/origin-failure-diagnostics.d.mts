@@ -2,7 +2,8 @@
 // The implementation is separately checked against the full Playwright API.
 export interface OriginDiagnosticApplication {
   process(): unknown;
-  context(): unknown;
+  /** Used only by the best-effort CDP target probe; its absence is recorded, not fatal. */
+  context?: () => unknown;
   windows(): unknown[];
   on(event: 'window', listener: (page: unknown) => void): unknown;
   off(event: 'window', listener: (page: unknown) => void): unknown;
