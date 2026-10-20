@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const require = createRequire(import.meta.url);
-const { readLegacyLocalStorage, _internals } = require('../electron/legacy-leveldb.cjs') as {
+const { readLegacyLocalStorage, LEGACY_STORE_TOO_LARGE, _internals } = require('../electron/legacy-leveldb.cjs') as {
+  LEGACY_STORE_TOO_LARGE: string;
   readLegacyLocalStorage: (dir: string) => Record<string, string>;
   _internals: {
     crc32c: (b: Buffer) => number;
@@ -153,6 +154,53 @@ describe('legacy leveldb reader — real Chromium stores (round 12)', () => {
       writeFileSync(join(dir, 'MANIFEST-000001'), manifest);
       expect(() => readLegacyLocalStorage(dir)).toThrow(/CRC|leveldb/);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  // Fable follow-up N1: the size refusal comes from the directory
+  // listing alone, before CURRENT/MANIFEST are even read — a store
+  // whose numbered tables + logs exceed 64 MiB on disk is refused
+  // as too large, however (in)valid its bytes are.
+  describe('pre-parse size short-circuit (Fable N1)', () => {
+    const MIB = 1024 * 1024;
+    function sparseStore(tableBytes: number, logBytes: number) {
+      const root = mkdtempSync(join(tmpdir(), 'jcad-leveldb-toolarge-'));
+      const dir = join(root, 'leveldb');
+      mkdirSync(dir, { recursive: true });
+      // Deliberately NO CURRENT/MANIFEST: if the reader touched
+      // either, the failure would be a parse error, not tooLarge.
+      if (tableBytes) { writeFileSync(join(dir, '000005.ldb'), ''); truncateSync(join(dir, '000005.ldb'), tableBytes); }
+      if (logBytes) { writeFileSync(join(dir, '000003.log'), ''); truncateSync(join(dir, '000003.log'), logBytes); }
+      return { root, dir };
+    }
+
+    it('refuses a store whose tables + logs exceed 64 MiB before parsing anything', () => {
+      const { root, dir } = sparseStore(40 * MIB, 25 * MIB);
+      try {
+        let caught: unknown;
+        try { readLegacyLocalStorage(dir); } catch (error) { caught = error; }
+        expect((caught as { code?: string }).code).toBe(LEGACY_STORE_TOO_LARGE);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+
+    it('at exactly 64 MiB the short-circuit does not fire (the failure is the missing CURRENT, not size)', () => {
+      const { root, dir } = sparseStore(32 * MIB, 32 * MIB);
+      try {
+        let caught: unknown;
+        try { readLegacyLocalStorage(dir); } catch (error) { caught = error; }
+        expect((caught as { code?: string }).code).not.toBe(LEGACY_STORE_TOO_LARGE);
+        expect((caught as { code?: string }).code).toBe('ENOENT');
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+
+    it('non-data files (LOG, LOG.old, LOCK) do not count toward the bound', () => {
+      const { root, dir } = sparseStore(0, 0);
+      try {
+        writeFileSync(join(dir, 'LOG'), ''); truncateSync(join(dir, 'LOG'), 100 * MIB);
+        let caught: unknown;
+        try { readLegacyLocalStorage(dir); } catch (error) { caught = error; }
+        expect((caught as { code?: string }).code).toBe('ENOENT');
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
   });
 
   // Round 12b (R12-3): the strict MANIFEST read tolerates ONLY a final

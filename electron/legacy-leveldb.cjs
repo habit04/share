@@ -408,6 +408,15 @@ const MAX_TOTAL_BYTES = 256 * 1024 * 1024; // sanity bound on bytes read
 // latter preserves a copy of the store).
 const LEGACY_STORE_TOO_LARGE = 'LEGACY_STORE_TOO_LARGE';
 const tooLarge = () => Object.assign(new Error('legacy leveldb: store exceeds the read size bound'), { code: LEGACY_STORE_TOO_LARGE });
+// Fable follow-up N1 (non-blocking at the 12b gate): short-circuit
+// BEFORE any parsing when the store's on-disk data files (numbered
+// tables + logs) already exceed 64 MiB. The per-read 256 MiB bound
+// below only trips after the MANIFEST and some files have been
+// read and parsed; a store this large is refused either way (the
+// leg's own accounting caps preferences at 8 MiB), so refuse it
+// from the directory listing alone — no CURRENT read, no MANIFEST
+// parse, no table bytes touched.
+const PRE_PARSE_SIZE_BOUND = 64 * 1024 * 1024;
 // Round 12b (R12-7 widening): a file the store's own metadata says
 // exists — the MANIFEST that CURRENT names, a live table the MANIFEST
 // names, or a log the directory listing just returned — but that is
@@ -437,6 +446,12 @@ function readReferencedFile(leveldbDir, name, what) {
  * @returns {Record<string, string>}
  */
 function readLegacyLocalStorage(leveldbDir) {
+  let onDiskBytes = 0;
+  for (const name of fs.readdirSync(leveldbDir)) {
+    if (!/^\d+\.(?:ldb|log)$/.test(name)) continue;
+    onDiskBytes += fs.statSync(path.join(leveldbDir, name)).size;
+    if (onDiskBytes > PRE_PARSE_SIZE_BOUND) throw tooLarge();
+  }
   const current = fs.readFileSync(path.join(leveldbDir, 'CURRENT'), 'utf8').trim();
   if (!/^MANIFEST-\d+$/.test(current)) throw new Error('legacy leveldb: CURRENT does not name a MANIFEST');
   const manifest = readReferencedFile(leveldbDir, current, 'CURRENT names');
