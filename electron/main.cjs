@@ -15,7 +15,7 @@
  *   updates.cjs       app info, external links, update checks and status
  *   handover.cjs      files handed over by the OS and by a second launch
  */
-const { app, BrowserWindow, session, ipcMain: rawIpcMain, protocol, net, dialog } = require('electron');
+const { app, BrowserWindow, session, ipcMain: rawIpcMain, protocol, net } = require('electron');
 const { createGPUCollector } = require('./gpu-diagnostics.cjs');
 const gpuCollector = createGPUCollector(app, { versions: {
   jcad: app.getVersion(), electron: process.versions.electron, chromium: process.versions.chrome,
@@ -39,6 +39,7 @@ const { guardIpc, appUrlTest, createRejectionLog, createPathPolicy } = require('
 const { createPathRegistry } = require('./path-registry.cjs');
 const { stateDir, recentFile, writeStateFile, logMainError, flushRendererPreferences, readRendererPreferences, checkpointRendererPreferences, latestRendererPreferences, installCrashLogging } = require('./main/app-data.cjs');
 const { createWindows } = require('./main/window.cjs');
+const { runStartupMigration } = require('./main/startup-migration.cjs');
 const { registerMenuIpc } = require('./main/menu.cjs');
 const { dwgHost, readDwg, registerDwgIpc } = require('./main/dwg.cjs');
 const { registerDrawingIpc } = require('./main/ipc-drawings.cjs');
@@ -114,7 +115,11 @@ const restrictedPdf = fontMetricsHost ? { host: createRestrictedPdfHost(), regis
  * check paths - and the main window.
  * @type {import('./main/context.cjs').MainContext}
  */
-const ctx = { ipcMain, rejections, registry, pathPolicy, senderWindow, mainWindow: null, openFilesReady: false, handedOverProjects: new Set(), restrictedPdf };
+const ctx = { ipcMain, rejections, registry, pathPolicy, senderWindow, mainWindow: null, openFilesReady: false, handedOverProjects: new Set(), restrictedPdf,
+  // Set when the startup legacy-storage migration did not complete (P-MIG): the migration must
+  // not be marked complete for this launch - neither by the migrated checkpoint below nor by a
+  // close-time checkpoint (electron/main/window.cjs) - so the next launch retries the extraction.
+  legacyMigrationFailed: false };
 ipcMain.handle('gpu-diagnostics', () => gpuCollector.get());
 
 function loadPersistedPaths() {
@@ -194,25 +199,25 @@ app.whenReady().then(async () => {
   installPermissionHandlers(session.defaultSession, () => (ctx.mainWindow && !ctx.mainWindow.isDestroyed() ? ctx.mainWindow.webContents : null));
   installAssetHandler({ protocol, net, root: path.join(__dirname, '..', 'dist') });
   if (!DEV_URL) {
-    try {
-      const checkpoint = await readRendererPreferences();
-      if (checkpoint !== null) rendererStorage = { values: checkpoint, source: 'checkpoint' };
-      else if (!fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated'))) {
-        const values = fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')) ? await legacyStorage({ BrowserWindow, protocol, indexFile: path.join(__dirname, '..', 'dist', 'index.html') }) : {};
-        if (values === null) throw new Error('Legacy settings could not be read completely');
-        rendererStorage = { values, source: 'legacy' };
-      }
-    } catch (error) {
-      // An unreadable/corrupt checkpoint must not fall back to stale legacy values.
-      logMainError('renderer preference migration', error);
-      // Opening an empty origin here would let its preload commit an empty
-      // checkpoint and permanent marker over settings we never read successfully.
-      try {
-        dialog.showErrorBox('JCad Electrical could not read its saved settings',
-          'Startup stopped to preserve your existing settings. No settings were reset. Restart JCad Electrical to retry. If the problem continues, contact support before resetting settings.');
-      } finally { app.quit(); }
-      return;
-    }
+    // The startup legacy-storage migration gate (P-MIG) lives in
+    // electron/main/startup-migration.cjs: it decides the startup storage and writes
+    // ctx.legacyMigrationFailed (only a failed migration LEG sets it - see that module),
+    // binding the real units here. A failed migration no longer stops startup behind a
+    // modal dialog (PR23 ASAR diagnosis): startup continues with no stored values, the
+    // migration is not marked complete, and the next launch retries the extraction.
+    rendererStorage = await runStartupMigration({
+      ctx,
+      readCheckpoint: readRendererPreferences,
+      markerExists: () => fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated')),
+      legacyStoreExists: () => fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')),
+      runLegacy: async () => {
+        // This line's legacyStorage resolves a dictionary, null for an incomplete
+        // read, and throws on failure; adapt it to the gate's outcome shape.
+        const values = await legacyStorage({ BrowserWindow, protocol, indexFile: path.join(__dirname, '..', 'dist', 'index.html') });
+        return values === null ? { values: null, ok: false } : { values, ok: true };
+      },
+      logError: logMainError,
+    });
   }
   loadPersistedPaths();
   handOverFiles(drawingArgs(process.argv, process.cwd()));
@@ -236,6 +241,10 @@ ipcMain.on('renderer-storage-migration', (event) => {
 });
 ipcMain.handle('renderer-storage-migrated', async (event) => {
   try {
+    // A failed startup migration (P-MIG) must not be marked complete: this checkpoint is the
+    // only write of the migration marker file, and it would also make the next launch take the
+    // checkpoint branch and never retry the legacy extraction. Skip it; the next launch retries.
+    if (ctx.legacyMigrationFailed) return false;
     const values = await checkpointRendererPreferences(event.sender, true);
     rendererStorage = { values, source: 'checkpoint' };
     flushRendererPreferences(event.sender);

@@ -81,7 +81,12 @@ function createWindows(ctx, devUrl, allowInspection = !app.isPackaged) {
     if (!win || win.isDestroyed() || win.webContents.isDestroyed() || win.webContents.isCrashed() || forceClose.has(win)) return true;
     if (devUrl) return true;
     try {
-      await checkpointRendererPreferences(win.webContents);
+      // A failed startup migration (P-MIG) must not be marked complete by a close-time
+      // checkpoint either: it would make the next launch take the checkpoint branch and
+      // never retry the legacy extraction, and its snapshot would lack the legacy values
+      // this session never received. What is forgone is only this session's refresh of
+      // that recovery copy; the next launch retries the extraction.
+      if (!ctx.legacyMigrationFailed) await checkpointRendererPreferences(win.webContents);
       flushRendererPreferences(win.webContents);
       return true;
     } catch (error) {
