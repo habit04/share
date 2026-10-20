@@ -91,7 +91,7 @@ async function profile(checkpoint?: string) {
 }
 
 /** Execute the real main ready callback and preload prefix; no Electron process is involved. */
-async function startup(options: { directory: string; legacy: () => Promise<unknown>; current?: Preferences; renameFails?: boolean; sourceExisted?: boolean }) {
+async function startup(options: { directory: string; legacy: () => Promise<unknown>; current?: Preferences; renameFails?: boolean; storePresent?: boolean }) {
   const storage = new Map(Object.entries(options.current ?? {}));
   const localStorage = {
     get length() { return storage.size; },
@@ -105,18 +105,16 @@ async function startup(options: { directory: string; legacy: () => Promise<unkno
   let ready: Promise<unknown> | undefined;
   const quit = vi.fn(), showErrorBox = vi.fn(), logMainError = vi.fn();
   const legacyStorage = vi.fn(options.legacy), loadPersistedPaths = vi.fn(), handOverFiles = vi.fn();
-  // Round 8 (R8-A): the migration copy is begun in main.cjs BEFORE
+  // Round 12: main.cjs snapshots the legacy store's existence BEFORE
   // whenReady (right after the single-instance lock) and the ready
-  // callback receives the handle as the free binding `legacyCopy`. The
-  // gate's leg decision reads the handle's copy-time snapshot
-  // (sourceExisted, round 9): this suite's profiles seed the legacy
-  // store before startup, so the snapshot is true unless a case
-  // overrides it (the fresh-profile case below). The stub legacy above
-  // ignores its arguments, so an opaque handle models the binding; the
-  // real begin/copy behaviour is covered in tests/legacy-storage.test.ts,
-  // and a static pin below orders the begin before whenReady/session
-  // use in the production text.
-  const legacyCopy = { sourceExisted: options.sourceExisted ?? true };
+  // callback reads the free binding `legacyStorePresent` (round 9's
+  // snapshot rule, kept). This suite's profiles seed the legacy store
+  // before startup, so the snapshot is true unless a case overrides
+  // it (the fresh-profile case below). The stub legacy above ignores
+  // its arguments; the real in-process read is covered in
+  // tests/legacy-storage.test.ts, and a static pin below orders the
+  // snapshot before whenReady/session use in the production text.
+  const legacyStorePresent = options.storePresent ?? true;
   const ipc = { sendSync: vi.fn((_channel: string) => context.rendererStorage),
     invoke: vi.fn((channel: string) => {
       if (channel !== 'renderer-storage-migrated') throw new Error('Unexpected preference IPC');
@@ -144,7 +142,7 @@ async function startup(options: { directory: string; legacy: () => Promise<unkno
     dialog: { showErrorBox }, session: { defaultSession: {} }, protocol: {}, net: {},
     BrowserWindow: class {}, __dirname: path.join(repo, 'electron'), path, fsSync,
     DEV_URL: null, stateDir: () => options.directory, rendererStorage: null, startingMainWindow: true,
-    readRendererPreferences: store.read, legacyStorage, legacyCopy, logMainError, runStartupMigration,
+    readRendererPreferences: store.read, legacyStorage, legacyStorePresent, logMainError, runStartupMigration,
     renameUnreadableCheckpoint: async () => {
       // The entry point binds app-data's rename over the same real profile; the
       // harness binds the same operation over the test profile (or a failure).
@@ -161,7 +159,7 @@ async function startup(options: { directory: string; legacy: () => Promise<unkno
   runInNewContext(startupSource, context, { filename: 'actual-main-ready-callback.cjs' });
   if (!ready) throw new Error('Actual ready callback did not execute');
   await ready;
-  return { quit, showErrorBox, logMainError, legacyStorage, legacyCopy, loadPersistedPaths, handOverFiles, createWindow, ipc, supplied, context, storage };
+  return { quit, showErrorBox, logMainError, legacyStorage, loadPersistedPaths, handOverFiles, createWindow, ipc, supplied, context, storage };
 }
 
 function migrationFailed(result: { context: Record<string, unknown> }) {
@@ -354,7 +352,7 @@ describe('main startup keeps an unsuccessful preference migration unacknowledged
   // successful empty read above (checkpoint '{}', marker '1').
   it('skips the leg when no store existed at copy time, even though the folder exists by gate time (round 9)', async () => {
     const p = await profile();
-    const result = await startup({ directory: p.directory, sourceExisted: false, legacy: async () => ({ stale: 'legacy' }) });
+    const result = await startup({ directory: p.directory, storePresent: false, legacy: async () => ({ stale: 'legacy' }) });
     expect(result.legacyStorage).not.toHaveBeenCalled();
     expect(result.logMainError).not.toHaveBeenCalled();
     expect(result.quit).not.toHaveBeenCalled(); expect(result.showErrorBox).not.toHaveBeenCalled();
@@ -514,22 +512,23 @@ describe('P-MIG retry guards (static pins on the production text)', () => {
     expect(windowSource).toContain('if (!ctx.legacyMigrationFailed && !ctx.checkpointUnreadable) await checkpointRendererPreferences(win.webContents);');
   });
 
-  // Round 8 (R8-B): the round-6 ordering mutant — copy started inside the
-  // ready callback, after the partition session existed — passed every
-  // unit test and only real Electron killed it. Pin the production order
-  // in main.cjs's text: the migration begin sits after the
-  // single-instance lock and before whenReady, the default session is
-  // first touched inside the ready callback, and main.cjs never creates
-  // the migration partition session itself.
-  it('pins the legacy copy start before whenReady and any session use (R8-B)', () => {
+  // Round 12: the copy/partition/hidden-window path is deleted. Pin the
+  // production order that replaces it in main.cjs's text: the store
+  // snapshot sits after the single-instance lock and before whenReady,
+  // the default session is first touched inside the ready callback,
+  // and no trace of the old begin/copy/partition machinery remains.
+  it('pins the legacy store snapshot before whenReady and the copy machinery gone (round 12)', () => {
     const lock = mainSource.indexOf('requestSingleInstanceLock()');
-    const begin = mainSource.indexOf('beginLegacyMigration({');
+    const snapshot = mainSource.indexOf('const legacyStorePresent =');
     const ready = mainSource.indexOf('app.whenReady().then(async () => {', lock);
     const defaultSession = mainSource.indexOf('session.defaultSession', lock);
     expect(lock).toBeGreaterThan(-1);
-    expect(begin).toBeGreaterThan(lock);
-    expect(begin).toBeLessThan(ready);
+    expect(snapshot).toBeGreaterThan(lock);
+    expect(snapshot).toBeLessThan(ready);
     expect(defaultSession).toBeGreaterThan(ready);
+    expect(mainSource).toContain('legacyStoreExists: () => legacyStorePresent');
+    expect(mainSource).not.toContain('beginLegacyMigration');
+    expect(mainSource).not.toContain('legacyCopy');
     expect(mainSource).not.toContain('fromPartition(');
   });
 });

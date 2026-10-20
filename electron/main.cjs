@@ -64,7 +64,7 @@ if (probePhase) setTimeout(() => { process.stdout.write('SHIPPING_PROBE_FAIL sta
 const { installPermissionHandlers, installWebContentsGuards } = require('./web-security.cjs');
 
 const { MAX_DRAWING_BYTES, readLimitedFile } = require('./resource-limits.cjs');
-const { installAssetHandler, legacyStorage, beginLegacyMigration } = require('./renderer-origin.cjs');
+const { installAssetHandler, legacyStorage } = require('./renderer-origin.cjs');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'jcad', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
@@ -192,18 +192,16 @@ if (!app.requestSingleInstanceLock()) {
   return;
 }
 
-// Round 8 (R8-A): begin the one-time legacy migration NOW — after the
-// single-instance lock, before whenReady. If the migration marker already
-// exists, beginLegacyMigration removes any stale migration-partition copy
-// once and returns null; otherwise it STARTS the partition copy —
-// session-free file I/O whose first attempt is synchronous, so it lands
-// before any session exists. The lead's instrumented gate runs showed the
-// default session opening the ORIGINAL leveldb ~14 ms into the copy once
-// ready fires; a larger store could compact mid-copy and tear it, so the
-// copy must precede default-session creation entirely. userData is
-// available here; the handle is consumed by the migration gate inside
-// whenReady below.
-const legacyCopy = DEV_URL ? null : beginLegacyMigration({ userDataDir: stateDir(), markerPath: path.join(stateDir(), 'renderer-origin-migrated') });
+// Round 12: snapshot the legacy store's existence NOW — after the
+// single-instance lock, before whenReady. The store, if any, is read
+// in-process by the migration gate below (electron/legacy-leveldb.cjs);
+// there is no copy, partition or hidden window anymore. The snapshot
+// discipline is round 9's, kept: the default session creates
+// Local Storage/leveldb at whenReady, so a live check inside the
+// gate would see a store even on a fresh profile and run the leg
+// against nothing. No store at snapshot time => no leg: the gate's
+// empty outcome, the marker acknowledged normally.
+const legacyStorePresent = !DEV_URL && fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb'));
 
 registerSecondInstance();
 
@@ -214,8 +212,8 @@ installCrashLogging();
 installWebContentsGuards(app);
 
 app.whenReady().then(async () => {
-  // The legacy migration began before whenReady (round 8, R8-A — see the
-  // legacyCopy binding above); its handle goes to the migration gate below.
+  // The legacy-store snapshot was taken before whenReady (round 12 — see
+  // the legacyStorePresent binding above); the gate consumes it below.
   installPermissionHandlers(session.defaultSession, () => (ctx.mainWindow && !ctx.mainWindow.isDestroyed() ? ctx.mainWindow.webContents : null));
   installAssetHandler({ protocol, net, root: path.join(__dirname, '..', 'dist') });
   if (!DEV_URL) {
@@ -230,19 +228,19 @@ app.whenReady().then(async () => {
       readCheckpoint: readRendererPreferences,
       renameCheckpointAside: renameUnreadableCheckpoint,
       markerExists: () => fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated')),
-      // Round 9: decide from the copy-time snapshot, never the live
-      // folder. The default session creates Local Storage/leveldb at
-      // whenReady, so the live check is true even on a fresh profile —
-      // PR23's CI regression ran the leg against an empty copy there and
-      // the recreate guard refused every fresh install's first launch.
-      // No store at copy time => no leg: the gate's empty outcome, the
-      // marker acknowledged normally. (legacyCopy is null only when the
-      // marker already exists, which the gate checks first.)
-      legacyStoreExists: () => legacyCopy?.sourceExisted === true,
+      // Round 12: decide from the pre-ready snapshot, never the live
+      // folder (round 9's rule, kept). The default session creates
+      // Local Storage/leveldb at whenReady, so the live check is true
+      // even on a fresh profile.
+      legacyStoreExists: () => legacyStorePresent,
       runLegacy: async () => {
-        // This line's legacyStorage resolves a dictionary, null for an incomplete
-        // read, and throws on failure; adapt it to the gate's outcome shape.
-        const values = await legacyStorage({ BrowserWindow, session, indexFile: path.join(__dirname, '..', 'dist', 'index.html'), copy: legacyCopy, logError: logMainError });
+        // Round 12's legacyStorage reads the leveldb in-process and
+        // resolves a dictionary; it throws on any parse failure, which
+        // the gate takes as the failed leg (retry next launch). The
+        // null mapping is the gate contract from the window era, kept:
+        // the reader never resolves null today, but an incomplete read
+        // must never read as a successful empty migration.
+        const values = await legacyStorage({ leveldbDir: path.join(stateDir(), 'Local Storage', 'leveldb') });
         return values === null ? { values: null, ok: false } : { values, ok: true };
       },
       logError: logMainError,
