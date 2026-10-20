@@ -409,6 +409,46 @@ async function clearPartitionBounded(partitionSession, logError) {
  * file-in-use errors while Chromium rebuilds the database (0 of 7 seeded
  * values served). Nothing here writes into a directory a live session
  * holds. */
+/** Round 11b: the partition leveldb's state AT the failure — the file
+ * listing (names/sizes/mtimes; data-file contents are never read) plus
+ * capped LOG/LOG.old tails — captured synchronously in this process at
+ * the moment the read fails, BEFORE legacyStorage's finally-scrub
+ * (clearStorageData) rebuilds the partition store. The round-11 gate
+ * showed F3's post-hoc capture photographing the rebuilt database:
+ * every file's mtime postdated the timeout and LOG.old was already
+ * the rebuild's __tmp_for_rebuild. Same discipline as F3's
+ * captureLeveldb, with message-sized caps (1 KiB tails). Never
+ * throws: every part degrades in place. */
+const PARTITION_LOG_TAIL_BYTES = 1024;
+function partitionCaptureAtFailure(leveldbDir) {
+  const tail = (name) => {
+    let descriptor;
+    try {
+      const file = path.join(leveldbDir, name);
+      const stat = fsSync.lstatSync(file);
+      if (!stat.isFile() || stat.isSymbolicLink()) return `${name} unavailable (not a regular file)`;
+      descriptor = fsSync.openSync(file, 'r');
+      const bytes = Buffer.alloc(Math.min(stat.size, PARTITION_LOG_TAIL_BYTES));
+      const read = fsSync.readSync(descriptor, bytes, 0, bytes.length, Math.max(0, stat.size - bytes.length));
+      const text = bytes.subarray(0, read).toString('utf8').split('\n').map((line) => line.trim()).filter(Boolean).join(' ⏎ ');
+      return `${name} tail (${stat.size} B): ${text || '(empty)'}`;
+    } catch (error) { return `${name} unavailable (${String(error).slice(0, 120)})`; }
+    finally { if (descriptor !== undefined) { try { fsSync.closeSync(descriptor); } catch { /* best-effort diagnostic */ } } }
+  };
+  let listing;
+  try {
+    const found = [];
+    for (const entry of fsSync.readdirSync(leveldbDir, { withFileTypes: true }).slice(0, 64)) {
+      try {
+        const stat = fsSync.lstatSync(path.join(leveldbDir, entry.name));
+        if (stat.isFile() && !stat.isSymbolicLink()) found.push(`${entry.name} ${stat.size} B @${stat.mtime.toISOString()}`);
+      } catch { /* a file vanishing mid-scan is skipped, not fatal */ }
+    }
+    listing = found.join('; ') || '(no files)';
+  } catch (error) { listing = `unavailable (${String(error).slice(0, 120)})`; }
+  return `partition leveldb at failure: ${listing} | ${tail('LOG')} | ${tail('LOG.old')}`;
+}
+
 async function legacyStorage({ BrowserWindow, session, indexFile, copy, logError }) {
   if (!copy) throw new Error('Legacy migration copy was not started');
   let copyState;
@@ -530,7 +570,9 @@ async function legacyStorage({ BrowserWindow, session, indexFile, copy, logError
     // facts are appended to the error's message in place, so the error
     // object (and any identity a caller holds) is preserved.
     let windowPid = null;
+    let windowOsPid = null;
     try { windowPid = contents.getProcessId(); } catch { /* diagnostics only */ }
+    try { windowOsPid = contents.getOSProcessId(); } catch { /* diagnostics only */ }
     let probeMs = null;
     const readStarted = Date.now();
     let values;
@@ -554,7 +596,12 @@ async function legacyStorage({ BrowserWindow, session, indexFile, copy, logError
       }, Date.now() + LEGACY_READ_TIMEOUT_MS, 'execute');
     } catch (error) {
       if (error instanceof Error) {
-        error.message += ` [migration-read diagnostics: copy settled ${copySettledAt ?? 'unavailable'}; partition session created ${sessionCreatedAt}; window created ${windowCreatedAt}; execute started ${new Date(readStarted).toISOString()}; renderer pid ${windowPid ?? 'unavailable'}; probe ${probeMs === null ? 'did not return' : `${probeMs} ms`}; read phase ${Date.now() - readStarted} ms]`;
+        error.message += ` [migration-read diagnostics: copy settled ${copySettledAt ?? 'unavailable'}; partition session created ${sessionCreatedAt}; window created ${windowCreatedAt}; execute started ${new Date(readStarted).toISOString()}; renderer pid ${windowPid ?? 'unavailable'} (os ${windowOsPid ?? 'unavailable'}); probe ${probeMs === null ? 'did not return' : `${probeMs} ms`}; read phase ${Date.now() - readStarted} ms]`;
+        // Round 11b: capture the partition leveldb NOW, in this
+        // process — the finally below scrubs the partition
+        // (clearStorageData rebuilds its store), and after that the
+        // stall's evidence is a photograph of the rebuild.
+        error.message += ` [${partitionCaptureAtFailure(leveldbDir)}]`;
       }
       throw error;
     }

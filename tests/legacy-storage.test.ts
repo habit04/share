@@ -39,6 +39,7 @@ class Contents extends EventEmitter {
   isCrashed() { return this.crashed; }
   setWindowOpenHandler = vi.fn();
   getProcessId = vi.fn(() => 4242);
+  getOSProcessId = vi.fn(() => 7777);
   executeJavaScript = vi.fn<(_code: string) => Promise<unknown>>(async () => Object.create(null));
 }
 
@@ -853,7 +854,42 @@ describe('legacy storage round 11 read diagnostics', () => {
     expect(message).toMatch(/execute timed out/);
     expect(message).toMatch(/probe 0 ms/);
     expect(message).toMatch(/read phase 5000 ms/);
+    expect(message).toMatch(/renderer pid 4242 \(os 7777\)/);
     expect(h.contents.executeJavaScript).toHaveBeenCalledTimes(2);
+    await pending.done; expectClean(h);
+  });
+
+  it('captures the partition leveldb into the error BEFORE the finally-scrub rebuilds it (round 11b)', async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'manifest', '000003.log': 'batch' });
+    // The read's Chromium side writes its LOG into the partition
+    // store as it opens it (the copy skipped the original's LOG),
+    // then the dump stalls. The finally-scrub's clearStorageData
+    // then REBUILDS the partition store — at the round-11 gate its
+    // LOG.old was already the rebuild's __tmp_for_rebuild, so F3's
+    // post-hoc capture photographed the rebuild, not the stall.
+    // The in-error capture must hold the stall-era bytes.
+    h.contents.executeJavaScript.mockImplementation(async code => {
+      if (code === '1') return 1;
+      writeFileSync(join(h.partitionLeveldb, 'LOG'), 'stall-era line: opening the copied store\n');
+      return new Promise(() => {});
+    });
+    h.clearStorageData.mockImplementation(async () => {
+      writeFileSync(join(h.partitionLeveldb, 'LOG'), 'REBUILT-AFTER-SCRUB\n');
+    });
+    const pending = observe(h.read());
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(pending.state.settled).toBe(true);
+    const message = String(pending.state.error);
+    expect(message).toMatch(/execute timed out/);
+    expect(message).toContain('partition leveldb at failure');
+    expect(message).toContain('CURRENT');
+    expect(message).toContain('stall-era line');
+    expect(message).not.toContain('REBUILT-AFTER-SCRUB');
+    // The scrub really ran and rewrote the LOG — otherwise the
+    // not-contain above proves nothing.
+    expect(readFileSync(join(h.partitionLeveldb, 'LOG'), 'utf8')).toContain('REBUILT-AFTER-SCRUB');
     await pending.done; expectClean(h);
   });
 });
