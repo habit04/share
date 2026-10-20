@@ -38,6 +38,7 @@ class Contents extends EventEmitter {
   isDestroyed() { return this.destroyed; }
   isCrashed() { return this.crashed; }
   setWindowOpenHandler = vi.fn();
+  getProcessId = vi.fn(() => 4242);
   executeJavaScript = vi.fn<(_code: string) => Promise<unknown>>(async () => Object.create(null));
 }
 
@@ -148,7 +149,8 @@ describe('owned bounded legacy-origin storage read', () => {
     h.contents.loading = false; h.contents.emit('did-stop-loading');
     await pending.done;
     expect(pending.state.error).toBeUndefined(); expect(pending.state.value).toEqual({});
-    expect(h.contents.executeJavaScript).toHaveBeenCalledTimes(1); expectClean(h);
+    // Round 11: the read is probe + dump, two evaluations.
+    expect(h.contents.executeJavaScript).toHaveBeenCalledTimes(2); expectClean(h);
   });
 
   it('rechecks readiness after listeners are attached rather than missing the state transition', async () => {
@@ -269,7 +271,10 @@ describe('owned bounded legacy-origin storage read', () => {
       const preventDefault = vi.fn(); h.contents.emit(name, { preventDefault }); expect(preventDefault).toHaveBeenCalledOnce();
     }
     loaded.resolve(); await result;
-    const script = h.contents.executeJavaScript.mock.calls[0]![0];
+    // Round 11: the first evaluation is the trivial probe; the storage
+    // dump is the second — and remains the read-only script.
+    expect(h.contents.executeJavaScript.mock.calls[0]![0]).toBe('1');
+    const script = h.contents.executeJavaScript.mock.calls[1]![0];
     expect(script).toContain('localStorage'); expect(script).not.toMatch(/setItem|removeItem|\.clear\(|fetch\(|require\(/);
     expectClean(h);
   });
@@ -379,7 +384,7 @@ describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, roun
       CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'manifest', '000003.log': 'recovered-bytes',
       '000005.ldb': 'table-bytes', LOG: 'previous session log', LOCK: '',
     });
-    h.contents.executeJavaScript.mockImplementation(async () => {
+    h.contents.executeJavaScript.mockImplementation(async code => { if (code === '1') return 1; // Round 11: mutations belong to the storage read, not the probe.
       // Chromium's open of the copy, as the read sees it afterwards.
       writeFileSync(join(h.partitionLeveldb, 'LOG.old'), 'previous session log');
       writeFileSync(join(h.partitionLeveldb, 'LOG'), '2026/10/20-00:00:00.000 Recovering log #3\n');
@@ -396,7 +401,7 @@ describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, roun
   it('refuses (R6-1) when the copy LOG records a recreation (Creating DB)', async () => {
     const h = harness();
     seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table' });
-    h.contents.executeJavaScript.mockImplementation(async () => {
+    h.contents.executeJavaScript.mockImplementation(async code => { if (code === '1') return 1; // Round 11: mutations belong to the storage read, not the probe.
       writeFileSync(join(h.partitionLeveldb, 'LOG'), '2026/10/20-00:00:00.000 Creating DB /Local Storage/leveldb since it was missing\n');
       return Object.assign(Object.create(null), {});
     });
@@ -410,7 +415,7 @@ describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, roun
   it('refuses (R6-1, R8-C) when only the copy LOG.old records a recreation (Creating DB)', async () => {
     const h = harness();
     seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table' });
-    h.contents.executeJavaScript.mockImplementation(async () => {
+    h.contents.executeJavaScript.mockImplementation(async code => { if (code === '1') return 1; // Round 11: mutations belong to the storage read, not the probe.
       writeFileSync(join(h.partitionLeveldb, 'LOG'), 'Recovering log #3\n');
       writeFileSync(join(h.partitionLeveldb, 'LOG.old'), '2026/10/20-00:00:00.000 Creating DB /Local Storage/leveldb since it was missing\n');
       return Object.assign(Object.create(null), {});
@@ -425,7 +430,7 @@ describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, roun
   it('passes when the only Creating DB line names __tmp_for_rebuild (Fable N1)', async () => {
     const h = harness();
     seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table' });
-    h.contents.executeJavaScript.mockImplementation(async () => {
+    h.contents.executeJavaScript.mockImplementation(async code => { if (code === '1') return 1; // Round 11: mutations belong to the storage read, not the probe.
       writeFileSync(join(h.partitionLeveldb, 'LOG'), '2026/10/20-00:00:00.000 Creating DB /Local Storage/leveldb/__tmp_for_rebuild since it was missing\nRecovering log #3\n');
       return Object.assign(Object.create(null), { k: 'v' });
     });
@@ -436,7 +441,7 @@ describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, roun
   it('refuses when a live-DB Creating DB line stands alongside a __tmp_for_rebuild line (Fable N1)', async () => {
     const h = harness();
     seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table' });
-    h.contents.executeJavaScript.mockImplementation(async () => {
+    h.contents.executeJavaScript.mockImplementation(async code => { if (code === '1') return 1; // Round 11: mutations belong to the storage read, not the probe.
       writeFileSync(join(h.partitionLeveldb, 'LOG'), 'Creating DB /Local Storage/leveldb/__tmp_for_rebuild since it was missing\nCreating DB /Local Storage/leveldb since it was missing\n');
       return Object.assign(Object.create(null), {});
     });
@@ -447,7 +452,7 @@ describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, roun
   it('refuses (R6-1, narrowed by R7-1) when every copied table file is gone and none exists after the read', async () => {
     const h = harness();
     seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table' });
-    h.contents.executeJavaScript.mockImplementation(async () => {
+    h.contents.executeJavaScript.mockImplementation(async code => { if (code === '1') return 1; // Round 11: mutations belong to the storage read, not the probe.
       writeFileSync(join(h.partitionLeveldb, 'LOG'), 'Recovering log #3\n');
       unlinkSync(join(h.partitionLeveldb, '000005.ldb'));
       return Object.assign(Object.create(null), { k: 'v' });
@@ -465,7 +470,7 @@ describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, roun
     seedLeveldb(h.originalDir, {
       CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 't5', '000006.ldb': 't6', LOG: 'previous session log',
     });
-    h.contents.executeJavaScript.mockImplementation(async () => {
+    h.contents.executeJavaScript.mockImplementation(async code => { if (code === '1') return 1; // Round 11: mutations belong to the storage read, not the probe.
       writeFileSync(join(h.partitionLeveldb, 'LOG'), 'Recovering log #5\n');
       unlinkSync(join(h.partitionLeveldb, '000005.ldb'));
       unlinkSync(join(h.partitionLeveldb, '000006.ldb'));
@@ -481,7 +486,7 @@ describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, roun
   it('passes when obsolete-file cleanup removes one copied table and another remains (R7-1)', async () => {
     const h = harness();
     seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 't5', '000006.ldb': 't6' });
-    h.contents.executeJavaScript.mockImplementation(async () => {
+    h.contents.executeJavaScript.mockImplementation(async code => { if (code === '1') return 1; // Round 11: mutations belong to the storage read, not the probe.
       writeFileSync(join(h.partitionLeveldb, 'LOG'), 'Recovering log #5\n');
       unlinkSync(join(h.partitionLeveldb, '000005.ldb'));
       return Object.assign(Object.create(null), { k: 'v' });
@@ -493,7 +498,7 @@ describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, roun
   it('refuses (R6-1) when the copy MANIFEST number went down', async () => {
     const h = harness();
     seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000005\n', 'MANIFEST-000005': 'm', '000005.ldb': 'table' });
-    h.contents.executeJavaScript.mockImplementation(async () => {
+    h.contents.executeJavaScript.mockImplementation(async code => { if (code === '1') return 1; // Round 11: mutations belong to the storage read, not the probe.
       writeFileSync(join(h.partitionLeveldb, 'LOG'), 'Recovering log #3\n');
       unlinkSync(join(h.partitionLeveldb, 'MANIFEST-000005'));
       writeFileSync(join(h.partitionLeveldb, 'MANIFEST-000001'), 'fresh-manifest');
@@ -808,5 +813,45 @@ describe('bounded contention wait (round 6, F1a; codes extended round 7, R6-6)',
     const operation = vi.fn(async () => { throw denied; });
     await expect(withBoundedContentionWait(operation)).rejects.toBe(denied);
     expect(operation).toHaveBeenCalledOnce();
+  });
+});
+
+describe('legacy storage round 11 read diagnostics', () => {
+  it('a stalled probe fails AS a probe stall, with the read facts on the error and the dump never attempted', async () => {
+    vi.useFakeTimers();
+    const h = harness(); h.contents.executeJavaScript.mockImplementation(() => new Promise(() => {}));
+    const pending = observe(h.read()); await vi.advanceTimersByTimeAsync(4_999);
+    expect(pending.state.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(pending.state.settled).toBe(true);
+    const message = String(pending.state.error);
+    expect(message).toMatch(/probe timed out/);
+    expect(message).toContain('migration-read diagnostics');
+    expect(message).toContain('renderer pid 4242');
+    expect(message).toMatch(/partition session created \d{4}-\d{2}-\d{2}T/);
+    expect(message).toMatch(/window created \d{4}-\d{2}-\d{2}T/);
+    expect(message).toContain('probe did not return');
+    expect(h.contents.executeJavaScript).toHaveBeenCalledTimes(1);
+    expect(h.contents.executeJavaScript.mock.calls[0]![0]).toBe('1');
+    await pending.done; expectClean(h);
+  });
+
+  it('a stalled read after a fast probe records the probe duration, separating scheduling from storage', async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    h.contents.executeJavaScript.mockImplementation(async code => {
+      if (code === '1') return 1;
+      return new Promise(() => {});
+    });
+    const pending = observe(h.read()); await vi.advanceTimersByTimeAsync(4_999);
+    expect(pending.state.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(pending.state.settled).toBe(true);
+    const message = String(pending.state.error);
+    expect(message).toMatch(/execute timed out/);
+    expect(message).toMatch(/probe 0 ms/);
+    expect(message).toMatch(/read phase 5000 ms/);
+    expect(h.contents.executeJavaScript).toHaveBeenCalledTimes(2);
+    await pending.done; expectClean(h);
   });
 });

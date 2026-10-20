@@ -436,12 +436,14 @@ async function legacyStorage({ BrowserWindow, session, indexFile, copy, logError
     throw error;
   }
   const partitionSession = session.fromPartition(LEGACY_MIGRATION_PARTITION);
+  const sessionCreatedAt = new Date().toISOString(); // Round 11 diagnostics (see the read below).
   const partitionProtocol = partitionSession.protocol;
   const { leveldbDir } = copy;
   // With file privileges fused off, Chromium denies access to the legacy file-origin store.
   // Relax origin checks only for this hidden, sandboxed migration window. Its exact file URL
   // serves constant HTML with default-src 'none'; no application, plugin or remote code runs.
   const window = new BrowserWindow({ show: false, webPreferences: { partition: LEGACY_MIGRATION_PARTITION, sandbox: true, nodeIntegration: false, contextIsolation: true, devTools: false, webSecurity: false, allowRunningInsecureContent: false } });
+  const windowCreatedAt = new Date().toISOString(); // Round 11 diagnostics (see the read below).
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event) => event.preventDefault());
   window.webContents.on('will-frame-navigate', (event) => event.preventDefault());
@@ -517,9 +519,25 @@ async function legacyStorage({ BrowserWindow, session, indexFile, copy, logError
         onReady();
       });
     }, loadDeadline, 'readiness');
-    const values = await within(() => {
-      if (!ready()) throw new Error('Legacy preference migration execute: page resumed loading');
-      return contents.executeJavaScript(`(() => {
+    // Round 11 (diagnostics only): time a trivial evaluate immediately
+    // before the storage read, and record the read facts on the failure
+    // itself. If '1' also stalls, the renderer could not evaluate at
+    // all (scheduling), not storage; if the probe returns and the read
+    // stalls, the stall is storage-side. Each evaluation keeps the
+    // unchanged 5 s read bound, its own; nothing else changes — the
+    // facts are appended to the error's message in place, so the error
+    // object (and any identity a caller holds) is preserved.
+    let windowPid = null;
+    try { windowPid = contents.getProcessId(); } catch { /* diagnostics only */ }
+    let probeMs = null;
+    const readStarted = Date.now();
+    let values;
+    try {
+      await within(() => contents.executeJavaScript('1'), Date.now() + LEGACY_READ_TIMEOUT_MS, 'probe');
+      probeMs = Date.now() - readStarted;
+      values = await within(() => {
+        if (!ready()) throw new Error('Legacy preference migration execute: page resumed loading');
+        return contents.executeJavaScript(`(() => {
       const result = Object.create(null); const encoder = new TextEncoder(); let size = 2;
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i), value = key === null ? null : localStorage.getItem(key);
@@ -531,7 +549,13 @@ async function legacyStorage({ BrowserWindow, session, indexFile, copy, logError
       }
       return result;
     })()`);
-    }, Date.now() + LEGACY_READ_TIMEOUT_MS, 'execute');
+      }, Date.now() + LEGACY_READ_TIMEOUT_MS, 'execute');
+    } catch (error) {
+      if (error instanceof Error) {
+        error.message += ` [migration-read diagnostics: partition session created ${sessionCreatedAt}; window created ${windowCreatedAt}; renderer pid ${windowPid ?? 'unavailable'}; probe ${probeMs === null ? 'did not return' : `${probeMs} ms`}; read phase ${Date.now() - readStarted} ms]`;
+      }
+      throw error;
+    }
     if (values === null) throw new Error('Legacy preferences exceed 8 MiB');
     result = preferenceDictionary(values);
     // R6-1: refuse if Chromium recreated the COPY mid-flight — its empty
