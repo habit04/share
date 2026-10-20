@@ -201,7 +201,11 @@ if (!app.requestSingleInstanceLock()) {
 // gate would see a store even on a fresh profile and run the leg
 // against nothing. No store at snapshot time => no leg: the gate's
 // empty outcome, the marker acknowledged normally.
-const legacyStorePresent = !DEV_URL && fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb'));
+// Round 12b (R12-1, R9-1 restored): "a store" means a leveldb DATABASE,
+// i.e. the directory holds CURRENT. A directory without CURRENT (a
+// stray LOG, an empty folder) is no store: no leg, and the marker is
+// acknowledged normally instead of a refused launch 1.
+const legacyStorePresent = !DEV_URL && fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb', 'CURRENT'));
 
 registerSecondInstance();
 

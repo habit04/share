@@ -72,6 +72,20 @@ const persistSource = windowSource.slice(persistStart, persistEnd);
 const preloadSource = fsSync.readFileSync(path.join(repo, 'electron/preload.cjs'), 'utf8');
 const preloadEnd = preloadSource.indexOf('contextBridge.exposeInMainWorld');
 if (preloadEnd < 0) throw new Error('The actual preload preference prefix could not be located');
+// Round 12b (R12-1): the production pre-ready snapshot statement(s), sliced
+// out of main.cjs (after the single-instance lock, before
+// registerSecondInstance and whenReady) and executed over a test profile.
+const preReadyStart = mainSource.indexOf('const legacyStorePresent =');
+const preReadyEnd = preReadyStart < 0 ? -1 : mainSource.indexOf('\nregisterSecondInstance();', preReadyStart);
+if (preReadyStart < 0 || preReadyEnd < 0) throw new Error('The actual pre-ready legacy snapshot could not be located');
+const preReadySource = mainSource.slice(preReadyStart, preReadyEnd);
+
+/** Execute the real pre-ready legacy snapshot over `directory` (the userData folder). */
+function preReady(directory: string, devUrl: string | null = null) {
+  return runInNewContext(`${preReadySource}\n;({ legacyStorePresent })`,
+    { DEV_URL: devUrl, fsSync, path, stateDir: () => directory },
+    { filename: 'actual-main-pre-ready.cjs' }) as { legacyStorePresent: boolean };
+}
 
 afterEach(async () => {
   for (const directory of directories.splice(0)) {
@@ -362,6 +376,38 @@ describe('main startup keeps an unsuccessful preference migration unacknowledged
     expect(await files.readFile(path.join(p.directory, CHECKPOINT_NAME), 'utf8')).toBe('{}');
     expect(await files.readFile(path.join(p.directory, MIGRATION_NAME), 'utf8')).toBe('1');
     expect(await files.readFile(p.legacy)).toEqual(p.original);
+  });
+
+  // Round 12b (R12-1, R9-1 restored): the snapshot means "a leveldb
+  // database exists", i.e. CURRENT is present. This suite's profile()
+  // seeds Local Storage/leveldb with a stray file and NO CURRENT — the
+  // LOG-only shape the r12 gate saw refused on launch 1. Driven through
+  // the real pre-ready text AND the real ready callback: no leg runs and
+  // the empty outcome is acknowledged (checkpoint '{}', marker '1').
+  it('a legacy directory without CURRENT is no store: no leg, the marker acknowledged (round 12b, R12-1)', async () => {
+    const p = await profile();
+    const snapshot = preReady(p.directory);
+    expect(snapshot.legacyStorePresent).toBe(false);
+    const result = await startup({ directory: p.directory, storePresent: snapshot.legacyStorePresent, legacy: async () => ({ stale: 'legacy' }) });
+    expect(result.legacyStorage).not.toHaveBeenCalled();
+    expect(result.logMainError).not.toHaveBeenCalled();
+    expect(result.quit).not.toHaveBeenCalled(); expect(result.showErrorBox).not.toHaveBeenCalled();
+    expect(result.createWindow).toHaveBeenCalledOnce(); expect(result.ipc.invoke).toHaveBeenCalledExactlyOnceWith('renderer-storage-migrated');
+    expect(result.supplied).toEqual([{ source: 'legacy', values: {} }]);
+    expect(migrationFailed(result)).toBe(false);
+    expect(await files.readFile(path.join(p.directory, CHECKPOINT_NAME), 'utf8')).toBe('{}');
+    expect(await files.readFile(path.join(p.directory, MIGRATION_NAME), 'utf8')).toBe('1');
+    expect(await files.readFile(p.legacy)).toEqual(p.original);
+  });
+
+  it('the pre-ready snapshot is true only once CURRENT exists, and never in development (round 12b, R12-1)', async () => {
+    const p = await profile();
+    await files.writeFile(path.join(p.directory, 'Local Storage', 'leveldb', 'CURRENT'), 'MANIFEST-000001\n');
+    expect(preReady(p.directory).legacyStorePresent).toBe(true);
+    expect(preReady(p.directory, 'http://localhost:5173/').legacyStorePresent).toBe(false);
+    const fresh = await profile();
+    await files.rm(path.join(fresh.directory, 'Local Storage'), { recursive: true, force: true });
+    expect(preReady(fresh.directory).legacyStorePresent).toBe(false);
   });
 
   it('uses an authoritative checkpoint without reading old legacy data', async () => {
