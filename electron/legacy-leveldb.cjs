@@ -408,6 +408,23 @@ const MAX_TOTAL_BYTES = 256 * 1024 * 1024; // sanity bound on bytes read
 // latter preserves a copy of the store).
 const LEGACY_STORE_TOO_LARGE = 'LEGACY_STORE_TOO_LARGE';
 const tooLarge = () => Object.assign(new Error('legacy leveldb: store exceeds the read size bound'), { code: LEGACY_STORE_TOO_LARGE });
+// Round 12b (R12-7 widening): a file the store's own metadata says
+// exists — a live table the MANIFEST names, or a log the directory
+// listing just returned — but that is missing is CORRUPTION to leveldb
+// (Status::Corruption "missing files"), and Chromium's recovery would
+// recreate the store. Its ENOENT is rethrown as this code, without the
+// fs error's syscall, so the caller classifies it as a decode failure:
+// the store is preserved and the leg fails. Absence of the directory or
+// of CURRENT stays a plain fs ENOENT ("no store").
+const LEGACY_STORE_MISSING_FILE = 'LEGACY_STORE_MISSING_FILE';
+function readReferencedFile(leveldbDir, name, what) {
+  try {
+    return fs.readFileSync(path.join(leveldbDir, name));
+  } catch (error) {
+    if (/** @type {{ code?: unknown }} */ (error)?.code !== 'ENOENT') throw error;
+    throw Object.assign(new Error(`legacy leveldb: ENOENT: ${what} ${name} is missing (a corrupt store)`), { code: LEGACY_STORE_MISSING_FILE, cause: error });
+  }
+}
 
 /**
  * Read the file:// origin's legacy localStorage dictionary from a
@@ -432,7 +449,7 @@ function readLegacyLocalStorage(leveldbDir) {
   };
   const tableNumbers = [...liveTables.keys()].sort((a, b) => a - b);
   for (const number of tableNumbers) {
-    const buffer = fs.readFileSync(path.join(leveldbDir, `${String(number).padStart(6, '0')}.ldb`));
+    const buffer = readReferencedFile(leveldbDir, `${String(number).padStart(6, '0')}.ldb`, 'the MANIFEST names table');
     totalBytes += buffer.length;
     if (totalBytes > MAX_TOTAL_BYTES) throw tooLarge();
     readTableFile(buffer, apply);
@@ -441,7 +458,7 @@ function readLegacyLocalStorage(leveldbDir) {
     .filter((name) => /^\d+\.log$/.test(name))
     .sort((a, b) => Number(a.slice(0, -4)) - Number(b.slice(0, -4)));
   for (const name of logNames) {
-    const buffer = fs.readFileSync(path.join(leveldbDir, name));
+    const buffer = readReferencedFile(leveldbDir, name, 'the directory lists log');
     totalBytes += buffer.length;
     if (totalBytes > MAX_TOTAL_BYTES) throw tooLarge();
     for (const record of readLogRecords(buffer)) readWriteBatch(record, apply);
@@ -455,4 +472,4 @@ function readLegacyLocalStorage(leveldbDir) {
   return result;
 }
 
-module.exports = { readLegacyLocalStorage, LEGACY_STORE_TOO_LARGE, _internals: { crc32c, maskCrc, readLogRecords, readWriteBatch, readManifestState, decodeScriptKey, decodeValue, snappyDecompress, readTableFile, TABLE_MAGIC } };
+module.exports = { readLegacyLocalStorage, LEGACY_STORE_TOO_LARGE, LEGACY_STORE_MISSING_FILE, _internals: { crc32c, maskCrc, readLogRecords, readWriteBatch, readManifestState, decodeScriptKey, decodeValue, snappyDecompress, readTableFile, TABLE_MAGIC } };

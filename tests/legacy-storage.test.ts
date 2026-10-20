@@ -170,6 +170,54 @@ describe('legacy storage: preserving an undecodable store before ready (round 12
     expect(legacyStoreDecodeFailure(Object.assign(new Error('too large'), { code: 'LEGACY_STORE_TOO_LARGE' }))).toBe(false);
   });
 
+  // R12-7 widening: a table the MANIFEST names but that is missing is
+  // corruption to leveldb (Chromium's recovery would recreate the
+  // store), not "no store": it is preserved and the leg fails.
+  it('a missing table the MANIFEST names is corruption: the store is preserved and the leg fails (round 12b, R12-7 widening)', async () => {
+    const { cpSync, mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const root = mkdtempSync(join(tmpdir(), 'jcad-legacy-missing-table-'));
+    try {
+      const local = join(root, 'Local Storage');
+      const leveldb = join(local, 'leveldb');
+      // A real store whose MANIFEST lists 000003.ldb and 000006.ldb, with
+      // 000006.ldb (the newer table, holding tt-victim's tombstone) gone.
+      cpSync(store('table-tombstone'), leveldb, { recursive: true });
+      rmSync(join(leveldb, '000006.ldb'));
+      writeFileSync(join(leveldb, 'LOCK'), '');
+      const before = await snapshot(leveldb);
+      const logError = vi.fn();
+      const read = readLegacyStoreBeforeReady(leveldb, { logError, now: at('2026-10-20T14:00:00.000Z') });
+      expect(read).toMatchObject({ error: { code: 'LEGACY_STORE_MISSING_FILE', message: expect.stringMatching(/ENOENT.*000006\.ldb/) } });
+      const error = (read as { error: { syscall?: unknown; cause?: { code?: unknown } } }).error;
+      expect(error.syscall).toBeUndefined();
+      expect(error.cause?.code).toBe('ENOENT');
+      expect(legacyStoreDecodeFailure(error)).toBe(true);
+      const preserved = join(local, `${PRESERVED}2026-10-20T14-00-00-000Z`);
+      expect(await preservedDirs(local)).toEqual([`${PRESERVED}2026-10-20T14-00-00-000Z`]);
+      const { LOCK, ...expectedCopy } = before;
+      expect(LOCK).toBe('');
+      expect(await snapshot(preserved)).toEqual(expectedCopy);
+      expect(logError).toHaveBeenCalledExactlyOnceWith('renderer preference migration', expect.objectContaining({ message: `Unreadable legacy store preserved at ${preserved}` }));
+      expect(await snapshot(leveldb)).toEqual(before);
+      await expect(legacyStorage({ read })).rejects.toBe(error);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('absence of the directory or of CURRENT stays "no store": nothing is preserved (round 12b, R12-7 widening)', async () => {
+    await withStore(async ({ local, leveldb }) => {
+      const { rmSync } = await import('node:fs');
+      rmSync(join(leveldb, 'CURRENT'));
+      const logError = vi.fn();
+      const read = readLegacyStoreBeforeReady(leveldb, { logError });
+      expect(read).toMatchObject({ error: { code: 'ENOENT', syscall: 'open' } });
+      expect(legacyStoreDecodeFailure((read as { error: unknown }).error)).toBe(false);
+      expect(readLegacyStoreBeforeReady(join(local, 'no-such-leveldb'), { logError })).toMatchObject({ error: { code: 'ENOENT' } });
+      expect(await preservedDirs(local)).toEqual([]);
+      expect(logError).not.toHaveBeenCalled();
+    }, false);
+  });
+
   it('never throws: a failing copy is logged and the read still returns its error', async () => {
     const logError = vi.fn();
     expect(preserveLegacyStore(store('simple') + '-nonexistent', { logError })).toBeNull();

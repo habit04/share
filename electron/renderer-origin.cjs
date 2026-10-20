@@ -147,6 +147,11 @@ async function legacyStorage({ read }) {
  * lock's EBUSY/EPERM: Node system errors carry a `syscall`), which
  * says nothing about the bytes, and as opposed to the reader's
  * size bound (a large store is not a corrupt one).
+ * A file the store's metadata names but that is missing (a live
+ * table, a listed log) is corruption to leveldb: the reader rethrows
+ * that ENOENT as LEGACY_STORE_MISSING_FILE, with no syscall, so it is
+ * a decode failure here too (R12-7 widening). Absence of the
+ * directory or of CURRENT stays an fs error.
  * @param {unknown} error
  */
 function legacyStoreDecodeFailure(error) {
