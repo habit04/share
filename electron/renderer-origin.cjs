@@ -412,8 +412,10 @@ async function clearPartitionBounded(partitionSession, logError) {
 async function legacyStorage({ BrowserWindow, session, indexFile, copy, logError }) {
   if (!copy) throw new Error('Legacy migration copy was not started');
   let copyState;
+  let copySettledAt = null; // Round 11 diagnostics: when the copy settled.
   try {
     copyState = await copy.promise;
+    copySettledAt = new Date().toISOString();
     // Round 9 guard: never open a partition on a copy with no CURRENT when
     // the source EXISTED — that copy is incoherent, a FAILED leg, retried
     // next launch. Opening it would make Chromium create a fresh database
@@ -552,7 +554,7 @@ async function legacyStorage({ BrowserWindow, session, indexFile, copy, logError
       }, Date.now() + LEGACY_READ_TIMEOUT_MS, 'execute');
     } catch (error) {
       if (error instanceof Error) {
-        error.message += ` [migration-read diagnostics: partition session created ${sessionCreatedAt}; window created ${windowCreatedAt}; renderer pid ${windowPid ?? 'unavailable'}; probe ${probeMs === null ? 'did not return' : `${probeMs} ms`}; read phase ${Date.now() - readStarted} ms]`;
+        error.message += ` [migration-read diagnostics: copy settled ${copySettledAt ?? 'unavailable'}; partition session created ${sessionCreatedAt}; window created ${windowCreatedAt}; execute started ${new Date(readStarted).toISOString()}; renderer pid ${windowPid ?? 'unavailable'}; probe ${probeMs === null ? 'did not return' : `${probeMs} ms`}; read phase ${Date.now() - readStarted} ms]`;
       }
       throw error;
     }

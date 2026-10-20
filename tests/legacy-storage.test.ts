@@ -828,8 +828,10 @@ describe('legacy storage round 11 read diagnostics', () => {
     expect(message).toMatch(/probe timed out/);
     expect(message).toContain('migration-read diagnostics');
     expect(message).toContain('renderer pid 4242');
+    expect(message).toMatch(/copy settled \d{4}-\d{2}-\d{2}T/);
     expect(message).toMatch(/partition session created \d{4}-\d{2}-\d{2}T/);
     expect(message).toMatch(/window created \d{4}-\d{2}-\d{2}T/);
+    expect(message).toMatch(/execute started \d{4}-\d{2}-\d{2}T/);
     expect(message).toContain('probe did not return');
     expect(h.contents.executeJavaScript).toHaveBeenCalledTimes(1);
     expect(h.contents.executeJavaScript.mock.calls[0]![0]).toBe('1');
