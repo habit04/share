@@ -407,6 +407,31 @@ describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, roun
     expect(h.clearStorageData).toHaveBeenCalledOnce();
   });
 
+  // N1: a data-preserving RewriteDB records its creation against the
+  // __tmp_for_rebuild subdirectory — the values survive, so that line
+  // alone must NOT refuse. A live-DB creation line alongside it still does.
+  it('passes when the only Creating DB line names __tmp_for_rebuild (Fable N1)', async () => {
+    const h = harness();
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table' });
+    h.contents.executeJavaScript.mockImplementation(async () => {
+      writeFileSync(join(h.partitionLeveldb, 'LOG'), '2026/10/20-00:00:00.000 Creating DB /Local Storage/leveldb/__tmp_for_rebuild since it was missing\nRecovering log #3\n');
+      return Object.assign(Object.create(null), { k: 'v' });
+    });
+    await expect(h.read()).resolves.toEqual({ k: 'v' });
+    expect(h.clearStorageData).toHaveBeenCalledOnce();
+  });
+
+  it('refuses when a live-DB Creating DB line stands alongside a __tmp_for_rebuild line (Fable N1)', async () => {
+    const h = harness();
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table' });
+    h.contents.executeJavaScript.mockImplementation(async () => {
+      writeFileSync(join(h.partitionLeveldb, 'LOG'), 'Creating DB /Local Storage/leveldb/__tmp_for_rebuild since it was missing\nCreating DB /Local Storage/leveldb since it was missing\n');
+      return Object.assign(Object.create(null), {});
+    });
+    await expect(h.read()).rejects.toThrow(/Creating DB|recreated/i);
+    expect(h.clearStorageData).toHaveBeenCalledOnce();
+  });
+
   it('refuses (R6-1, narrowed by R7-1) when every copied table file is gone and none exists after the read', async () => {
     const h = harness();
     seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table' });

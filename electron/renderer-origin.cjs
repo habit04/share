@@ -185,10 +185,21 @@ function readCopyLogHead(leveldbDir, name) {
  * marker is written, the next launch retries) when the copy's LOG records a
  * creation, every copied table file is gone with none left afterwards, or
  * the MANIFEST numbering went down — a recreation restarts all three. */
+/** Does a log head record the creation of the LIVE database? Lines naming
+ * `__tmp_for_rebuild` are excluded (Fable N1): Chromium's data-preserving
+ * RewriteDB builds the replacement inside that subdirectory and its
+ * creation line names the tmp path — the data survives, so it is not the
+ * recreate clause (a) guards against. Only a creation of the database
+ * itself counts. */
+function logRecordsRecreate(logHead) {
+  if (logHead === null) return false;
+  return logHead.split('\n').some((line) => line.includes('Creating DB') && !line.includes('__tmp_for_rebuild'));
+}
+
 function assertCopyNotRecreated(leveldbDir, before) {
   const log = readCopyLogHead(leveldbDir, 'LOG');
   const oldLog = readCopyLogHead(leveldbDir, 'LOG.old');
-  if ((log !== null && log.includes('Creating DB')) || (oldLog !== null && oldLog.includes('Creating DB'))) {
+  if (logRecordsRecreate(log) || logRecordsRecreate(oldLog)) {
     throw new Error('Legacy storage copy was recreated during the migration read (its log records Creating DB); refusing to acknowledge the migration');
   }
   const after = snapshotCopyState(leveldbDir);
