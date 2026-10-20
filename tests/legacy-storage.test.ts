@@ -10,7 +10,7 @@ import { runInNewContext } from 'node:vm';
 
 const require = createRequire(import.meta.url);
 const { legacyStorage, startLegacyStorageCopy, beginLegacyMigration, LEGACY_MIGRATION_PARTITION, withBoundedContentionWait } = require('../electron/renderer-origin.cjs') as {
-  legacyStorage(options: { BrowserWindow: unknown; session: unknown; indexFile: string; copy: unknown }): Promise<Record<string, string>>;
+  legacyStorage(options: { BrowserWindow: unknown; session: unknown; indexFile: string; copy: unknown; logError?: (kind: string, error: unknown) => void }): Promise<Record<string, string>>;
   startLegacyStorageCopy(options: { userDataDir: string }): { partitionDir: string; leveldbDir: string; sourceExisted: boolean; promise: Promise<{ ldbFiles: string[]; manifestMax: number | null }> };
   beginLegacyMigration(options: { userDataDir: string; markerPath: string }): { partitionDir: string; leveldbDir: string; sourceExisted: boolean; promise: Promise<{ ldbFiles: string[]; manifestMax: number | null }> } | null;
   LEGACY_MIGRATION_PARTITION: string;
@@ -85,9 +85,10 @@ function harness() {
   const originalDir = join(userDataDir, 'Local Storage', 'leveldb');
   const partitionLeveldb = join(partitionDir, 'Local Storage', 'leveldb');
   const start = () => startLegacyStorageCopy({ userDataDir });
+  const logError = vi.fn((_kind: string, _error: unknown) => {});
   return { contents, window, BrowserWindow, protocol, handler: () => handler, session, fromPartition,
-    clearStorageData, userDataDir, partitionDir, originalDir, partitionLeveldb, start,
-    read: () => legacyStorage({ BrowserWindow, session, indexFile, copy: start() }) };
+    clearStorageData, userDataDir, partitionDir, originalDir, partitionLeveldb, start, logError,
+    read: () => legacyStorage({ BrowserWindow, session, indexFile, copy: start(), logError }) };
 }
 
 function observe<T>(promise: Promise<T>) {
@@ -590,13 +591,25 @@ describe('round 7: copy start (R6-2) and marker partition removal (R6-4)', () =>
 });
 
 describe('round 8: bounded, non-refusing partition clear (R7-2)', () => {
-  it('still serves the read when the partition scrub rejects, and logs it', async () => {
+  it('still serves the read when the partition scrub rejects, and logs it to error.log (N2)', async () => {
+    const h = harness();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const failure = new Error('Controlled scrub failure');
+      h.clearStorageData.mockRejectedValue(failure);
+      await expect(h.read()).resolves.toEqual({});
+      expect(h.clearStorageData).toHaveBeenCalledOnce();
+      expect(h.logError).toHaveBeenCalledExactlyOnceWith('legacy migration partition cleanup', failure);
+      expect(logged).not.toHaveBeenCalled();
+    } finally { logged.mockRestore(); }
+  });
+
+  it('falls back to console.error when no logger is injected (N2)', async () => {
     const h = harness();
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       h.clearStorageData.mockRejectedValue(new Error('Controlled scrub failure'));
-      await expect(h.read()).resolves.toEqual({});
-      expect(h.clearStorageData).toHaveBeenCalledOnce();
+      await expect(legacyStorage({ BrowserWindow: h.BrowserWindow, session: h.session, indexFile, copy: h.start() })).resolves.toEqual({});
       expect(logged).toHaveBeenCalledOnce();
       expect(String(logged.mock.calls[0]?.[0])).toContain('partition cleanup');
     } finally { logged.mockRestore(); }
@@ -613,7 +626,9 @@ describe('round 8: bounded, non-refusing partition clear (R7-2)', () => {
       await pending.done;
       expect(pending.state.value).toEqual({});
       expect(h.clearStorageData).toHaveBeenCalledOnce();
-      expect(logged).toHaveBeenCalledOnce();
+      expect(h.logError).toHaveBeenCalledOnce();
+      expect(h.logError.mock.calls[0]?.[0]).toBe('legacy migration partition cleanup');
+      expect(logged).not.toHaveBeenCalled();
       expect(vi.getTimerCount()).toBe(0);
     } finally { logged.mockRestore(); }
   });

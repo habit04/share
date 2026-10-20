@@ -371,7 +371,7 @@ function beginLegacyMigration({ userDataDir, markerPath }) {
  * rejection, log and move on — the read's outcome never depends on the
  * scrub. (Window destruction and handler removal in the caller still
  * refuse: those guard the read itself, not the cleanup of its copy.) */
-async function clearPartitionBounded(partitionSession) {
+async function clearPartitionBounded(partitionSession, logError) {
   let timer;
   try {
     await Promise.race([
@@ -379,7 +379,12 @@ async function clearPartitionBounded(partitionSession) {
       new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Legacy migration partition clear timed out after ${LEGACY_CLEAR_TIMEOUT_MS} ms`)), LEGACY_CLEAR_TIMEOUT_MS); }),
     ]);
   } catch (error) {
-    console.error('JCad: legacy migration partition cleanup failed or timed out; continuing startup (the partition is removed on a later launch)', error);
+    // Fable N2: the failure belongs in the app's error.log (via the
+    // injected logMainError) where a problem report will find it — not
+    // only on stderr. The console line remains the fallback when no
+    // logger was injected.
+    if (logError) logError('legacy migration partition cleanup', error);
+    else console.error('JCad: legacy migration partition cleanup failed or timed out; continuing startup (the partition is removed on a later launch)', error);
   } finally { clearTimeout(timer); }
 }
 
@@ -399,7 +404,7 @@ async function clearPartitionBounded(partitionSession) {
  * file-in-use errors while Chromium rebuilds the database (0 of 7 seeded
  * values served). Nothing here writes into a directory a live session
  * holds. */
-async function legacyStorage({ BrowserWindow, session, indexFile, copy }) {
+async function legacyStorage({ BrowserWindow, session, indexFile, copy, logError }) {
   if (!copy) throw new Error('Legacy migration copy was not started');
   const copyState = await copy.promise;
   // Round 9 guard: never open a partition on a copy with no CURRENT when
@@ -522,7 +527,7 @@ async function legacyStorage({ BrowserWindow, session, indexFile, copy }) {
     // Scrub the partition in finally: the copied legacy data must not
     // outlive the migration, whatever the read's outcome was. Bounded and
     // non-refusing (R7-2) — see clearPartitionBounded.
-    await clearPartitionBounded(partitionSession);
+    await clearPartitionBounded(partitionSession, logError);
   }
   // A primary error propagates through finally. Only a successful read
   // reaches this point, where a failed window/handler cleanup must still
