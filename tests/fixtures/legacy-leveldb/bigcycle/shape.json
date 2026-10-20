@@ -1,0 +1,34 @@
+{
+  "shape": "bigcycle",
+  "produced": "launch 1 wrote set A (20 keys x 200,000-char deterministic pseudo-random ASCII values, ~4 MB), clean quit; launch 2 wrote set B (20 different keys x 200,000 chars) and overwrote cycA03/cycA17 with new values, clean quit; launch 3 reopened with no writes (log-to-table conversion), clean quit; final store should hold multiple table generations with newest-wins for the overwritten keys; verified by a fourth launch read-back hashing every value (per-key bytes+sha256 in expected.json)",
+  "files": [
+    {
+      "name": "000003.ldb",
+      "bytes": 4001394
+    },
+    {
+      "name": "000006.ldb",
+      "bytes": 4401500
+    },
+    {
+      "name": "000007.log",
+      "bytes": 49
+    },
+    {
+      "name": "CURRENT",
+      "bytes": 16
+    },
+    {
+      "name": "LOCK",
+      "bytes": 0
+    },
+    {
+      "name": "MANIFEST-000001",
+      "bytes": 177
+    }
+  ],
+  "hasLog": true,
+  "hasLdb": true,
+  "verified": true,
+  "expectedFormat": "per-key {bytes: utf8 length, sha256} (values too large to store as full text)"
+}
