@@ -18,16 +18,23 @@ const windowStateFile = () => path.join(stateDir(), 'window-state.json');
 const autosaveDir = () => path.join(stateDir(), 'autosave');
 const rendererPreferences = createPreferenceStore({ stateDir });
 const readRendererPreferences = rendererPreferences.read;
+/** Whether a path currently exists (any error other than absence counts as unknown → false). */
+async function pathExists(file) { try { await fs.stat(file); return true; } catch { return false; } }
 /**
- * Move an unreadable renderer-preferences checkpoint aside (PR23 ASAR round 3): the bytes
- * are preserved at renderer-preferences.json.unreadable-<timestamp>, never deleted, so the
- * startup gate can let the normal writers resume on a fresh checkpoint while the unreadable
- * evidence survives. Rejects when the rename fails.
+ * Move an unreadable renderer-preferences checkpoint aside (PR23 ASAR rounds 3-4): the
+ * bytes are preserved at renderer-preferences.json.unreadable-<timestamp>, never deleted,
+ * so the startup gate can let the normal writers resume on a fresh checkpoint while the
+ * unreadable evidence survives. fs.rename REPLACES an existing destination on Windows,
+ * so when the timestamped name is already taken (an earlier preserved checkpoint) a
+ * counter suffix is added until the name is free — an existing file is never replaced.
+ * Rejects when the rename fails.
  * @returns {Promise<string>} the path the checkpoint was moved to
  */
 async function renameUnreadableCheckpoint() {
   const from = path.join(stateDir(), CHECKPOINT_NAME);
-  const aside = `${from}.unreadable-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  let aside = `${from}.unreadable-${stamp}`;
+  for (let counter = 2; await pathExists(aside); counter += 1) aside = `${from}.unreadable-${stamp}-${counter}`;
   await fs.rename(from, aside);
   return aside;
 }
