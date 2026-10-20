@@ -48,6 +48,7 @@ try {
     const app = await electron.launch({ ...(executable ? { executablePath: executable } : {}), args: [...(executable ? [] : ['.']), `--user-data-dir=${profile}`, ...linuxTestArgs], cwd: repo, env, timeout: 60_000 });
     const diagnostic = originFailureDiagnostics(app, { profile, output: process.env.JCAD_E2E_OUT, launch });
     let failed = false;
+    let uncleanClose = false;
     try {
       const page = await applicationWindow(app);
       const errors = [];
@@ -105,9 +106,14 @@ try {
       // helper tree-kills by pid. Keep the actual assertion/launch failure if
       // owned cleanup also reports an error.
       const closedCleanly = await closeApplication(app);
-      if (failed) { if (!closedCleanly) console.error('Origin cleanup after failure: application close exceeded its bound and was tree-killed.'); }
-      else if (!closedCleanly) throw new Error('The application did not close within its bound and was tree-killed.');
+      if (!closedCleanly) {
+        if (failed) console.error('Origin cleanup after failure: application close exceeded its bound and was tree-killed.');
+        // A throw in finally could mask the primary failure; the unclean
+        // success-path close is thrown after this block instead (same error).
+        else uncleanClose = true;
+      }
     }
+    if (uncleanClose) throw new Error('The application did not close within its bound and was tree-killed.');
     if (launch === 1) {
       // Emulate lost Chromium DOM storage after a completed quit. Keep the durable private
       // checkpoint and migration marker; the next immediate launch must recover the latest state.
