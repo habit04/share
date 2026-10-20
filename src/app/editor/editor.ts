@@ -82,6 +82,7 @@ export class Editor {
   private overlay: ViewportOverlay = {
     preview: [],
     ghost: [],
+    aiPreview: null,
     selection: this.selection,
     hover: null,
     selectionBox: null,
@@ -91,6 +92,8 @@ export class Editor {
     dynText: [],
     cursorMode: 'idle',
   };
+  private aiPreviewOwner: object | null = null;
+  private interactionSerial = 0;
   private listeners: Record<EditorEvent, Set<() => void>> = {
     change: new Set(),
     selection: new Set(),
@@ -101,6 +104,7 @@ export class Editor {
     log: new Set(),
     space: new Set(),
     project: new Set(),
+    interaction: new Set(),
   };
   /** The private working state the editor's modules share (internals.ts). */
   private readonly internals: EditorInternals = createInternals(this.overlay);
@@ -308,6 +312,47 @@ export class Editor {
   /** True while a tool waits on "Select objects:". */
   get selectionPending(): boolean {
     return this.internals.selReq !== null;
+  }
+
+  /**
+   * True while the user is mid-interaction: a command tool is active, a
+   * "Select objects:" request is pending, a grip drag or selection gesture
+   * is in progress, or the view is being panned. `tool === null` alone does
+   * not cover these — picking and grips are the null-tool pointer behaviour.
+   * Read-only query used by the AI Draft boundary (docs/AI-ASSISTANT-M3.md)
+   * to refuse generation/application without disturbing the interaction.
+   */
+  get interactionBusy(): boolean {
+    return this.editingInteractionBusy || this.internals.panning;
+  }
+
+  /** Editing activity that conflicts with an AI capture, excluding view-only panning. */
+  get editingInteractionBusy(): boolean {
+    return this.tool !== null
+      || this.internals.selReq !== null
+      || this.internals.gripDrag !== null
+      || this.internals.dragStart !== null;
+  }
+
+  /**
+   * Set (or clear, with null) the AI Draft preview channel on the viewport
+   * overlay. This is renderer state only: it never touches the document,
+   * history, selection or the tool preview/ghost channels.
+   */
+  setAiPreview(preview: ViewportOverlay['aiPreview'], owner?: object): void {
+    if (!preview && owner && this.aiPreviewOwner !== owner) return;
+    this.aiPreviewOwner = preview ? owner ?? null : null;
+    this.overlay.aiPreview = preview;
+    this.render();
+  }
+
+  /** Monotonic even when a conflicting gesture starts and is cancelled without an edit. */
+  get interactionGeneration(): number { return this.interactionSerial; }
+
+  /** Pointer/view controllers call this before a new editing interaction begins. */
+  noteInteractionStart(): void {
+    this.interactionSerial += 1;
+    this.emit('interaction');
   }
 
   /**

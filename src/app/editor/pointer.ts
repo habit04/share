@@ -107,6 +107,7 @@ export function onMouseDown(ed: Editor, st: EditorInternals, ev: MouseEvent): un
   if (ev.button === 1 || (ev.button === 0 && ed.tool instanceof PanTool && !st.selReq)) {
     ev.preventDefault();
     st.panning = true;
+    ed.notify('view');
     return;
   }
   if (ev.button !== 0) return;
@@ -128,6 +129,7 @@ export function onMouseDown(ed: Editor, st: EditorInternals, ev: MouseEvent): un
       const idx = grips.findIndex((gp) => (!clip || clip.contains(gp)) && g.dist(gp, raw) <= gripTol);
       if (idx >= 0) {
         st.gripDrag = { entity: e, index: idx, start: raw };
+        ed.noteInteractionStart();
         st.overlay.trackFrom = grips[idx]!;
         ed.setPrompt('** STRETCH **  Specify stretch point:');
         st.overlay.cursorMode = 'point';
@@ -143,11 +145,13 @@ export function onMouseDown(ed: Editor, st: EditorInternals, ev: MouseEvent): un
   }
   st.dragStart = s;
   st.dragWorld = raw;
+  ed.noteInteractionStart();
 }
 
 export function onMouseUp(ed: Editor, st: EditorInternals, ev: MouseEvent): void {
   if (ev.button === 1 || (ev.button === 0 && st.panning)) {
     st.panning = false;
+    ed.notify('view');
     return;
   }
   if (ev.button !== 0) return;

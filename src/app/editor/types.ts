@@ -14,7 +14,7 @@ import type { PlotOptions } from '../plot';
 import type { Editor } from './editor';
 import type { GpuDiagnostics } from '../gpu-diagnostics';
 
-export type EditorEvent = 'change' | 'selection' | 'tool' | 'view' | 'snap' | 'file' | 'log' | 'space' | 'project';
+export type EditorEvent = 'change' | 'selection' | 'tool' | 'view' | 'snap' | 'file' | 'log' | 'space' | 'project' | 'interaction';
 
 export interface CommandDef {
   name: string;
@@ -150,6 +150,10 @@ export interface EditorHooks {
   terminalStrip?: (init: TerminalStripSettings) => Promise<TerminalStripSettings | null>;
   wireType?: (current: string) => Promise<string | null>;
   properties?: () => void;
+  /** AI Assistant palette toggle (src/ui/ai-panel.ts). Called directly, never via runCommand, so it cannot cancel the current tool. */
+  aiAssistant?: () => void;
+  /** Read-only view capability: AI Draft currently requires the visible World-XY 2D viewport. */
+  aiDraftingAvailable?: () => boolean;
   projectChanged?: () => void;
   /** AutoCAD Electrical-style dialogs (see src/electrical/ui.ts); defaults come from src/ui/electrical-dialogs.ts. */
   electrical?: ElectricalUi;
