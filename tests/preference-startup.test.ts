@@ -208,6 +208,26 @@ describe('main startup keeps an unsuccessful preference migration unacknowledged
     expect(await files.readFile(p.legacy)).toEqual(p.original);
   });
 
+  it('keeps the retry when the leg fails after a successful rename-aside', async () => {
+    const corrupt = '{"incomplete":"checkpoint"', p = await profile(corrupt);
+    const failure = new Error('load timed out');
+    const result = await startup({ directory: p.directory, legacy: async () => { throw failure; } });
+    expect(result.showErrorBox).not.toHaveBeenCalled(); expect(result.quit).not.toHaveBeenCalled();
+    expect(result.createWindow).toHaveBeenCalledOnce(); expect(result.supplied).toEqual([null]);
+    // The rename succeeded (bytes preserved aside, guard cleared), then the
+    // fall-through leg FAILED (round 4, F2): legacyMigrationFailed stands, so
+    // the acknowledgement is refused — no fresh checkpoint, no marker — and
+    // the next launch retries the leg against the now-absent checkpoint.
+    expect(result.legacyStorage).toHaveBeenCalledOnce();
+    expect(migrationFailed(result)).toBe(true); expect(checkpointUnreadable(result)).toBe(false);
+    expect(result.logMainError).toHaveBeenCalledTimes(3);
+    expect(await files.readFile(path.join(p.directory, `${CHECKPOINT_NAME}.unreadable-test`), 'utf8')).toBe(corrupt);
+    expect(result.ipc.invoke).toHaveBeenCalledExactlyOnceWith('renderer-storage-migrated');
+    await expect(files.stat(path.join(p.directory, CHECKPOINT_NAME))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(files.stat(path.join(p.directory, MIGRATION_NAME))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await files.readFile(p.legacy)).toEqual(p.original);
+  });
+
   it('keeps the guard and renames nothing when the checkpoint read fails with a filesystem error', async () => {
     const p = await profile();
     // A directory where the checkpoint file belongs: the real store's read
