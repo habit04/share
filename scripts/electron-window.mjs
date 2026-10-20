@@ -29,8 +29,10 @@ export async function applicationWindow(app, timeout = 60_000) {
  *
  * Never throws. Resolves to { outcome, ms } — plus `error` for 'rejected' —
  * where outcome is 'closed' (the close settled, or the process is verifiably
- * gone), 'rejected' (app.close() rejected), or 'timeout' (the bound was
- * exceeded and the tree was killed). The measured close duration is logged on
+ * gone), 'rejected' (app.close() rejected; a still-live process is killed
+ * first, since an orphan would hold the profile), or 'timeout' (the bound was
+ * exceeded; the tree is killed when a handle exists, and a handle-less
+ * timeout still reports 'timeout'). The measured close duration is logged on
  * every call. A normal application close runs the product's close-time
  * preference checkpoint (its capture is bounded at 5 s inside a close flow
  * whose own waits run to 15 s), so success-path callers pass a 30 s bound;
@@ -56,12 +58,11 @@ export async function closeApplication(app, timeout = 15_000) {
   const first = await Promise.race([settled, expired]);
   clearTimeout(timer);
   if (first === 'closed') return done('closed');
-  if (first === 'rejected') return done('rejected', { error: closeError });
   let child = null;
   try { child = app.process(); } catch { /* process handle unavailable */ }
   const pid = child && Number.isInteger(child.pid) ? child.pid : null;
   const alreadyExited = !!child && (child.exitCode !== null || child.signalCode !== null);
-  if (pid !== null && !alreadyExited) {
+  const killTree = () => {
     try {
       if (process.platform === 'win32') {
         spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 5_000 });
@@ -71,11 +72,25 @@ export async function closeApplication(app, timeout = 15_000) {
     } catch {
       try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
     }
+  };
+  const settleBriefly = () => Promise.race([settled, new Promise((resolve) => { setTimeout(resolve, 5_000); })]);
+  if (first === 'rejected') {
+    // A rejected close can still leave a live process holding the profile
+    // (round 3): kill it if it is still alive — never an already-exited pid,
+    // which may have been reused — then report 'rejected' either way.
+    if (pid !== null && !alreadyExited) { killTree(); await settleBriefly(); }
+    return done('rejected', { error: closeError });
+  }
+  // The bound was exceeded. With no process handle there is nothing to kill
+  // and nothing proving the application gone: report 'timeout' (round 3).
+  if (pid === null) return done('timeout', { detail: 'no process handle' });
+  if (!alreadyExited) {
+    killTree();
     // Brief settle race so the caller does not race a dying process tree.
-    await Promise.race([settled, new Promise((resolve) => { setTimeout(resolve, 5_000); })]);
+    await settleBriefly();
     return done('timeout', { error: closeError });
   }
-  // The process is already gone (or no pid is available): the close's goal is
-  // met even though app.close() never settled.
-  return done('closed', { detail: alreadyExited ? 'process already exited' : 'no process handle' });
+  // The process already exited on its own: the close's goal is met even
+  // though app.close() never settled.
+  return done('closed', { detail: 'process already exited' });
 }
