@@ -538,6 +538,16 @@ describe('round 7: copy start (R6-2) and marker partition removal (R6-4)', () =>
     expect(h.clearStorageData).not.toHaveBeenCalled();
   });
 
+  it('scrubs the partition directory when the copy fails before any session exists (gate obs 1)', async () => {
+    const h = harness(), failure = new Error('Controlled copy failure');
+    mkdirSync(h.partitionLeveldb, { recursive: true });
+    writeFileSync(join(h.partitionLeveldb, '000005.ldb'), 'partial-copy');
+    const copy = { leveldbDir: h.partitionLeveldb, partitionDir: h.partitionDir, sourceExisted: true, promise: Promise.reject(failure) };
+    await expect(legacyStorage({ BrowserWindow: h.BrowserWindow, session: h.session, indexFile, copy })).rejects.toBe(failure);
+    expect(h.fromPartition).not.toHaveBeenCalled();
+    expect(existsSync(h.partitionDir)).toBe(false);
+  });
+
   it('refuses when the copy was never started', async () => {
     const h = harness();
     await expect(legacyStorage({ BrowserWindow: h.BrowserWindow, session: h.session, indexFile, copy: null })).rejects.toThrow(/not started/);

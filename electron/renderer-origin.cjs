@@ -406,7 +406,19 @@ async function clearPartitionBounded(partitionSession, logError) {
  * holds. */
 async function legacyStorage({ BrowserWindow, session, indexFile, copy, logError }) {
   if (!copy) throw new Error('Legacy migration copy was not started');
-  const copyState = await copy.promise;
+  let copyState;
+  try {
+    copyState = await copy.promise;
+  } catch (error) {
+    // Gate obs 1 (round 9): a failed copy can leave a partial copy in
+    // the partition directory, and no session exists yet to scrub
+    // through — remove the directory directly, best-effort, before the
+    // refusal propagates. (R6-4 also removes it on a later launch.)
+    if (copy.partitionDir) {
+      try { fsSync.rmSync(copy.partitionDir, { recursive: true, force: true }); } catch { /* best effort: the refusal stands either way */ }
+    }
+    throw error;
+  }
   // Round 9 guard: never open a partition on a copy with no CURRENT when
   // the source EXISTED — that copy is incoherent, a FAILED leg, retried
   // next launch. Opening it would make Chromium create a fresh database
