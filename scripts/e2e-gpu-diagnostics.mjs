@@ -81,5 +81,5 @@ try {
   console.log(`GPU diagnostics: real Windows collector (${snapshot.state}), About, clipboard and bug-report checks passed (Electron ${snapshot.versions.electron}).`);
 } finally {
   await app.evaluate(({ app }) => app.exit(0)).catch(() => {});
-  await closeApplication(app); // bounded (PR23 ASAR diagnosis); tree-kills a wedged app by pid
+  await closeApplication(app, 30_000); // success-path bound covers the close checkpoint (PR23 ASAR round 2); tree-kills a wedged app by pid
 }

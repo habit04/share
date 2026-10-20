@@ -213,7 +213,7 @@ try {
 } finally {
   clearTimeout(hardTimeout);
   await Promise.race([app.evaluate(({ app: main }) => main.exit(0)).catch(() => {}), new Promise((r) => setTimeout(r, 5_000))]);
-  await closeApplication(app); // bounded (PR23 ASAR diagnosis); tree-kills a wedged app by pid
+  await closeApplication(app, 30_000); // success-path bound covers the close checkpoint (PR23 ASAR round 2); tree-kills a wedged app by pid
   if (profile.startsWith(join(tmpdir(), 'jcad-3d-security-'))) rmSync(profile, { recursive: true, force: true });
 }
 
