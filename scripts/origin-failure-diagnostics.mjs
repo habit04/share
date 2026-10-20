@@ -156,40 +156,48 @@ export function originFailureDiagnostics(app, { profile, output, launch, seedExi
     // contents are never read) and the leveldb logs under the same
     // capped-tail discipline as error.log. Every part degrades to an
     // unavailable record on its own; nothing here throws.
-    const leveldbDir = join(profile, 'Local Storage', 'leveldb');
-    /** @type {Record<string, unknown>[] | { unavailable: string }} */
-    let leveldbFiles;
-    let leveldbListing;
-    try {
-      leveldbListing = opendirSync(leveldbDir);
-      const files = [];
-      for (let count = 0; count < 64; count++) {
-        const entry = leveldbListing.readSync(); if (!entry) break;
-        try {
-          const stat = lstatSync(join(leveldbDir, entry.name));
-          if (!stat.isFile() || stat.isSymbolicLink()) continue;
-          files.push({ name: entry.name.slice(0, 255), bytes: stat.size, modifiedUtc: stat.mtime.toISOString() });
-        } catch { /* A file vanishing mid-scan is skipped, not fatal. */ }
-      }
-      leveldbFiles = files;
-    } catch (error) { leveldbFiles = { unavailable: String(error).slice(0, 1_024) }; }
-    finally { if (leveldbListing) { try { leveldbListing.closeSync(); } catch { /* Best-effort diagnostic only. */ } } }
-    const leveldbLog = (/** @type {string} */ name) => {
-      const file = join(leveldbDir, name);
-      let descriptor;
+    // Round 11: the same capture now also runs on the migration
+    // PARTITION's leveldb — since round 6 the read is served from the
+    // pre-ready copy there, and the round-10 CI failure stalled against
+    // the partition-resident store, so the partition's state at failure
+    // is first-class evidence too.
+    const captureLeveldb = (/** @type {string} */ leveldbDir) => {
+      /** @type {Record<string, unknown>[] | { unavailable: string }} */
+      let files;
+      let listing;
       try {
-        const stat = lstatSync(file);
-        if (!stat.isFile() || stat.isSymbolicLink()) return { unavailable: 'Not a regular file' };
-        const limit = 16_384;
-        descriptor = openSync(file, 'r');
-        const bytes = Buffer.alloc(Math.min(stat.size, limit));
-        const read = readSync(descriptor, bytes, 0, bytes.length, Math.max(0, stat.size - bytes.length));
-        return { bytes: stat.size, modifiedUtc: stat.mtime.toISOString(), truncated: stat.size > limit, text: bytes.subarray(0, read).toString('utf8') };
-      } catch (error) { return { unavailable: String(error).slice(0, 1_024) }; }
-      finally { if (descriptor !== undefined) { try { closeSync(descriptor); } catch { /* Best-effort diagnostic only. */ } } }
+        listing = opendirSync(leveldbDir);
+        const found = [];
+        for (let count = 0; count < 64; count++) {
+          const entry = listing.readSync(); if (!entry) break;
+          try {
+            const stat = lstatSync(join(leveldbDir, entry.name));
+            if (!stat.isFile() || stat.isSymbolicLink()) continue;
+            found.push({ name: entry.name.slice(0, 255), bytes: stat.size, modifiedUtc: stat.mtime.toISOString() });
+          } catch { /* A file vanishing mid-scan is skipped, not fatal. */ }
+        }
+        files = found;
+      } catch (error) { files = { unavailable: String(error).slice(0, 1_024) }; }
+      finally { if (listing) { try { listing.closeSync(); } catch { /* Best-effort diagnostic only. */ } } }
+      const log = (/** @type {string} */ name) => {
+        const file = join(leveldbDir, name);
+        let descriptor;
+        try {
+          const stat = lstatSync(file);
+          if (!stat.isFile() || stat.isSymbolicLink()) return { unavailable: 'Not a regular file' };
+          const limit = 16_384;
+          descriptor = openSync(file, 'r');
+          const bytes = Buffer.alloc(Math.min(stat.size, limit));
+          const read = readSync(descriptor, bytes, 0, bytes.length, Math.max(0, stat.size - bytes.length));
+          return { bytes: stat.size, modifiedUtc: stat.mtime.toISOString(), truncated: stat.size > limit, text: bytes.subarray(0, read).toString('utf8') };
+        } catch (error) { return { unavailable: String(error).slice(0, 1_024) }; }
+        finally { if (descriptor !== undefined) { try { closeSync(descriptor); } catch { /* Best-effort diagnostic only. */ } } }
+      };
+      return { files, log: log('LOG'), logOld: log('LOG.old') };
     };
-    const leveldb = { files: leveldbFiles, log: leveldbLog('LOG'), logOld: leveldbLog('LOG.old') };
-    return { inventory, inventoryLimit: 64, selected, leveldb };
+    const leveldb = captureLeveldb(join(profile, 'Local Storage', 'leveldb'));
+    const partitionLeveldb = captureLeveldb(join(profile, 'Partitions', 'legacy-migration', 'Local Storage', 'leveldb'));
+    return { inventory, inventoryLimit: 64, selected, leveldb, partitionLeveldb };
   }
   return {
     async capture(error) {

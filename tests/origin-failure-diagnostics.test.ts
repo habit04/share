@@ -191,6 +191,28 @@ describe('failure-only origin diagnostics', () => {
     expect(proof.profile.leveldb.logOld.unavailable).toBeTruthy();
   });
 
+  it('also captures the migration PARTITION leveldb, listing and LOG tails (round 11, F3)', async () => {
+    silence(); const f = fixture();
+    const partitionDb = join(f.profile, 'Partitions', 'legacy-migration', 'Local Storage', 'leveldb');
+    mkdirSync(partitionDb, { recursive: true });
+    writeFileSync(join(partitionDb, 'CURRENT'), 'MANIFEST-000001\n');
+    writeFileSync(join(partitionDb, '000003.ldb'), 'PARTITION_DATA_NEVER_DUMPED');
+    writeFileSync(join(partitionDb, 'LOG'), 'partition log body');
+    const observed = originFailureDiagnostics(f.typedApp, { profile: f.profile, output: f.output, launch: 0 });
+    await observed.capture(new Error('original')); observed.stop();
+    const text = readFileSync(join(f.output, 'origin-failure-launch-1.json'), 'utf8'), proof = JSON.parse(text);
+    expect(text).not.toContain('PARTITION_DATA_NEVER_DUMPED');
+    const files = proof.profile.partitionLeveldb.files;
+    expect(Array.isArray(files)).toBe(true);
+    const byName = Object.fromEntries(files.map((entry: { name: string }) => [entry.name, entry]));
+    expect(byName['CURRENT'].bytes).toBe(16);
+    expect(byName['000003.ldb'].bytes).toBe(27);
+    expect(proof.profile.partitionLeveldb.log).toMatchObject({ bytes: 18, truncated: false, text: 'partition log body' });
+    expect(proof.profile.partitionLeveldb.logOld.unavailable).toBeTruthy();
+    // The original store's section is unaffected by the partition's presence.
+    expect(proof.profile.leveldb.files.unavailable).toBeTruthy();
+  });
+
   it('records seed-exit and app-spawn events with the provided stamps, in order (round 6, F3)', async () => {
     silence(); const f = fixture();
     const observed = originFailureDiagnostics(f.typedApp, { profile: f.profile, output: f.output, launch: 0, seedExitedAt: '2026-10-19T23:00:00.000Z', appSpawnedAt: '2026-10-19T23:00:01.500Z' });
