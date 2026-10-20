@@ -55,7 +55,7 @@ const { runStartupMigration } = require('../electron/main/startup-migration.cjs'
 type LegacyRead = { values: Record<string, string> } | { error: unknown } | null;
 const realLegacy = require('../electron/renderer-origin.cjs') as {
   legacyStorage: (options: { read: LegacyRead }) => Promise<Record<string, string>>;
-  readLegacyStoreBeforeReady: (leveldbDir: string) => { values: Record<string, string> } | { error: unknown };
+  readLegacyStoreBeforeReady: (leveldbDir: string, options: { logError: (kind: string, error: unknown) => void }) => { values: Record<string, string> } | { error: unknown };
 };
 const repo = path.resolve(import.meta.dirname, '..');
 const privateRoot = path.join(repo, '.codex-local', 'preference-startup-tests');
@@ -88,11 +88,11 @@ const preReadySource = mainSource.slice(preReadyStart, preReadyEnd);
 /** Execute the real pre-ready legacy snapshot (and, since round 12b R12-4, the real
  * pre-ready read) over `directory` (the userData folder). */
 function preReady(directory: string, devUrl: string | null = null) {
-  const readLegacyStoreBeforeReady = vi.fn(realLegacy.readLegacyStoreBeforeReady);
+  const readLegacyStoreBeforeReady = vi.fn(realLegacy.readLegacyStoreBeforeReady), logMainError = vi.fn();
   const snapshot = runInNewContext(`${preReadySource}\n;({ legacyStorePresent, legacyRead })`,
-    { DEV_URL: devUrl, fsSync, path, stateDir: () => directory, readLegacyStoreBeforeReady },
+    { DEV_URL: devUrl, fsSync, path, stateDir: () => directory, readLegacyStoreBeforeReady, logMainError },
     { filename: 'actual-main-pre-ready.cjs' }) as { legacyStorePresent: boolean; legacyRead: LegacyRead };
-  return { ...snapshot, readLegacyStoreBeforeReady };
+  return { ...snapshot, readLegacyStoreBeforeReady, logMainError };
 }
 
 afterEach(async () => {
@@ -436,7 +436,8 @@ describe('main startup keeps an unsuccessful preference migration unacknowledged
     const leveldb = await seedStore(p.directory, 'simple');
     const snapshot = preReady(p.directory);
     expect(snapshot.legacyStorePresent).toBe(true);
-    expect(snapshot.readLegacyStoreBeforeReady).toHaveBeenCalledExactlyOnceWith(leveldb);
+    expect(snapshot.readLegacyStoreBeforeReady).toHaveBeenCalledExactlyOnceWith(leveldb, { logError: snapshot.logMainError });
+    expect(snapshot.logMainError).not.toHaveBeenCalled();
     expect(snapshot.legacyRead).toEqual({ values: await fixtureValues('simple') });
     const result = await startup({ directory: p.directory, storePresent: snapshot.legacyStorePresent, legacyRead: snapshot.legacyRead, legacy: realLegacy.legacyStorage });
     expect(result.legacyStorage).toHaveBeenCalledExactlyOnceWith({ read: snapshot.legacyRead });
@@ -447,7 +448,7 @@ describe('main startup keeps an unsuccessful preference migration unacknowledged
     expect(await files.readFile(p.legacy)).toEqual(p.original);
   });
 
-  it('a pre-ready read error fails the leg: logged once, no marker, retried next launch (round 12b, R12-4)', async () => {
+  it('a pre-ready read error fails the leg: logged once, no marker, retried next launch; the store is preserved (round 12b, R12-4/R12-7)', async () => {
     const p = await profile();
     const leveldb = await seedStore(p.directory, 'simple');
     const manifest = await files.readFile(path.join(leveldb, 'MANIFEST-000001'));
@@ -458,6 +459,16 @@ describe('main startup keeps an unsuccessful preference migration unacknowledged
     const read = snapshot.legacyRead as { error: Error };
     expect(read.error).toBeInstanceOf(Error);
     expect(read.error.message).toMatch(/CRC/);
+    // Round 12b (R12-7): the undecodable store was COPIED aside by the
+    // pre-ready text (before whenReady), its path logged once; the
+    // original is untouched.
+    const local = path.join(p.directory, 'Local Storage');
+    const preserved = (await files.readdir(local)).filter((name) => name.startsWith('leveldb.preserved-'));
+    expect(preserved).toHaveLength(1);
+    const preservedDir = path.join(local, preserved[0] ?? '');
+    expect(snapshot.logMainError).toHaveBeenCalledExactlyOnceWith('renderer preference migration', expect.objectContaining({ message: `Unreadable legacy store preserved at ${preservedDir}` }));
+    expect(await files.readFile(path.join(preservedDir, 'MANIFEST-000001'))).toEqual(manifest);
+    expect(await files.readFile(path.join(leveldb, 'MANIFEST-000001'))).toEqual(manifest);
     const result = await startup({ directory: p.directory, storePresent: snapshot.legacyStorePresent, legacyRead: snapshot.legacyRead, legacy: realLegacy.legacyStorage });
     expect(result.legacyStorage).toHaveBeenCalledOnce();
     expect(result.logMainError).toHaveBeenCalledExactlyOnceWith('renderer preference migration', read.error);
@@ -665,6 +676,9 @@ describe('P-MIG retry guards (static pins on the production text)', () => {
     expect(read).toBeLessThan(defaultSession);
     expect(mainSource.indexOf('readLegacyStoreBeforeReady(', read + 1)).toBe(-1);
     expect(preReadySource).toContain('const legacyRead =');
+    // R12-7: the preservation runs inside that same pre-ready read, logged
+    // through the main error logger.
+    expect(preReadySource).toContain("readLegacyStoreBeforeReady(path.join(stateDir(), 'Local Storage', 'leveldb'), { logError: logMainError })");
     expect(startupSource).toContain('legacyStorage({ read: legacyRead })');
     expect(startupSource).not.toContain('leveldbDir');
   });

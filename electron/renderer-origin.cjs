@@ -101,7 +101,8 @@ function installAssetHandler({ protocol, net, root }) {
 }
 
 
-const { readLegacyLocalStorage } = require('./legacy-leveldb.cjs');
+const fsSync = require('node:fs');
+const { readLegacyLocalStorage, LEGACY_STORE_TOO_LARGE } = require('./legacy-leveldb.cjs');
 /** Read the old file-origin storage without executing the old application or any plugins.
  *
  * Round 12: the read is a pure-JS parse of the legacy leveldb in this
@@ -140,20 +141,88 @@ async function legacyStorage({ read }) {
 }
 
 /**
+ * Round 12b (R12-7, data preservation): a read error that says the
+ * store's BYTES are bad — any parse/decode failure of the reader —
+ * as opposed to a filesystem error (ENOENT-type absence, an AV
+ * lock's EBUSY/EPERM: Node system errors carry a `syscall`), which
+ * says nothing about the bytes, and as opposed to the reader's
+ * size bound (a large store is not a corrupt one).
+ * @param {unknown} error
+ */
+function legacyStoreDecodeFailure(error) {
+  if (!error || typeof error !== 'object') return true;
+  const { syscall, code } = /** @type {{ syscall?: unknown, code?: unknown }} */ (error);
+  if (typeof syscall === 'string') return false;
+  return code !== LEGACY_STORE_TOO_LARGE;
+}
+
+/**
+ * Round 12b (R12-7, data preservation): COPY the legacy store (never
+ * move, never delete; LOCK excluded) to
+ * <Local Storage>/leveldb.preserved-<timestamp> before whenReady. A
+ * store the reader cannot decode is one the default session's own
+ * leveldb recovery may recreate at whenReady, wiping its bytes; the
+ * copy keeps them for a later fix, while Chromium's behaviour is
+ * unchanged. Bounded: once per distinct failure — skipped when an
+ * existing leveldb.preserved-* directory already holds the same
+ * MANIFEST file name(s) and size(s) (CURRENT's when the store has no
+ * MANIFEST). MANIFEST files are copied LAST, so a copy torn by a
+ * failure never satisfies that check. The path is logged once. Never
+ * throws: any failure is logged and the caller continues.
+ * @param {string} leveldbDir
+ * @param {{ logError: (kind: string, error: unknown) => void, now?: () => Date }} options
+ * @returns {string | null} the preserved copy, or null (skipped or failed)
+ */
+function preserveLegacyStore(leveldbDir, { logError, now = () => new Date() }) {
+  try {
+    const parent = path.dirname(leveldbDir);
+    const prefix = `${path.basename(leveldbDir)}.preserved-`;
+    const files = fsSync.readdirSync(leveldbDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name !== 'LOCK').map((entry) => entry.name);
+    const manifests = files.filter((name) => name.startsWith('MANIFEST-'));
+    const identity = (manifests.length ? manifests : ['CURRENT'])
+      .map((name) => ({ name, size: fsSync.statSync(path.join(leveldbDir, name)).size }));
+    for (const name of fsSync.readdirSync(parent)) {
+      if (!name.startsWith(prefix)) continue;
+      const earlier = path.join(parent, name);
+      const same = identity.every((file) => {
+        try { return fsSync.statSync(path.join(earlier, file.name)).size === file.size; } catch { return false; }
+      });
+      if (same) return null;
+    }
+    const stamp = now().toISOString().replace(/[:.]/g, '-');
+    let target = path.join(parent, `${prefix}${stamp}`);
+    for (let counter = 2; fsSync.existsSync(target); counter += 1) target = path.join(parent, `${prefix}${stamp}-${counter}`);
+    fsSync.mkdirSync(target);
+    const ordered = [...files.filter((name) => !name.startsWith('MANIFEST-')), ...manifests];
+    for (const name of ordered) fsSync.copyFileSync(path.join(leveldbDir, name), path.join(target, name), fsSync.constants.COPYFILE_EXCL);
+    logError('renderer preference migration', new Error(`Unreadable legacy store preserved at ${target}`));
+    return target;
+  } catch (error) {
+    logError('renderer preference migration', error);
+    return null;
+  }
+}
+
+/**
  * Round 12b (R12-4): the synchronous pre-ready read of the legacy
  * store. main.cjs calls it after the single-instance lock and the
  * legacy-store snapshot, before app.whenReady() and before anything
- * touches session.defaultSession. It never throws: it returns the
+ * touches the default session. It never throws: it returns the
  * dictionary, or the caught error for the leg to fail with.
+ * R12-7: on a decode failure it first preserves a copy of the store
+ * (preserveLegacyStore, which never throws), still before whenReady.
  * @param {string} leveldbDir
+ * @param {{ logError: (kind: string, error: unknown) => void, now?: () => Date }} options
  * @returns {{ values: Record<string, string> } | { error: unknown }}
  */
-function readLegacyStoreBeforeReady(leveldbDir) {
+function readLegacyStoreBeforeReady(leveldbDir, { logError, now }) {
   try {
     return { values: readLegacyLocalStorage(leveldbDir) };
   } catch (error) {
+    if (legacyStoreDecodeFailure(error)) preserveLegacyStore(leveldbDir, { logError, now });
     return { error };
   }
 }
 
-module.exports = { APP_URL, WORKER_CSP, assetPath, assetResponseHeaders, installAssetHandler, legacyStorage, readLegacyStoreBeforeReady, rendererStartUrl, servedPath, withAssetHeaders };
+module.exports = { APP_URL, WORKER_CSP, assetPath, assetResponseHeaders, installAssetHandler, legacyStorage, legacyStoreDecodeFailure, preserveLegacyStore, readLegacyStoreBeforeReady, rendererStartUrl, servedPath, withAssetHeaders };

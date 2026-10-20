@@ -403,6 +403,11 @@ function decodeValue(bytes) {
 // ------------------------------------------------------------- public read
 
 const MAX_TOTAL_BYTES = 256 * 1024 * 1024; // sanity bound on bytes read
+// Round 12b (R12-7): the size bound's error carries this code, so the
+// caller can tell "too large" apart from "cannot decode" (only the
+// latter preserves a copy of the store).
+const LEGACY_STORE_TOO_LARGE = 'LEGACY_STORE_TOO_LARGE';
+const tooLarge = () => Object.assign(new Error('legacy leveldb: store exceeds the read size bound'), { code: LEGACY_STORE_TOO_LARGE });
 
 /**
  * Read the file:// origin's legacy localStorage dictionary from a
@@ -429,7 +434,7 @@ function readLegacyLocalStorage(leveldbDir) {
   for (const number of tableNumbers) {
     const buffer = fs.readFileSync(path.join(leveldbDir, `${String(number).padStart(6, '0')}.ldb`));
     totalBytes += buffer.length;
-    if (totalBytes > MAX_TOTAL_BYTES) throw new Error('legacy leveldb: store exceeds the read size bound');
+    if (totalBytes > MAX_TOTAL_BYTES) throw tooLarge();
     readTableFile(buffer, apply);
   }
   const logNames = fs.readdirSync(leveldbDir)
@@ -438,7 +443,7 @@ function readLegacyLocalStorage(leveldbDir) {
   for (const name of logNames) {
     const buffer = fs.readFileSync(path.join(leveldbDir, name));
     totalBytes += buffer.length;
-    if (totalBytes > MAX_TOTAL_BYTES) throw new Error('legacy leveldb: store exceeds the read size bound');
+    if (totalBytes > MAX_TOTAL_BYTES) throw tooLarge();
     for (const record of readLogRecords(buffer)) readWriteBatch(record, apply);
   }
   const result = Object.create(null);
@@ -450,4 +455,4 @@ function readLegacyLocalStorage(leveldbDir) {
   return result;
 }
 
-module.exports = { readLegacyLocalStorage, _internals: { crc32c, maskCrc, readLogRecords, readWriteBatch, readManifestState, decodeScriptKey, decodeValue, snappyDecompress, readTableFile, TABLE_MAGIC } };
+module.exports = { readLegacyLocalStorage, LEGACY_STORE_TOO_LARGE, _internals: { crc32c, maskCrc, readLogRecords, readWriteBatch, readManifestState, decodeScriptKey, decodeValue, snappyDecompress, readTableFile, TABLE_MAGIC } };

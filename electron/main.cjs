@@ -214,8 +214,13 @@ const legacyStorePresent = !DEV_URL && fsSync.existsSync(path.join(stateDir(), '
 // The read runs only when the leg can run: a store is present and the
 // migration marker is absent (the gate never reaches the leg once the
 // marker exists, and only this process writes it, after the gate).
+// Round 12b (R12-7): when that read fails to DECODE the store, a copy
+// of it (LOCK excluded) is preserved at Local Storage/leveldb.preserved-
+// <timestamp> here, still before whenReady — the default session's own
+// recovery may recreate a corrupt store at whenReady and wipe its bytes.
+// The path is logged once; the leg then fails as before.
 const legacyRead = legacyStorePresent && !fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated'))
-  ? readLegacyStoreBeforeReady(path.join(stateDir(), 'Local Storage', 'leveldb'))
+  ? readLegacyStoreBeforeReady(path.join(stateDir(), 'Local Storage', 'leveldb'), { logError: logMainError })
   : null;
 
 registerSecondInstance();
