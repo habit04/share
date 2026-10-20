@@ -1,13 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 
 const require = createRequire(import.meta.url);
-const { legacyStorage } = require('../electron/renderer-origin.cjs') as {
-  legacyStorage(options: { BrowserWindow: unknown; protocol: unknown; indexFile: string }): Promise<Record<string, string>>;
+const { legacyStorage, LEGACY_MIGRATION_PARTITION, withBoundedContentionWait } = require('../electron/renderer-origin.cjs') as {
+  legacyStorage(options: { BrowserWindow: unknown; session: unknown; userDataDir: string; indexFile: string }): Promise<Record<string, string>>;
+  LEGACY_MIGRATION_PARTITION: string;
+  withBoundedContentionWait(operation: () => Promise<unknown>, deadlineMs?: number): Promise<unknown>;
 };
 const indexFile = join(resolve(import.meta.dirname, '..'), '.codex-local', 'legacy-storage-fixture', 'app.asar', 'dist', 'index.html');
 const expectedUrl = pathToFileURL(indexFile).href;
@@ -34,6 +38,18 @@ class Contents extends EventEmitter {
   executeJavaScript = vi.fn<(_code: string) => Promise<unknown>>(async () => Object.create(null));
 }
 
+const roots: string[] = [];
+function tempRoot() { const root = mkdtempSync(join(tmpdir(), 'jcad-legacy-storage-')); roots.push(root); return root; }
+/** Round 6 performs its pre-window file I/O (snapshot + partition copy)
+ * synchronously in the module, so the window phases and their fake deadlines
+ * start from a settled filesystem state with no flush needed here. */
+/** Seed a leveldb-shaped directory with the given name -> content files. */
+function seedLeveldb(dir: string, files: Record<string, string>) {
+  mkdirSync(dir, { recursive: true });
+  for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
+  return dir;
+}
+
 function harness() {
   const contents = new Contents();
   const window = {
@@ -48,8 +64,20 @@ function harness() {
     handle: vi.fn((_scheme: string, value: typeof handler) => { handler = value; }),
     unhandle: vi.fn(),
   };
-  return { contents, window, BrowserWindow, protocol, handler: () => handler,
-    read: () => legacyStorage({ BrowserWindow, protocol, indexFile }) };
+  // Round 6: the migration runs in a private partition. The fake session
+  // hands legacyStorage the partition protocol (the same fake the assertions
+  // watch), a real temp storage path, and a recording clearStorageData.
+  const root = tempRoot();
+  const userDataDir = join(root, 'user-data'), partitionDir = join(root, 'partition');
+  const clearStorageData = vi.fn(async () => {});
+  const partitionSession = { protocol, getStoragePath: () => partitionDir, clearStorageData };
+  const fromPartition = vi.fn((_name: string) => partitionSession);
+  const session = { fromPartition };
+  const originalDir = join(userDataDir, 'Local Storage', 'leveldb');
+  const partitionLeveldb = join(partitionDir, 'Local Storage', 'leveldb');
+  return { contents, window, BrowserWindow, protocol, handler: () => handler, session, fromPartition,
+    clearStorageData, userDataDir, partitionDir, originalDir, partitionLeveldb,
+    read: () => legacyStorage({ BrowserWindow, session, userDataDir, indexFile }) };
 }
 
 function observe<T>(promise: Promise<T>) {
@@ -62,13 +90,14 @@ async function microtasks() { await vi.advanceTimersByTimeAsync(0); }
 
 function expectClean(h: ReturnType<typeof harness>, installed = true, destroys = 1) {
   expect(h.window.destroy).toHaveBeenCalledTimes(destroys);
+  expect(h.clearStorageData).toHaveBeenCalledOnce();
   if (installed) expect(h.protocol.unhandle).toHaveBeenCalledExactlyOnceWith('file');
   else expect(h.protocol.unhandle).not.toHaveBeenCalled();
   for (const event of lifecycleEvents) expect(h.contents.listenerCount(event), event).toBe(0);
   expect(vi.getTimerCount()).toBe(0);
 }
 
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => { vi.useRealTimers(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe('owned bounded legacy-origin storage read', () => {
   it('bounds an unresolved load at 15 seconds and cleans up without executing storage code', async () => {
@@ -210,8 +239,10 @@ describe('owned bounded legacy-origin storage read', () => {
     const h = harness(), loaded = deferred<void>(); h.window.loadFile.mockReturnValue(loaded.promise);
     const result = h.read();
     expect(h.BrowserWindow).toHaveBeenCalledExactlyOnceWith({ show: false, webPreferences: {
+      partition: LEGACY_MIGRATION_PARTITION,
       sandbox: true, nodeIntegration: false, contextIsolation: true, devTools: false, webSecurity: false, allowRunningInsecureContent: false,
     } });
+    expect(h.fromPartition).toHaveBeenCalledExactlyOnceWith(LEGACY_MIGRATION_PARTITION);
     const handler = h.handler()!;
     const response = handler({ url: expectedUrl });
     expect(response.status).toBe(200);
@@ -260,5 +291,95 @@ describe('owned bounded legacy-origin storage read', () => {
     const h = harness(), getter = vi.fn(() => 'must not run');
     h.contents.executeJavaScript.mockResolvedValue(Object.defineProperty({}, 'key', { enumerable: true, get: getter }));
     await expect(h.read()).rejects.toThrow(); expect(getter).not.toHaveBeenCalled(); expectClean(h);
+  });
+});
+
+describe('round 6: partition copy (F1a) and original-integrity guard (F2)', () => {
+  it('copies the leveldb minus LOCK into the partition before the window loads; the original is untouched', async () => {
+    const h = harness();
+    const files = { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'manifest-bytes', '000003.log': 'log-bytes-Δ', LOG: 'info log', LOCK: '' };
+    seedLeveldb(h.originalDir, files);
+    const before = Object.fromEntries(Object.keys(files).map((name) => [name, readFileSync(join(h.originalDir, name))]));
+    let partitionAtLoad: Record<string, Buffer> | null = null;
+    h.window.loadFile.mockImplementation(async () => {
+      partitionAtLoad = Object.fromEntries(readdirSync(h.partitionLeveldb).map((name) => [name, readFileSync(join(h.partitionLeveldb, name))]));
+    });
+    h.contents.executeJavaScript.mockResolvedValue(Object.assign(Object.create(null), { k: 'v' }));
+    await expect(h.read()).resolves.toEqual({ k: 'v' });
+    // The copy (minus LOCK) was already in the partition when the window loaded.
+    const atLoad = partitionAtLoad!;
+    expect(Object.keys(atLoad).sort()).toEqual(['000003.log', 'CURRENT', 'LOG', 'MANIFEST-000001']);
+    for (const name of Object.keys(atLoad)) expect(atLoad[name]!.equals(before[name]!)).toBe(true);
+    // The original is byte-identical, LOCK included, with no file added or lost.
+    expect(readdirSync(h.originalDir).sort()).toEqual(Object.keys(files).sort());
+    for (const name of Object.keys(files)) expect(readFileSync(join(h.originalDir, name)).equals(before[name]!)).toBe(true);
+    expect(h.clearStorageData).toHaveBeenCalledOnce();
+  });
+
+  it('clears the partition even when the read itself fails', async () => {
+    const h = harness(); seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n' });
+    h.contents.executeJavaScript.mockRejectedValue(new Error('Controlled read failure'));
+    await expect(h.read()).rejects.toThrow(/Controlled read failure/);
+    expect(h.clearStorageData).toHaveBeenCalledOnce();
+  });
+
+  it('reads an absent legacy store as empty and still clears the partition', async () => {
+    const h = harness();
+    await expect(h.read()).resolves.toEqual({});
+    expect(h.clearStorageData).toHaveBeenCalledOnce();
+  });
+
+  it('refuses (F2) when the original leveldb shrinks during the read', async () => {
+    const h = harness();
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', '000003.log': 'x'.repeat(4_096), 'MANIFEST-000001': 'm' });
+    h.contents.executeJavaScript.mockImplementation(async () => {
+      unlinkSync(join(h.originalDir, '000003.log'));
+      return Object.assign(Object.create(null), { k: 'v' });
+    });
+    await expect(h.read()).rejects.toThrow(/shrank|lost|refusing/i);
+    expect(h.clearStorageData).toHaveBeenCalledOnce();
+  });
+
+  it('refuses (F2) when CURRENT changes identity during the read', async () => {
+    const h = harness();
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm' });
+    h.contents.executeJavaScript.mockImplementation(async () => {
+      writeFileSync(join(h.originalDir, 'CURRENT'), 'MANIFEST-000002\n');
+      return Object.assign(Object.create(null), { k: 'v' });
+    });
+    await expect(h.read()).rejects.toThrow(/CURRENT/);
+    expect(h.clearStorageData).toHaveBeenCalledOnce();
+  });
+});
+
+describe('bounded contention wait (round 6, F1a)', () => {
+  it('retries EBUSY and EPERM until the operation succeeds', async () => {
+    vi.useFakeTimers();
+    const operation = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('busy'), { code: 'EBUSY' }))
+      .mockRejectedValueOnce(Object.assign(new Error('perm'), { code: 'EPERM' }))
+      .mockResolvedValue('done');
+    const pending = withBoundedContentionWait(operation);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(pending).resolves.toBe('done');
+    expect(operation).toHaveBeenCalledTimes(3);
+  });
+
+  it('gives up after the bounded wait and propagates the contention error', async () => {
+    vi.useFakeTimers();
+    const busy = Object.assign(new Error('still busy'), { code: 'EBUSY' });
+    const operation = vi.fn(async () => { throw busy; });
+    const pending = withBoundedContentionWait(operation, 500);
+    const assertion = expect(pending).rejects.toBe(busy);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await assertion;
+    expect(operation.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('does not retry other errors', async () => {
+    const denied = Object.assign(new Error('denied'), { code: 'EACCES' });
+    const operation = vi.fn(async () => { throw denied; });
+    await expect(withBoundedContentionWait(operation)).rejects.toBe(denied);
+    expect(operation).toHaveBeenCalledOnce();
   });
 });

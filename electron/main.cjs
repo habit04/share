@@ -218,7 +218,7 @@ app.whenReady().then(async () => {
       runLegacy: async () => {
         // This line's legacyStorage resolves a dictionary, null for an incomplete
         // read, and throws on failure; adapt it to the gate's outcome shape.
-        const values = await legacyStorage({ BrowserWindow, protocol, indexFile: path.join(__dirname, '..', 'dist', 'index.html') });
+        const values = await legacyStorage({ BrowserWindow, session, userDataDir: stateDir(), indexFile: path.join(__dirname, '..', 'dist', 'index.html') });
         return values === null ? { values: null, ok: false } : { values, ok: true };
       },
       logError: logMainError,
