@@ -91,7 +91,7 @@ async function profile(checkpoint?: string) {
 }
 
 /** Execute the real main ready callback and preload prefix; no Electron process is involved. */
-async function startup(options: { directory: string; legacy: () => Promise<unknown>; current?: Preferences; renameFails?: boolean }) {
+async function startup(options: { directory: string; legacy: () => Promise<unknown>; current?: Preferences; renameFails?: boolean; sourceExisted?: boolean }) {
   const storage = new Map(Object.entries(options.current ?? {}));
   const localStorage = {
     get length() { return storage.size; },
@@ -108,11 +108,15 @@ async function startup(options: { directory: string; legacy: () => Promise<unkno
   // Round 8 (R8-A): the migration copy is begun in main.cjs BEFORE
   // whenReady (right after the single-instance lock) and the ready
   // callback receives the handle as the free binding `legacyCopy`. The
-  // stub legacy above ignores its arguments, so an opaque handle models
-  // the binding; the real begin/copy behaviour is covered in
-  // tests/legacy-storage.test.ts, and a static pin below orders the
-  // begin before whenReady/session use in the production text.
-  const legacyCopy = {};
+  // gate's leg decision reads the handle's copy-time snapshot
+  // (sourceExisted, round 9): this suite's profiles seed the legacy
+  // store before startup, so the snapshot is true unless a case
+  // overrides it (the fresh-profile case below). The stub legacy above
+  // ignores its arguments, so an opaque handle models the binding; the
+  // real begin/copy behaviour is covered in tests/legacy-storage.test.ts,
+  // and a static pin below orders the begin before whenReady/session
+  // use in the production text.
+  const legacyCopy = { sourceExisted: options.sourceExisted ?? true };
   const ipc = { sendSync: vi.fn((_channel: string) => context.rendererStorage),
     invoke: vi.fn((channel: string) => {
       if (channel !== 'renderer-storage-migrated') throw new Error('Unexpected preference IPC');
@@ -333,6 +337,26 @@ describe('main startup keeps an unsuccessful preference migration unacknowledged
   it('allows a genuinely successful empty legacy read to complete and persist an empty checkpoint', async () => {
     const p = await profile();
     const result = await startup({ directory: p.directory, legacy: async () => Object.create(null) });
+    expect(result.quit).not.toHaveBeenCalled(); expect(result.showErrorBox).not.toHaveBeenCalled();
+    expect(result.createWindow).toHaveBeenCalledOnce(); expect(result.ipc.invoke).toHaveBeenCalledExactlyOnceWith('renderer-storage-migrated');
+    expect(result.supplied).toEqual([{ source: 'legacy', values: {} }]);
+    expect(migrationFailed(result)).toBe(false);
+    expect(await files.readFile(path.join(p.directory, CHECKPOINT_NAME), 'utf8')).toBe('{}');
+    expect(await files.readFile(path.join(p.directory, MIGRATION_NAME), 'utf8')).toBe('1');
+    expect(await files.readFile(p.legacy)).toEqual(p.original);
+  });
+
+  // Round 9 (the PR23 CI regression): on a fresh profile the legacy
+  // folder exists by gate time — the default session created it at
+  // whenReady — but no store existed when the copy began. The gate must
+  // decide from the copy-time snapshot: NO leg runs, nothing is logged
+  // as failed, and the empty outcome is acknowledged exactly like the
+  // successful empty read above (checkpoint '{}', marker '1').
+  it('skips the leg when no store existed at copy time, even though the folder exists by gate time (round 9)', async () => {
+    const p = await profile();
+    const result = await startup({ directory: p.directory, sourceExisted: false, legacy: async () => ({ stale: 'legacy' }) });
+    expect(result.legacyStorage).not.toHaveBeenCalled();
+    expect(result.logMainError).not.toHaveBeenCalled();
     expect(result.quit).not.toHaveBeenCalled(); expect(result.showErrorBox).not.toHaveBeenCalled();
     expect(result.createWindow).toHaveBeenCalledOnce(); expect(result.ipc.invoke).toHaveBeenCalledExactlyOnceWith('renderer-storage-migrated');
     expect(result.supplied).toEqual([{ source: 'legacy', values: {} }]);

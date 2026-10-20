@@ -230,7 +230,15 @@ app.whenReady().then(async () => {
       readCheckpoint: readRendererPreferences,
       renameCheckpointAside: renameUnreadableCheckpoint,
       markerExists: () => fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated')),
-      legacyStoreExists: () => fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')),
+      // Round 9: decide from the copy-time snapshot, never the live
+      // folder. The default session creates Local Storage/leveldb at
+      // whenReady, so the live check is true even on a fresh profile —
+      // PR23's CI regression ran the leg against an empty copy there and
+      // the recreate guard refused every fresh install's first launch.
+      // No store at copy time => no leg: the gate's empty outcome, the
+      // marker acknowledged normally. (legacyCopy is null only when the
+      // marker already exists, which the gate checks first.)
+      legacyStoreExists: () => legacyCopy?.sourceExisted === true,
       runLegacy: async () => {
         // This line's legacyStorage resolves a dictionary, null for an incomplete
         // read, and throws on failure; adapt it to the gate's outcome shape.

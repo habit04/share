@@ -296,8 +296,17 @@ function assertCopiedManifestPresent(leveldbDir) {
 function startLegacyStorageCopy({ userDataDir }) {
   const partitionDir = legacyPartitionDir(userDataDir);
   const leveldbDir = path.join(partitionDir, 'Local Storage', 'leveldb');
+  const sourceDir = path.join(userDataDir, 'Local Storage', 'leveldb');
+  // Round 9: whether a legacy store existed AT COPY TIME, captured at
+  // entry — before anything else in the process can create one. The
+  // default session creates Local Storage/leveldb at whenReady, so at
+  // gate time the folder exists even on a fresh profile; the PR23 CI
+  // regression was the gate deciding from that live folder (the leg ran
+  // against an empty copy, Chromium created the partition DB, and the
+  // R6-1 guard refused — every fresh install's first launch). The gate
+  // decides from THIS captured fact, never from the live folder.
+  const sourceExisted = fsSync.existsSync(sourceDir);
   const promise = (async () => {
-    const sourceDir = path.join(userDataDir, 'Local Storage', 'leveldb');
     const deadline = Date.now() + LEGACY_COPY_WAIT_MS;
     for (;;) {
       const before = listStoreFiles(sourceDir);
@@ -312,7 +321,7 @@ function startLegacyStorageCopy({ userDataDir }) {
     return snapshotCopyState(leveldbDir);
   })();
   void promise.catch(() => {}); // Observed via the await in legacyStorage; startup must not see it unhandled first.
-  return { partitionDir, leveldbDir, promise };
+  return { partitionDir, leveldbDir, promise, sourceExisted };
 }
 
 /** Remove the migration partition's storage directory (round 7, R6-4): a
@@ -377,6 +386,16 @@ async function clearPartitionBounded(partitionSession) {
 async function legacyStorage({ BrowserWindow, session, indexFile, copy }) {
   if (!copy) throw new Error('Legacy migration copy was not started');
   const copyState = await copy.promise;
+  // Round 9 guard: never open a partition on a copy with no CURRENT when
+  // the source EXISTED — that copy is incoherent, a FAILED leg, retried
+  // next launch. Opening it would make Chromium create a fresh database
+  // whose 'Creating DB' the R6-1 guard then refuses for the wrong reason.
+  // (When no source existed the gate runs no leg at all — it decides from
+  // copy.sourceExisted — so this function is never the fresh-profile
+  // path; a direct caller with an absent store still reads {}.)
+  if (copy.sourceExisted === true && !fsSync.existsSync(path.join(copy.leveldbDir, 'CURRENT'))) {
+    throw new Error('Legacy storage copy has no CURRENT; refusing to open the migration partition');
+  }
   const partitionSession = session.fromPartition(LEGACY_MIGRATION_PARTITION);
   const partitionProtocol = partitionSession.protocol;
   const { leveldbDir } = copy;

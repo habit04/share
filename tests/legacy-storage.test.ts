@@ -11,8 +11,8 @@ import { runInNewContext } from 'node:vm';
 const require = createRequire(import.meta.url);
 const { legacyStorage, startLegacyStorageCopy, beginLegacyMigration, LEGACY_MIGRATION_PARTITION, withBoundedContentionWait } = require('../electron/renderer-origin.cjs') as {
   legacyStorage(options: { BrowserWindow: unknown; session: unknown; indexFile: string; copy: unknown }): Promise<Record<string, string>>;
-  startLegacyStorageCopy(options: { userDataDir: string }): { partitionDir: string; leveldbDir: string; promise: Promise<{ ldbFiles: string[]; manifestMax: number | null }> };
-  beginLegacyMigration(options: { userDataDir: string; markerPath: string }): { partitionDir: string; leveldbDir: string; promise: Promise<{ ldbFiles: string[]; manifestMax: number | null }> } | null;
+  startLegacyStorageCopy(options: { userDataDir: string }): { partitionDir: string; leveldbDir: string; sourceExisted: boolean; promise: Promise<{ ldbFiles: string[]; manifestMax: number | null }> };
+  beginLegacyMigration(options: { userDataDir: string; markerPath: string }): { partitionDir: string; leveldbDir: string; sourceExisted: boolean; promise: Promise<{ ldbFiles: string[]; manifestMax: number | null }> } | null;
   LEGACY_MIGRATION_PARTITION: string;
   withBoundedContentionWait(operation: () => Promise<unknown>, deadlineMs?: number): Promise<unknown>;
 };
@@ -338,10 +338,23 @@ describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, roun
     expect(h.clearStorageData).toHaveBeenCalledOnce();
   });
 
+  // An absent store read directly still serves {} — production never
+  // reaches this function that way (round 9: the gate runs no leg when
+  // the copy captured sourceExisted=false), so this is the direct-call
+  // contract only. The round-9 guard below covers the incoherent case
+  // that CAN reach here: the source existed, its copy has no CURRENT.
   it('reads an absent legacy store as empty and still clears the partition', async () => {
     const h = harness();
     await expect(h.read()).resolves.toEqual({});
     expect(h.clearStorageData).toHaveBeenCalledOnce();
+  });
+
+  it('fails the leg when the source existed but its copy has no CURRENT (round 9 guard)', async () => {
+    const h = harness();
+    seedLeveldb(h.originalDir, { '000005.ldb': 'table-without-a-current' });
+    await expect(h.read()).rejects.toThrow(/no CURRENT/);
+    expect(h.fromPartition).not.toHaveBeenCalled();
+    expect(h.clearStorageData).not.toHaveBeenCalled();
   });
 
   // R6-1 (round 7) replaces round 6's F2: the guard watches the COPY now —
@@ -634,6 +647,29 @@ describe('round 8: stable, coherent copy (R8-A)', () => {
     const h = harness();
     seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000777\n', '000005.ldb': 'table' });
     await expect(h.start().promise).rejects.toThrow(/MANIFEST/);
+  });
+});
+
+describe('round 9: the leg decision comes from the copy-time snapshot', () => {
+  it('captures sourceExisted at copy entry — a folder appearing later does not change it', async () => {
+    const h = harness();
+    // No store exists when the copy begins (the fresh-profile shape).
+    const handle = h.start();
+    expect(handle.sourceExisted).toBe(false);
+    // The default session creates the folder at whenReady — after the
+    // copy began. The captured fact stands; the live folder is never
+    // consulted (the gate binds legacyStoreExists to this value).
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm' });
+    await handle.promise;
+    expect(handle.sourceExisted).toBe(false);
+  });
+
+  it('captures sourceExisted=true when a store exists at copy entry', async () => {
+    const h = harness();
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table' });
+    const handle = h.start();
+    expect(handle.sourceExisted).toBe(true);
+    await expect(handle.promise).resolves.toEqual({ ldbFiles: ['000005.ldb'], manifestMax: 1 });
   });
 });
 
