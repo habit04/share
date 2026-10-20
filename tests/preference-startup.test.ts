@@ -105,12 +105,14 @@ async function startup(options: { directory: string; legacy: () => Promise<unkno
   let ready: Promise<unknown> | undefined;
   const quit = vi.fn(), showErrorBox = vi.fn(), logMainError = vi.fn();
   const legacyStorage = vi.fn(options.legacy), loadPersistedPaths = vi.fn(), handOverFiles = vi.fn();
-  // Round 7: the ready callback begins the migration copy via
-  // beginLegacyMigration and passes the handle to legacyStorage. The stub
-  // legacy above ignores its arguments, so an opaque handle models the
-  // binding; the real begin/copy behaviour is covered in
-  // tests/legacy-storage.test.ts.
-  const beginLegacyMigration = vi.fn(() => ({}));
+  // Round 8 (R8-A): the migration copy is begun in main.cjs BEFORE
+  // whenReady (right after the single-instance lock) and the ready
+  // callback receives the handle as the free binding `legacyCopy`. The
+  // stub legacy above ignores its arguments, so an opaque handle models
+  // the binding; the real begin/copy behaviour is covered in
+  // tests/legacy-storage.test.ts, and a static pin below orders the
+  // begin before whenReady/session use in the production text.
+  const legacyCopy = {};
   const ipc = { sendSync: vi.fn((_channel: string) => context.rendererStorage),
     invoke: vi.fn((channel: string) => {
       if (channel !== 'renderer-storage-migrated') throw new Error('Unexpected preference IPC');
@@ -138,7 +140,7 @@ async function startup(options: { directory: string; legacy: () => Promise<unkno
     dialog: { showErrorBox }, session: { defaultSession: {} }, protocol: {}, net: {},
     BrowserWindow: class {}, __dirname: path.join(repo, 'electron'), path, fsSync,
     DEV_URL: null, stateDir: () => options.directory, rendererStorage: null, startingMainWindow: true,
-    readRendererPreferences: store.read, legacyStorage, beginLegacyMigration, logMainError, runStartupMigration,
+    readRendererPreferences: store.read, legacyStorage, legacyCopy, logMainError, runStartupMigration,
     renameUnreadableCheckpoint: async () => {
       // The entry point binds app-data's rename over the same real profile; the
       // harness binds the same operation over the test profile (or a failure).
@@ -155,7 +157,7 @@ async function startup(options: { directory: string; legacy: () => Promise<unkno
   runInNewContext(startupSource, context, { filename: 'actual-main-ready-callback.cjs' });
   if (!ready) throw new Error('Actual ready callback did not execute');
   await ready;
-  return { quit, showErrorBox, logMainError, legacyStorage, beginLegacyMigration, loadPersistedPaths, handOverFiles, createWindow, ipc, supplied, context, storage };
+  return { quit, showErrorBox, logMainError, legacyStorage, legacyCopy, loadPersistedPaths, handOverFiles, createWindow, ipc, supplied, context, storage };
 }
 
 function migrationFailed(result: { context: Record<string, unknown> }) {
@@ -486,5 +488,24 @@ describe('P-MIG retry guards (static pins on the production text)', () => {
 
   it('the close-time checkpoint is skipped while either failure flag stands', () => {
     expect(windowSource).toContain('if (!ctx.legacyMigrationFailed && !ctx.checkpointUnreadable) await checkpointRendererPreferences(win.webContents);');
+  });
+
+  // Round 8 (R8-B): the round-6 ordering mutant — copy started inside the
+  // ready callback, after the partition session existed — passed every
+  // unit test and only real Electron killed it. Pin the production order
+  // in main.cjs's text: the migration begin sits after the
+  // single-instance lock and before whenReady, the default session is
+  // first touched inside the ready callback, and main.cjs never creates
+  // the migration partition session itself.
+  it('pins the legacy copy start before whenReady and any session use (R8-B)', () => {
+    const lock = mainSource.indexOf('requestSingleInstanceLock()');
+    const begin = mainSource.indexOf('beginLegacyMigration({');
+    const ready = mainSource.indexOf('app.whenReady().then(async () => {', lock);
+    const defaultSession = mainSource.indexOf('session.defaultSession', lock);
+    expect(lock).toBeGreaterThan(-1);
+    expect(begin).toBeGreaterThan(lock);
+    expect(begin).toBeLessThan(ready);
+    expect(defaultSession).toBeGreaterThan(ready);
+    expect(mainSource).not.toContain('fromPartition(');
   });
 });

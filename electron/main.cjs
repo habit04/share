@@ -191,6 +191,20 @@ if (!app.requestSingleInstanceLock()) {
   // @ts-expect-error TS1108: CommonJS modules may return at the top level (Node wraps them in a function).
   return;
 }
+
+// Round 8 (R8-A): begin the one-time legacy migration NOW — after the
+// single-instance lock, before whenReady. If the migration marker already
+// exists, beginLegacyMigration removes any stale migration-partition copy
+// once and returns null; otherwise it STARTS the partition copy —
+// session-free file I/O whose first attempt is synchronous, so it lands
+// before any session exists. The lead's instrumented gate runs showed the
+// default session opening the ORIGINAL leveldb ~14 ms into the copy once
+// ready fires; a larger store could compact mid-copy and tear it, so the
+// copy must precede default-session creation entirely. userData is
+// available here; the handle is consumed by the migration gate inside
+// whenReady below.
+const legacyCopy = DEV_URL ? null : beginLegacyMigration({ userDataDir: stateDir(), markerPath: path.join(stateDir(), 'renderer-origin-migrated') });
+
 registerSecondInstance();
 
 // Main-process failures go to a log the user can send with a problem report.
@@ -200,13 +214,8 @@ installCrashLogging();
 installWebContentsGuards(app);
 
 app.whenReady().then(async () => {
-  // Round 7 (R6-2 + R6-4 + R6-6): begin the one-time legacy migration before
-  // any other startup work. If the migration marker already exists, this
-  // removes any stale migration-partition copy once and returns null;
-  // otherwise it STARTS the partition copy now — session-free file I/O, so
-  // the copy is settled before the migration gate below creates the
-  // partition session (which on Windows opens its leveldb immediately).
-  const legacyCopy = DEV_URL ? null : beginLegacyMigration({ userDataDir: stateDir(), markerPath: path.join(stateDir(), 'renderer-origin-migrated') });
+  // The legacy migration began before whenReady (round 8, R8-A — see the
+  // legacyCopy binding above); its handle goes to the migration gate below.
   installPermissionHandlers(session.defaultSession, () => (ctx.mainWindow && !ctx.mainWindow.isDestroyed() ? ctx.mainWindow.webContents : null));
   installAssetHandler({ protocol, net, root: path.join(__dirname, '..', 'dist') });
   if (!DEV_URL) {
