@@ -414,25 +414,26 @@ async function legacyStorage({ BrowserWindow, session, indexFile, copy, logError
   let copyState;
   try {
     copyState = await copy.promise;
+    // Round 9 guard: never open a partition on a copy with no CURRENT when
+    // the source EXISTED — that copy is incoherent, a FAILED leg, retried
+    // next launch. Opening it would make Chromium create a fresh database
+    // whose 'Creating DB' the R6-1 guard then refuses for the wrong reason.
+    // (When no source existed the gate runs no leg at all — it decides from
+    // copy.sourceExisted — so this function is never the fresh-profile
+    // path; a direct caller with an absent store still reads {}.)
+    if (copy.sourceExisted === true && !fsSync.existsSync(path.join(copy.leveldbDir, 'CURRENT'))) {
+      throw new Error('Legacy storage copy has no CURRENT; refusing to open the migration partition');
+    }
   } catch (error) {
-    // Gate obs 1 (round 9): a failed copy can leave a partial copy in
-    // the partition directory, and no session exists yet to scrub
-    // through — remove the directory directly, best-effort, before the
-    // refusal propagates. (R6-4 also removes it on a later launch.)
+    // Gate obs 1 (round 9), extended round 10: a failed copy — or a copy
+    // refused by the guard above — can leave a (partial) copy in the
+    // partition directory, and no session exists yet to scrub through:
+    // remove the directory directly, best-effort, before the refusal
+    // propagates. (R6-4 also removes it on a later launch.)
     if (copy.partitionDir) {
       try { fsSync.rmSync(copy.partitionDir, { recursive: true, force: true }); } catch { /* best effort: the refusal stands either way */ }
     }
     throw error;
-  }
-  // Round 9 guard: never open a partition on a copy with no CURRENT when
-  // the source EXISTED — that copy is incoherent, a FAILED leg, retried
-  // next launch. Opening it would make Chromium create a fresh database
-  // whose 'Creating DB' the R6-1 guard then refuses for the wrong reason.
-  // (When no source existed the gate runs no leg at all — it decides from
-  // copy.sourceExisted — so this function is never the fresh-profile
-  // path; a direct caller with an absent store still reads {}.)
-  if (copy.sourceExisted === true && !fsSync.existsSync(path.join(copy.leveldbDir, 'CURRENT'))) {
-    throw new Error('Legacy storage copy has no CURRENT; refusing to open the migration partition');
   }
   const partitionSession = session.fromPartition(LEGACY_MIGRATION_PARTITION);
   const partitionProtocol = partitionSession.protocol;

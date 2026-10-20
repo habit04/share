@@ -356,11 +356,17 @@ describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, roun
     // a database existed (sourceExisted: true) but the copy that landed
     // has no CURRENT. (Since round 10 / R9-1 a CURRENT-less SOURCE no
     // longer produces this state — it captures false, no leg runs.)
+    // Round 10: the refusal also removes the partition directory (the
+    // guard throws inside the obs-1 catch's scope) — a partial copy is
+    // not left behind for the next launch to trip over.
+    mkdirSync(h.partitionLeveldb, { recursive: true });
+    writeFileSync(join(h.partitionLeveldb, '000005.ldb'), 'partial-copy');
     const copy = { leveldbDir: h.partitionLeveldb, partitionDir: h.partitionDir, sourceExisted: true,
       promise: Promise.resolve({ ldbFiles: [], manifestMax: null }) };
     await expect(legacyStorage({ BrowserWindow: h.BrowserWindow, session: h.session, indexFile, copy })).rejects.toThrow(/no CURRENT/);
     expect(h.fromPartition).not.toHaveBeenCalled();
     expect(h.clearStorageData).not.toHaveBeenCalled();
+    expect(existsSync(h.partitionDir)).toBe(false);
   });
 
   // R6-1 (round 7) replaces round 6's F2: the guard watches the COPY now —
