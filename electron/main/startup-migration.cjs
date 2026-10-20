@@ -19,8 +19,12 @@
  * (renderer-preferences.json.unreadable-<timestamp>, bytes preserved, never deleted):
  * only a successful rename clears the flag, so the normal writers resume on a fresh
  * checkpoint while the evidence survives; a failed rename keeps the guard, and the
- * next launch retries. The gate below is P-MIG's except for exactly this
- * checkpoint-read tracking and recovery.
+ * next launch retries. Round 4 narrows the rename to tagged DECODE failures only
+ * (renderer-preferences.cjs tags bad JSON, invalid shape, over-limit and symlink
+ * reads; a filesystem error such as an AV lock's EBUSY never retires a valid
+ * checkpoint), and a successful rename falls through to the marker check and the
+ * legacy leg in the same launch instead of returning early. The gate below is
+ * P-MIG's except for exactly this checkpoint-read tracking and recovery.
  *
  * The gate, in order: a committed preference checkpoint is the startup storage and no
  * migration runs; if the migration marker already exists, there is no startup storage; only
@@ -66,20 +70,28 @@ async function runStartupMigration(deps) {
   try {
     checkpoint = await readCheckpoint();
   } catch (readError) {
-    // Rounds 2-3 (see the header): an unreadable checkpoint — corrupt or over the
-    // size limit — is protected from overwrite, and the gate tries to rename it
-    // aside. Only a successful rename clears the protection, letting the normal
-    // writers resume on a fresh checkpoint; a failed rename keeps the guard for
-    // the whole launch. Startup continues with no stored values either way: an
-    // unreadable checkpoint never falls back to stale legacy values.
+    // Rounds 2-4 (see the header): an unreadable checkpoint is protected from
+    // overwrite and startup continues with no stored values from it. The
+    // rename-aside recovery is attempted ONLY for a tagged decode failure
+    // (round 4): a filesystem failure — an AV lock's EBUSY/EPERM, EISDIR —
+    // says nothing about the bytes, so the file stays in place under the guard
+    // for the next launch's retry. A successful rename clears the guard and
+    // the state is simply 'no checkpoint': execution falls through to the
+    // marker check and the legacy leg below, in this same launch (a failed leg
+    // still blocks the marker via ctx.legacyMigrationFailed). A failed rename
+    // is logged with its fs code and keeps the guard.
     ctx.checkpointUnreadable = true;
     logError('renderer preference migration', readError);
+    if (!readError || readError.checkpointDecodeFailure !== true) return null;
     try {
       const aside = await renameCheckpointAside();
       ctx.checkpointUnreadable = false;
       logError('renderer preference migration', new Error(`Unreadable checkpoint preserved at ${aside}`));
-    } catch { /* the guard stands; the read failure above is the logged error */ }
-    return null;
+    } catch (renameError) {
+      logError('renderer preference migration', renameError);
+      return null;
+    }
+    checkpoint = null;
   }
   let migrationLegThrew = false;
   try {
