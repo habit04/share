@@ -350,10 +350,15 @@ describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, roun
     expect(h.clearStorageData).toHaveBeenCalledOnce();
   });
 
-  it('fails the leg when the source existed but its copy has no CURRENT (round 9 guard)', async () => {
+  it('fails the leg when the source had a database but its copy has no CURRENT — a torn copy (round 9 guard)', async () => {
     const h = harness();
-    seedLeveldb(h.originalDir, { '000005.ldb': 'table-without-a-current' });
-    await expect(h.read()).rejects.toThrow(/no CURRENT/);
+    // Modelled directly, as the state actually arises: the capture said
+    // a database existed (sourceExisted: true) but the copy that landed
+    // has no CURRENT. (Since round 10 / R9-1 a CURRENT-less SOURCE no
+    // longer produces this state — it captures false, no leg runs.)
+    const copy = { leveldbDir: h.partitionLeveldb, partitionDir: h.partitionDir, sourceExisted: true,
+      promise: Promise.resolve({ ldbFiles: [], manifestMax: null }) };
+    await expect(legacyStorage({ BrowserWindow: h.BrowserWindow, session: h.session, indexFile, copy })).rejects.toThrow(/no CURRENT/);
     expect(h.fromPartition).not.toHaveBeenCalled();
     expect(h.clearStorageData).not.toHaveBeenCalled();
   });
@@ -739,6 +744,20 @@ describe('round 9: the leg decision comes from the copy-time snapshot', () => {
     const handle = h.start();
     expect(handle.sourceExisted).toBe(true);
     await expect(handle.promise).resolves.toEqual({ ldbFiles: ['000005.ldb'], manifestMax: 1 });
+  });
+
+  // R9-1 (round 10): a directory without a CURRENT is not a database —
+  // an aborted leveldb creation or an emptied folder. It captures
+  // false, so the gate runs no leg and the marker is acknowledged
+  // (the gate side of that outcome is the round-9 preference-startup
+  // case); counting it as a store would refuse every launch forever.
+  it('captures sourceExisted=false when the source directory exists without a CURRENT (R9-1)', async () => {
+    const h = harness();
+    seedLeveldb(h.originalDir, { '000005.ldb': 'orphaned-table', LOG: 'noise' });
+    const handle = h.start();
+    expect(handle.sourceExisted).toBe(false);
+    await handle.promise;
+    expect(handle.sourceExisted).toBe(false);
   });
 });
 

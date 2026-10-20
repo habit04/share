@@ -321,7 +321,12 @@ function startLegacyStorageCopy({ userDataDir }) {
   // against an empty copy, Chromium created the partition DB, and the
   // R6-1 guard refused — every fresh install's first launch). The gate
   // decides from THIS captured fact, never from the live folder.
-  const sourceExisted = fsSync.existsSync(sourceDir);
+  // Round 10 (R9-1): "existed" means a DATABASE exists — a directory
+  // with a CURRENT. A bare directory (an aborted leveldb creation, an
+  // emptied folder) holds nothing to migrate; counting it would run
+  // the leg against a CURRENT-less copy, the round-9 guard would
+  // refuse, and the profile would fail every launch forever.
+  const sourceExisted = fsSync.existsSync(sourceDir) && fsSync.existsSync(path.join(sourceDir, 'CURRENT'));
   const promise = (async () => {
     const deadline = Date.now() + LEGACY_COPY_WAIT_MS;
     for (;;) {
