@@ -64,7 +64,7 @@ if (probePhase) setTimeout(() => { process.stdout.write('SHIPPING_PROBE_FAIL sta
 const { installPermissionHandlers, installWebContentsGuards } = require('./web-security.cjs');
 
 const { MAX_DRAWING_BYTES, readLimitedFile } = require('./resource-limits.cjs');
-const { installAssetHandler, legacyStorage } = require('./renderer-origin.cjs');
+const { installAssetHandler, legacyStorage, readLegacyStoreBeforeReady } = require('./renderer-origin.cjs');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'jcad', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
@@ -206,6 +206,17 @@ if (!app.requestSingleInstanceLock()) {
 // stray LOG, an empty folder) is no store: no leg, and the marker is
 // acknowledged normally instead of a refused launch 1.
 const legacyStorePresent = !DEV_URL && fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb', 'CURRENT'));
+// Round 12b (R12-4): READ the legacy store here too, synchronously,
+// before whenReady and before anything touches the default session
+// — so the read never overlaps the default session's own open of the
+// store at whenReady. The result (the dictionary, or the caught error)
+// is handed to the gate's legacy leg below, which only consumes it.
+// The read runs only when the leg can run: a store is present and the
+// migration marker is absent (the gate never reaches the leg once the
+// marker exists, and only this process writes it, after the gate).
+const legacyRead = legacyStorePresent && !fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated'))
+  ? readLegacyStoreBeforeReady(path.join(stateDir(), 'Local Storage', 'leveldb'))
+  : null;
 
 registerSecondInstance();
 
@@ -216,8 +227,9 @@ installCrashLogging();
 installWebContentsGuards(app);
 
 app.whenReady().then(async () => {
-  // The legacy-store snapshot was taken before whenReady (round 12 — see
-  // the legacyStorePresent binding above); the gate consumes it below.
+  // The legacy-store snapshot and read were taken before whenReady
+  // (rounds 12/12b — see the legacyStorePresent and legacyRead
+  // bindings above); the gate consumes them below.
   installPermissionHandlers(session.defaultSession, () => (ctx.mainWindow && !ctx.mainWindow.isDestroyed() ? ctx.mainWindow.webContents : null));
   installAssetHandler({ protocol, net, root: path.join(__dirname, '..', 'dist') });
   if (!DEV_URL) {
@@ -238,13 +250,14 @@ app.whenReady().then(async () => {
       // even on a fresh profile.
       legacyStoreExists: () => legacyStorePresent,
       runLegacy: async () => {
-        // Round 12's legacyStorage reads the leveldb in-process and
-        // resolves a dictionary; it throws on any parse failure, which
-        // the gate takes as the failed leg (retry next launch). The
-        // null mapping is the gate contract from the window era, kept:
-        // the reader never resolves null today, but an incomplete read
-        // must never read as a successful empty migration.
-        const values = await legacyStorage({ leveldbDir: path.join(stateDir(), 'Local Storage', 'leveldb') });
+        // Round 12b (R12-4): the leveldb was read BEFORE whenReady
+        // (legacyRead above); legacyStorage only consumes that result
+        // and resolves a dictionary, or throws the caught read error,
+        // which the gate takes as the failed leg (retry next launch).
+        // The null mapping is the gate contract from the window era,
+        // kept: the leg never resolves null today, but an incomplete
+        // read must never read as a successful empty migration.
+        const values = await legacyStorage({ read: legacyRead });
         return values === null ? { values: null, ok: false } : { values, ok: true };
       },
       logError: logMainError,

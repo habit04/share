@@ -52,6 +52,11 @@ const { createPreferenceStore, CHECKPOINT_NAME, MIGRATION_NAME } = require('../e
 const { runStartupMigration } = require('../electron/main/startup-migration.cjs') as {
   runStartupMigration: unknown;
 };
+type LegacyRead = { values: Record<string, string> } | { error: unknown } | null;
+const realLegacy = require('../electron/renderer-origin.cjs') as {
+  legacyStorage: (options: { read: LegacyRead }) => Promise<Record<string, string>>;
+  readLegacyStoreBeforeReady: (leveldbDir: string) => { values: Record<string, string> } | { error: unknown };
+};
 const repo = path.resolve(import.meta.dirname, '..');
 const privateRoot = path.join(repo, '.codex-local', 'preference-startup-tests');
 const directories: string[] = [];
@@ -80,11 +85,14 @@ const preReadyEnd = preReadyStart < 0 ? -1 : mainSource.indexOf('\nregisterSecon
 if (preReadyStart < 0 || preReadyEnd < 0) throw new Error('The actual pre-ready legacy snapshot could not be located');
 const preReadySource = mainSource.slice(preReadyStart, preReadyEnd);
 
-/** Execute the real pre-ready legacy snapshot over `directory` (the userData folder). */
+/** Execute the real pre-ready legacy snapshot (and, since round 12b R12-4, the real
+ * pre-ready read) over `directory` (the userData folder). */
 function preReady(directory: string, devUrl: string | null = null) {
-  return runInNewContext(`${preReadySource}\n;({ legacyStorePresent })`,
-    { DEV_URL: devUrl, fsSync, path, stateDir: () => directory },
-    { filename: 'actual-main-pre-ready.cjs' }) as { legacyStorePresent: boolean };
+  const readLegacyStoreBeforeReady = vi.fn(realLegacy.readLegacyStoreBeforeReady);
+  const snapshot = runInNewContext(`${preReadySource}\n;({ legacyStorePresent, legacyRead })`,
+    { DEV_URL: devUrl, fsSync, path, stateDir: () => directory, readLegacyStoreBeforeReady },
+    { filename: 'actual-main-pre-ready.cjs' }) as { legacyStorePresent: boolean; legacyRead: LegacyRead };
+  return { ...snapshot, readLegacyStoreBeforeReady };
 }
 
 afterEach(async () => {
@@ -105,7 +113,7 @@ async function profile(checkpoint?: string) {
 }
 
 /** Execute the real main ready callback and preload prefix; no Electron process is involved. */
-async function startup(options: { directory: string; legacy: () => Promise<unknown>; current?: Preferences; renameFails?: boolean; storePresent?: boolean }) {
+async function startup(options: { directory: string; legacy: (options: { read: LegacyRead }) => Promise<unknown>; current?: Preferences; renameFails?: boolean; storePresent?: boolean; legacyRead?: LegacyRead }) {
   const storage = new Map(Object.entries(options.current ?? {}));
   const localStorage = {
     get length() { return storage.size; },
@@ -157,6 +165,8 @@ async function startup(options: { directory: string; legacy: () => Promise<unkno
     BrowserWindow: class {}, __dirname: path.join(repo, 'electron'), path, fsSync,
     DEV_URL: null, stateDir: () => options.directory, rendererStorage: null, startingMainWindow: true,
     readRendererPreferences: store.read, legacyStorage, legacyStorePresent, logMainError, runStartupMigration,
+    // Round 12b (R12-4): the pre-ready read's result, consumed by the leg.
+    legacyRead: options.legacyRead ?? null,
     renameUnreadableCheckpoint: async () => {
       // The entry point binds app-data's rename over the same real profile; the
       // harness binds the same operation over the test profile (or a failure).
@@ -410,6 +420,68 @@ describe('main startup keeps an unsuccessful preference migration unacknowledged
     expect(preReady(fresh.directory).legacyStorePresent).toBe(false);
   });
 
+  // Round 12b (R12-4): the leveldb is READ before whenReady (the real
+  // pre-ready text, executed over a real store) and the leg only consumes
+  // that result through the REAL legacyStorage inside the real callback.
+  const seedStore = async (directory: string, shape: string) => {
+    const from = path.join(repo, 'tests', 'fixtures', 'legacy-leveldb', shape, 'leveldb');
+    const to = path.join(directory, 'Local Storage', 'leveldb');
+    for (const name of await files.readdir(from)) await files.copyFile(path.join(from, name), path.join(to, name));
+    return to;
+  };
+  const fixtureValues = async (shape: string) => JSON.parse(await files.readFile(path.join(repo, 'tests', 'fixtures', 'legacy-leveldb', shape, 'expected.json'), 'utf8')) as Preferences;
+
+  it('reads a real store before ready and the leg serves exactly that read (round 12b, R12-4)', async () => {
+    const p = await profile();
+    const leveldb = await seedStore(p.directory, 'simple');
+    const snapshot = preReady(p.directory);
+    expect(snapshot.legacyStorePresent).toBe(true);
+    expect(snapshot.readLegacyStoreBeforeReady).toHaveBeenCalledExactlyOnceWith(leveldb);
+    expect(snapshot.legacyRead).toEqual({ values: await fixtureValues('simple') });
+    const result = await startup({ directory: p.directory, storePresent: snapshot.legacyStorePresent, legacyRead: snapshot.legacyRead, legacy: realLegacy.legacyStorage });
+    expect(result.legacyStorage).toHaveBeenCalledExactlyOnceWith({ read: snapshot.legacyRead });
+    expect(result.logMainError).not.toHaveBeenCalled();
+    expect(migrationFailed(result)).toBe(false);
+    expect(result.supplied).toEqual([{ source: 'legacy', values: await fixtureValues('simple') }]);
+    expect(await files.readFile(path.join(p.directory, MIGRATION_NAME), 'utf8')).toBe('1');
+    expect(await files.readFile(p.legacy)).toEqual(p.original);
+  });
+
+  it('a pre-ready read error fails the leg: logged once, no marker, retried next launch (round 12b, R12-4)', async () => {
+    const p = await profile();
+    const leveldb = await seedStore(p.directory, 'simple');
+    const manifest = await files.readFile(path.join(leveldb, 'MANIFEST-000001'));
+    manifest[20] = (manifest[20] ?? 0) ^ 0xff;
+    await files.writeFile(path.join(leveldb, 'MANIFEST-000001'), manifest);
+    const snapshot = preReady(p.directory);
+    expect(snapshot.legacyStorePresent).toBe(true);
+    const read = snapshot.legacyRead as { error: Error };
+    expect(read.error).toBeInstanceOf(Error);
+    expect(read.error.message).toMatch(/CRC/);
+    const result = await startup({ directory: p.directory, storePresent: snapshot.legacyStorePresent, legacyRead: snapshot.legacyRead, legacy: realLegacy.legacyStorage });
+    expect(result.legacyStorage).toHaveBeenCalledOnce();
+    expect(result.logMainError).toHaveBeenCalledExactlyOnceWith('renderer preference migration', read.error);
+    expect(result.quit).not.toHaveBeenCalled(); expect(result.showErrorBox).not.toHaveBeenCalled();
+    expect(result.createWindow).toHaveBeenCalledOnce(); expect(result.supplied).toEqual([null]);
+    expect(migrationFailed(result)).toBe(true);
+    await expectNoMigration(p.directory);
+    expect(await files.readFile(p.legacy)).toEqual(p.original);
+  });
+
+  it('does not read the store before ready once the migration marker exists (round 12b, R12-4)', async () => {
+    const p = await profile();
+    await seedStore(p.directory, 'simple');
+    await files.writeFile(path.join(p.directory, MIGRATION_NAME), '1');
+    const snapshot = preReady(p.directory);
+    expect(snapshot.legacyStorePresent).toBe(true);
+    expect(snapshot.readLegacyStoreBeforeReady).not.toHaveBeenCalled();
+    expect(snapshot.legacyRead).toBeNull();
+    const result = await startup({ directory: p.directory, storePresent: snapshot.legacyStorePresent, legacyRead: snapshot.legacyRead, legacy: realLegacy.legacyStorage });
+    expect(result.legacyStorage).not.toHaveBeenCalled();
+    expect(result.logMainError).not.toHaveBeenCalled();
+    expect(result.supplied).toEqual([null]);
+  });
+
   it('uses an authoritative checkpoint without reading old legacy data', async () => {
     const values = JSON.parse('{"__proto__":"own value","preference":"new Δ 雷"}') as Preferences;
     const p = await profile(JSON.stringify(values));
@@ -576,5 +648,24 @@ describe('P-MIG retry guards (static pins on the production text)', () => {
     expect(mainSource).not.toContain('beginLegacyMigration');
     expect(mainSource).not.toContain('legacyCopy');
     expect(mainSource).not.toContain('fromPartition(');
+  });
+
+  // Round 12b (R12-4): the READ itself sits at the pre-ready snapshot
+  // point — after the lock and the snapshot, before whenReady and before
+  // any session.defaultSession use — and the leg consumes its result.
+  it('pins the legacy store READ before whenReady and the leg consuming it (round 12b, R12-4)', () => {
+    const lock = mainSource.indexOf('requestSingleInstanceLock()');
+    const snapshot = mainSource.indexOf('const legacyStorePresent =');
+    const read = mainSource.indexOf('readLegacyStoreBeforeReady(path.join(stateDir()', lock);
+    const ready = mainSource.indexOf('app.whenReady().then(async () => {', lock);
+    const defaultSession = mainSource.indexOf('session.defaultSession', lock);
+    expect(read).toBeGreaterThan(snapshot);
+    expect(snapshot).toBeGreaterThan(lock);
+    expect(read).toBeLessThan(ready);
+    expect(read).toBeLessThan(defaultSession);
+    expect(mainSource.indexOf('readLegacyStoreBeforeReady(', read + 1)).toBe(-1);
+    expect(preReadySource).toContain('const legacyRead =');
+    expect(startupSource).toContain('legacyStorage({ read: legacyRead })');
+    expect(startupSource).not.toContain('leveldbDir');
   });
 });

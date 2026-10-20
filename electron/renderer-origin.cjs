@@ -101,6 +101,7 @@ function installAssetHandler({ protocol, net, root }) {
 }
 
 
+const { readLegacyLocalStorage } = require('./legacy-leveldb.cjs');
 /** Read the old file-origin storage without executing the old application or any plugins.
  *
  * Round 12: the read is a pure-JS parse of the legacy leveldb in this
@@ -113,10 +114,22 @@ function installAssetHandler({ protocol, net, root }) {
  * parse failure throws, and the caller takes the failed-leg path
  * (no marker, retry next launch) — there is no window fallback.
  * The 8 MiB accounting is the dump's own, unchanged: the UTF-8 JSON
- * size of the dictionary, brackets included. */
-const { readLegacyLocalStorage } = require('./legacy-leveldb.cjs');
-async function legacyStorage({ leveldbDir }) {
-  const values = readLegacyLocalStorage(leveldbDir);
+ * size of the dictionary, brackets included.
+ *
+ * Round 12b (R12-4): the read itself runs BEFORE whenReady
+ * (readLegacyStoreBeforeReady, called from main.cjs right after the
+ * pre-ready snapshot), so it never overlaps the default session's
+ * own open of the store at whenReady. This leg only consumes that
+ * result: a caught read error is rethrown here (the gate's failed
+ * leg: no marker, retry next launch), a dictionary goes through the
+ * unchanged accounting and validation. No result at all (the store
+ * was not read before ready) is also a failed leg, never an empty
+ * success.
+ * @param {{ read: { values: Record<string, string> } | { error: unknown } | null }} options */
+async function legacyStorage({ read }) {
+  if (!read) throw new Error('The legacy store was not read before ready');
+  if ('error' in read) throw read.error;
+  const values = read.values;
   let size = 2;
   const encoder = new TextEncoder();
   for (const [key, value] of Object.entries(values)) {
@@ -126,4 +139,21 @@ async function legacyStorage({ leveldbDir }) {
   return preferenceDictionary(values);
 }
 
-module.exports = { APP_URL, WORKER_CSP, assetPath, assetResponseHeaders, installAssetHandler, legacyStorage, rendererStartUrl, servedPath, withAssetHeaders };
+/**
+ * Round 12b (R12-4): the synchronous pre-ready read of the legacy
+ * store. main.cjs calls it after the single-instance lock and the
+ * legacy-store snapshot, before app.whenReady() and before anything
+ * touches session.defaultSession. It never throws: it returns the
+ * dictionary, or the caught error for the leg to fail with.
+ * @param {string} leveldbDir
+ * @returns {{ values: Record<string, string> } | { error: unknown }}
+ */
+function readLegacyStoreBeforeReady(leveldbDir) {
+  try {
+    return { values: readLegacyLocalStorage(leveldbDir) };
+  } catch (error) {
+    return { error };
+  }
+}
+
+module.exports = { APP_URL, WORKER_CSP, assetPath, assetResponseHeaders, installAssetHandler, legacyStorage, readLegacyStoreBeforeReady, rendererStartUrl, servedPath, withAssetHeaders };
