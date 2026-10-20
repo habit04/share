@@ -533,6 +533,44 @@ describe('round 7: copy start (R6-2) and marker partition removal (R6-4)', () =>
   });
 });
 
+describe('round 8: bounded, non-refusing partition clear (R7-2)', () => {
+  it('still serves the read when the partition scrub rejects, and logs it', async () => {
+    const h = harness();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      h.clearStorageData.mockRejectedValue(new Error('Controlled scrub failure'));
+      await expect(h.read()).resolves.toEqual({});
+      expect(h.clearStorageData).toHaveBeenCalledOnce();
+      expect(logged).toHaveBeenCalledOnce();
+      expect(String(logged.mock.calls[0]?.[0])).toContain('partition cleanup');
+    } finally { logged.mockRestore(); }
+  });
+
+  it('bounds a hanging scrub at five seconds and still serves the read', async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      h.clearStorageData.mockImplementation(() => new Promise(() => {}));
+      const pending = observe(h.read());
+      await vi.advanceTimersByTimeAsync(5_000);
+      await pending.done;
+      expect(pending.state.value).toEqual({});
+      expect(h.clearStorageData).toHaveBeenCalledOnce();
+      expect(logged).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { logged.mockRestore(); }
+  });
+
+  it('keeps refusing a good read when window destruction fails (only the scrub is non-refusing)', async () => {
+    vi.useFakeTimers();
+    const h = harness(), first = new Error('Window cleanup failure');
+    h.window.destroy.mockImplementation(() => { throw first; });
+    await expect(h.read()).rejects.toBe(first);
+    expect(h.clearStorageData).toHaveBeenCalledOnce();
+  });
+});
+
 describe('bounded contention wait (round 6, F1a; codes extended round 7, R6-6)', () => {
   it('retries EBUSY and EPERM until the operation succeeds', async () => {
     vi.useFakeTimers();

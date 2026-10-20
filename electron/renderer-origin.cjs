@@ -7,6 +7,12 @@ const { preferenceDictionary } = require('./renderer-preferences.cjs');
 const APP_URL = 'jcad://app/index.html';
 const LEGACY_LOAD_TIMEOUT_MS = 15_000;
 const LEGACY_READ_TIMEOUT_MS = 5_000;
+/** Round 8 (R7-2): the partition scrub gets its OWN 5 s bound — a new
+ * bound, not a raised one. Chromium's clearStorageData does a DeleteStorage
+ * plus a leveldb rebuild, the same contention class as the original stall;
+ * an unbounded (or merely failing) scrub must never hang startup or refuse
+ * a good read. R6-4 removes the directory next launch regardless. */
+const LEGACY_CLEAR_TIMEOUT_MS = 5_000;
 
 /**
  * Content-Security-Policy sent with worker scripts (docs/SECURITY-REVIEW.md E-19). The renderer
@@ -271,6 +277,23 @@ function beginLegacyMigration({ userDataDir, markerPath }) {
   return startLegacyStorageCopy({ userDataDir });
 }
 
+/** Scrub the migration partition, bounded and best-effort (round 8, R7-2):
+ * race clearStorageData against LEGACY_CLEAR_TIMEOUT_MS; on expiry or
+ * rejection, log and move on — the read's outcome never depends on the
+ * scrub. (Window destruction and handler removal in the caller still
+ * refuse: those guard the read itself, not the cleanup of its copy.) */
+async function clearPartitionBounded(partitionSession) {
+  let timer;
+  try {
+    await Promise.race([
+      partitionSession.clearStorageData(),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Legacy migration partition clear timed out after ${LEGACY_CLEAR_TIMEOUT_MS} ms`)), LEGACY_CLEAR_TIMEOUT_MS); }),
+    ]);
+  } catch (error) {
+    console.error('JCad: legacy migration partition cleanup failed or timed out; continuing startup (the partition is removed on a later launch)', error);
+  } finally { clearTimeout(timer); }
+}
+
 /** Read the old file-origin storage without executing the old application or any plugins.
  * Round 6 (F1a): the read runs against a main-process COPY of the legacy
  * leveldb in a private partition — the confirmed stall was the migration
@@ -396,12 +419,14 @@ async function legacyStorage({ BrowserWindow, session, indexFile, copy }) {
     for (const remove of cleanup) remove();
     try { if (!window.isDestroyed()) window.destroy(); } catch (error) { cleanupError = error; }
     try { if (handling) partitionProtocol.unhandle('file'); } catch (error) { cleanupError ??= error; }
-    // Clear the partition in finally: the copied legacy data must not outlive
-    // the migration, whatever the read's outcome was.
-    try { await partitionSession.clearStorageData(); } catch (error) { cleanupError ??= error; }
+    // Scrub the partition in finally: the copied legacy data must not
+    // outlive the migration, whatever the read's outcome was. Bounded and
+    // non-refusing (R7-2) — see clearPartitionBounded.
+    await clearPartitionBounded(partitionSession);
   }
-  // A primary error propagates through finally. Only a successful read reaches
-  // this point, where incomplete cleanup must still prevent acknowledgement.
+  // A primary error propagates through finally. Only a successful read
+  // reaches this point, where a failed window/handler cleanup must still
+  // prevent acknowledgement (a failed partition scrub does not — R7-2).
   if (cleanupError) throw cleanupError;
   return result;
 }
