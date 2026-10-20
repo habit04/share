@@ -37,7 +37,7 @@ export async function applicationWindow(app, timeout = 60_000) {
  * preference checkpoint (its capture is bounded at 5 s inside a close flow
  * whose own waits run to 15 s), so success-path callers pass a 30 s bound;
  * failure-path teardown of a wedged process keeps 15 s.
- * @param {{ close(): Promise<unknown>, process(): { pid?: number, exitCode?: number | null, signalCode?: string | null } }} app
+ * @param {{ close(): Promise<unknown>, process(): { pid?: number, exitCode?: number | null, signalCode?: string | null, once?: (event: string, listener: () => void) => void } }} app
  * @param {number} [timeout]
  * @returns {Promise<{ outcome: 'closed' | 'rejected' | 'timeout', ms: number, error?: unknown, detail?: string }>}
  */
