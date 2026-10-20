@@ -22,11 +22,13 @@
  * What these tests drive, exactly: the REAL startup gate
  * (electron/main/startup-migration.cjs) executing inside the REAL main ready
  * callback sliced out of electron/main.cjs, the REAL preload preference prefix,
- * and the REAL preference store over a temp profile. What is modeled, and why:
- * only the 'renderer-storage-migrated' handler's one-line early return — that
- * handler lives below the sliced callback; the harness's invoke models it by
- * consulting the same ctx flag the gate wrote, and static pins below assert the
- * production handler and the window close path carry the same guards.
+ * and the REAL preference store over a temp profile. In the full-startup runs
+ * the 'renderer-storage-migrated' invoke is modeled by consulting the same ctx
+ * flags the gate wrote (the handler lives below the sliced callback) — but the
+ * guards themselves are ALSO driven for real below: the actual handler sliced
+ * out of electron/main.cjs and the actual persistBeforeClose sliced out of
+ * electron/main/window.cjs, each executed with the failure flags set, plus
+ * static pins on the production text (round 3 addition).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as files from 'node:fs/promises';
@@ -55,6 +57,14 @@ const startupEnd = mainSource.indexOf("ipcMain.on('renderer-storage-migration'",
 if (startupStart < 0 || startupEnd < 0) throw new Error('The actual main startup callback could not be located');
 const startupSource = mainSource.slice(startupStart, startupEnd);
 const windowSource = fsSync.readFileSync(path.join(repo, 'electron/main/window.cjs'), 'utf8');
+const handlerStart = mainSource.indexOf("ipcMain.handle('renderer-storage-migrated', async (event) => {");
+const handlerEnd = handlerStart < 0 ? -1 : mainSource.indexOf('\n});', handlerStart);
+if (handlerStart < 0 || handlerEnd < 0) throw new Error('The actual migrated handler could not be located');
+const handlerSource = mainSource.slice(handlerStart, handlerEnd + 4);
+const persistStart = windowSource.indexOf('  async function persistBeforeClose(win, canAcceptLoss = true) {');
+const persistEnd = persistStart < 0 ? -1 : windowSource.indexOf('\n  let closeSeq', persistStart);
+if (persistStart < 0 || persistEnd < 0) throw new Error('The actual persistBeforeClose could not be located');
+const persistSource = windowSource.slice(persistStart, persistEnd);
 const preloadSource = fsSync.readFileSync(path.join(repo, 'electron/preload.cjs'), 'utf8');
 const preloadEnd = preloadSource.indexOf('contextBridge.exposeInMainWorld');
 if (preloadEnd < 0) throw new Error('The actual preload preference prefix could not be located');
@@ -181,7 +191,8 @@ describe('main startup keeps an unsuccessful preference migration unacknowledged
     // renamed path is logged once, after the read failure itself.
     expect(migrationFailed(result)).toBe(false); expect(checkpointUnreadable(result)).toBe(false);
     expect(result.logMainError).toHaveBeenCalledTimes(2);
-    expect(String((result.logMainError.mock.calls[1][1] as Error).message)).toContain('Unreadable checkpoint preserved at');
+    const loggedMessages = result.logMainError.mock.calls.map((call) => String((call[1] as Error).message));
+    expect(loggedMessages[1]).toContain('Unreadable checkpoint preserved at');
     expect(await files.readFile(path.join(p.directory, `${CHECKPOINT_NAME}.unreadable-test`), 'utf8')).toBe(corrupt);
     // With the flag cleared, the normal writers resume: the acknowledgement
     // commits a fresh checkpoint of the live storage and writes the marker.
@@ -291,6 +302,79 @@ describe('main startup keeps an unsuccessful preference migration unacknowledged
     expect(result.legacyStorage).not.toHaveBeenCalled(); expect(result.quit).not.toHaveBeenCalled();
     expect(result.storage.get('preference')).toBe('newest'); expect(result.storage.has('deleted')).toBe(false);
     expect(JSON.parse(await files.readFile(path.join(p.directory, CHECKPOINT_NAME), 'utf8'))).toEqual({ preference: 'newest' });
+  });
+});
+
+describe('P-MIG retry guards (the real handler and close path, driven)', () => {
+  type Flags = { legacyMigrationFailed: boolean; checkpointUnreadable: boolean };
+
+  /** Register the ACTUAL 'renderer-storage-migrated' handler sliced out of
+   * electron/main.cjs and return it with its spies (round 3: driven, not modeled). */
+  function realMigratedHandler(flags: Flags) {
+    let handler: ((event: { sender: unknown }) => Promise<boolean>) | undefined;
+    const checkpoint = vi.fn(async () => ({ preference: 'live' }));
+    const flush = vi.fn(); const logMainError = vi.fn();
+    const context: Record<string, unknown> = {
+      ipcMain: { handle: (_channel: string, fn: typeof handler) => { handler = fn; } },
+      ctx: { mainWindow: null, ...flags },
+      checkpointRendererPreferences: checkpoint, flushRendererPreferences: flush,
+      logMainError, rendererStorage: null,
+    };
+    runInNewContext(handlerSource, context, { filename: 'actual-migrated-handler.cjs' });
+    if (!handler) throw new Error('The actual migrated handler was not registered');
+    return { handler, checkpoint, flush, logMainError, context };
+  }
+
+  /** Load the ACTUAL persistBeforeClose sliced out of electron/main/window.cjs. */
+  function realPersistBeforeClose(flags: Flags) {
+    const checkpoint = vi.fn(async () => ({}));
+    const flush = vi.fn(); const logMainError = vi.fn();
+    const context: Record<string, unknown> = {
+      ctx: { mainWindow: null, ...flags },
+      checkpointRendererPreferences: checkpoint, flushRendererPreferences: flush,
+      logMainError, dialog: { showMessageBoxSync: vi.fn(() => 1) },
+      forceClose: new WeakSet(), devUrl: null,
+    };
+    const persist = runInNewContext(`${persistSource}\n;persistBeforeClose;`, context,
+      { filename: 'actual-persist-before-close.cjs' }) as (win: unknown) => Promise<boolean>;
+    const win = { isDestroyed: () => false, webContents: { isDestroyed: () => false, isCrashed: () => false } };
+    return { persist, win, checkpoint, flush, logMainError };
+  }
+
+  it.each([
+    ['checkpointUnreadable', { legacyMigrationFailed: false, checkpointUnreadable: true }],
+    ['legacyMigrationFailed', { legacyMigrationFailed: true, checkpointUnreadable: false }],
+  ])('the real migrated handler refuses its checkpoint while %s stands', async (_name, flags) => {
+    const { handler, checkpoint, flush } = realMigratedHandler(flags);
+    await expect(handler({ sender: 'sender-1' })).resolves.toBe(false);
+    expect(checkpoint).not.toHaveBeenCalled(); expect(flush).not.toHaveBeenCalled();
+  });
+
+  it('the real migrated handler commits the checkpoint when no failure flag stands', async () => {
+    const { handler, checkpoint, flush, context } = realMigratedHandler({ legacyMigrationFailed: false, checkpointUnreadable: false });
+    await expect(handler({ sender: 'sender-1' })).resolves.toBe(true);
+    expect(checkpoint).toHaveBeenCalledExactlyOnceWith('sender-1', true);
+    expect(flush).toHaveBeenCalledExactlyOnceWith('sender-1');
+    expect(context.rendererStorage).toEqual({ values: { preference: 'live' }, source: 'checkpoint' });
+  });
+
+  it.each([
+    ['checkpointUnreadable', { legacyMigrationFailed: false, checkpointUnreadable: true }],
+    ['legacyMigrationFailed', { legacyMigrationFailed: true, checkpointUnreadable: false }],
+  ])('the real persistBeforeClose skips its checkpoint while %s stands', async (_name, flags) => {
+    const { persist, win, checkpoint, flush, logMainError } = realPersistBeforeClose(flags);
+    await expect(persist(win)).resolves.toBe(true);
+    expect(checkpoint).not.toHaveBeenCalled();
+    // The flush still runs: only the checkpoint write is guarded.
+    expect(flush).toHaveBeenCalledExactlyOnceWith(win.webContents);
+    expect(logMainError).not.toHaveBeenCalled();
+  });
+
+  it('the real persistBeforeClose checkpoints when no failure flag stands', async () => {
+    const { persist, win, checkpoint, flush } = realPersistBeforeClose({ legacyMigrationFailed: false, checkpointUnreadable: false });
+    await expect(persist(win)).resolves.toBe(true);
+    expect(checkpoint).toHaveBeenCalledExactlyOnceWith(win.webContents);
+    expect(flush).toHaveBeenCalledExactlyOnceWith(win.webContents);
   });
 });
 
