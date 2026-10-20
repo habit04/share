@@ -37,7 +37,7 @@ if (rejectsProductionDebugging(app.isPackaged, testBuild, debugArgs)) {
 const updater = require('./updater.cjs');
 const { guardIpc, appUrlTest, createRejectionLog, createPathPolicy } = require('./ipc-guard.cjs');
 const { createPathRegistry } = require('./path-registry.cjs');
-const { stateDir, recentFile, writeStateFile, logMainError, flushRendererPreferences, readRendererPreferences, checkpointRendererPreferences, latestRendererPreferences, installCrashLogging } = require('./main/app-data.cjs');
+const { stateDir, recentFile, writeStateFile, logMainError, flushRendererPreferences, readRendererPreferences, renameUnreadableCheckpoint, checkpointRendererPreferences, latestRendererPreferences, installCrashLogging } = require('./main/app-data.cjs');
 const { createWindows } = require('./main/window.cjs');
 const { runStartupMigration } = require('./main/startup-migration.cjs');
 const { registerMenuIpc } = require('./main/menu.cjs');
@@ -212,6 +212,7 @@ app.whenReady().then(async () => {
     rendererStorage = await runStartupMigration({
       ctx,
       readCheckpoint: readRendererPreferences,
+      renameCheckpointAside: renameUnreadableCheckpoint,
       markerExists: () => fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated')),
       legacyStoreExists: () => fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')),
       runLegacy: async () => {

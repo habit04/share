@@ -14,8 +14,10 @@
  * complete, so the next launch retries the extraction. A checkpoint-READ failure
  * does NOT set it; since round 2 (lead ruling) it sets ctx.checkpointUnreadable
  * instead, and while THAT stands the same two guards protect the checkpoint file
- * itself: an unreadable (corrupt or over-limit) checkpoint is never overwritten
- * by a live snapshot, so its bytes survive for the next launch's retry.
+ * itself. Since round 3 the gate renames the unreadable file aside (bytes
+ * preserved, never deleted): only a successful rename clears the flag, so the
+ * normal writers resume on a fresh checkpoint while the evidence survives; a
+ * failed rename keeps the guard for the whole launch.
  *
  * What these tests drive, exactly: the REAL startup gate
  * (electron/main/startup-migration.cjs) executing inside the REAL main ready
@@ -75,7 +77,7 @@ async function profile(checkpoint?: string) {
 }
 
 /** Execute the real main ready callback and preload prefix; no Electron process is involved. */
-async function startup(options: { directory: string; legacy: () => Promise<unknown>; current?: Preferences }) {
+async function startup(options: { directory: string; legacy: () => Promise<unknown>; current?: Preferences; renameFails?: boolean }) {
   const storage = new Map(Object.entries(options.current ?? {}));
   const localStorage = {
     get length() { return storage.size; },
@@ -117,6 +119,14 @@ async function startup(options: { directory: string; legacy: () => Promise<unkno
     BrowserWindow: class {}, __dirname: path.join(repo, 'electron'), path, fsSync,
     DEV_URL: null, stateDir: () => options.directory, rendererStorage: null, startingMainWindow: true,
     readRendererPreferences: store.read, legacyStorage, logMainError, runStartupMigration,
+    renameUnreadableCheckpoint: async () => {
+      // The entry point binds app-data's rename over the same real profile; the
+      // harness binds the same operation over the test profile (or a failure).
+      if (options.renameFails) throw new Error('Controlled rename failure');
+      const from = path.join(options.directory, CHECKPOINT_NAME);
+      const aside = `${from}.unreadable-test`;
+      await files.rename(from, aside); return aside;
+    },
     installPermissionHandlers: vi.fn(), installAssetHandler: vi.fn(), loadPersistedPaths, handOverFiles,
     drawingArgs: vi.fn(() => []), process: { argv: ['private-test-jcad'], cwd: () => repo }, createWindow,
     probePhase: null, testBuild: true, runShippingProbe: vi.fn(), updater: { scheduleStartupCheck: vi.fn() },
@@ -158,17 +168,37 @@ describe('main startup keeps an unsuccessful preference migration unacknowledged
     await expectNoMigration(p.directory); expect(await files.readFile(p.legacy)).toEqual(p.original);
   });
 
-  it('keeps a corrupt checkpoint byte-identical and unwritten while startup proceeds', async () => {
+  it('preserves a corrupt checkpoint aside and lets a fresh checkpoint be written', async () => {
     const corrupt = '{"incomplete":"checkpoint"', p = await profile(corrupt);
     const result = await startup({ directory: p.directory, legacy: async () => ({ stale: 'legacy' }) });
-    expect(result.legacyStorage).not.toHaveBeenCalled(); expect(result.logMainError).toHaveBeenCalledOnce();
+    expect(result.legacyStorage).not.toHaveBeenCalled();
     expect(result.showErrorBox).not.toHaveBeenCalled(); expect(result.quit).not.toHaveBeenCalled();
     expect(result.createWindow).toHaveBeenCalledOnce(); expect(result.supplied).toEqual([null]);
     expect(result.storage.has('stale')).toBe(false);
     // A checkpoint-READ failure is not a migration-leg failure (P-MIG): the leg
-    // flag stays clear, but round 2's checkpointUnreadable protects the file —
-    // the acknowledgement is refused, the corrupt bytes survive untouched, and
-    // no marker is written, even though this origin's live storage is empty.
+    // flag stays clear. Round 3: the gate renames the unreadable file aside —
+    // the corrupt bytes survive byte-identical under the new name and the
+    // renamed path is logged once, after the read failure itself.
+    expect(migrationFailed(result)).toBe(false); expect(checkpointUnreadable(result)).toBe(false);
+    expect(result.logMainError).toHaveBeenCalledTimes(2);
+    expect(String((result.logMainError.mock.calls[1][1] as Error).message)).toContain('Unreadable checkpoint preserved at');
+    expect(await files.readFile(path.join(p.directory, `${CHECKPOINT_NAME}.unreadable-test`), 'utf8')).toBe(corrupt);
+    // With the flag cleared, the normal writers resume: the acknowledgement
+    // commits a fresh checkpoint of the live storage and writes the marker.
+    expect(result.ipc.invoke).toHaveBeenCalledExactlyOnceWith('renderer-storage-migrated');
+    expect(await files.readFile(path.join(p.directory, CHECKPOINT_NAME), 'utf8')).toBe('{}');
+    expect(await files.readFile(path.join(p.directory, MIGRATION_NAME), 'utf8')).toBe('1');
+    expect(await files.readFile(p.legacy)).toEqual(p.original);
+  });
+
+  it('keeps the overwrite guard when the unreadable checkpoint cannot be renamed aside', async () => {
+    const corrupt = '{"incomplete":"checkpoint"', p = await profile(corrupt);
+    const result = await startup({ directory: p.directory, legacy: async () => ({ stale: 'legacy' }), renameFails: true });
+    expect(result.legacyStorage).not.toHaveBeenCalled(); expect(result.logMainError).toHaveBeenCalledOnce();
+    expect(result.showErrorBox).not.toHaveBeenCalled(); expect(result.quit).not.toHaveBeenCalled();
+    expect(result.createWindow).toHaveBeenCalledOnce(); expect(result.supplied).toEqual([null]);
+    // A failed rename keeps round 2's protection exactly: flag set, bytes in
+    // place, acknowledgement refused, no fresh checkpoint, no marker.
     expect(migrationFailed(result)).toBe(false); expect(checkpointUnreadable(result)).toBe(true);
     expect(result.ipc.invoke).toHaveBeenCalledExactlyOnceWith('renderer-storage-migrated');
     expect(await files.readFile(path.join(p.directory, CHECKPOINT_NAME), 'utf8')).toBe(corrupt);
@@ -187,20 +217,21 @@ describe('main startup keeps an unsuccessful preference migration unacknowledged
     expect(await files.readFile(p.legacy)).toEqual(p.original);
   });
 
-  it('keeps an over-limit checkpoint byte-identical even with a non-empty live origin', async () => {
+  it('preserves an over-limit checkpoint aside and commits the live origin as a fresh checkpoint', async () => {
     const bytes = JSON.stringify({ oversize: 'a'.repeat(8 * 1024 * 1024) }), p = await profile(bytes);
     const result = await startup({ directory: p.directory, legacy: async () => ({ stale: 'legacy' }), current: { preference: 'newest' } });
-    expect(result.legacyStorage).not.toHaveBeenCalled(); expect(result.logMainError).toHaveBeenCalledOnce();
+    expect(result.legacyStorage).not.toHaveBeenCalled();
     expect(result.showErrorBox).not.toHaveBeenCalled(); expect(result.quit).not.toHaveBeenCalled();
     expect(result.createWindow).toHaveBeenCalledOnce(); expect(result.supplied).toEqual([null]);
     expect(result.storage.has('stale')).toBe(false);
-    // The live origin HAS a committable value ('newest') and it stays live — but
-    // round 2 protects the unreadable file: no snapshot, however good, may
-    // replace the over-limit bytes or write the marker this launch.
+    // The over-limit bytes are never used and never destroyed: they survive in
+    // the renamed file. Only then may the live origin's committable value be
+    // written — as a FRESH checkpoint at the original path, never over them.
     expect(result.storage.get('preference')).toBe('newest');
-    expect(migrationFailed(result)).toBe(false); expect(checkpointUnreadable(result)).toBe(true);
-    expect(await files.readFile(path.join(p.directory, CHECKPOINT_NAME), 'utf8')).toBe(bytes);
-    await expect(files.stat(path.join(p.directory, MIGRATION_NAME))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(migrationFailed(result)).toBe(false); expect(checkpointUnreadable(result)).toBe(false);
+    expect(await files.readFile(path.join(p.directory, `${CHECKPOINT_NAME}.unreadable-test`), 'utf8')).toBe(bytes);
+    expect(JSON.parse(await files.readFile(path.join(p.directory, CHECKPOINT_NAME), 'utf8'))).toEqual({ preference: 'newest' });
+    expect(await files.readFile(path.join(p.directory, MIGRATION_NAME), 'utf8')).toBe('1');
     expect(await files.readFile(p.legacy)).toEqual(p.original);
   });
 
@@ -266,6 +297,7 @@ describe('main startup keeps an unsuccessful preference migration unacknowledged
 describe('P-MIG retry guards (static pins on the production text)', () => {
   it('the startup callback delegates to the gate and never shows the modal error dialog', () => {
     expect(startupSource).toContain('runStartupMigration({');
+    expect(startupSource).toContain('renameCheckpointAside: renameUnreadableCheckpoint');
     expect(startupSource).not.toContain('showErrorBox');
   });
 
