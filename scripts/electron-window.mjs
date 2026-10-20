@@ -74,11 +74,20 @@ export async function closeApplication(app, timeout = 15_000) {
     }
   };
   const settleBriefly = () => Promise.race([settled, new Promise((resolve) => { setTimeout(resolve, 5_000); })]);
+  // Round 4: after a kill on the 'rejected' path, wait for the child's actual
+  // 'exit' event (bounded at 5 s). Racing `settled` there proves nothing — it
+  // already resolved when the close rejected, so the wait returned instantly
+  // while the killed process was still dying.
+  const waitForChildExit = () => new Promise((resolve) => {
+    if (!child || typeof child.once !== 'function' || child.exitCode !== null || child.signalCode !== null) return resolve();
+    const timer = setTimeout(resolve, 5_000);
+    child.once('exit', () => { clearTimeout(timer); resolve(); });
+  });
   if (first === 'rejected') {
     // A rejected close can still leave a live process holding the profile
     // (round 3): kill it if it is still alive — never an already-exited pid,
     // which may have been reused — then report 'rejected' either way.
-    if (pid !== null && !alreadyExited) { killTree(); await settleBriefly(); }
+    if (pid !== null && !alreadyExited) { killTree(); await waitForChildExit(); }
     return done('rejected', { error: closeError });
   }
   // The bound was exceeded. With no process handle there is nothing to kill
