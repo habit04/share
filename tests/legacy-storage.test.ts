@@ -376,7 +376,7 @@ describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, roun
     expect(h.clearStorageData).toHaveBeenCalledOnce();
   });
 
-  it('refuses (R6-1) when a copied table file is gone after the read', async () => {
+  it('refuses (R6-1, narrowed by R7-1) when every copied table file is gone and none exists after the read', async () => {
     const h = harness();
     seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table' });
     h.contents.executeJavaScript.mockImplementation(async () => {
@@ -384,7 +384,41 @@ describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, roun
       unlinkSync(join(h.partitionLeveldb, '000005.ldb'));
       return Object.assign(Object.create(null), { k: 'v' });
     });
-    await expect(h.read()).rejects.toThrow(/lost 000005\.ldb|refusing/i);
+    await expect(h.read()).rejects.toThrow(/lost every table file|refusing/i);
+    expect(h.clearStorageData).toHaveBeenCalledOnce();
+  });
+
+  // R7-1: the healthy counterpart — an L0 compaction right after open
+  // legitimately deletes BOTH copied tables and replaces them with one
+  // higher-numbered table. That profile must NOT refuse (a refusal would
+  // repeat on every launch, permanently).
+  it('passes when a healthy L0 compaction replaces the copied tables with a higher-numbered one (R7-1)', async () => {
+    const h = harness();
+    seedLeveldb(h.originalDir, {
+      CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 't5', '000006.ldb': 't6', LOG: 'previous session log',
+    });
+    h.contents.executeJavaScript.mockImplementation(async () => {
+      writeFileSync(join(h.partitionLeveldb, 'LOG'), 'Recovering log #5\n');
+      unlinkSync(join(h.partitionLeveldb, '000005.ldb'));
+      unlinkSync(join(h.partitionLeveldb, '000006.ldb'));
+      writeFileSync(join(h.partitionLeveldb, '000009.ldb'), 'compacted');
+      return Object.assign(Object.create(null), { k: 'v' });
+    });
+    await expect(h.read()).resolves.toEqual({ k: 'v' });
+    expect(h.clearStorageData).toHaveBeenCalledOnce();
+  });
+
+  // R7-1: orphan cleanup deleting ONE copied table (another remains) is
+  // likewise healthy and must pass.
+  it('passes when obsolete-file cleanup removes one copied table and another remains (R7-1)', async () => {
+    const h = harness();
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 't5', '000006.ldb': 't6' });
+    h.contents.executeJavaScript.mockImplementation(async () => {
+      writeFileSync(join(h.partitionLeveldb, 'LOG'), 'Recovering log #5\n');
+      unlinkSync(join(h.partitionLeveldb, '000005.ldb'));
+      return Object.assign(Object.create(null), { k: 'v' });
+    });
+    await expect(h.read()).resolves.toEqual({ k: 'v' });
     expect(h.clearStorageData).toHaveBeenCalledOnce();
   });
 

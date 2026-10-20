@@ -174,16 +174,24 @@ function readCopyLogHead(leveldbDir) {
  * silently produced an empty dictionary that the gate would seal with a
  * permanent marker. Refuse instead (the gate sets legacyMigrationFailed, no
  * marker is written, the next launch retries) when the copy's LOG records a
- * creation, a copied table file is gone, or the MANIFEST numbering went
- * down — a recreation restarts all three. */
+ * creation, every copied table file is gone with none left afterwards, or
+ * the MANIFEST numbering went down — a recreation restarts all three. */
 function assertCopyNotRecreated(leveldbDir, before) {
   const log = readCopyLogHead(leveldbDir);
   if (log !== null && log.includes('Creating DB')) {
     throw new Error('Legacy storage copy was recreated during the migration read (LOG records Creating DB); refusing to acknowledge the migration');
   }
   const after = snapshotCopyState(leveldbDir);
-  for (const name of before.ldbFiles) {
-    if (!after.ldbFiles.includes(name)) throw new Error(`Legacy storage copy lost ${name} during the migration read; refusing to acknowledge the migration`);
+  // Clause (b), narrowed in round 8 (R7-1): a HEALTHY open can delete
+  // copied table files — RemoveObsoleteFiles clears orphans and an L0
+  // compaction right after open replaces its inputs with a higher-numbered
+  // table — so 'any copied .ldb gone' would refuse healthy reads, and a
+  // refused profile would fail permanently on every launch. A real
+  // recreate leaves NO table files at all: refuse only when every copied
+  // .ldb is gone AND no .ldb exists afterwards.
+  const everyCopiedGone = before.ldbFiles.length > 0 && before.ldbFiles.every((name) => !after.ldbFiles.includes(name));
+  if (everyCopiedGone && after.ldbFiles.length === 0) {
+    throw new Error('Legacy storage copy lost every table file during the migration read; refusing to acknowledge the migration');
   }
   if (before.manifestMax !== null && (after.manifestMax === null || after.manifestMax < before.manifestMax)) {
     throw new Error('Legacy storage copy MANIFEST number went down during the migration read; refusing to acknowledge the migration');
