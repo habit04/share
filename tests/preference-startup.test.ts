@@ -682,4 +682,47 @@ describe('P-MIG retry guards (static pins on the production text)', () => {
     expect(startupSource).toContain('legacyStorage({ read: legacyRead })');
     expect(startupSource).not.toContain('leveldbDir');
   });
+
+  // Round 12b (R12-6): the migration path opens NO window and runs NO page
+  // script — a hidden-window "fallback" (the r12 gate's mutWin, which masks
+  // a reader failure as an empty success) passed every unit test. Pinned on
+  // the production text of every migration function: the pre-ready
+  // snapshot/read in main.cjs, the gate's runLegacy binding, the leg and
+  // its helpers in renderer-origin.cjs (their own source text, via
+  // Function.prototype.toString, plus the whole module), the
+  // preferenceDictionary validation the leg calls, and the whole reader.
+  it('pins that the migration path creates no BrowserWindow and runs no executeJavaScript or fromPartition (round 12b, R12-6)', () => {
+    const forbidden = ['BrowserWindow', 'executeJavaScript', 'fromPartition', 'webContents', "require('electron')", 'require("electron")', 'defaultSession'];
+    const runLegacyStart = startupSource.indexOf('runLegacy: async () => {');
+    const runLegacyEnd = startupSource.indexOf('logError: logMainError', runLegacyStart);
+    expect(runLegacyStart).toBeGreaterThan(-1);
+    expect(runLegacyEnd).toBeGreaterThan(runLegacyStart);
+    const originModule = require('../electron/renderer-origin.cjs') as Record<string, unknown>;
+    const { preferenceDictionary } = require('../electron/renderer-preferences.cjs') as { preferenceDictionary: () => unknown };
+    const functionText = (name: string) => {
+      const fn = originModule[name];
+      expect(typeof fn).toBe('function');
+      return String(fn);
+    };
+    const sources: Record<string, string> = {
+      'main.cjs pre-ready snapshot and read': preReadySource,
+      'main.cjs runLegacy': startupSource.slice(runLegacyStart, runLegacyEnd),
+      legacyStorage: functionText('legacyStorage'),
+      readLegacyStoreBeforeReady: functionText('readLegacyStoreBeforeReady'),
+      preserveLegacyStore: functionText('preserveLegacyStore'),
+      legacyStoreDecodeFailure: functionText('legacyStoreDecodeFailure'),
+      'renderer-origin.cjs': fsSync.readFileSync(path.join(repo, 'electron/renderer-origin.cjs'), 'utf8'),
+      preferenceDictionary: String(preferenceDictionary),
+      'legacy-leveldb.cjs': fsSync.readFileSync(path.join(repo, 'electron/legacy-leveldb.cjs'), 'utf8'),
+    };
+    for (const [where, text] of Object.entries(sources)) {
+      expect(text.length, where).toBeGreaterThan(0);
+      for (const token of forbidden) expect(text.includes(token), `${where} must not contain ${token}`).toBe(false);
+    }
+    // The leg is reached only through runLegacy, which calls nothing but
+    // legacyStorage with the pre-ready result.
+    const runLegacy = startupSource.slice(runLegacyStart, runLegacyEnd);
+    expect(runLegacy).toContain('await legacyStorage({ read: legacyRead })');
+    expect(runLegacy.match(/\bawait\b/g)).toHaveLength(1);
+  });
 });
