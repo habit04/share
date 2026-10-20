@@ -147,4 +147,70 @@ describe('failure-only origin diagnostics', () => {
     expect(proof.failure).toContain('ORIGINAL_FAILURE'); expect(proof.main.unavailable).toContain('2000ms');
     expect(f.app.evaluate).toHaveBeenCalledOnce();
   });
+
+  it('captures the Local Storage leveldb listing and capped LOG tails (round 6, F3)', async () => {
+    silence(); const f = fixture();
+    const dbDir = join(f.profile, 'Local Storage', 'leveldb'); mkdirSync(dbDir, { recursive: true });
+    writeFileSync(join(dbDir, 'CURRENT'), 'MANIFEST-000002\n');
+    writeFileSync(join(dbDir, '000003.log'), 'x'.repeat(100));
+    writeFileSync(join(dbDir, '000005.ldb'), 'DO_NOT_DUMP');
+    mkdirSync(join(dbDir, 'archive'));
+    const logBody = 'HEAD_MARKER' + 'h'.repeat(20_000) + 'LOG_TAIL_END';
+    writeFileSync(join(dbDir, 'LOG'), logBody);
+    writeFileSync(join(dbDir, 'LOG.old'), 'previous log body');
+    const observed = originFailureDiagnostics(f.typedApp, { profile: f.profile, output: f.output, launch: 0 });
+    await observed.capture(new Error('original')); observed.stop();
+    const text = readFileSync(join(f.output, 'origin-failure-launch-1.json'), 'utf8'), proof = JSON.parse(text);
+    // Data-file contents are never read: the listing carries metadata only.
+    expect(text).not.toContain('DO_NOT_DUMP');
+    const files = proof.profile.leveldb.files;
+    expect(Array.isArray(files)).toBe(true);
+    const byName = Object.fromEntries(files.map((entry: { name: string }) => [entry.name, entry]));
+    expect(byName['CURRENT'].bytes).toBe(16);
+    expect(byName['000003.log'].bytes).toBe(100);
+    expect(byName['000005.ldb'].bytes).toBe(11);
+    expect(typeof byName['CURRENT'].modifiedUtc).toBe('string');
+    expect(Number.isNaN(Date.parse(byName['CURRENT'].modifiedUtc))).toBe(false);
+    expect(byName['archive']).toBeUndefined();
+    const log = proof.profile.leveldb.log;
+    expect(log.bytes).toBe(logBody.length); expect(log.truncated).toBe(true);
+    expect(log.text).toHaveLength(16_384);
+    expect(log.text).toMatch(/LOG_TAIL_END$/);
+    expect(log.text).not.toContain('HEAD_MARKER');
+    expect(proof.profile.leveldb.logOld).toMatchObject({ bytes: 17, truncated: false, text: 'previous log body' });
+  });
+
+  it('records the leveldb section as unavailable when the profile has no Local Storage leveldb (round 6, F3)', async () => {
+    silence(); const f = fixture();
+    const observed = originFailureDiagnostics(f.typedApp, { profile: f.profile, output: f.output, launch: 0 });
+    await expect(observed.capture(new Error('original'))).resolves.toBeUndefined(); observed.stop();
+    const proof = JSON.parse(readFileSync(join(f.output, 'origin-failure-launch-1.json'), 'utf8'));
+    expect(proof.failure).toContain('original');
+    expect(proof.profile.leveldb.files.unavailable).toBeTruthy();
+    expect(proof.profile.leveldb.log.unavailable).toBeTruthy();
+    expect(proof.profile.leveldb.logOld.unavailable).toBeTruthy();
+  });
+
+  it('records seed-exit and app-spawn events with the provided stamps, in order (round 6, F3)', async () => {
+    silence(); const f = fixture();
+    const observed = originFailureDiagnostics(f.typedApp, { profile: f.profile, output: f.output, launch: 0, seedExitedAt: '2026-10-19T23:00:00.000Z', appSpawnedAt: '2026-10-19T23:00:01.500Z' });
+    await observed.capture(new Error('original')); observed.stop();
+    const proof = JSON.parse(readFileSync(join(f.output, 'origin-failure-launch-1.json'), 'utf8'));
+    const seed = proof.events.find((event: { kind: string }) => event.kind === 'seed-exit');
+    const spawn = proof.events.find((event: { kind: string }) => event.kind === 'app-spawn');
+    expect(seed).toEqual({ at: '2026-10-19T23:00:00.000Z', kind: 'seed-exit' });
+    expect(spawn).toEqual({ at: '2026-10-19T23:00:01.500Z', kind: 'app-spawn' });
+    expect(proof.events.indexOf(seed)).toBeLessThan(proof.events.indexOf(spawn));
+  });
+
+  it('records an app-spawn event with the construction time and no seed-exit event when no stamps are provided (round 6, F3)', async () => {
+    silence(); const f = fixture();
+    const observed = originFailureDiagnostics(f.typedApp, { profile: f.profile, output: f.output, launch: 0 });
+    await observed.capture(new Error('original')); observed.stop();
+    const proof = JSON.parse(readFileSync(join(f.output, 'origin-failure-launch-1.json'), 'utf8'));
+    const spawn = proof.events.find((event: { kind: string }) => event.kind === 'app-spawn');
+    expect(spawn).toBeTruthy();
+    expect(Number.isNaN(Date.parse(spawn.at))).toBe(false);
+    expect(proof.events.some((event: { kind: string }) => event.kind === 'seed-exit')).toBe(false);
+  });
 });

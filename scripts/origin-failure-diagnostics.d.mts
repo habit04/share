@@ -9,7 +9,7 @@ export interface OriginDiagnosticApplication {
   off(event: 'window', listener: (page: unknown) => void): unknown;
   evaluate: unknown;
 }
-export declare function originFailureDiagnostics(app: OriginDiagnosticApplication, options: { profile: string; output?: string; launch: number }): {
+export declare function originFailureDiagnostics(app: OriginDiagnosticApplication, options: { profile: string; output?: string; launch: number; seedExitedAt?: string; appSpawnedAt?: string }): {
   capture(error: unknown): Promise<void>;
   stop(): void;
 };

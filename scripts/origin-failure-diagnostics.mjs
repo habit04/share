@@ -5,8 +5,8 @@ import { dirname, join, resolve } from 'node:path';
 // Observe only this freshly created test profile and its owned Electron child.
 // No logging environment, application timeout, retry or preference assertion changes.
 /** @param {import('playwright').ElectronApplication} app
- * @param {{profile: string, output?: string, launch: number}} options */
-export function originFailureDiagnostics(app, { profile, output, launch }) {
+ * @param {{profile: string, output?: string, launch: number, seedExitedAt?: string, appSpawnedAt?: string}} options */
+export function originFailureDiagnostics(app, { profile, output, launch, seedExitedAt, appSpawnedAt }) {
   if (!Number.isInteger(launch) || launch < 0 || launch > 2) throw new Error('Invalid origin diagnostic launch index');
   let child;
   try { child = app.process(); } catch { /* Main-process unavailability is itself captured below. */ }
@@ -19,6 +19,15 @@ export function originFailureDiagnostics(app, { profile, output, launch }) {
     events.push({ at: new Date().toISOString(), kind, ...detail });
     if (events.length > 64) events.shift();
   };
+  // Round 6 (F3): pin the harness timeline into the event log — when the seed
+  // process exited (it closed the Local Storage leveldb moments earlier) and
+  // when this app was spawned (it reopens that DB). The provided stamp rides
+  // in the detail, where it overrides add()'s own `at`, so the events carry
+  // the true instants rather than the construction time. Without a provided
+  // app-spawn stamp, the construction time stands; without a seed stamp, no
+  // seed-exit event is recorded at all.
+  if (typeof seedExitedAt === 'string' && seedExitedAt) add('seed-exit', { at: seedExitedAt });
+  add('app-spawn', typeof appSpawnedAt === 'string' && appSpawnedAt ? { at: appSpawnedAt } : {});
   const tail = (value) => Buffer.isBuffer(value) ? value.subarray(-16_384).toString('utf8') : String(value).slice(-16_384);
   const onStdout = (value) => { stdout = (stdout + tail(value)).slice(-16_384); };
   const onStderr = (value) => { stderr = (stderr + tail(value)).slice(-16_384); };
@@ -140,7 +149,47 @@ export function originFailureDiagnostics(app, { profile, output, launch }) {
       } catch (error) { selected[name] = { unavailable: String(error).slice(0, 1_024) }; }
       finally { if (descriptor !== undefined) { try { closeSync(descriptor); } catch { /* Best-effort diagnostic only. */ } } }
     }
-    return { inventory, inventoryLimit: 64, selected };
+    // Round 6 (F3): the Local Storage leveldb is the root-cause evidence —
+    // the migration page's first synchronous localStorage touch opens this
+    // DB in the browser process, and the seed process closed it moments
+    // before. Capture its file set (names/sizes/mtimes only — data-file
+    // contents are never read) and the leveldb logs under the same
+    // capped-tail discipline as error.log. Every part degrades to an
+    // unavailable record on its own; nothing here throws.
+    const leveldbDir = join(profile, 'Local Storage', 'leveldb');
+    /** @type {Record<string, unknown>[] | { unavailable: string }} */
+    let leveldbFiles;
+    let leveldbListing;
+    try {
+      leveldbListing = opendirSync(leveldbDir);
+      const files = [];
+      for (let count = 0; count < 64; count++) {
+        const entry = leveldbListing.readSync(); if (!entry) break;
+        try {
+          const stat = lstatSync(join(leveldbDir, entry.name));
+          if (!stat.isFile() || stat.isSymbolicLink()) continue;
+          files.push({ name: entry.name.slice(0, 255), bytes: stat.size, modifiedUtc: stat.mtime.toISOString() });
+        } catch { /* A file vanishing mid-scan is skipped, not fatal. */ }
+      }
+      leveldbFiles = files;
+    } catch (error) { leveldbFiles = { unavailable: String(error).slice(0, 1_024) }; }
+    finally { if (leveldbListing) { try { leveldbListing.closeSync(); } catch { /* Best-effort diagnostic only. */ } } }
+    const leveldbLog = (/** @type {string} */ name) => {
+      const file = join(leveldbDir, name);
+      let descriptor;
+      try {
+        const stat = lstatSync(file);
+        if (!stat.isFile() || stat.isSymbolicLink()) return { unavailable: 'Not a regular file' };
+        const limit = 16_384;
+        descriptor = openSync(file, 'r');
+        const bytes = Buffer.alloc(Math.min(stat.size, limit));
+        const read = readSync(descriptor, bytes, 0, bytes.length, Math.max(0, stat.size - bytes.length));
+        return { bytes: stat.size, modifiedUtc: stat.mtime.toISOString(), truncated: stat.size > limit, text: bytes.subarray(0, read).toString('utf8') };
+      } catch (error) { return { unavailable: String(error).slice(0, 1_024) }; }
+      finally { if (descriptor !== undefined) { try { closeSync(descriptor); } catch { /* Best-effort diagnostic only. */ } } }
+    };
+    const leveldb = { files: leveldbFiles, log: leveldbLog('LOG'), logOld: leveldbLog('LOG.old') };
+    return { inventory, inventoryLimit: 64, selected, leveldb };
   }
   return {
     async capture(error) {
