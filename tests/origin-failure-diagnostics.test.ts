@@ -86,6 +86,30 @@ describe('failure-only origin diagnostics', () => {
     expect(proof.profile.selected['renderer-preferences.json'].omitted).toContain('read cap');
   });
 
+  it('records real CDP target data probed from the live page while its window exists', async () => {
+    silence(); const f = fixture();
+    const targetInfos = [
+      { type: 'page', url: 'jcad://app/index.html', attached: true, targetId: 'MAIN-TARGET' },
+      { type: 'page', url: 'file:///app/dist/index.html', attached: true, targetId: 'MIGRATION-TARGET' },
+    ];
+    const session = { send: vi.fn(async (method: string) => { if (method !== 'Target.getTargets') throw new Error(`Unexpected CDP method ${method}`); return { targetInfos }; }), detach: vi.fn(async () => {}) };
+    const newCDPSession = vi.fn(async () => session);
+    Object.assign(f.app, { context: () => ({ newCDPSession }) });
+    const observed = originFailureDiagnostics(f.typedApp, { profile: f.profile, output: f.output, launch: 0 });
+    // The probe runs off the window event (the fixture page is already open at
+    // construction); let it land before the failure capture reads the snapshot.
+    await new Promise((done) => setImmediate(done)); await new Promise((done) => setImmediate(done));
+    await observed.capture(new Error('original')); observed.stop();
+    expect(newCDPSession).toHaveBeenCalledExactlyOnceWith(f.page);
+    expect(session.send).toHaveBeenCalledExactlyOnceWith('Target.getTargets');
+    const proof = JSON.parse(readFileSync(join(f.output, 'origin-failure-launch-1.json'), 'utf8'));
+    expect(proof.cdpTargets.targets).toEqual([
+      { type: 'page', url: 'jcad://app/index.html', attached: true, targetId: 'MAIN-TARGET' },
+      { type: 'page', url: 'file:///app/dist/index.html', attached: true, targetId: 'MIGRATION-TARGET' },
+    ]);
+    expect(typeof proof.cdpTargets.at).toBe('string');
+  });
+
   it('bounds an unresponsive main snapshot and still records the original failure', async () => {
     silence(); vi.useFakeTimers(); const f = fixture();
     f.app.evaluate.mockImplementation(() => new Promise<never>(() => {}));

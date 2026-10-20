@@ -27,6 +27,40 @@ export function originFailureDiagnostics(app, { profile, output, launch }) {
   child?.on('exit', onExit);
   /** @type {Set<import('playwright').Page>} */
   const tracked = new Set();
+  /** The latest live CDP target snapshot, taken while a window exists (round 2,
+   * see probeTargets). @type {{ at: string, targets: Record<string, unknown>[] } | { unavailable: string } | null} */
+  let latestTargets = null;
+  /** Live CDP target probe (PR23 ASAR diagnosis item C, redesigned in round 2).
+   * Round 1 probed at capture time, which is dead on the real runtime:
+   * newCDPSession() with no page argument throws ('page: expected Page or
+   * Frame'), and by capture time the migration window is already gone. This
+   * probe instead runs when a window appears — while that window, and any
+   * hidden migration window alongside it, still exists — opens a session on
+   * the live page, and asks for ALL targets, so the snapshot shows every
+   * window's type/url/attach state at that moment. The Debugger.paused signal
+   * is dropped: enabling the debugger perturbs the very pause state under
+   * observation, and attachment is already in the target list. Best-effort,
+   * bounded at the same 2000ms discipline as mainState; never throws. */
+  async function probeTargets(page) {
+    const probe = (async () => {
+      const session = await (/** @type {any} */ (app)).context().newCDPSession(page);
+      try {
+        const { targetInfos } = await session.send('Target.getTargets');
+        return (targetInfos ?? []).slice(0, 16).map((info) => ({
+          type: String(info?.type ?? ''), url: String(info?.url ?? '').slice(0, 512),
+          attached: Boolean(info?.attached), targetId: String(info?.targetId ?? '').slice(0, 64),
+        }));
+      } finally { await session.detach().catch(() => {}); }
+    })();
+    let timer;
+    try {
+      const targets = await Promise.race([probe, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Target probe exceeded its 2000ms bound')), 2_000); })]);
+      latestTargets = { at: new Date().toISOString(), targets };
+    } catch (error) {
+      if (latestTargets === null) latestTargets = { unavailable: String(error).slice(0, 512) };
+      add('target-probe-unavailable', { error: String(error).slice(0, 512) });
+    } finally { clearTimeout(timer); }
+  }
   /** @param {import('playwright').Page} page */
   const track = (page) => {
     if (tracked.has(page) || tracked.size >= 16) return;
@@ -38,6 +72,7 @@ export function originFailureDiagnostics(app, { profile, output, launch }) {
     const onClose = () => add('page-close', { url: url() });
     page.on('framenavigated', onNavigate); page.on('crash', onCrash); page.on('close', onClose);
     detach.push(() => { page.off('framenavigated', onNavigate); page.off('crash', onCrash); page.off('close', onClose); });
+    void probeTargets(page);
   };
   const observe = (page) => { try { track(page); } catch (error) { add('window-observer-unavailable', { error: String(error).slice(0, 512) }); } };
   try { app.on('window', observe); for (const page of app.windows().slice(0, 16)) observe(page); }
@@ -102,56 +137,13 @@ export function originFailureDiagnostics(app, { profile, output, launch }) {
     }
     return { inventory, inventoryLimit: 64, selected };
   }
-  /** Bounded CDP target probe (PR23 ASAR diagnosis item C): for the next
-   * occurrence, show whether the hidden migration window's target had a
-   * debugger attached and whether it sat paused waiting for one. Best-effort
-   * and capped at the same 2000ms discipline as mainState; never throws. */
-  async function cdpTargetState() {
-    const probe = (async () => {
-      const result = { targets: [], pages: [] };
-      try {
-        const browser = await (/** @type {any} */ (app)).context().newCDPSession();
-        try {
-          const { targetInfos } = await browser.send('Target.getTargets');
-          result.targets = (targetInfos ?? []).slice(0, 16).map((info) => ({
-            type: String(info.type ?? ''), url: String(info.url ?? '').slice(0, 512),
-            attached: Boolean(info.attached), targetId: String(info.targetId ?? '').slice(0, 64),
-          }));
-        } finally { await browser.detach().catch(() => {}); }
-      } catch (error) { result.targets = [{ unavailable: String(error).slice(0, 512) }]; }
-      for (const page of tracked) {
-        const entry = { url: '<unavailable>' };
-        try { entry.url = page.url().slice(0, 512); } catch { /* keep unavailable */ }
-        try {
-          const session = await (/** @type {any} */ (app)).context().newCDPSession(page);
-          try {
-            const { targetInfo } = await session.send('Target.getTargetInfo');
-            entry.target = { type: targetInfo.type, attached: targetInfo.attached, targetId: String(targetInfo.targetId ?? '').slice(0, 64) };
-            // A target paused for a debugger announces Debugger.paused once a
-            // session enables the debugger; listen briefly, then detach.
-            entry.debuggerPaused = await new Promise((done) => {
-              const timer = setTimeout(() => done(false), 400);
-              session.on('Debugger.paused', () => { clearTimeout(timer); done(true); });
-              session.send('Debugger.enable').catch(() => { clearTimeout(timer); done(false); });
-            });
-          } finally { await session.detach().catch(() => {}); }
-        } catch (error) { entry.unavailable = String(error).slice(0, 512); }
-        result.pages.push(entry);
-      }
-      return result;
-    })();
-    let timer;
-    try {
-      return await Promise.race([probe, new Promise((done) => { timer = setTimeout(() => done({ unavailable: 'CDP probe exceeded its 2000ms bound' }), 2_000); })]);
-    } finally { clearTimeout(timer); }
-  }
   return {
     async capture(error) {
       try {
         const out = output;
         if (!out) { console.error('Origin failure diagnostics require JCAD_E2E_OUT; original failure retained.'); return; }
         const state = await mainState();
-        const cdpTargets = await cdpTargetState();
+        const cdpTargets = latestTargets ?? { unavailable: 'No live target snapshot was recorded' };
         const diagnostic = { kind: 'Failure-only origin E2E observation; no cause inferred', launch: launch + 1,
           at: new Date().toISOString(), failure: String(error?.stack ?? error).slice(0, 4_096),
           process: child ? { pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode, killed: child.killed } : { unavailable: true },
