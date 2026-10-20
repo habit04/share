@@ -154,15 +154,29 @@ describe('legacy storage: preserving an undecodable store before ready (round 12
     });
   });
 
-  it('a filesystem error (ENOENT-type absence) preserves nothing; only decode failures count', async () => {
+  // A MANIFEST that CURRENT names but that is missing is corruption to
+  // leveldb ("CURRENT points to a non-existent file"): preserved, and the
+  // leg fails. Directory/CURRENT absence is covered further below.
+  it('a MANIFEST that CURRENT names but that is missing is corruption: preserved, the leg fails; only decode failures count', async () => {
     await withStore(async ({ local, leveldb }) => {
       const { writeFileSync } = await import('node:fs');
       writeFileSync(join(leveldb, 'CURRENT'), 'MANIFEST-000009\n');
+      const before = await snapshot(leveldb);
       const logError = vi.fn();
-      const read = readLegacyStoreBeforeReady(leveldb, { logError });
-      expect(read).toMatchObject({ error: { code: 'ENOENT' } });
-      expect(await preservedDirs(local)).toEqual([]);
-      expect(logError).not.toHaveBeenCalled();
+      const read = readLegacyStoreBeforeReady(leveldb, { logError, now: at('2026-10-20T15:00:00.000Z') });
+      expect(read).toMatchObject({ error: { code: 'LEGACY_STORE_MISSING_FILE', message: expect.stringMatching(/ENOENT.*MANIFEST-000009/) } });
+      const error = (read as { error: { syscall?: unknown; cause?: { code?: unknown } } }).error;
+      expect(error.syscall).toBeUndefined();
+      expect(error.cause?.code).toBe('ENOENT');
+      expect(legacyStoreDecodeFailure(error)).toBe(true);
+      const preserved = join(local, `${PRESERVED}2026-10-20T15-00-00-000Z`);
+      expect(await preservedDirs(local)).toEqual([`${PRESERVED}2026-10-20T15-00-00-000Z`]);
+      const { LOCK, ...expectedCopy } = before;
+      expect(LOCK).toBe('');
+      expect(await snapshot(preserved)).toEqual(expectedCopy);
+      expect(logError).toHaveBeenCalledExactlyOnceWith('renderer preference migration', expect.objectContaining({ message: `Unreadable legacy store preserved at ${preserved}` }));
+      expect(await snapshot(leveldb)).toEqual(before);
+      await expect(legacyStorage({ read })).rejects.toBe(error);
     }, false);
     expect(legacyStoreDecodeFailure(new Error('leveldb log: record CRC mismatch'))).toBe(true);
     expect(legacyStoreDecodeFailure(Object.assign(new RangeError('out of range'), { code: 'ERR_OUT_OF_RANGE' }))).toBe(true);

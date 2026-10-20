@@ -409,9 +409,10 @@ const MAX_TOTAL_BYTES = 256 * 1024 * 1024; // sanity bound on bytes read
 const LEGACY_STORE_TOO_LARGE = 'LEGACY_STORE_TOO_LARGE';
 const tooLarge = () => Object.assign(new Error('legacy leveldb: store exceeds the read size bound'), { code: LEGACY_STORE_TOO_LARGE });
 // Round 12b (R12-7 widening): a file the store's own metadata says
-// exists — a live table the MANIFEST names, or a log the directory
-// listing just returned — but that is missing is CORRUPTION to leveldb
-// (Status::Corruption "missing files"), and Chromium's recovery would
+// exists — the MANIFEST that CURRENT names, a live table the MANIFEST
+// names, or a log the directory listing just returned — but that is
+// missing is CORRUPTION to leveldb (Status::Corruption: "CURRENT points
+// to a non-existent file", "missing files"), and Chromium's recovery would
 // recreate the store. Its ENOENT is rethrown as this code, without the
 // fs error's syscall, so the caller classifies it as a decode failure:
 // the store is preserved and the leg fails. Absence of the directory or
@@ -438,7 +439,7 @@ function readReferencedFile(leveldbDir, name, what) {
 function readLegacyLocalStorage(leveldbDir) {
   const current = fs.readFileSync(path.join(leveldbDir, 'CURRENT'), 'utf8').trim();
   if (!/^MANIFEST-\d+$/.test(current)) throw new Error('legacy leveldb: CURRENT does not name a MANIFEST');
-  const manifest = fs.readFileSync(path.join(leveldbDir, current));
+  const manifest = readReferencedFile(leveldbDir, current, 'CURRENT names');
   const { liveTables } = readManifestState(manifest);
   const entries = new Map(); // hex(userKey) -> { sequence, kind, key, value }
   let totalBytes = manifest.length;
