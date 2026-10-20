@@ -9,9 +9,9 @@ import { runInNewContext } from 'node:vm';
 
 const require = createRequire(import.meta.url);
 const { legacyStorage, startLegacyStorageCopy, beginLegacyMigration, LEGACY_MIGRATION_PARTITION, withBoundedContentionWait } = require('../electron/renderer-origin.cjs') as {
-  legacyStorage(options: { BrowserWindow: unknown; indexFile: string; copy: unknown }): Promise<Record<string, string>>;
-  startLegacyStorageCopy(options: { session: unknown; userDataDir: string }): { partitionSession: unknown; leveldbDir: string | null; promise: Promise<{ ldbFiles: string[]; manifestMax: number | null }> };
-  beginLegacyMigration(options: { session: unknown; userDataDir: string; markerPath: string }): { promise: Promise<{ ldbFiles: string[]; manifestMax: number | null }> } | null;
+  legacyStorage(options: { BrowserWindow: unknown; session: unknown; indexFile: string; copy: unknown }): Promise<Record<string, string>>;
+  startLegacyStorageCopy(options: { userDataDir: string }): { partitionDir: string; leveldbDir: string; promise: Promise<{ ldbFiles: string[]; manifestMax: number | null }> };
+  beginLegacyMigration(options: { userDataDir: string; markerPath: string }): { partitionDir: string; leveldbDir: string; promise: Promise<{ ldbFiles: string[]; manifestMax: number | null }> } | null;
   LEGACY_MIGRATION_PARTITION: string;
   withBoundedContentionWait(operation: () => Promise<unknown>, deadlineMs?: number): Promise<unknown>;
 };
@@ -67,21 +67,26 @@ function harness() {
     handle: vi.fn((_scheme: string, value: typeof handler) => { handler = value; }),
     unhandle: vi.fn(),
   };
-  // Round 6/7: the migration runs in a private partition. The fake session
-  // hands the copy the partition protocol (the same fake the assertions
-  // watch), a real temp storage path, and a recording clearStorageData.
+  // Round 6/7: the migration runs in a private partition whose storage path
+  // is DERIVED from the user-data layout (Partitions/legacy-migration) — the
+  // copy is placed before any session exists (R6-6). The fake session
+  // deliberately has NO getStoragePath: if the product asked a session for
+  // the path, this harness would fail. It hands legacyStorage the partition
+  // protocol (the same fake the assertions watch) and a recording
+  // clearStorageData once fromPartition is finally called.
   const root = tempRoot();
-  const userDataDir = join(root, 'user-data'), partitionDir = join(root, 'partition');
+  const userDataDir = join(root, 'user-data');
+  const partitionDir = join(userDataDir, 'Partitions', 'legacy-migration');
   const clearStorageData = vi.fn(async () => {});
-  const partitionSession = { protocol, getStoragePath: () => partitionDir, clearStorageData };
+  const partitionSession = { protocol, clearStorageData };
   const fromPartition = vi.fn((_name: string) => partitionSession);
   const session = { fromPartition };
   const originalDir = join(userDataDir, 'Local Storage', 'leveldb');
   const partitionLeveldb = join(partitionDir, 'Local Storage', 'leveldb');
-  const start = () => startLegacyStorageCopy({ session, userDataDir });
+  const start = () => startLegacyStorageCopy({ userDataDir });
   return { contents, window, BrowserWindow, protocol, handler: () => handler, session, fromPartition,
     clearStorageData, userDataDir, partitionDir, originalDir, partitionLeveldb, start,
-    read: () => legacyStorage({ BrowserWindow, indexFile, copy: start() }) };
+    read: () => legacyStorage({ BrowserWindow, session, indexFile, copy: start() }) };
 }
 
 function observe<T>(promise: Promise<T>) {
@@ -242,6 +247,9 @@ describe('owned bounded legacy-origin storage read', () => {
     vi.useFakeTimers();
     const h = harness(), loaded = deferred<void>(); h.window.loadFile.mockReturnValue(loaded.promise);
     const result = h.read();
+    // Round 7 (R6-6): the window and the partition session are created only
+    // after the started copy settles — flush that await before asserting.
+    await microtasks();
     expect(h.BrowserWindow).toHaveBeenCalledExactlyOnceWith({ show: false, webPreferences: {
       partition: LEGACY_MIGRATION_PARTITION,
       sandbox: true, nodeIntegration: false, contextIsolation: true, devTools: false, webSecurity: false, allowRunningInsecureContent: false,
@@ -396,30 +404,32 @@ describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, roun
 });
 
 describe('round 7: copy start (R6-2) and marker partition removal (R6-4)', () => {
-  it('settles the copy at start time, before any window exists; the read then uses it', async () => {
+  it('settles the copy at start time, before any session or window exists; the read then uses it', async () => {
     const h = harness();
     seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table', LOCK: '' });
     const copy = h.start();
     const state = await copy.promise;
     // The copy landed (minus LOCK) and its R6-1 state was captured — all
-    // before legacyStorage or any BrowserWindow.
+    // before legacyStorage, any session, or any BrowserWindow (R6-6).
     expect(readdirSync(h.partitionLeveldb).sort()).toEqual(['000005.ldb', 'CURRENT', 'MANIFEST-000001']);
     expect(state).toEqual({ ldbFiles: ['000005.ldb'], manifestMax: 1 });
+    expect(h.fromPartition).not.toHaveBeenCalled();
     expect(h.BrowserWindow).not.toHaveBeenCalled();
     h.contents.executeJavaScript.mockResolvedValue(Object.assign(Object.create(null), { k: 'v' }));
-    await expect(legacyStorage({ BrowserWindow: h.BrowserWindow, indexFile, copy })).resolves.toEqual({ k: 'v' });
+    await expect(legacyStorage({ BrowserWindow: h.BrowserWindow, session: h.session, indexFile, copy })).resolves.toEqual({ k: 'v' });
     expect(h.fromPartition).toHaveBeenCalledExactlyOnceWith(LEGACY_MIGRATION_PARTITION);
     expect(h.clearStorageData).toHaveBeenCalledOnce();
   });
 
-  it('does not load the window until an unfinished copy settles', async () => {
+  it('creates no session and no window until an unfinished copy settles (R6-6)', async () => {
     vi.useFakeTimers();
     const h = harness();
     const gate = deferred<{ ldbFiles: string[]; manifestMax: number | null }>();
-    const partitionSession = h.session.fromPartition(LEGACY_MIGRATION_PARTITION);
-    const copy = { partitionSession, leveldbDir: h.partitionLeveldb, promise: gate.promise };
-    const pending = observe(legacyStorage({ BrowserWindow: h.BrowserWindow, indexFile, copy }));
+    const copy = { leveldbDir: h.partitionLeveldb, promise: gate.promise };
+    const pending = observe(legacyStorage({ BrowserWindow: h.BrowserWindow, session: h.session, indexFile, copy }));
     await microtasks();
+    expect(h.fromPartition).not.toHaveBeenCalled();
+    expect(h.BrowserWindow).not.toHaveBeenCalled();
     expect(h.window.loadFile).not.toHaveBeenCalled();
     gate.resolve({ ldbFiles: [], manifestMax: null });
     await pending.done;
@@ -427,19 +437,44 @@ describe('round 7: copy start (R6-2) and marker partition removal (R6-4)', () =>
     expectClean(h);
   });
 
-  it('refuses the read when the started copy failed, and still cleans up', async () => {
+  it('refuses the read when the started copy failed — no session, window or cleanup exists yet', async () => {
     vi.useFakeTimers();
     const h = harness(), failure = new Error('Controlled copy failure');
-    const partitionSession = h.session.fromPartition(LEGACY_MIGRATION_PARTITION);
-    const copy = { partitionSession, leveldbDir: h.partitionLeveldb, promise: Promise.reject(failure) };
-    await expect(legacyStorage({ BrowserWindow: h.BrowserWindow, indexFile, copy })).rejects.toBe(failure);
-    expectClean(h);
+    const copy = { leveldbDir: h.partitionLeveldb, promise: Promise.reject(failure) };
+    await expect(legacyStorage({ BrowserWindow: h.BrowserWindow, session: h.session, indexFile, copy })).rejects.toBe(failure);
+    expect(h.fromPartition).not.toHaveBeenCalled();
+    expect(h.BrowserWindow).not.toHaveBeenCalled();
+    expect(h.clearStorageData).not.toHaveBeenCalled();
   });
 
   it('refuses when the copy was never started', async () => {
     const h = harness();
-    await expect(legacyStorage({ BrowserWindow: h.BrowserWindow, indexFile, copy: null })).rejects.toThrow(/not started/);
+    await expect(legacyStorage({ BrowserWindow: h.BrowserWindow, session: h.session, indexFile, copy: null })).rejects.toThrow(/not started/);
     expect(h.BrowserWindow).not.toHaveBeenCalled();
+  });
+
+  // R6-6's pin, on the real filesystem with no fake session anywhere near
+  // the copy: the copy is begun (session-free) and fully lands in the
+  // derived partition directory; an instrumented session then proves
+  // legacyStorage creates the partition session only after the copy settled.
+  it('pins the copy-before-session ordering on the real filesystem (R6-6)', async () => {
+    const h = harness();
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table', LOCK: '' });
+    const copy = beginLegacyMigration({ userDataDir: h.userDataDir, markerPath: join(h.userDataDir, 'renderer-origin-migrated') })!;
+    let settled = false;
+    void copy.promise.then(() => { settled = true; });
+    const order: string[] = [];
+    const instrumentedSession = { fromPartition: vi.fn((_name: string) => {
+      order.push(settled ? 'session-after-settle' : 'session-BEFORE-settle');
+      return { protocol: h.protocol, clearStorageData: h.clearStorageData };
+    }) };
+    h.contents.executeJavaScript.mockResolvedValue(Object.assign(Object.create(null), { k: 'v' }));
+    await expect(legacyStorage({ BrowserWindow: h.BrowserWindow, session: instrumentedSession, indexFile, copy })).resolves.toEqual({ k: 'v' });
+    expect(order).toEqual(['session-after-settle']);
+    // The copy itself really landed (minus LOCK) in the derived directory —
+    // the fake clearStorageData records the scrub call without deleting.
+    expect(readdirSync(h.partitionLeveldb).sort()).toEqual(['000005.ldb', 'CURRENT', 'MANIFEST-000001']);
+    expect(h.clearStorageData).toHaveBeenCalledOnce();
   });
 
   it('removes a stale migration partition once when the marker exists, without touching any session', async () => {
@@ -448,9 +483,8 @@ describe('round 7: copy start (R6-2) and marker partition removal (R6-4)', () =>
     seedLeveldb(stale, { '000005.ldb': 'stale-copy' });
     const markerPath = join(h.userDataDir, 'renderer-origin-migrated');
     writeFileSync(markerPath, '');
-    const result = beginLegacyMigration({ session: h.session, userDataDir: h.userDataDir, markerPath });
+    const result = beginLegacyMigration({ userDataDir: h.userDataDir, markerPath });
     expect(result).toBeNull();
-    expect(h.fromPartition).not.toHaveBeenCalled();
     expect(existsSync(join(h.userDataDir, 'Partitions', 'legacy-migration'))).toBe(false);
   });
 
@@ -458,15 +492,14 @@ describe('round 7: copy start (R6-2) and marker partition removal (R6-4)', () =>
     const h = harness();
     seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', '000005.ldb': 'table' });
     const markerPath = join(h.userDataDir, 'renderer-origin-migrated');
-    const result = beginLegacyMigration({ session: h.session, userDataDir: h.userDataDir, markerPath });
+    const result = beginLegacyMigration({ userDataDir: h.userDataDir, markerPath });
     expect(result).not.toBeNull();
-    expect(h.fromPartition).toHaveBeenCalledExactlyOnceWith(LEGACY_MIGRATION_PARTITION);
     await expect(result!.promise).resolves.toEqual({ ldbFiles: ['000005.ldb'], manifestMax: null });
     expect(readdirSync(h.partitionLeveldb).sort()).toEqual(['000005.ldb', 'CURRENT']);
   });
 });
 
-describe('bounded contention wait (round 6, F1a)', () => {
+describe('bounded contention wait (round 6, F1a; codes extended round 7, R6-6)', () => {
   it('retries EBUSY and EPERM until the operation succeeds', async () => {
     vi.useFakeTimers();
     const operation = vi.fn()
@@ -488,6 +521,18 @@ describe('bounded contention wait (round 6, F1a)', () => {
     await vi.advanceTimersByTimeAsync(5_000);
     await assertion;
     expect(operation.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('treats EPIPE and ENOTEMPTY as contention too (the gate-observed live-directory codes)', async () => {
+    vi.useFakeTimers();
+    const operation = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('pipe'), { code: 'EPIPE' }))
+      .mockRejectedValueOnce(Object.assign(new Error('not empty'), { code: 'ENOTEMPTY' }))
+      .mockResolvedValue('done');
+    const pending = withBoundedContentionWait(operation);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(pending).resolves.toBe('done');
+    expect(operation).toHaveBeenCalledTimes(3);
   });
 
   it('does not retry other errors', async () => {

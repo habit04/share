@@ -114,16 +114,20 @@ const LEGACY_COPY_WAIT_MS = 2_000;
 
 const contentionWait = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
-/** Run `operation`, retrying ONLY filesystem contention (EBUSY/EPERM) until
- * the bounded wait expires. Any other error, and expiry, propagates. */
+/** Run `operation`, retrying ONLY filesystem contention until the bounded
+ * wait expires. Any other error, and expiry, propagates. The contention set
+ * carries the codes the lead's Windows gate observed when a copy raced a
+ * live database directory (round 7, R6-6): EBUSY/EPERM for locked files,
+ * EPIPE for a broken write into a held directory, ENOTEMPTY when the stale
+ * copy's directory was repopulated mid-remove. */
+const CONTENTION_CODES = new Set(['EBUSY', 'EPERM', 'EPIPE', 'ENOTEMPTY']);
 async function withBoundedContentionWait(operation, deadlineMs = LEGACY_COPY_WAIT_MS) {
   const deadline = Date.now() + deadlineMs;
   let delay = 25;
   for (;;) {
     try { return await operation(); }
     catch (error) {
-      const code = error?.code;
-      if ((code !== 'EBUSY' && code !== 'EPERM') || Date.now() >= deadline) throw error;
+      if (!CONTENTION_CODES.has(error?.code) || Date.now() >= deadline) throw error;
       await contentionWait(Math.min(delay, Math.max(0, deadline - Date.now())));
       delay = Math.min(delay * 2, 250);
     }
@@ -205,29 +209,32 @@ async function copyLeveldbToPartition(sourceDir, destDir) {
   });
 }
 
-/** Start the partition copy NOW and return its handle (round 7, R6-2): the
- * copy is awaited inside legacyStorage, potentially a whole startup later,
- * so the copied files get settle time instead of being read back the same
- * millisecond they were written. The promise resolves to the copy-side
- * state (R6-1) once the copy lands; the 2 s contention bound stays on the
- * copy only. Synchronous setup failures become a rejected promise, never a
- * throw — this runs at the top of the ready callback. */
-function startLegacyStorageCopy({ session, userDataDir }) {
-  let partitionSession, partitionDir, leveldbDir;
-  try {
-    partitionSession = session.fromPartition(LEGACY_MIGRATION_PARTITION);
-    partitionDir = partitionSession.getStoragePath();
-    leveldbDir = partitionDir ? path.join(partitionDir, 'Local Storage', 'leveldb') : null;
-  } catch (error) {
-    return { partitionSession: undefined, partitionDir: undefined, leveldbDir: null, promise: Promise.reject(error) };
-  }
+/** The migration partition's storage directory, derived from the user-data
+ * layout (Electron places partition storage under Partitions/<name>, the
+ * name being the partition string without its persist: prefix). Derived —
+ * never asked of a session (round 7, R6-6): on Windows a partition session
+ * opens its Local Storage leveldb the moment it exists, so the copy must
+ * be placed before any session is created, which leaves no session to ask. */
+function legacyPartitionDir(userDataDir) {
+  return path.join(userDataDir, 'Partitions', LEGACY_MIGRATION_PARTITION.replace(/^persist:/, ''));
+}
+
+/** Start the partition copy NOW and return its handle (round 7, R6-2 +
+ * R6-6): session-free main-process file I/O, begun at the top of the ready
+ * callback, long before legacyStorage creates the partition session — so
+ * the copy is settled before any live database can hold the directory, and
+ * nothing ever writes into a directory a live session holds. The promise
+ * resolves to the copy-side state (R6-1) once the copy lands; the 2 s
+ * contention bound stays on the copy only. Never throws synchronously. */
+function startLegacyStorageCopy({ userDataDir }) {
+  const partitionDir = legacyPartitionDir(userDataDir);
+  const leveldbDir = path.join(partitionDir, 'Local Storage', 'leveldb');
   const promise = (async () => {
-    if (!leveldbDir) throw new Error('Legacy migration partition has no storage path');
     await copyLeveldbToPartition(path.join(userDataDir, 'Local Storage', 'leveldb'), leveldbDir);
     return snapshotCopyState(leveldbDir);
   })();
   void promise.catch(() => {}); // Observed via the await in legacyStorage; startup must not see it unhandled first.
-  return { partitionSession, partitionDir, leveldbDir, promise };
+  return { partitionDir, leveldbDir, promise };
 }
 
 /** Remove the migration partition's storage directory (round 7, R6-4): a
@@ -235,24 +242,25 @@ function startLegacyStorageCopy({ session, userDataDir }) {
  * a stale copy of the user's legacy storage persist indefinitely. */
 function removeLegacyMigrationPartition(userDataDir) {
   try {
-    fsSync.rmSync(path.join(userDataDir, 'Partitions', LEGACY_MIGRATION_PARTITION.replace(/^persist:/, '')), { recursive: true, force: true });
+    fsSync.rmSync(legacyPartitionDir(userDataDir), { recursive: true, force: true });
     return true;
   } catch { return false; }
 }
 
-/** Begin the one-time migration at startup (round 7, R6-2 + R6-4). When
- * the migration marker already exists the migration is done: remove any
- * stale partition copy once — BEFORE anything calls fromPartition — and
- * return null (the gate will not run the legacy leg). Otherwise start the
- * copy and return its handle for legacyStorage. Never throws. */
-function beginLegacyMigration({ session, userDataDir, markerPath }) {
+/** Begin the one-time migration at startup (round 7, R6-2 + R6-4 + R6-6).
+ * When the migration marker already exists the migration is done: remove
+ * any stale partition copy once — BEFORE anything calls fromPartition —
+ * and return null (the gate will not run the legacy leg). Otherwise start
+ * the session-free copy and return its handle for legacyStorage. Never
+ * throws. */
+function beginLegacyMigration({ userDataDir, markerPath }) {
   let markerPresent = false;
   try { markerPresent = fsSync.existsSync(markerPath); } catch { markerPresent = false; }
   if (markerPresent) {
     removeLegacyMigrationPartition(userDataDir);
     return null;
   }
-  return startLegacyStorageCopy({ session, userDataDir });
+  return startLegacyStorageCopy({ userDataDir });
 }
 
 /** Read the old file-origin storage without executing the old application or any plugins.
@@ -263,12 +271,19 @@ function beginLegacyMigration({ session, userDataDir, markerPath }) {
  * had closed moments earlier (and whose recovery path can wipe it). The
  * original is only ever touched by bounded main-process file I/O here.
  * Round 7 (R6-2): the copy arrives STARTED — `copy` is the handle from
- * beginLegacyMigration, begun at the top of the ready callback — and is
- * awaited below, after the window and handler are in place. */
-async function legacyStorage({ BrowserWindow, indexFile, copy }) {
+ * beginLegacyMigration, begun at the top of the ready callback. Round 7
+ * (R6-6): it is awaited BEFORE the partition session is created — the
+ * lead's Windows gate showed fromPartition opens the partition's leveldb
+ * immediately, and a copy written into that live directory fails with
+ * file-in-use errors while Chromium rebuilds the database (0 of 7 seeded
+ * values served). Nothing here writes into a directory a live session
+ * holds. */
+async function legacyStorage({ BrowserWindow, session, indexFile, copy }) {
   if (!copy) throw new Error('Legacy migration copy was not started');
-  const { partitionSession, leveldbDir } = copy;
-  const partitionProtocol = partitionSession?.protocol;
+  const copyState = await copy.promise;
+  const partitionSession = session.fromPartition(LEGACY_MIGRATION_PARTITION);
+  const partitionProtocol = partitionSession.protocol;
+  const { leveldbDir } = copy;
   // With file privileges fused off, Chromium denies access to the legacy file-origin store.
   // Relax origin checks only for this hidden, sandboxed migration window. Its exact file URL
   // serves constant HTML with default-src 'none'; no application, plugin or remote code runs.
@@ -317,23 +332,16 @@ async function legacyStorage({ BrowserWindow, indexFile, copy }) {
     return !contents.isLoadingMainFrame();
   };
   let removeReady = () => {};
-  let copyState;
   try {
     // The constant-HTML handler lives on the PARTITION session's protocol
-    // (round 6): the default session never serves the migration page. A
-    // started copy without a session means its setup already failed; the
-    // await below surfaces that rejection before anything loads.
-    if (partitionProtocol) {
-      partitionProtocol.handle('file', (request) => {
-        try {
-          if (path.resolve(fileURLToPath(request.url)).toLowerCase() !== path.resolve(indexFile).toLowerCase()) return new Response('', { status: 403 });
-          return new Response('<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'">', { headers: { 'content-type': 'text/html' } });
-        } catch { return new Response('', { status: 403 }); }
-      });
-      handling = true;
-    }
-    // The window must not load before its storage is the settled copy.
-    copyState = await copy.promise;
+    // (round 6): the default session never serves the migration page.
+    partitionProtocol.handle('file', (request) => {
+      try {
+        if (path.resolve(fileURLToPath(request.url)).toLowerCase() !== path.resolve(indexFile).toLowerCase()) return new Response('', { status: 403 });
+        return new Response('<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'">', { headers: { 'content-type': 'text/html' } });
+      } catch { return new Response('', { status: 403 }); }
+    });
+    handling = true;
     // Keep navigation and execution independently bounded; an unresolved native
     // Promise must not leave the only application window hidden indefinitely.
     const loadDeadline = Date.now() + LEGACY_LOAD_TIMEOUT_MS;
@@ -382,7 +390,7 @@ async function legacyStorage({ BrowserWindow, indexFile, copy }) {
     try { if (handling) partitionProtocol.unhandle('file'); } catch (error) { cleanupError ??= error; }
     // Clear the partition in finally: the copied legacy data must not outlive
     // the migration, whatever the read's outcome was.
-    if (partitionSession) { try { await partitionSession.clearStorageData(); } catch (error) { cleanupError ??= error; } }
+    try { await partitionSession.clearStorageData(); } catch (error) { cleanupError ??= error; }
   }
   // A primary error propagates through finally. Only a successful read reaches
   // this point, where incomplete cleanup must still prevent acknowledgement.

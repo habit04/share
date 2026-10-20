@@ -200,12 +200,13 @@ installCrashLogging();
 installWebContentsGuards(app);
 
 app.whenReady().then(async () => {
-  // Round 7 (R6-2 + R6-4): begin the one-time legacy migration before any
-  // other startup work. If the migration marker already exists, this removes
-  // any stale migration-partition copy once and returns null; otherwise it
-  // STARTS the partition copy now, so the copied leveldb has the whole of
-  // startup to settle before the migration gate below awaits it.
-  const legacyCopy = DEV_URL ? null : beginLegacyMigration({ session, userDataDir: stateDir(), markerPath: path.join(stateDir(), 'renderer-origin-migrated') });
+  // Round 7 (R6-2 + R6-4 + R6-6): begin the one-time legacy migration before
+  // any other startup work. If the migration marker already exists, this
+  // removes any stale migration-partition copy once and returns null;
+  // otherwise it STARTS the partition copy now — session-free file I/O, so
+  // the copy is settled before the migration gate below creates the
+  // partition session (which on Windows opens its leveldb immediately).
+  const legacyCopy = DEV_URL ? null : beginLegacyMigration({ userDataDir: stateDir(), markerPath: path.join(stateDir(), 'renderer-origin-migrated') });
   installPermissionHandlers(session.defaultSession, () => (ctx.mainWindow && !ctx.mainWindow.isDestroyed() ? ctx.mainWindow.webContents : null));
   installAssetHandler({ protocol, net, root: path.join(__dirname, '..', 'dist') });
   if (!DEV_URL) {
@@ -224,7 +225,7 @@ app.whenReady().then(async () => {
       runLegacy: async () => {
         // This line's legacyStorage resolves a dictionary, null for an incomplete
         // read, and throws on failure; adapt it to the gate's outcome shape.
-        const values = await legacyStorage({ BrowserWindow, indexFile: path.join(__dirname, '..', 'dist', 'index.html'), copy: legacyCopy });
+        const values = await legacyStorage({ BrowserWindow, session, indexFile: path.join(__dirname, '..', 'dist', 'index.html'), copy: legacyCopy });
         return values === null ? { values: null, ok: false } : { values, ok: true };
       },
       logError: logMainError,
