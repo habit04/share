@@ -623,6 +623,25 @@ describe('round 8: stable, coherent copy (R8-A)', () => {
     } finally { spy.mockRestore(); }
   });
 
+  it('does not recopy when only a skipped name (LOG) changes during the copy (N3)', async () => {
+    const h = harness();
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table', LOG: 'x' });
+    const realCpSync = fs.cpSync;
+    let calls = 0;
+    const spy = vi.spyOn(fs, 'cpSync').mockImplementation(((...args: Parameters<typeof fs.cpSync>) => {
+      calls += 1;
+      if (calls === 1) writeFileSync(join(h.originalDir, 'LOG'), 'x'.repeat(64));
+      return (realCpSync as (...a: Parameters<typeof fs.cpSync>) => void)(...args);
+    }) as typeof fs.cpSync);
+    try {
+      const state = await h.start().promise;
+      // One attempt copies exactly three files (LOG is skipped): the
+      // log's growth is not instability.
+      expect(calls).toBe(3);
+      expect(state.ldbFiles).toEqual(['000005.ldb']);
+    } finally { spy.mockRestore(); }
+  });
+
   it('fails the leg when the original never stabilises inside the copy bound', async () => {
     vi.useFakeTimers();
     const h = harness();

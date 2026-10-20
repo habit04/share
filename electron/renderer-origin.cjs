@@ -253,6 +253,11 @@ function listStoreFiles(dir) {
   catch { return []; }
   const listing = [];
   for (const name of names) {
+    // N3: the names the copy skips (LOCK, LOG, LOG.old) are excluded —
+    // they are not copied, so their churn (the original's log growing
+    // under its owner) cannot tear the copy and must not force recopies
+    // or fail the leg.
+    if (COPY_SKIP_NAMES.has(name)) continue;
     try {
       const stat = fsSync.statSync(path.join(dir, name));
       if (stat.isFile()) listing.push([name, stat.size]);
