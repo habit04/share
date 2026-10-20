@@ -119,7 +119,11 @@ const ctx = { ipcMain, rejections, registry, pathPolicy, senderWindow, mainWindo
   // Set when the startup legacy-storage migration did not complete (P-MIG): the migration must
   // not be marked complete for this launch - neither by the migrated checkpoint below nor by a
   // close-time checkpoint (electron/main/window.cjs) - so the next launch retries the extraction.
-  legacyMigrationFailed: false };
+  legacyMigrationFailed: false,
+  // Set when the startup preference checkpoint could not be read (corrupt or over-limit;
+  // PR23 ASAR round 2): the checkpoint file and the migration marker are protected from
+  // overwrite for this launch (see electron/main/startup-migration.cjs).
+  checkpointUnreadable: false };
 ipcMain.handle('gpu-diagnostics', () => gpuCollector.get());
 
 function loadPersistedPaths() {
@@ -243,8 +247,10 @@ ipcMain.handle('renderer-storage-migrated', async (event) => {
   try {
     // A failed startup migration (P-MIG) must not be marked complete: this checkpoint is the
     // only write of the migration marker file, and it would also make the next launch take the
-    // checkpoint branch and never retry the legacy extraction. Skip it; the next launch retries.
-    if (ctx.legacyMigrationFailed) return false;
+    // checkpoint branch and never retry the legacy extraction. An unreadable checkpoint
+    // (round 2) must not be overwritten either: its bytes are preserved for the next launch.
+    // Skip it; the next launch retries.
+    if (ctx.legacyMigrationFailed || ctx.checkpointUnreadable) return false;
     const values = await checkpointRendererPreferences(event.sender, true);
     rendererStorage = { values, source: 'checkpoint' };
     flushRendererPreferences(event.sender);

@@ -12,8 +12,10 @@
  * it stands, neither the 'renderer-storage-migrated' checkpoint (the only write of
  * the migration marker) nor a close-time checkpoint may mark the migration
  * complete, so the next launch retries the extraction. A checkpoint-READ failure
- * does NOT set it: the recovery copy self-heals from the renderer's live storage
- * on the next committed checkpoint, as it always could once a window opened.
+ * does NOT set it; since round 2 (lead ruling) it sets ctx.checkpointUnreadable
+ * instead, and while THAT stands the same two guards protect the checkpoint file
+ * itself: an unreadable (corrupt or over-limit) checkpoint is never overwritten
+ * by a live snapshot, so its bytes survive for the next launch's retry.
  *
  * What these tests drive, exactly: the REAL startup gate
  * (electron/main/startup-migration.cjs) executing inside the REAL main ready
@@ -90,10 +92,11 @@ async function startup(options: { directory: string; legacy: () => Promise<unkno
   const ipc = { sendSync: vi.fn((_channel: string) => context.rendererStorage),
     invoke: vi.fn((channel: string) => {
       if (channel !== 'renderer-storage-migrated') throw new Error('Unexpected preference IPC');
-      // Model the production handler's one-line P-MIG guard (electron/main.cjs):
-      // while the failure flag stands, the migrated checkpoint — the only write of
+      // Model the production handler's one-line guard (electron/main.cjs): while
+      // either failure flag stands, the migrated checkpoint — the only write of
       // the migration marker — is refused. Static pins below tie this to the text.
-      if ((context.ctx as { legacyMigrationFailed: boolean }).legacyMigrationFailed) return Promise.resolve(false);
+      const flags = context.ctx as { legacyMigrationFailed: boolean; checkpointUnreadable: boolean };
+      if (flags.legacyMigrationFailed || flags.checkpointUnreadable) return Promise.resolve(false);
       const task = store.checkpoint({}, true).then(() => true);
       acknowledgement.push(task); return task;
     }) };
@@ -117,7 +120,7 @@ async function startup(options: { directory: string; legacy: () => Promise<unkno
     installPermissionHandlers: vi.fn(), installAssetHandler: vi.fn(), loadPersistedPaths, handOverFiles,
     drawingArgs: vi.fn(() => []), process: { argv: ['private-test-jcad'], cwd: () => repo }, createWindow,
     probePhase: null, testBuild: true, runShippingProbe: vi.fn(), updater: { scheduleStartupCheck: vi.fn() },
-    ctx: { mainWindow: null, legacyMigrationFailed: false },
+    ctx: { mainWindow: null, legacyMigrationFailed: false, checkpointUnreadable: false },
   };
   runInNewContext(startupSource, context, { filename: 'actual-main-ready-callback.cjs' });
   if (!ready) throw new Error('Actual ready callback did not execute');
@@ -127,6 +130,10 @@ async function startup(options: { directory: string; legacy: () => Promise<unkno
 
 function migrationFailed(result: { context: Record<string, unknown> }) {
   return (result.context.ctx as { legacyMigrationFailed: boolean }).legacyMigrationFailed;
+}
+
+function checkpointUnreadable(result: { context: Record<string, unknown> }) {
+  return (result.context.ctx as { checkpointUnreadable: boolean }).checkpointUnreadable;
 }
 
 async function expectNoMigration(directory: string) {
@@ -151,19 +158,21 @@ describe('main startup keeps an unsuccessful preference migration unacknowledged
     await expectNoMigration(p.directory); expect(await files.readFile(p.legacy)).toEqual(p.original);
   });
 
-  it('keeps a corrupt checkpoint from falling back to legacy values while startup proceeds', async () => {
+  it('keeps a corrupt checkpoint byte-identical and unwritten while startup proceeds', async () => {
     const corrupt = '{"incomplete":"checkpoint"', p = await profile(corrupt);
     const result = await startup({ directory: p.directory, legacy: async () => ({ stale: 'legacy' }) });
     expect(result.legacyStorage).not.toHaveBeenCalled(); expect(result.logMainError).toHaveBeenCalledOnce();
     expect(result.showErrorBox).not.toHaveBeenCalled(); expect(result.quit).not.toHaveBeenCalled();
     expect(result.createWindow).toHaveBeenCalledOnce(); expect(result.supplied).toEqual([null]);
     expect(result.storage.has('stale')).toBe(false);
-    // A checkpoint-READ failure is not a migration-leg failure (P-MIG): the retry
-    // flag stays clear, so the acknowledgement commits the renderer's live storage
-    // and the corrupt recovery copy self-heals instead of wedging every launch.
-    expect(migrationFailed(result)).toBe(false);
-    expect(await files.readFile(path.join(p.directory, CHECKPOINT_NAME), 'utf8')).toBe('{}');
-    expect(await files.readFile(path.join(p.directory, MIGRATION_NAME), 'utf8')).toBe('1');
+    // A checkpoint-READ failure is not a migration-leg failure (P-MIG): the leg
+    // flag stays clear, but round 2's checkpointUnreadable protects the file —
+    // the acknowledgement is refused, the corrupt bytes survive untouched, and
+    // no marker is written, even though this origin's live storage is empty.
+    expect(migrationFailed(result)).toBe(false); expect(checkpointUnreadable(result)).toBe(true);
+    expect(result.ipc.invoke).toHaveBeenCalledExactlyOnceWith('renderer-storage-migrated');
+    expect(await files.readFile(path.join(p.directory, CHECKPOINT_NAME), 'utf8')).toBe(corrupt);
+    await expect(files.stat(path.join(p.directory, MIGRATION_NAME))).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await files.readFile(p.legacy)).toEqual(p.original);
   });
 
@@ -178,17 +187,39 @@ describe('main startup keeps an unsuccessful preference migration unacknowledged
     expect(await files.readFile(p.legacy)).toEqual(p.original);
   });
 
-  it('keeps an over-limit checkpoint from falling back to legacy values while startup proceeds', async () => {
+  it('keeps an over-limit checkpoint byte-identical even with a non-empty live origin', async () => {
     const bytes = JSON.stringify({ oversize: 'a'.repeat(8 * 1024 * 1024) }), p = await profile(bytes);
-    const result = await startup({ directory: p.directory, legacy: async () => ({ stale: 'legacy' }) });
+    const result = await startup({ directory: p.directory, legacy: async () => ({ stale: 'legacy' }), current: { preference: 'newest' } });
     expect(result.legacyStorage).not.toHaveBeenCalled(); expect(result.logMainError).toHaveBeenCalledOnce();
     expect(result.showErrorBox).not.toHaveBeenCalled(); expect(result.quit).not.toHaveBeenCalled();
     expect(result.createWindow).toHaveBeenCalledOnce(); expect(result.supplied).toEqual([null]);
     expect(result.storage.has('stale')).toBe(false);
-    // Same self-heal as the corrupt case: the unreadable file itself is never used,
-    // and the committed checkpoint is the renderer's live (here empty) storage.
-    expect(migrationFailed(result)).toBe(false);
-    expect(await files.readFile(path.join(p.directory, CHECKPOINT_NAME), 'utf8')).toBe('{}');
+    // The live origin HAS a committable value ('newest') and it stays live — but
+    // round 2 protects the unreadable file: no snapshot, however good, may
+    // replace the over-limit bytes or write the marker this launch.
+    expect(result.storage.get('preference')).toBe('newest');
+    expect(migrationFailed(result)).toBe(false); expect(checkpointUnreadable(result)).toBe(true);
+    expect(await files.readFile(path.join(p.directory, CHECKPOINT_NAME), 'utf8')).toBe(bytes);
+    await expect(files.stat(path.join(p.directory, MIGRATION_NAME))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await files.readFile(p.legacy)).toEqual(p.original);
+  });
+
+  it('re-runs the legacy leg on the next startup after a failed leg and merges its values', async () => {
+    const p = await profile();
+    const failure = new Error('storage execution timed out');
+    const first = await startup({ directory: p.directory, legacy: async () => { throw failure; } });
+    expect(first.legacyStorage).toHaveBeenCalledOnce(); expect(migrationFailed(first)).toBe(true);
+    await expectNoMigration(p.directory);
+    // Second launch over the SAME profile: nothing was marked complete, so the
+    // gate runs the extraction again; this time it succeeds and its values are
+    // served, inserted into the empty origin, and committed with the marker.
+    const second = await startup({ directory: p.directory, legacy: async () => ({ preference: 'legacy value Δ', theme: 'dark' }) });
+    expect(second.legacyStorage).toHaveBeenCalledOnce();
+    expect(migrationFailed(second)).toBe(false); expect(checkpointUnreadable(second)).toBe(false);
+    expect(second.supplied).toEqual([{ source: 'legacy', values: { preference: 'legacy value Δ', theme: 'dark' } }]);
+    expect(second.storage.get('preference')).toBe('legacy value Δ'); expect(second.storage.get('theme')).toBe('dark');
+    expect(JSON.parse(await files.readFile(path.join(p.directory, CHECKPOINT_NAME), 'utf8'))).toEqual({ preference: 'legacy value Δ', theme: 'dark' });
+    expect(await files.readFile(path.join(p.directory, MIGRATION_NAME), 'utf8')).toBe('1');
     expect(await files.readFile(p.legacy)).toEqual(p.original);
   });
 
@@ -238,13 +269,13 @@ describe('P-MIG retry guards (static pins on the production text)', () => {
     expect(startupSource).not.toContain('showErrorBox');
   });
 
-  it('the migrated handler refuses its checkpoint while the failure flag stands', () => {
+  it('the migrated handler refuses its checkpoint while either failure flag stands', () => {
     const handler = mainSource.indexOf("ipcMain.handle('renderer-storage-migrated'");
     expect(handler).toBeGreaterThan(0);
-    expect(mainSource.slice(handler, handler + 600)).toContain('if (ctx.legacyMigrationFailed) return false;');
+    expect(mainSource.slice(handler, handler + 700)).toContain('if (ctx.legacyMigrationFailed || ctx.checkpointUnreadable) return false;');
   });
 
-  it('the close-time checkpoint is skipped while the failure flag stands', () => {
-    expect(windowSource).toContain('if (!ctx.legacyMigrationFailed) await checkpointRendererPreferences(win.webContents);');
+  it('the close-time checkpoint is skipped while either failure flag stands', () => {
+    expect(windowSource).toContain('if (!ctx.legacyMigrationFailed && !ctx.checkpointUnreadable) await checkpointRendererPreferences(win.webContents);');
   });
 });

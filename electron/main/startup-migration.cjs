@@ -6,9 +6,17 @@
  * the state folder, renderer-origin's legacyStorage with its window arguments bound).
  *
  * Ported to this line from the P-MIG source (electron/main/startup-migration.cjs, gate at
- * lines 44-66) as part of the PR23 ASAR fix: semantics unchanged. This line's legacyStorage
- * resolves a dictionary (or null for an incomplete read) and throws on failure, so the entry
- * point's runLegacy binding adapts it to the { values, ok } outcome this gate consumes.
+ * lines 44-66) as part of the PR23 ASAR fix. This line's legacyStorage resolves a
+ * dictionary (or null for an incomplete read) and throws on failure, so the entry point's
+ * runLegacy binding adapts it to the { values, ok } outcome this gate consumes.
+ *
+ * Round-2 extension on this line (lead ruling, PR23 ASAR fix gate): a checkpoint-READ
+ * failure additionally sets ctx.checkpointUnreadable. P-MIG left a corrupt checkpoint to
+ * self-heal via the next committed checkpoint; this line's data-protection rule is
+ * stricter — while the flag stands, neither the migrated checkpoint nor a close-time
+ * checkpoint may overwrite the unreadable checkpoint file or write the migration
+ * marker, so the preserved bytes stay available and the next launch retries the read.
+ * The gate below is P-MIG's except for exactly this checkpoint-read tracking.
  *
  * The gate, in order: a committed preference checkpoint is the startup storage and no
  * migration runs; if the migration marker already exists, there is no startup storage; only
@@ -18,9 +26,9 @@
  * extraction resolved { ok: false }, or the leg itself threw - the hidden window's
  * construction throws outside legacyStorage's own handling and propagates as its rejection.
  * A throw anywhere else in the gate does NOT set it - in particular a checkpoint-READ
- * failure: with the flag standing, the close-time checkpoint is skipped, so a permanently
- * corrupt checkpoint would never be overwritten on a normal close as it always has been,
- * and could never self-heal. Every throw is logged exactly once, here, and startup
+ * failure sets the separate ctx.checkpointUnreadable instead (round 2, see above): with
+ * THAT flag standing, the checkpoint file and the marker are protected from overwrite
+ * for the whole launch. Every throw is logged exactly once, here, and startup
  * continues with no startup storage: an unreadable/corrupt checkpoint must not fall back
  * to stale legacy values.
  */
@@ -48,9 +56,19 @@
  */
 async function runStartupMigration(deps) {
   const { ctx, readCheckpoint, markerExists, legacyStoreExists, runLegacy, logError } = deps;
+  let checkpoint;
+  try {
+    checkpoint = await readCheckpoint();
+  } catch (readError) {
+    // Round 2 (see the header): an unreadable checkpoint — corrupt or over the size
+    // limit — is protected from overwrite for this whole launch; startup continues
+    // with no stored values and the next launch retries the read.
+    ctx.checkpointUnreadable = true;
+    logError('renderer preference migration', readError);
+    return null;
+  }
   let migrationLegThrew = false;
   try {
-    const checkpoint = await readCheckpoint();
     if (checkpoint !== null) return { values: checkpoint, source: 'checkpoint' };
     if (markerExists()) return null;
     let outcome;

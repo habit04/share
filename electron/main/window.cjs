@@ -84,9 +84,10 @@ function createWindows(ctx, devUrl, allowInspection = !app.isPackaged) {
       // A failed startup migration (P-MIG) must not be marked complete by a close-time
       // checkpoint either: it would make the next launch take the checkpoint branch and
       // never retry the legacy extraction, and its snapshot would lack the legacy values
-      // this session never received. What is forgone is only this session's refresh of
-      // that recovery copy; the next launch retries the extraction.
-      if (!ctx.legacyMigrationFailed) await checkpointRendererPreferences(win.webContents);
+      // this session never received. An unreadable checkpoint (round 2) must not be
+      // overwritten either: its bytes are preserved for the next launch's retry. What
+      // is forgone is only this session's refresh of that recovery copy.
+      if (!ctx.legacyMigrationFailed && !ctx.checkpointUnreadable) await checkpointRendererPreferences(win.webContents);
       flushRendererPreferences(win.webContents);
       return true;
     } catch (error) {
