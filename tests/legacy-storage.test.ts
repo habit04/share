@@ -157,6 +157,38 @@ describe('legacy storage: preserving an undecodable store before ready (round 12
   // A MANIFEST that CURRENT names but that is missing is corruption to
   // leveldb ("CURRENT points to a non-existent file"): preserved, and the
   // leg fails. Directory/CURRENT absence is covered further below.
+  it('stops preserving at 3 copies and logs the skip (Fable N2)', async () => {
+    await withStore(async ({ local, leveldb }) => {
+      const { mkdirSync } = await import('node:fs');
+      for (const stamp of ['2026-10-18T00-00-00-000Z', '2026-10-19T00-00-00-000Z', '2026-10-20T00-00-00-000Z']) {
+        mkdirSync(join(local, `${PRESERVED}${stamp}`), { recursive: true });
+      }
+      const logError = vi.fn();
+      const read = readLegacyStoreBeforeReady(leveldb, { logError, now: at('2026-10-20T12:00:00.000Z') });
+      // The leg still fails; only the copy is skipped, and the skip
+      // is what gets logged (the 3 existing copies keep the bytes).
+      expect(read).toHaveProperty('error');
+      expect(await preservedDirs(local)).toHaveLength(3);
+      expect(logError).toHaveBeenCalledOnce();
+      expect(logError).toHaveBeenCalledWith('renderer preference migration',
+        expect.objectContaining({ message: expect.stringContaining('preservation skipped: 3 preserved copies') }));
+    });
+  });
+
+  it('still preserves with 2 copies present — the cap is on the count, not the presence (Fable N2)', async () => {
+    await withStore(async ({ local, leveldb }) => {
+      const { mkdirSync } = await import('node:fs');
+      for (const stamp of ['2026-10-18T00-00-00-000Z', '2026-10-19T00-00-00-000Z']) {
+        mkdirSync(join(local, `${PRESERVED}${stamp}`), { recursive: true });
+      }
+      const logError = vi.fn();
+      readLegacyStoreBeforeReady(leveldb, { logError, now: at('2026-10-20T12:00:00.000Z') });
+      expect(await preservedDirs(local)).toHaveLength(3);
+      expect(logError).toHaveBeenCalledWith('renderer preference migration',
+        expect.objectContaining({ message: expect.stringContaining('Unreadable legacy store preserved at') }));
+    });
+  });
+
   it('a MANIFEST that CURRENT names but that is missing is corruption: preserved, the leg fails; only decode failures count', async () => {
     await withStore(async ({ local, leveldb }) => {
       const { writeFileSync } = await import('node:fs');

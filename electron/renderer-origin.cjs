@@ -195,6 +195,16 @@ function preserveLegacyStore(leveldbDir, { logError, now = () => new Date() }) {
       });
       if (same) return null;
     }
+    // Fable follow-up N2 (non-blocking at the 12b gate): bound the
+    // preserved copies themselves. A store that keeps failing to
+    // decode in new states would otherwise leave one copy per
+    // launch forever; at 3 existing copies the bytes are already
+    // kept, so skip and say so — once, through the same log.
+    const existing = fsSync.readdirSync(parent).filter((name) => name.startsWith(prefix)).length;
+    if (existing >= 3) {
+      logError('renderer preference migration', new Error(`Legacy store preservation skipped: ${existing} preserved copies already exist beside ${leveldbDir}`));
+      return null;
+    }
     const stamp = now().toISOString().replace(/[:.]/g, '-');
     let target = path.join(parent, `${prefix}${stamp}`);
     for (let counter = 2; fsSync.existsSync(target); counter += 1) target = path.join(parent, `${prefix}${stamp}-${counter}`);
