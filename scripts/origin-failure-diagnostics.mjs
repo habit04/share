@@ -27,9 +27,12 @@ export function originFailureDiagnostics(app, { profile, output, launch }) {
   child?.on('exit', onExit);
   /** @type {Set<import('playwright').Page>} */
   const tracked = new Set();
-  /** The latest live CDP target snapshot, taken while a window exists (round 2,
-   * see probeTargets). @type {{ at: string, targets: Record<string, unknown>[] } | { unavailable: string } | null} */
-  let latestTargets = null;
+  /** Live CDP target snapshots, taken while windows exist (rounds 2-3, see
+   * probeTargets): a bounded array (max 16), one entry per probed window, each
+   * with its `at` time and the probing page's url — round 2 kept only the
+   * latest snapshot, so the main window's probe overwrote the migration
+   * window's. @type {{ at: string, pageUrl: string, targets: Record<string, unknown>[] }[]} */
+  const targetSnapshots = [];
   /** Live CDP target probe (PR23 ASAR diagnosis item C, redesigned in round 2).
    * Round 1 probed at capture time, which is dead on the real runtime:
    * newCDPSession() with no page argument throws ('page: expected Page or
@@ -55,9 +58,11 @@ export function originFailureDiagnostics(app, { profile, output, launch }) {
     let timer;
     try {
       const targets = await Promise.race([probe, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Target probe exceeded its 2000ms bound')), 2_000); })]);
-      latestTargets = { at: new Date().toISOString(), targets };
+      let pageUrl = '<unavailable>';
+      try { pageUrl = page.url().slice(0, 512); } catch { /* keep unavailable */ }
+      targetSnapshots.push({ at: new Date().toISOString(), pageUrl, targets });
+      if (targetSnapshots.length > 16) targetSnapshots.shift();
     } catch (error) {
-      if (latestTargets === null) latestTargets = { unavailable: String(error).slice(0, 512) };
       add('target-probe-unavailable', { error: String(error).slice(0, 512) });
     } finally { clearTimeout(timer); }
   }
@@ -143,7 +148,7 @@ export function originFailureDiagnostics(app, { profile, output, launch }) {
         const out = output;
         if (!out) { console.error('Origin failure diagnostics require JCAD_E2E_OUT; original failure retained.'); return; }
         const state = await mainState();
-        const cdpTargets = latestTargets ?? { unavailable: 'No live target snapshot was recorded' };
+        const cdpTargets = targetSnapshots.length > 0 ? targetSnapshots : { unavailable: 'No live target snapshot was recorded' };
         const diagnostic = { kind: 'Failure-only origin E2E observation; no cause inferred', launch: launch + 1,
           at: new Date().toISOString(), failure: String(error?.stack ?? error).slice(0, 4_096),
           process: child ? { pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode, killed: child.killed } : { unavailable: true },
