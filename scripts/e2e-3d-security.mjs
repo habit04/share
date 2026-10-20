@@ -24,7 +24,7 @@ import { createRequire } from 'node:module';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { applicationWindow } from './electron-window.mjs';
+import { applicationWindow, closeApplication } from './electron-window.mjs';
 import { verifyExecutableFuses } from './electron-fuse-policy.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
@@ -213,7 +213,7 @@ try {
 } finally {
   clearTimeout(hardTimeout);
   await Promise.race([app.evaluate(({ app: main }) => main.exit(0)).catch(() => {}), new Promise((r) => setTimeout(r, 5_000))]);
-  try { await app.close(); } catch { /* already gone */ }
+  await closeApplication(app); // bounded (PR23 ASAR diagnosis); tree-kills a wedged app by pid
   if (profile.startsWith(join(tmpdir(), 'jcad-3d-security-'))) rmSync(profile, { recursive: true, force: true });
 }
 

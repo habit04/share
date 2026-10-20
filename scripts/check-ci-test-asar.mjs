@@ -134,6 +134,17 @@ async function main() {
     receipt.ok=true;
   }catch(error){receipt.error=String(error.stack??error);throw error;}
   finally{
+    // Surface the origin driver's recorded CDP target state in the receipt
+    // itself (PR23 ASAR diagnosis item C). Best-effort: the driver outputs
+    // sit beside this receipt in the uploaded bundle either way.
+    try{
+      const originOut=join(reports,'origin-output');
+      const failureFiles=existsSync(originOut)?readdirSync(originOut).filter(name=>/^origin-failure-launch-\d+\.json$/.test(name)).sort():[];
+      if(failureFiles.length){
+        const diagnostic=JSON.parse(readFileSync(join(originOut,failureFiles[failureFiles.length-1]),'utf8'));
+        if(diagnostic?.cdpTargets)receipt.originCdpTargets=diagnostic.cdpTargets;
+      }
+    }catch{/* diagnostics never change the recorded driver outcome */}
     // Driver failure must still retain and enforce final package identity.
     if(receipt.proof){
       try{

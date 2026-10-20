@@ -102,12 +102,56 @@ export function originFailureDiagnostics(app, { profile, output, launch }) {
     }
     return { inventory, inventoryLimit: 64, selected };
   }
+  /** Bounded CDP target probe (PR23 ASAR diagnosis item C): for the next
+   * occurrence, show whether the hidden migration window's target had a
+   * debugger attached and whether it sat paused waiting for one. Best-effort
+   * and capped at the same 2000ms discipline as mainState; never throws. */
+  async function cdpTargetState() {
+    const probe = (async () => {
+      const result = { targets: [], pages: [] };
+      try {
+        const browser = await (/** @type {any} */ (app)).context().newCDPSession();
+        try {
+          const { targetInfos } = await browser.send('Target.getTargets');
+          result.targets = (targetInfos ?? []).slice(0, 16).map((info) => ({
+            type: String(info.type ?? ''), url: String(info.url ?? '').slice(0, 512),
+            attached: Boolean(info.attached), targetId: String(info.targetId ?? '').slice(0, 64),
+          }));
+        } finally { await browser.detach().catch(() => {}); }
+      } catch (error) { result.targets = [{ unavailable: String(error).slice(0, 512) }]; }
+      for (const page of tracked) {
+        const entry = { url: '<unavailable>' };
+        try { entry.url = page.url().slice(0, 512); } catch { /* keep unavailable */ }
+        try {
+          const session = await (/** @type {any} */ (app)).context().newCDPSession(page);
+          try {
+            const { targetInfo } = await session.send('Target.getTargetInfo');
+            entry.target = { type: targetInfo.type, attached: targetInfo.attached, targetId: String(targetInfo.targetId ?? '').slice(0, 64) };
+            // A target paused for a debugger announces Debugger.paused once a
+            // session enables the debugger; listen briefly, then detach.
+            entry.debuggerPaused = await new Promise((done) => {
+              const timer = setTimeout(() => done(false), 400);
+              session.on('Debugger.paused', () => { clearTimeout(timer); done(true); });
+              session.send('Debugger.enable').catch(() => { clearTimeout(timer); done(false); });
+            });
+          } finally { await session.detach().catch(() => {}); }
+        } catch (error) { entry.unavailable = String(error).slice(0, 512); }
+        result.pages.push(entry);
+      }
+      return result;
+    })();
+    let timer;
+    try {
+      return await Promise.race([probe, new Promise((done) => { timer = setTimeout(() => done({ unavailable: 'CDP probe exceeded its 2000ms bound' }), 2_000); })]);
+    } finally { clearTimeout(timer); }
+  }
   return {
     async capture(error) {
       try {
         const out = output;
         if (!out) { console.error('Origin failure diagnostics require JCAD_E2E_OUT; original failure retained.'); return; }
         const state = await mainState();
+        const cdpTargets = await cdpTargetState();
         const diagnostic = { kind: 'Failure-only origin E2E observation; no cause inferred', launch: launch + 1,
           at: new Date().toISOString(), failure: String(error?.stack ?? error).slice(0, 4_096),
           process: child ? { pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode, killed: child.killed } : { unavailable: true },
@@ -115,7 +159,7 @@ export function originFailureDiagnostics(app, { profile, output, launch }) {
             try { return { url: page.url().slice(0, 512), closed: page.isClosed() }; }
             catch (error) { return { unavailable: String(error).slice(0, 1024) }; }
           }),
-          events, main: state, profile: profileState(), stdoutTail: stdout, stderrTail: stderr };
+          events, main: state, cdpTargets, profile: profileState(), stdoutTail: stdout, stderrTail: stderr };
         mkdirSync(out, { recursive: true });
         const artifactFile = join(resolve(out), `origin-failure-launch-${launch + 1}.json`);
         if (dirname(artifactFile) !== resolve(out)) throw new Error('Origin diagnostic output escaped its artifact directory');

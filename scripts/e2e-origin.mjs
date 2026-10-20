@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { _electron as electron } from 'playwright';
-import { applicationWindow } from './electron-window.mjs';
+import { applicationWindow, closeApplication } from './electron-window.mjs';
 import { originFailureDiagnostics } from './origin-failure-diagnostics.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
@@ -99,9 +99,14 @@ try {
       throw error;
     } finally {
       diagnostic.stop();
-      // Keep the actual assertion/launch failure if owned cleanup also reports an error.
-      if (failed) { try { await app.close(); } catch (error) { console.error(`Origin cleanup after failure: ${String(error).slice(0, 2048)}`); } }
-      else await app.close();
+      // Bound the cleanup close (PR23 ASAR diagnosis): a wedged main process
+      // leaves app.close() pending, which once burned the whole shared CI
+      // budget in cleanup after the failure was already named. On expiry the
+      // helper tree-kills by pid. Keep the actual assertion/launch failure if
+      // owned cleanup also reports an error.
+      const closedCleanly = await closeApplication(app);
+      if (failed) { if (!closedCleanly) console.error('Origin cleanup after failure: application close exceeded its bound and was tree-killed.'); }
+      else if (!closedCleanly) throw new Error('The application did not close within its bound and was tree-killed.');
     }
     if (launch === 1) {
       // Emulate lost Chromium DOM storage after a completed quit. Keep the durable private

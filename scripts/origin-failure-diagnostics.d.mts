@@ -2,6 +2,7 @@
 // The implementation is separately checked against the full Playwright API.
 export interface OriginDiagnosticApplication {
   process(): unknown;
+  context(): unknown;
   windows(): unknown[];
   on(event: 'window', listener: (page: unknown) => void): unknown;
   off(event: 'window', listener: (page: unknown) => void): unknown;
