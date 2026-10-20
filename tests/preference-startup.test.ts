@@ -105,6 +105,12 @@ async function startup(options: { directory: string; legacy: () => Promise<unkno
   let ready: Promise<unknown> | undefined;
   const quit = vi.fn(), showErrorBox = vi.fn(), logMainError = vi.fn();
   const legacyStorage = vi.fn(options.legacy), loadPersistedPaths = vi.fn(), handOverFiles = vi.fn();
+  // Round 7: the ready callback begins the migration copy via
+  // beginLegacyMigration and passes the handle to legacyStorage. The stub
+  // legacy above ignores its arguments, so an opaque handle models the
+  // binding; the real begin/copy behaviour is covered in
+  // tests/legacy-storage.test.ts.
+  const beginLegacyMigration = vi.fn(() => ({}));
   const ipc = { sendSync: vi.fn((_channel: string) => context.rendererStorage),
     invoke: vi.fn((channel: string) => {
       if (channel !== 'renderer-storage-migrated') throw new Error('Unexpected preference IPC');
@@ -132,7 +138,7 @@ async function startup(options: { directory: string; legacy: () => Promise<unkno
     dialog: { showErrorBox }, session: { defaultSession: {} }, protocol: {}, net: {},
     BrowserWindow: class {}, __dirname: path.join(repo, 'electron'), path, fsSync,
     DEV_URL: null, stateDir: () => options.directory, rendererStorage: null, startingMainWindow: true,
-    readRendererPreferences: store.read, legacyStorage, logMainError, runStartupMigration,
+    readRendererPreferences: store.read, legacyStorage, beginLegacyMigration, logMainError, runStartupMigration,
     renameUnreadableCheckpoint: async () => {
       // The entry point binds app-data's rename over the same real profile; the
       // harness binds the same operation over the test profile (or a failure).
@@ -149,7 +155,7 @@ async function startup(options: { directory: string; legacy: () => Promise<unkno
   runInNewContext(startupSource, context, { filename: 'actual-main-ready-callback.cjs' });
   if (!ready) throw new Error('Actual ready callback did not execute');
   await ready;
-  return { quit, showErrorBox, logMainError, legacyStorage, loadPersistedPaths, handOverFiles, createWindow, ipc, supplied, context, storage };
+  return { quit, showErrorBox, logMainError, legacyStorage, beginLegacyMigration, loadPersistedPaths, handOverFiles, createWindow, ipc, supplied, context, storage };
 }
 
 function migrationFailed(result: { context: Record<string, unknown> }) {

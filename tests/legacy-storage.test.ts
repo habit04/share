@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -8,8 +8,10 @@ import { pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 
 const require = createRequire(import.meta.url);
-const { legacyStorage, LEGACY_MIGRATION_PARTITION, withBoundedContentionWait } = require('../electron/renderer-origin.cjs') as {
-  legacyStorage(options: { BrowserWindow: unknown; session: unknown; userDataDir: string; indexFile: string }): Promise<Record<string, string>>;
+const { legacyStorage, startLegacyStorageCopy, beginLegacyMigration, LEGACY_MIGRATION_PARTITION, withBoundedContentionWait } = require('../electron/renderer-origin.cjs') as {
+  legacyStorage(options: { BrowserWindow: unknown; indexFile: string; copy: unknown }): Promise<Record<string, string>>;
+  startLegacyStorageCopy(options: { session: unknown; userDataDir: string }): { partitionSession: unknown; leveldbDir: string | null; promise: Promise<{ ldbFiles: string[]; manifestMax: number | null }> };
+  beginLegacyMigration(options: { session: unknown; userDataDir: string; markerPath: string }): { promise: Promise<{ ldbFiles: string[]; manifestMax: number | null }> } | null;
   LEGACY_MIGRATION_PARTITION: string;
   withBoundedContentionWait(operation: () => Promise<unknown>, deadlineMs?: number): Promise<unknown>;
 };
@@ -40,9 +42,10 @@ class Contents extends EventEmitter {
 
 const roots: string[] = [];
 function tempRoot() { const root = mkdtempSync(join(tmpdir(), 'jcad-legacy-storage-')); roots.push(root); return root; }
-/** Round 6 performs its pre-window file I/O (snapshot + partition copy)
- * synchronously in the module, so the window phases and their fake deadlines
- * start from a settled filesystem state with no flush needed here. */
+/** Round 7 performs its pre-window file I/O (the partition copy) when the
+ * copy is STARTED — synchronously on its first attempt — so the window
+ * phases and their fake deadlines start from a settled filesystem state
+ * with no flush needed here. */
 /** Seed a leveldb-shaped directory with the given name -> content files. */
 function seedLeveldb(dir: string, files: Record<string, string>) {
   mkdirSync(dir, { recursive: true });
@@ -64,8 +67,8 @@ function harness() {
     handle: vi.fn((_scheme: string, value: typeof handler) => { handler = value; }),
     unhandle: vi.fn(),
   };
-  // Round 6: the migration runs in a private partition. The fake session
-  // hands legacyStorage the partition protocol (the same fake the assertions
+  // Round 6/7: the migration runs in a private partition. The fake session
+  // hands the copy the partition protocol (the same fake the assertions
   // watch), a real temp storage path, and a recording clearStorageData.
   const root = tempRoot();
   const userDataDir = join(root, 'user-data'), partitionDir = join(root, 'partition');
@@ -75,9 +78,10 @@ function harness() {
   const session = { fromPartition };
   const originalDir = join(userDataDir, 'Local Storage', 'leveldb');
   const partitionLeveldb = join(partitionDir, 'Local Storage', 'leveldb');
+  const start = () => startLegacyStorageCopy({ session, userDataDir });
   return { contents, window, BrowserWindow, protocol, handler: () => handler, session, fromPartition,
-    clearStorageData, userDataDir, partitionDir, originalDir, partitionLeveldb,
-    read: () => legacyStorage({ BrowserWindow, session, userDataDir, indexFile }) };
+    clearStorageData, userDataDir, partitionDir, originalDir, partitionLeveldb, start,
+    read: () => legacyStorage({ BrowserWindow, indexFile, copy: start() }) };
 }
 
 function observe<T>(promise: Promise<T>) {
@@ -294,7 +298,7 @@ describe('owned bounded legacy-origin storage read', () => {
   });
 });
 
-describe('round 6: partition copy (F1a) and original-integrity guard (F2)', () => {
+describe('partition copy (F1a, round 6) and copy-side recreate guard (R6-1, round 7)', () => {
   it('copies the leveldb minus LOCK into the partition before the window loads; the original is untouched', async () => {
     const h = harness();
     const files = { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'manifest-bytes', '000003.log': 'log-bytes-Δ', LOG: 'info log', LOCK: '' };
@@ -329,26 +333,136 @@ describe('round 6: partition copy (F1a) and original-integrity guard (F2)', () =
     expect(h.clearStorageData).toHaveBeenCalledOnce();
   });
 
-  it('refuses (F2) when the original leveldb shrinks during the read', async () => {
+  // R6-1 (round 7) replaces round 6's F2: the guard watches the COPY now —
+  // the original is opened by nothing in this process. A healthy leveldb
+  // open rewrites CURRENT/MANIFEST, rotates LOG and deletes the recovered
+  // log, so the fixture below is the realistic post-open set and must PASS.
+  it('passes a healthy leveldb recovery of the copy (CURRENT/MANIFEST rewritten, old log deleted, LOG recovering)', async () => {
     const h = harness();
-    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', '000003.log': 'x'.repeat(4_096), 'MANIFEST-000001': 'm' });
+    seedLeveldb(h.originalDir, {
+      CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'manifest', '000003.log': 'recovered-bytes',
+      '000005.ldb': 'table-bytes', LOG: 'previous session log', LOCK: '',
+    });
     h.contents.executeJavaScript.mockImplementation(async () => {
-      unlinkSync(join(h.originalDir, '000003.log'));
+      // Chromium's open of the copy, as the read sees it afterwards.
+      writeFileSync(join(h.partitionLeveldb, 'LOG.old'), 'previous session log');
+      writeFileSync(join(h.partitionLeveldb, 'LOG'), '2026/10/20-00:00:00.000 Recovering log #3\n');
+      writeFileSync(join(h.partitionLeveldb, 'CURRENT'), 'MANIFEST-000002\n');
+      writeFileSync(join(h.partitionLeveldb, 'MANIFEST-000002'), 'manifest-2');
+      unlinkSync(join(h.partitionLeveldb, 'MANIFEST-000001'));
+      unlinkSync(join(h.partitionLeveldb, '000003.log'));
       return Object.assign(Object.create(null), { k: 'v' });
     });
-    await expect(h.read()).rejects.toThrow(/shrank|lost|refusing/i);
+    await expect(h.read()).resolves.toEqual({ k: 'v' });
     expect(h.clearStorageData).toHaveBeenCalledOnce();
   });
 
-  it('refuses (F2) when CURRENT changes identity during the read', async () => {
+  it('refuses (R6-1) when the copy LOG records a recreation (Creating DB)', async () => {
     const h = harness();
-    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm' });
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table' });
     h.contents.executeJavaScript.mockImplementation(async () => {
-      writeFileSync(join(h.originalDir, 'CURRENT'), 'MANIFEST-000002\n');
+      writeFileSync(join(h.partitionLeveldb, 'LOG'), '2026/10/20-00:00:00.000 Creating DB /Local Storage/leveldb since it was missing\n');
+      return Object.assign(Object.create(null), {});
+    });
+    await expect(h.read()).rejects.toThrow(/Creating DB|recreated/i);
+    expect(h.clearStorageData).toHaveBeenCalledOnce();
+  });
+
+  it('refuses (R6-1) when a copied table file is gone after the read', async () => {
+    const h = harness();
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table' });
+    h.contents.executeJavaScript.mockImplementation(async () => {
+      writeFileSync(join(h.partitionLeveldb, 'LOG'), 'Recovering log #3\n');
+      unlinkSync(join(h.partitionLeveldb, '000005.ldb'));
       return Object.assign(Object.create(null), { k: 'v' });
     });
-    await expect(h.read()).rejects.toThrow(/CURRENT/);
+    await expect(h.read()).rejects.toThrow(/lost 000005\.ldb|refusing/i);
     expect(h.clearStorageData).toHaveBeenCalledOnce();
+  });
+
+  it('refuses (R6-1) when the copy MANIFEST number went down', async () => {
+    const h = harness();
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000005\n', 'MANIFEST-000005': 'm', '000005.ldb': 'table' });
+    h.contents.executeJavaScript.mockImplementation(async () => {
+      writeFileSync(join(h.partitionLeveldb, 'LOG'), 'Recovering log #3\n');
+      unlinkSync(join(h.partitionLeveldb, 'MANIFEST-000005'));
+      writeFileSync(join(h.partitionLeveldb, 'MANIFEST-000001'), 'fresh-manifest');
+      writeFileSync(join(h.partitionLeveldb, 'CURRENT'), 'MANIFEST-000001\n');
+      return Object.assign(Object.create(null), { k: 'v' });
+    });
+    await expect(h.read()).rejects.toThrow(/MANIFEST number went down/i);
+    expect(h.clearStorageData).toHaveBeenCalledOnce();
+  });
+});
+
+describe('round 7: copy start (R6-2) and marker partition removal (R6-4)', () => {
+  it('settles the copy at start time, before any window exists; the read then uses it', async () => {
+    const h = harness();
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', 'MANIFEST-000001': 'm', '000005.ldb': 'table', LOCK: '' });
+    const copy = h.start();
+    const state = await copy.promise;
+    // The copy landed (minus LOCK) and its R6-1 state was captured — all
+    // before legacyStorage or any BrowserWindow.
+    expect(readdirSync(h.partitionLeveldb).sort()).toEqual(['000005.ldb', 'CURRENT', 'MANIFEST-000001']);
+    expect(state).toEqual({ ldbFiles: ['000005.ldb'], manifestMax: 1 });
+    expect(h.BrowserWindow).not.toHaveBeenCalled();
+    h.contents.executeJavaScript.mockResolvedValue(Object.assign(Object.create(null), { k: 'v' }));
+    await expect(legacyStorage({ BrowserWindow: h.BrowserWindow, indexFile, copy })).resolves.toEqual({ k: 'v' });
+    expect(h.fromPartition).toHaveBeenCalledExactlyOnceWith(LEGACY_MIGRATION_PARTITION);
+    expect(h.clearStorageData).toHaveBeenCalledOnce();
+  });
+
+  it('does not load the window until an unfinished copy settles', async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const gate = deferred<{ ldbFiles: string[]; manifestMax: number | null }>();
+    const partitionSession = h.session.fromPartition(LEGACY_MIGRATION_PARTITION);
+    const copy = { partitionSession, leveldbDir: h.partitionLeveldb, promise: gate.promise };
+    const pending = observe(legacyStorage({ BrowserWindow: h.BrowserWindow, indexFile, copy }));
+    await microtasks();
+    expect(h.window.loadFile).not.toHaveBeenCalled();
+    gate.resolve({ ldbFiles: [], manifestMax: null });
+    await pending.done;
+    expect(pending.state.value).toEqual({});
+    expectClean(h);
+  });
+
+  it('refuses the read when the started copy failed, and still cleans up', async () => {
+    vi.useFakeTimers();
+    const h = harness(), failure = new Error('Controlled copy failure');
+    const partitionSession = h.session.fromPartition(LEGACY_MIGRATION_PARTITION);
+    const copy = { partitionSession, leveldbDir: h.partitionLeveldb, promise: Promise.reject(failure) };
+    await expect(legacyStorage({ BrowserWindow: h.BrowserWindow, indexFile, copy })).rejects.toBe(failure);
+    expectClean(h);
+  });
+
+  it('refuses when the copy was never started', async () => {
+    const h = harness();
+    await expect(legacyStorage({ BrowserWindow: h.BrowserWindow, indexFile, copy: null })).rejects.toThrow(/not started/);
+    expect(h.BrowserWindow).not.toHaveBeenCalled();
+  });
+
+  it('removes a stale migration partition once when the marker exists, without touching any session', async () => {
+    const h = harness();
+    const stale = join(h.userDataDir, 'Partitions', 'legacy-migration', 'Local Storage', 'leveldb');
+    seedLeveldb(stale, { '000005.ldb': 'stale-copy' });
+    const markerPath = join(h.userDataDir, 'renderer-origin-migrated');
+    writeFileSync(markerPath, '');
+    const result = beginLegacyMigration({ session: h.session, userDataDir: h.userDataDir, markerPath });
+    expect(result).toBeNull();
+    expect(h.fromPartition).not.toHaveBeenCalled();
+    expect(existsSync(join(h.userDataDir, 'Partitions', 'legacy-migration'))).toBe(false);
+  });
+
+  it('starts the copy when the marker is absent', async () => {
+    const h = harness();
+    seedLeveldb(h.originalDir, { CURRENT: 'MANIFEST-000001\n', '000005.ldb': 'table' });
+    const markerPath = join(h.userDataDir, 'renderer-origin-migrated');
+    const result = beginLegacyMigration({ session: h.session, userDataDir: h.userDataDir, markerPath });
+    expect(result).not.toBeNull();
+    expect(h.fromPartition).toHaveBeenCalledExactlyOnceWith(LEGACY_MIGRATION_PARTITION);
+    await expect(result!.promise).resolves.toEqual({ ldbFiles: ['000005.ldb'], manifestMax: null });
+    expect(readdirSync(h.partitionLeveldb).sort()).toEqual(['000005.ldb', 'CURRENT']);
   });
 });
 
