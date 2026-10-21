@@ -12,6 +12,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { HatchEntity, PolylineEntity } from '../src/core/entities';
+import type { DrawingState } from '../src/core/document';
 import { readDxf, writeDxf } from '../src/io/dxf';
 import { importReportOf } from '../src/io/import-report';
 
@@ -117,11 +118,31 @@ describe('associative HATCH: DXF retention round-trip', () => {
     expect(boundaryRefsOf(written)).toEqual([]);
   });
 
+  it('an associative hatch inside a block definition keeps its link through save/reopen (layouts mechanism)', () => {
+    // Associations resolve per entity list (model space, paper layouts and
+    // block definitions share the read-pass resolution), so a hatch whose
+    // boundary lives in the same block definition round-trips its link.
+    const plain = readDxf(assocDxf());
+    const blocked: DrawingState = {
+      ...plain,
+      entities: [],
+      blocks: { BLK: { name: 'BLK', basePoint: { x: 0, y: 0 }, entities: plain.entities, attributes: [] } },
+    };
+    const reopened = readDxf(writeDxf(blocked));
+    const def = reopened.blocks['BLK']!;
+    expect(def).toBeDefined();
+    const hatch = def.entities.find((e): e is HatchEntity => e.type === 'hatch')!;
+    const poly = def.entities.find((e): e is PolylineEntity => e.type === 'polyline')!;
+    expect(hatch.associative).toBe(true);
+    expect(hatch.loops[0]!.boundaryRefs).toEqual([poly.id]);
+  });
+
   it('the AutoCAD-authored fixture hatch (handle 51 -> LWPOLYLINE 50) retains and re-emits its link', () => {
     const text = readFileSync(join(__dirname, 'fixtures/interchange/r2000-hatch-curves.dxf'), 'utf8');
     const state = readDxf(text);
-    const hatch = state.entities.find((e): e is HatchEntity => e.type === 'hatch' && e.cadIdentity === '51')!;
-    const poly = state.entities.find((e) => e.cadIdentity === '50')!;
+    // cadIdentity is the cad-graph node id "<session>:<source handle>".
+    const hatch = state.entities.find((e): e is HatchEntity => e.type === 'hatch' && e.cadIdentity?.endsWith(':51'))!;
+    const poly = state.entities.find((e) => e.cadIdentity?.endsWith(':50'))!;
     expect(hatch.associative).toBe(true);
     expect(hatch.loops[0]!.boundaryRefs).toEqual([poly.id]);
     const written = writeDxf(state);

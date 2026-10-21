@@ -629,7 +629,9 @@ describe('MTEXT columns in the R2018 embedded object: static, dynamic auto heigh
  * loops (polyline loops with bulges, line / arc edges as bulged polylines), SOLID with an island;
  * LWPOLYLINE bulges, constant width (43) and vertex start/end widths (40/41); SPLINE fit points, end tangents, knots, control
  * points and weights; ELLIPSE axes, ratio and parameters; entity lineweights.
- * Lost (matrix): the hatch's link to its boundary object.
+ * Kept since P17 (was: lost): the hatch's link to its boundary object — the
+ * per-loop 97/330 source handles are modelled (HatchLoop.boundaryRefs),
+ * resolved on import and written back on save (PROPOSAL-P17).
  */
 describe('r2000-hatch-curves.dxf: HATCH (ANSI31 with bulges, SOLID with island), LWPOLYLINE, SPLINE, ELLIPSE (AC1015)', () => {
   const f = fixture('r2000-hatch-curves.dxf');
@@ -640,9 +642,9 @@ describe('r2000-hatch-curves.dxf: HATCH (ANSI31 with bulges, SOLID with island),
     const splines = ofType<SplineEntity>(s.entities, 'spline');
     const ellipses = ofType<EllipseEntity>(s.entities, 'ellipse');
 
-    it('entity order and vertex widths kept; source boundary-link losses are reported', () => {
+    it('entity order and vertex widths kept; the source boundary link is kept (P17), not reported lost', () => {
       if (s === f.imported) {
-        expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'HATCH', reason: expect.stringContaining('boundary links') }));
+        expect(importReportOf(s)?.items.some((i) => i.type === 'HATCH' && i.reason.includes('boundary links are not kept'))).toBe(false);
         expect(importReportOf(s)?.items.some((i) => i.reason.includes('per-vertex polyline widths'))).toBe(false);
         expect(importReportOf(s)?.items).toContainEqual(expect.objectContaining({ type: 'LWPOLYLINE', action: 'kept', reason: expect.stringContaining('typed object references') }));
       }
@@ -754,16 +756,26 @@ describe('r2000-hatch-curves.dxf: HATCH (ANSI31 with bulges, SOLID with island),
     expect(arrow.width).toBeUndefined();
   });
 
-  it('lost as the matrix says: the associative hatch keeps its own loops, not its link to the boundary polyline', () => {
-    expect(ofType<HatchEntity>(f.imported.entities, 'hatch')[0]!.associative).toBe(true);
-    const hatch = records(f.written, 'HATCH')[0]!;
-    expect(group(hatch, 97)).toBe('0');
+  it('kept since P17 (was: lost as the matrix says): the associative hatch keeps its link to the boundary polyline', () => {
+    const hatch = ofType<HatchEntity>(f.imported.entities, 'hatch')[0]!;
+    expect(hatch.associative).toBe(true);
+    const boundary = f.imported.entities.find((e) => e.cadIdentity?.endsWith(':50'))!;
+    expect(hatch.loops[0]!.boundaryRefs).toEqual([boundary.id]);
+    const written = records(f.written, 'HATCH')[0]!;
+    expect(group(written, 97)).toBe('1');
   });
 
-  it('a hatch saved without its boundary link is written non-associative (71 = 0) with the same loops', () => {
-    for (const h of records(f.written, 'HATCH')) expect(group(h, 71)).toBe('0');
-    expect(ofType<HatchEntity>(f.roundTripped.entities, 'hatch')[0]!.associative).toBeUndefined();
-    expect(ofType<HatchEntity>(f.roundTripped.entities, 'hatch')[0]!.loops).toEqual(ofType<HatchEntity>(f.imported.entities, 'hatch')[0]!.loops);
+  it('a hatch saved with its boundary link is written associative (71 = 1), the others non-associative, and reopens still linked', () => {
+    const written = records(f.written, 'HATCH');
+    expect(group(written[0]!, 71)).toBe('1');
+    for (const h of written.slice(1)) expect(group(h, 71)).toBe('0');
+    const rt = ofType<HatchEntity>(f.roundTripped.entities, 'hatch')[0]!;
+    expect(rt.associative).toBe(true);
+    const rtBoundary = ofType<PolylineEntity>(f.roundTripped.entities, 'polyline')[0]!;
+    expect(rt.loops[0]!.boundaryRefs).toEqual([rtBoundary.id]);
+    const imported = ofType<HatchEntity>(f.imported.entities, 'hatch')[0]!;
+    expect(rt.loops[0]!.points).toEqual(imported.loops[0]!.points);
+    expect(rt.loops[0]!.bulges).toEqual(imported.loops[0]!.bulges);
   });
 });
 
