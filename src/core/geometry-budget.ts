@@ -70,10 +70,33 @@ export function validateGeometryBudget(state: DrawingState, previous?: DrawingSt
   if (isImmutableData(state)) checked.add(state);
 }
 
+/**
+ * Root keys exempt from the whole-DrawingState seal (AMENDMENT TO RULING-P31, Matter 1):
+ * exactly the one own property 'signatureRecord' at depth 0 of the state. The preserved
+ * signature record carries a Uint8Array payload (src/project/drawing-signature.ts), which
+ * the plain-data seal can never certify; the exemption is keyed by root + name only, so a
+ * typed array or custom prototype anywhere else in the state still throws.
+ *
+ * CAVEAT (stated scope reduction, ruling invariant (d)): the exempt subtree is NOT
+ * seal-certified — it is not traversed, frozen or sealed, and the record itself is NOT
+ * immutable: a holder of the record or payload reference can mutate its bytes/fields and
+ * the seal will not prevent it. For a state sealed through this path, isImmutableData
+ * certifies "sealed EXCEPT the signatureRecord subtree". The record's integrity posture
+ * is the documented (f2) one — unauthenticated, API discipline: invalidation stickiness
+ * is a property of the C2 API transitions in core/document.ts (noteSignatureEdit applied
+ * at the two state-replacement points), NOT of seal enforcement.
+ */
+const DRAWING_STATE_SEAL_EXEMPT_ROOT_KEYS: ReadonlySet<PropertyKey> = new Set<PropertyKey>(['signatureRecord']);
+
+/** Seal a whole DrawingState, exempting only the root 'signatureRecord' subtree (above). */
+export function sealDrawingState<T extends DrawingState>(state: T): T {
+  return sealImmutableData(state, DRAWING_STATE_SEAL_EXEMPT_ROOT_KEYS);
+}
+
 /** Validate before taking immutable ownership, then safely memoize the accepted snapshot. */
 export function prepareDrawingState(state: DrawingState, previous?: DrawingState): DrawingState {
   validateGeometryBudget(state, previous);
-  sealImmutableData(state);
+  sealDrawingState(state);
   checked.add(state);
   return state;
 }
