@@ -5,8 +5,12 @@
  * Written BEFORE the implementation: at base 038cb7b4 the reader
  * consumes and discards the boundary-path source handles (97/330) and
  * the writer hardcodes 71 = 0 / 97 = 0, so every retention case here
- * fails at base. The fixture case uses the real AutoCAD-authored
- * r2000-hatch-curves.dxf (HATCH handle 51, boundary LWPOLYLINE 50).
+ * fails at base. The fixture case uses r2000-hatch-curves.dxf (HATCH
+ * handle 51, boundary LWPOLYLINE 50) — a HAND-WRITTEN AutoCAD-format
+ * fixture (creating commit 3c1e83b: "nine hand-written AutoCAD-layout
+ * DXF files"), NOT authored by AutoCAD. A genuine natively-authored
+ * associative-hatch fixture is a lead/Windows-gate item; the build
+ * recipe is in evidence-p17/RECIPE-native-associative-hatch-fixture.md.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -137,7 +141,7 @@ describe('associative HATCH: DXF retention round-trip', () => {
     expect(hatch.loops[0]!.boundaryRefs).toEqual([poly.id]);
   });
 
-  it('the AutoCAD-authored fixture hatch (handle 51 -> LWPOLYLINE 50) retains and re-emits its link', () => {
+  it('the hand-written fixture hatch (handle 51 -> LWPOLYLINE 50) retains and re-emits its link', () => {
     const text = readFileSync(join(__dirname, 'fixtures/interchange/r2000-hatch-curves.dxf'), 'utf8');
     const state = readDxf(text);
     // cadIdentity is the cad-graph node id "<session>:<source handle>".
