@@ -11,6 +11,8 @@ import { hasHatchGradient, hatchGradientRenderProblem } from '../core/hatch-grad
 import { newTable, cellAt, setCellText, TABLE_DEFAULTS } from '../core/table';
 import { mtextFromDxf, hasFormatting } from '../core/mtext';
 import { evaluateFields, acVarField, ACVAR_FIELDS, FIELD_UNAVAILABLE, type FieldContext } from '../core/fields';
+import { sheetFieldValues, type SheetSet } from '../project/sheet-set';
+import type { DocumentSession } from '../app/sessions';
 import type { Drawing } from '../core/document';
 import type { Tool, ToolContext } from './types';
 import { scriptTool, point, pointOrKeyword, text, number, keyword, select, dflt, type Step } from './script';
@@ -473,8 +475,29 @@ export function tableEditTool(): Tool {
 // ------------------------------------------------------------------ FIELD / UPDATEFIELD
 
 /** Values for field evaluation from the drawing (file name, current date). */
-export function fieldContextFor(doc: Drawing, extra: FieldContext = {}): FieldContext {
-  return { filePath: doc.filePath, now: new Date(), ...extra };
+export function fieldContextFor(doc: Drawing, extra: FieldContext = {}, sheet?: { set: SheetSet; sheetId: string }): FieldContext {
+  // P31A wiring (PROPOSAL-P31-A-WIRING, FILED-UNADMITTED prototype): the
+  // optional third argument feeds \AcSm evaluation through the EXISTING
+  // FieldContext.sheetSet channel (src/core/fields.ts) with the checkpoint-1
+  // module's sheetFieldValues bridge — no second field channel. Without it
+  // the returned context is exactly today's (no sheetSet key).
+  return { filePath: doc.filePath, now: new Date(), ...extra, ...(sheet ? { sheetSet: sheetFieldValues(sheet.set, sheet.sheetId) } : {}) };
+}
+
+/** The \AcSm value source sheetFieldContextFor consumes (SheetSetHost satisfies it structurally). */
+export interface SheetFieldValuesSource {
+  fieldValuesFor(session: Pick<DocumentSession, 'sheetId'>): Record<string, string> | undefined;
+}
+
+/**
+ * Field context for a document session: when the session is bound to a sheet
+ * of the host's open sheet set, \AcSm fields evaluate to that sheet's values;
+ * unbound (or a stale binding) yields the plain context, so \AcSm shows ####
+ * exactly as an unbound drawing does today.
+ */
+export function sheetFieldContextFor(source: SheetFieldValuesSource, doc: Drawing, session: Pick<DocumentSession, 'sheetId'>): FieldContext {
+  const values = source.fieldValuesFor(session);
+  return values ? { filePath: doc.filePath, now: new Date(), sheetSet: values } : fieldContextFor(doc);
 }
 
 /** Re-evaluate the fields of one entity; the same object when nothing changes. */

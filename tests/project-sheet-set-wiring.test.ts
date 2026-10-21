@@ -179,7 +179,7 @@ describe('PROPOSAL-P31-A-WIRING (FILED-UNADMITTED prototype)', () => {
     active.filePath = 'drawings/power.dwg';
     expect(host.bindSession(active, active.filePath)?.id).toBe(powerId);
     expect(active.sheetId).toBe(powerId);
-    const secondIndex = mgr.add({ entities: [] }, 'drawings/cover.dwg');
+    const secondIndex = mgr.add(new Drawing({ entities: [] }).snapshot, 'drawings/cover.dwg');
     const second = mgr.all[secondIndex]!;
     expect(second.sheetId).toBeUndefined();
     expect(mgr.switchTo(0)).toBe(true);

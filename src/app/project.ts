@@ -60,6 +60,13 @@ export interface Project {
    * ("ATTRIBUTE = SOURCE" per line, see src/electrical/titleblock-map.ts); empty = built-in mapping.
    */
   titleBlockMap?: string;
+  /**
+   * P31A wiring (PROPOSAL-P31-A-WIRING, FILED-UNADMITTED prototype): path of
+   * the project's sheet-set file (the checkpoint-1 JSON form or the DST
+   * subset form), relative to the project file — the catalogFile precedent.
+   * Absent = no sheet set associated with this project.
+   */
+  sheetSetPath?: string;
   /** Absolute path of the project file (not serialised). */
   path?: string;
 }
@@ -96,6 +103,7 @@ export function parseProject(text: string, path?: string): Project {
       .map((d) => ({ file: d.file, description: str(d.description), sheet: str(d.sheet), dwgno: str(d.dwgno), section: str(d.section), rev: str(d.rev), date: str(d.date) })),
     reportTemplates: Array.isArray(raw.reportTemplates) ? parseReportTemplates(raw.reportTemplates) : undefined,
     titleBlockMap: str(raw.titleBlockMap),
+    sheetSetPath: str(raw.sheetSetPath),
     path,
   };
 }
@@ -116,6 +124,7 @@ export function serializeProject(p: Project): string {
   if (p.settings && Object.values(p.settings).some((v) => v !== undefined && v !== '')) out.settings = p.settings;
   if (p.reportTemplates && p.reportTemplates.length) out.reportTemplates = p.reportTemplates;
   if (p.titleBlockMap && p.titleBlockMap.trim()) out.titleBlockMap = p.titleBlockMap;
+  if (p.sheetSetPath) out.sheetSetPath = p.sheetSetPath;
   return JSON.stringify(out, null, 2) + '\n';
 }
 

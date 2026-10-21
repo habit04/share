@@ -40,6 +40,15 @@ export interface DocumentSession {
   view: { center: Point; scale: number; twist?: number } | null;
   parkedSpaceViews: ParkedSpaceViews | null;
   selection: Set<string>;
+  /**
+   * P31A wiring (PROPOSAL-P31-A-WIRING, FILED-UNADMITTED prototype): the stable
+   * sheet id (SheetSetSheet.id) this document is bound to in the host's open
+   * sheet set (src/app/sheet-set-host.ts). Session-scope only — never part of
+   * DrawingState — so it parks/restores with the tab like filePath/dirty and
+   * survives every Drawing state-replacement path by construction. Absent =
+   * unbound; \AcSm fields in an unbound document show ####.
+   */
+  sheetId?: string;
   /** Name shown for drawings without a file (Drawing1.dxf, Drawing2.dxf ...). */
   untitledName: string;
 }
