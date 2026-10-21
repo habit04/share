@@ -11,6 +11,35 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-21
+
+### Upgrade notes
+
+- Windows x64 patch update from v0.6.1 for drawing Open and Save after
+  metadata-only changes, including file-attribute updates during synchronization.
+
+### Fixed
+
+- Windows: drawings open and save correctly after metadata-only changes (e.g.
+  OneDrive attribute updates); content edits, replacement and rename-into-place
+  are still refused. A fresh coherent read must verify the same canonical path,
+  native file identity, size, modification time and exact SHA-256 before an
+  in-place Save accepts a changed metadata timestamp. Save As, project-batch and
+  write-time file checks remain unchanged.
+- Update development tooling to Vite 6.4.4 and follow-redirects 1.16.1 to address
+  reported development-server/editor and redirect credential-header advisories.
+  Production dependency versions remain unchanged.
+
+### Known limitations
+
+- Existing DWG import limitations are unchanged: one validation drawing still
+  reports 99 dropped/simplified entries and 42 unsupported property groups.
+  These counts describe that drawing, not every DWG. Incomplete hatch boundaries
+  remain unfilled and identified in the import report. This update does not add
+  support for those records or claim complete DWG preservation.
+- A partial import cannot overwrite its source. Use Save As for a separate copy
+  and review the import report before continuing.
+
 ## [0.6.1] - 2026-10-21
 
 ### Upgrade notes
@@ -1434,7 +1463,8 @@ First release.
 
 - Renamed the application to JCad Electrical.
 
-[Unreleased]: https://github.com/habit04/share/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/habit04/share/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/habit04/share/compare/v0.6.1...v0.6.2
 [0.6.0]: https://github.com/habit04/share/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/habit04/share/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/habit04/share/compare/v0.5.0...v0.5.1
