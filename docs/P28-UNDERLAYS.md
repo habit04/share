@@ -108,6 +108,27 @@ is a historical integration log, not a feature matrix.)
 - Linux/headless test evidence only; Windows, Electron-packaged and
   native AutoCAD behaviour are separate HOLD gates (Claude schedules).
 
+## Fixture recipes for the lead (native gate — lead builds via headless accoreconsole)
+
+Per the lead's fixture policy, P28 sends recipes, not binaries. Requested
+handbuilt fixtures (all paths inside files must be generic relative
+names — no local paths or usernames; repo is public):
+
+1. `underlay-pdf.dxf` (AutoCAD-saved, R2018): one PDFUNDERLAY in model
+   space referencing `floor.pdf` (any 1-page PDF), PDFDEFINITION with
+   the page name stored; placement at a non-origin point, rotation
+   30°, non-unit scales, flags with clipping ON and a 4-point clip
+   boundary (verifies the codec's 14/24 boundary convention), contrast
+   80 / fade 15. Plus a second PDFUNDERLAY with clipping OFF.
+2. `underlay-dwf.dxf`: one DWFUNDERLAY + DWFDEFINITION (any small DWF),
+   default placement.
+3. `underlay-dgn.dxf`: one DGNUNDERLAY + DGNDEFINITION (any small V8
+   DGN), default placement.
+4. DWG twins of 1–3 saved natively, for the separate DWG gate.
+Each fixture: open in AutoCAD, attach, save, close, reopen, confirm the
+underlay still displays — then commit the file plus a one-line
+provenance note (AutoCAD version, accoreconsole script used).
+
 ## Next slices (in order)
 
 1. Integration per admitted PROPOSAL-P28 (entity variant + optional
