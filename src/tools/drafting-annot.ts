@@ -6,6 +6,7 @@ import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity, HatchEntity, LeaderEntity, TableEntity, TextEntity, MTextEntity, HatchLoop, MTextAttachment } from '../core/entities';
 import { newId, ellipsePoints, isFullEllipse, splinePoints, hatchGeometry } from '../core/entities';
+import { defaultMLeaderNative } from '../core/multileader';
 import { HATCH_PATTERNS, findPattern, loopPolygon, pointInLoops, polygonArea } from '../core/hatch';
 import { hasHatchGradient, hatchGradientRenderProblem } from '../core/hatch-gradient';
 import { newTable, cellAt, setCellText, TABLE_DEFAULTS } from '../core/table';
@@ -395,6 +396,8 @@ export function mleaderTool(): Tool {
         textHeight: h,
         ...(lines.length ? { text: lines.join('\n'), ...placeText(end, dir, h, annotDefaults.landingGap) } : {}),
         kind: 'mleader',
+        // P18: newly authored multileaders are native (Standard style).
+        mleader: defaultMLeaderNative({ landingGap: annotDefaults.landingGap }),
       };
     };
     const landing = yield* point(ctx, 'Specify leader landing location:', { preview: (c) => [build(c)], trackFrom: at });

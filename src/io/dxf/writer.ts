@@ -18,6 +18,7 @@ import { isScaleName } from '../../core/layouts';
 import type { WriteExtras } from './write-core';
 import * as g from '../../core/geometry';
 import { dimHeaderVars, dimStylesToWrite, dimStyleXdata } from './dimstyles';
+import { mleaderStyleData, STANDARD_MLEADER_STYLE, type MLeaderStyleData } from '../../core/multileader';
 import { textStylesForWrite, textStyleOf, STANDARD_TEXT_STYLE, textStyleGroups, encodeDxfText, shapeStylesOf, shapeStyleGroups } from '../encoding';
 import { writeComplexLinetypeElements } from './complex-linetypes';
 import { DIMSTYLE_APP, TABLE_APP, DYNAMIC_APP, CONSTRAINTS_APP, ANNO_APP, MTEXT_COLUMNS_APP, MTEXT_BACKGROUND_APP, MODEL3D_APP } from './codes';
@@ -206,6 +207,29 @@ export function writeDxf(state: DrawingState): string {
     if (!sourceId || sourceId.length > 255 || /[\u0000\r\n]/.test(sourceId) || problem) throw new Error(`Cannot preserve shape STYLE resource "${sourceId}": ${problem || 'invalid identity'}.`);
     shapeHandles.set(sourceId, w.nextHandle());
   }
+  // P18: MLEADERSTYLE objects for the native multileaders in the drawing, one per
+  // style name (first entity with the name supplies the effective values).
+  // Handles are pre-allocated like text-style handles because entities name
+  // their style (group 340) before OBJECTS is written. No native mleader =>
+  // no allocation, no output: every other drawing is byte-identical to base.
+  const mleaderStyles = new Map<string, MLeaderStyleData>();
+  for (const e of allEntities) {
+    if (e.type !== 'leader' || e.kind !== 'mleader' || !e.mleader) continue;
+    const key = e.mleader.styleName.toUpperCase();
+    if (!mleaderStyles.has(key)) {
+      mleaderStyles.set(key, mleaderStyleData(e.mleader, {
+        arrowSize: e.arrowSize,
+        textHeight: e.textHeight,
+        doglegLength: e.dogleg ? g.len(e.dogleg) : STANDARD_MLEADER_STYLE.doglegLength,
+        textStyleName: e.mleader.textStyleName ?? textStyleOf(e) ?? undefined,
+      }));
+    }
+  }
+  let mleaderDict: string | null = null;
+  if (mleaderStyles.size) {
+    mleaderDict = w.nextHandle();
+    for (const key of mleaderStyles.keys()) w.mleaderStyleHandles.set(key, w.nextHandle());
+  }
   // Choose the highest native format required anywhere, including associated text/attributes.
   const appearances = [...allEntities, ...state.layers, ...blockList.flatMap((b) => b.attributes),
     ...allEntities.flatMap<AttributeAppearance>((e) => e.type === 'insert' ? Object.values(e.attributePlacements ?? {}) : e.type === 'leader' && e.textAppearance ? [e.textAppearance] : [])];
@@ -351,6 +375,10 @@ export function writeDxf(state: DrawingState): string {
       // AC1015 control registers it, only when a chain is generated.
       const roundtripCount = tableList.filter(([, picture]) => picture.roundtrip).length;
       if (roundtripCount) tcls('ACDBDATATABLE', 'AcDbDataTable', 0, false, roundtripCount);
+    }
+    if (mleaderDict) {
+      // P18: registered like the other OBJECTS-resident classes above.
+      cls('MLEADERSTYLE', 'AcDbMLeaderStyle', 0, false, mleaderStyles.size);
     }
     if (createCannoVariable || createAnnoVariable) {
       // AutoCAD's specimen registration (the HANDBUILT fixtures): app name
@@ -718,6 +746,10 @@ export function writeDxf(state: DrawingState): string {
     w.pair(3, 'ACAD_IMAGE_DICT');
     w.pair(350, imageDict);
   }
+  if (mleaderDict) {
+    w.pair(3, 'ACAD_MLEADERSTYLE');
+    w.pair(350, mleaderDict);
+  }
   if (variableDictionary) {
     // AutoCAD keeps the variable dictionary as the root dictionary's last entry.
     w.pair(3, 'AcDbVariableDictionary');
@@ -902,6 +934,85 @@ export function writeDxf(state: DrawingState): string {
         if (!entityHandle) throw new Error(`Cannot write the roundtrip chain of table ${t.id}: its written entity handle is unknown.`);
         writeTableRoundtrip(w, t, picture.roundtrip!, entityHandle);
       }
+    }
+  }
+  if (mleaderDict) {
+    // P18: the ACAD_MLEADERSTYLE dictionary and its MLEADERSTYLE objects. The
+    // style body mirrors the real AutoCAD R2018 specimen (tests/fixtures/
+    // interchange/r2018-minsert.dxf, MLEADERSTYLE handle 16F) in group order,
+    // with the style's effective values substituted at their documented
+    // groups (Autodesk's MLEADERSTYLE reference): 170 content type, 42
+    // landing gap, 43 dogleg length, 44 arrowhead size, 45 text height, 142
+    // scale factor, 342 the text-style handle. Group 3 is the style
+    // description (the specimen's reads 'Standard'); JCad writes it empty.
+    // Remaining groups (91/92/93/94 colour words, 46 align space, 47/49/140
+    // block-content scale, 271/272/273 attachment directions, 143 break gap,
+    // 298) are carried over unchanged from the specimen and are not claimed
+    // as modeled. The specimen's group 340 (leader linetype, a TABLES handle
+    // JCad does not pre-allocate) is omitted; the default is ByLayer.
+    w.pair(0, 'DICTIONARY');
+    w.pair(5, mleaderDict);
+    w.pair(330, 'C');
+    w.pair(100, 'AcDbDictionary');
+    w.pair(281, 1);
+    for (const [, data] of mleaderStyles) {
+      w.pair(3, data.name);
+      w.pair(350, w.mleaderStyleHandles.get(data.name.toUpperCase())!);
+    }
+    for (const [, data] of mleaderStyles) {
+      const handle = w.mleaderStyleHandles.get(data.name.toUpperCase())!;
+      const textStyleName = data.textStyleName;
+      const textStyleHandle = w.textStyleHandles.get(textStyleName.toUpperCase());
+      w.pair(0, 'MLEADERSTYLE');
+      w.pair(5, handle);
+      w.pair(102, '{ACAD_REACTORS');
+      w.pair(330, mleaderDict);
+      w.pair(102, '}');
+      w.pair(330, mleaderDict);
+      w.pair(100, 'AcDbMLeaderStyle');
+      w.pair(179, 2);
+      w.pair(170, data.contentType);
+      w.pair(171, 1);
+      w.pair(172, 0);
+      w.pair(90, 2);
+      w.pair(40, 0);
+      w.pair(41, 0);
+      w.pair(173, 1);
+      w.pair(91, -1056964608);
+      w.pair(92, -2);
+      w.pair(290, 1);
+      w.pair(42, data.landingGap);
+      w.pair(291, 1);
+      w.pair(43, data.doglegLength);
+      w.pair(3, '');
+      w.pair(44, data.arrowSize);
+      w.pair(300, '');
+      if (textStyleHandle) w.pair(342, textStyleHandle);
+      w.pair(174, 1);
+      w.pair(178, 6);
+      w.pair(175, 1);
+      w.pair(176, 0);
+      w.pair(93, -1056964608);
+      w.pair(45, data.textHeight);
+      w.pair(292, 0);
+      w.pair(297, 0);
+      w.pair(46, 0.18);
+      w.pair(94, -1056964608);
+      w.pair(47, 1);
+      w.pair(49, 1);
+      w.pair(140, 1);
+      w.pair(293, 1);
+      w.pair(141, 0);
+      w.pair(294, 1);
+      w.pair(177, 0);
+      w.pair(142, data.scaleFactor);
+      w.pair(295, 0);
+      w.pair(296, 0);
+      w.pair(143, 0.125);
+      w.pair(271, 0);
+      w.pair(272, 9);
+      w.pair(273, 9);
+      w.pair(298, 0);
     }
   }
   w.pair(0, 'ENDSEC');

@@ -153,9 +153,12 @@ describe('LEADER and MULTILEADER in DXF', () => {
     expect(l.textPosition).toEqual({ x: 10.5, y: 5.2 });
     expect(l.textHeight).toBeCloseTo(0.25);
     expect(l.arrowSize).toBeCloseTo(0.2);
-    // Written back as LEADER + MTEXT (plus a LEADER for the second leader line).
+    // P18: written back natively as one MULTILEADER (both leader lines in its
+    // LEADER cluster), replacing the pre-P18 LEADER + MTEXT write-back
+    // (PROPOSAL-P18 in the six-pipeline ledger).
     const out = writeDxf(s);
-    expect(out.match(/\r\nLEADER\r\n/g)).toHaveLength(2);
+    expect(out).toContain('\r\nMULTILEADER\r\n');
+    expect(out).not.toContain('\r\nLEADER\r\n');
     expect(out).toContain('{\\C1;PUMP} P-101\\PSTANDBY');
   });
   it('degrades gracefully when the MULTILEADER has no context data', () => {
