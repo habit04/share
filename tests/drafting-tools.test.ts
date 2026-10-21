@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import type { Entity, LineEntity, PolylineEntity, ArcEntity, InsertEntity, MTextEntity, EllipseEntity } from '../src/core/entities';
+import type { Entity, LineEntity, PolylineEntity, ArcEntity, InsertEntity, MTextEntity, EllipseEntity, BlockDef } from '../src/core/entities';
+import type { AlignmentSpec } from '../src/core/parametric/definitions';
 import { polylineArea, polylineVertices, splineThroughPoints } from '../src/core/entities';
 import { newTable } from '../src/core/table';
 import { Drawing } from '../src/core/document';
@@ -416,5 +417,132 @@ describe('inquiry', () => {
     has(image, /Path\s+logo\.png$/);
     has(image, /Image size \(pixels\)\s+200 x 100$/);
     has(image, /Image size \(units\)\s+2\.0000 x 1\.0000$/);
+  });
+});
+
+describe('blocks — alignment placement (30.4, design §4.3)', () => {
+  // A dynamic block (door-style width parameter + stretch, so instance
+  // seeding applies) whose definition may carry an alignment spec.
+  const swingBlock = (alignment?: AlignmentSpec): BlockDef => ({
+    name: 'SWING',
+    basePoint: { x: 0, y: 0 },
+    entities: [line('L1', [0, 0], [10, 0]), line('L2', [10, 0], [10, 5]), line('L3', [10, 5], [0, 5]), line('L4', [0, 5], [0, 0])],
+    attributes: [],
+    dynamic: {
+      version: 1,
+      parameters: [{
+        kind: 'linear-distance', id: 'width', name: 'Width',
+        basePoint: { x: 0, y: 0 }, direction: { x: 1, y: 0 },
+        defaultValue: 10, constraint: { kind: 'range', min: 5, max: 20 },
+        grips: [{ role: 'base', movesWithValue: false }, { role: 'value', movesWithValue: true }],
+      }],
+      actions: [{
+        kind: 'stretch', id: 'S1', name: 'Stretch', parameterId: 'width',
+        frame: { kind: 'rectangle', min: { x: 5, y: -1 }, max: { x: 15, y: 6 } },
+        selection: [{ entityId: 'L2', points: { kind: 'frame' } }],
+      }],
+      ...(alignment ? { alignment } : {}),
+    },
+  });
+  const spec = (direction: [number, number], mode: AlignmentSpec['mode']): AlignmentSpec => ({
+    basePoint: { x: 0, y: 0 }, direction: { x: direction[0], y: direction[1] }, mode,
+  });
+  const place = (ctx: ReturnType<typeof fakeContext>, inputs: Parameters<typeof drive>[2], name = 'SWING'): InsertEntity => {
+    drive(insertTool(name), ctx, inputs);
+    const ins = ctx.doc.entities.find((e) => e.type === 'insert' && e.block === name) as InsertEntity;
+    expect(ins).toBeDefined();
+    return ins;
+  };
+  const withTarget = (alignment: AlignmentSpec | undefined, target: Entity): ReturnType<typeof fakeContext> => {
+    const ctx = fakeContext();
+    ctx.doc.defineBlock(swingBlock(alignment));
+    ctx.doc.addEntities([target]);
+    return ctx;
+  };
+
+  it('perpendicular: axis ends up normal to a vertical line target', () => {
+    const ctx = withTarget(spec([0, 1], 'perpendicular'), line('wall', [10, -5], [10, 5]));
+    // Pick on the wall at (10,1); unaligned pick rotation would be atan2(1,10).
+    const ins = place(ctx, [{ x: 0, y: 0 }, '', '', { x: 10, y: 1 }]);
+    expect(ins.rotation).toBeCloseTo(Math.PI / 2, 12);
+    expect(ins.position).toEqual({ x: 0, y: 0 });
+  });
+
+  it('tangent: axis ends up along a horizontal line target (negative rotation)', () => {
+    const ctx = withTarget(spec([0, 1], 'tangent'), line('rail', [-10, -3], [10, -3]));
+    const ins = place(ctx, [{ x: 0, y: 0 }, '', '', { x: 8, y: -3 }]);
+    expect(ins.rotation).toBeCloseTo(-Math.PI / 2, 12);
+    expect(ins.rotation).toBeLessThan(0);
+  });
+
+  it('tangent: a diagonal target yields the large rotation (3π/4), not its half-turn twin', () => {
+    const ctx = withTarget(spec([1, 0], 'tangent'), line('diag', [0, 0], [-5, 5]));
+    const ins = place(ctx, [{ x: 5, y: -5 }, '', '', { x: -2.5, y: 2.5 }]);
+    expect(ins.rotation).toBeCloseTo((3 * Math.PI) / 4, 12);
+  });
+
+  it('perpendicular to a circle: rotation derives from the tangent at the pick point', () => {
+    const circle: Entity = { id: 'c', ...props, type: 'circle', center: { x: 0, y: 10 }, radius: 5 };
+    const ctx = withTarget(spec([1, 0], 'perpendicular'), circle);
+    const pick = { x: 2.5, y: 10 + 5 * Math.sin(Math.PI / 3) }; // at 60° on the circle
+    const ins = place(ctx, [{ x: 0, y: 0 }, '', '', pick]);
+    expect(ins.rotation).toBeCloseTo(Math.PI / 3, 9);
+  });
+
+  it('tangent against a polyline segment', () => {
+    const rail: Entity = { id: 'pl', ...props, type: 'polyline', points: [{ x: 0, y: 10 }, { x: 10, y: 10 }], closed: false };
+    const ctx = withTarget(spec([0, 1], 'tangent'), rail);
+    const ins = place(ctx, [{ x: 0, y: 0 }, '', '', { x: 5, y: 10 }]);
+    expect(ins.rotation).toBeCloseTo(Math.PI / 2, 12);
+  });
+
+  it('no target under the rotation pick: ordinary pick rotation, exactly as before', () => {
+    const ctx = withTarget(spec([0, 1], 'tangent'), line('rail', [-10, -3], [10, -3]));
+    const ins = place(ctx, [{ x: 0, y: 0 }, '', '', { x: 20, y: 20 }]);
+    expect(ins.rotation).toBeCloseTo(Math.atan2(20, 20), 12);
+  });
+
+  it('a pick on an entity with no local direction (an insert) is not a target', () => {
+    const ctx = withTarget(spec([0, 1], 'tangent'), {
+      id: 'other', ...props, type: 'insert', block: 'OTHER', position: { x: 8, y: -3 }, rotation: 0, scale: 1, attributes: {},
+    });
+    const ins = place(ctx, [{ x: 0, y: 0 }, '', '', { x: 8, y: -3 }]);
+    expect(ins.rotation).toBeCloseTo(Math.atan2(-3, 8), 12);
+  });
+
+  it('a typed rotation angle is the user-specified rotation: alignment does not apply', () => {
+    const ctx = withTarget(spec([0, 1], 'perpendicular'), line('wall', [10, -5], [10, 5]));
+    const ins = place(ctx, [{ x: 0, y: 0 }, '', '', '30']);
+    expect(ins.rotation).toBeCloseTo(Math.PI / 6, 12);
+  });
+
+  it('Enter at the rotation prompt keeps the [Rotate] preset: alignment does not apply', () => {
+    const ctx = withTarget(spec([0, 1], 'perpendicular'), line('wall', [10, -5], [10, 5]));
+    const ins = place(ctx, ['R', '45', { x: 0, y: 0 }, '', '', '']);
+    expect(ins.rotation).toBeCloseTo(Math.PI / 4, 12);
+  });
+
+  it('a dynamic block WITHOUT alignment places exactly as before (same geometry as the tangent case)', () => {
+    const ctx = withTarget(undefined, line('rail', [-10, -3], [10, -3]));
+    const ins = place(ctx, [{ x: 0, y: 0 }, '', '', { x: 8, y: -3 }]);
+    expect(ins.rotation).toBeCloseTo(Math.atan2(-3, 8), 12);
+    expect(ins.dynamic).toEqual({ block: 'SWING', values: {} });
+  });
+
+  it('composition: an aligned dynamic block still gets its seeded instance state', () => {
+    const ctx = withTarget(spec([0, 1], 'perpendicular'), line('wall', [10, -5], [10, 5]));
+    const ins = place(ctx, [{ x: 0, y: 0 }, '', '', { x: 10, y: 1 }]);
+    expect(ins.rotation).toBeCloseTo(Math.PI / 2, 12);
+    expect(ins.dynamic).toEqual({ block: 'SWING', values: {} });
+    expect(ins.scale).toBe(1);
+  });
+
+  it('a static block (no dynamic definition) is untouched by alignment placement', () => {
+    const ctx = fakeContext();
+    ctx.doc.defineBlock({ name: 'PLAIN', basePoint: { x: 0, y: 0 }, entities: [line('p1', [0, 0], [1, 0])], attributes: [] });
+    ctx.doc.addEntities([line('wall', [10, -5], [10, 5])]);
+    const ins = place(ctx, [{ x: 0, y: 0 }, '', '', { x: 10, y: 1 }], 'PLAIN');
+    expect(ins.rotation).toBeCloseTo(Math.atan2(1, 10), 12);
+    expect(ins.dynamic).toBeUndefined();
   });
 });

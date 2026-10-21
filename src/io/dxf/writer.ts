@@ -13,13 +13,16 @@ import { rawEntitiesOf } from '../import-report';
 import { findLinetype, patternLength, STANDARD_LINETYPES, complexLinetypeProblem, linetypeShapeStyleProblem } from '../../core/linetypes';
 import { Writer, setPaperOwners, emptyExtras, writeTextLike, writeTextStyle, writeEntityCommon } from './write-core';
 import { DEFAULT_HEADER } from '../../core/document';
-import { planLayouts, writeLayoutHeader, extraBlockRecords, layoutHandleOf, writeLayoutContent, writeLayoutObjects } from '../dxf-layouts';
+import { planLayouts, extraBlockRecords, layoutHandleOf, writeLayoutContent, writeLayoutObjects } from '../dxf-layouts';
+import { isScaleName } from '../../core/layouts';
 import type { WriteExtras } from './write-core';
 import * as g from '../../core/geometry';
 import { dimHeaderVars, dimStylesToWrite, dimStyleXdata } from './dimstyles';
 import { textStylesForWrite, textStyleOf, STANDARD_TEXT_STYLE, textStyleGroups, encodeDxfText, shapeStylesOf, shapeStyleGroups } from '../encoding';
 import { writeComplexLinetypeElements } from './complex-linetypes';
-import { DIMSTYLE_APP, TABLE_APP, ANNO_APP, MTEXT_COLUMNS_APP, MTEXT_BACKGROUND_APP, MODEL3D_APP } from './codes';
+import { DIMSTYLE_APP, TABLE_APP, DYNAMIC_APP, CONSTRAINTS_APP, ANNO_APP, MTEXT_COLUMNS_APP, MTEXT_BACKGROUND_APP, MODEL3D_APP } from './codes';
+import { chunkDynamicPayload, encodeDynamicDefinition } from './dynamic-data';
+import { encodeConstraints } from './constraints-data';
 import { writeSolid } from './mesh3d-write';
 import { writeDimension3D, writeDimension3DPicture } from './dim3d-write';
 import { dimension3dTo2d } from '../../model3d/dimension3d';
@@ -33,7 +36,7 @@ import { entityMTextBackground } from '../../core/mtext-background';
 import { materializePolylineWidthFrames } from './polyline-width-blocks';
 import { LAYER_TRANSPARENCY_APP, transparencyToDxf, validColorName } from '../../core/appearance';
 import { namedCameraDisplayCenter, planarNamedCamera } from '../../core/named-view';
-import { preserveDxfCadGraph } from '../cad-graph-dxf';
+import { annotationScaleRatio, graphAnnotationCarrier, preserveDxfCadGraph } from '../cad-graph-dxf';
 
 /** Linetype names referenced anywhere in the drawing (layers, entities, block entities). */
 function usedLinetypes(state: DrawingState): Linetype[] {
@@ -62,6 +65,31 @@ function usedLinetypes(state: DrawingState): Linetype[] {
   return out;
 }
 
+/**
+ * Content key for a dimension's generated picture (Q11 F1): the canonical serialization of
+ * the parts exactly as the *D block writer emits them (including its ByLayer -> 0 color
+ * mapping), with identity fields removed (part ids embed the owning dimension's id) and
+ * numbers at write precision (write-core fmt rounds to 10 decimals). Equal keys therefore
+ * mean byte-identical picture bodies; unequal keys can still render alike only through
+ * fields the writer never emits, never the reverse.
+ */
+function dimensionPictureKey(d: DimensionEntity): string {
+  const canonical = (value: unknown): unknown => {
+    if (typeof value === 'number') return Number.isFinite(value) ? Number(value.toFixed(10)) : 0;
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value !== null && typeof value === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const key of Object.keys(value).sort()) {
+        if (key === 'id' || key === 'cadIdentity') continue;
+        out[key] = canonical((value as Record<string, unknown>)[key]);
+      }
+      return out;
+    }
+    return value;
+  };
+  return JSON.stringify(dimensionParts(d).map((part) => canonical({ ...part, color: part.color === 'ByLayer' ? 0 : part.color })));
+}
+
 export function writeDxf(state: DrawingState): string {
   state = materializePolylineWidthFrames(state);
   const w = new Writer();
@@ -69,6 +97,44 @@ export function writeDxf(state: DrawingState): string {
   // AUDIT reports layers whose plot style handle names no object).
   const plotStyleDictionary = w.nextHandle();
   const normalPlotStyle = w.nextHandle();
+  // Q11 F2 rework: the annotation settings (cannoscale / annoAllVisible) are not HEADER
+  // variables in AutoCAD — they live as DICTIONARYVARs in the AcDbVariableDictionary, at
+  // every DXF version. Emit only what is set (CANNOSCALE when a valid scale name is set;
+  // ANNOALLVISIBLE only when false, as '0' — at the default AutoCAD omits both
+  // everywhere), and create the dictionary only when the retained graph carries none:
+  // when it carries one, the graph path refreshes/inserts the values and a second
+  // dictionary must never appear. (A carried variable implies a carried dictionary —
+  // the dictionary path is how annotationVariables finds it.)
+  // With neither setting present, creation is impossible whatever the graph carries,
+  // so the carrier consult (a full graph pass) is skipped entirely.
+  const annotationSettingPresent = state.header?.cannoscale !== undefined || state.header?.annoAllVisible !== undefined;
+  const annotationCarrier = annotationSettingPresent ? graphAnnotationCarrier(state) : { variables: new Set<string>(), dictionary: false, scaleList: { dictionary: false, names: new Set<string>() } };
+  const createCannoVariable = !annotationCarrier.dictionary && state.header?.cannoscale !== undefined && isScaleName(state.header.cannoscale);
+  const createAnnoVariable = !annotationCarrier.dictionary && state.header?.annoAllVisible === false;
+  // F2 round 2 (Item 1): AutoCAD resolves CANNOSCALE to 1:1 when the drawing has no
+  // ACAD_SCALELIST entry for the named scale (the F2 gate verified AutoCAD reads
+  // 1:4 where the entry exists — N1 AC1032, Q10 AC1015), so a write that creates
+  // the variable dictionary for a drawing whose graph carries no scale list at
+  // all also creates the list, holding ONLY the entry for the current scale. When
+  // the graph carries a scale list (or the variable dictionary) but lacks the
+  // entry, preserveDxfCadGraph adds it there instead. Only plain 'N:M' scale
+  // names produce an entry — the ratio is parsed from the name; other names
+  // invent no geometry and get no entry (the dictionary variable still writes).
+  const scaleRatio = state.header?.cannoscale !== undefined ? annotationScaleRatio(state.header.cannoscale) : null;
+  const createScaleList = createCannoVariable && scaleRatio !== null && !annotationCarrier.scaleList.dictionary;
+  // The handles are allocated in the OBJECTS section, NOT here (deviation from the
+  // design's plan-time allocation, found in validation): allocating them here shifts
+  // every later handle in the file, and on drawings with retained 3D carriers a
+  // shifted temporary handle can coincide with a retained SOURCE handle that
+  // preserveDxfCadGraph's structuralKeys reads as an owner — the false owner edge
+  // chains through the face records and the embedded slot keys grow exponentially
+  // (heap OOM on tests/fixtures/3d/enclosure.dxf). Allocating last keeps every
+  // other handle at its pre-rework value.
+  let variableDictionary: string | null = null;
+  let cannoVariable: string | null = null;
+  let annoVariable: string | null = null;
+  let scaleListDictionary: string | null = null;
+  let scaleObject: string | null = null;
   const MODEL_SPACE = '1F';
   const PAPER_SPACE = '1B';
   const header = state.header ?? DEFAULT_HEADER;
@@ -77,23 +143,35 @@ export function writeDxf(state: DrawingState): string {
   // Pre-assign a BLOCK_RECORD handle per block; block entities use it as their owner (330).
   const blockRecordHandles = new Map<string, string>();
   for (const b of blockList) blockRecordHandles.set(b.name, w.nextHandle());
-  // Anonymous *D blocks that carry each dimension's picture.
+  // Anonymous *D blocks that carry each dimension's picture. Dimensions whose generated
+  // pictures are identical share one block, named in first-appearance order (Q11 F1):
+  // AutoCAD shares *D graphics across a drawing's records, and one block per distinct
+  // content is the reproducible part of that behavior (AutoCAD's own count also depends
+  // on its evaluation history, so it is not the target).
   const dimBlocks = new Map<string, string>();
+  const dimPictures: Array<{ name: string; dimension: DimensionEntity }> = [];
   const layoutPlan = planLayouts(state, w, PAPER_SPACE);
   setPaperOwners(layoutPlan.paperOwners);
   // Dimensions inside block definitions get their picture block too (a DIMENSION naming no block
   // is invalid).
   const dimEntities = [...state.entities, ...layoutPlan.entities, ...blockList.flatMap((b) => b.entities)].filter((e): e is DimensionEntity => e.type === 'dimension');
-  dimEntities.forEach((d, i) => {
-    const name = `*D${i + 1}`;
+  const pictureByKey = new Map<string, string>();
+  for (const d of dimEntities) {
+    const key = dimensionPictureKey(d);
+    let name = pictureByKey.get(key);
+    if (name === undefined) {
+      name = `*D${dimPictures.length + 1}`;
+      pictureByKey.set(key, name);
+      dimPictures.push({ name, dimension: d });
+      blockRecordHandles.set(name, w.nextHandle());
+    }
     dimBlocks.set(d.id, name);
-    blockRecordHandles.set(name, w.nextHandle());
-  });
+  }
   // Experimental true 3D dimensions: a picture block each, numbered after the 2D dimensions'.
   const dims3d = state.model3d?.dimensions ?? [];
   const dim3dBlocks = new Map<string, string>();
   dims3d.forEach((d, i) => {
-    const name = `*D${dimEntities.length + i + 1}`;
+    const name = `*D${dimPictures.length + i + 1}`;
     dim3dBlocks.set(d.id, name);
     const handle = w.nextHandle();
     blockRecordHandles.set(name, handle);
@@ -193,7 +271,8 @@ export function writeDxf(state: DrawingState): string {
   hv('$DIMSTYLE', 2, ds.name);
   for (const [name, code, value] of dimHeaderVars(ds)) if (name !== 'DIMLUNIT') hv(`$${name}`, code, value);
   hv('$DIMLUNIT', 70, ds.lunit);
-  writeLayoutHeader(hv, state);
+  // No $CANNOSCALE / $ANNOALLVISIBLE here: not HEADER variables (Q11 F2 rework) —
+  // they are written as DICTIONARYVARs in OBJECTS below.
   w.pair(0, 'ENDSEC');
 
   // CLASSES: the plot style dictionary's object types, and raster images' when there are images.
@@ -216,6 +295,35 @@ export function writeDxf(state: DrawingState): string {
       cls('IMAGE', 'AcDbRasterImage', 127, true, extras.imageReactors.size);
       cls('IMAGEDEF', 'AcDbRasterImageDef', 0, false, extras.imageDefs.size);
       cls('IMAGEDEF_REACTOR', 'AcDbRasterImageDefReactor', 1, false, extras.imageReactors.size);
+    }
+    if (createCannoVariable || createAnnoVariable) {
+      // AutoCAD's specimen registration (the HANDBUILT fixtures): app name
+      // 'ObjectDBX Classes', instance count = the DICTIONARYVARs created below.
+      // Keyed on the creation booleans (known at plan time): the dictionary
+      // handle is only allocated in OBJECTS, after CLASSES is emitted, so
+      // keying on it made this block unreachable on fresh writes (Q11 F2
+      // rework C1).
+      w.pair(0, 'CLASS');
+      w.pair(1, 'DICTIONARYVAR');
+      w.pair(2, 'AcDbDictionaryVar');
+      w.pair(3, 'ObjectDBX Classes');
+      w.pair(90, 0);
+      if (acadVersion !== 'AC1015') w.pair(91, (createCannoVariable ? 1 : 0) + (createAnnoVariable ? 1 : 0));
+      w.pair(280, 0);
+      w.pair(281, 0);
+    }
+    if (createScaleList) {
+      // Specimen registration (N1/Q10/Q12 HANDBUILT fixtures): SCALE / AcDbScale,
+      // app name 'ObjectDBX Classes', class version 1153, one created instance;
+      // group 91 omitted at AC1015, exactly like the registration above.
+      w.pair(0, 'CLASS');
+      w.pair(1, 'SCALE');
+      w.pair(2, 'AcDbScale');
+      w.pair(3, 'ObjectDBX Classes');
+      w.pair(90, 1153);
+      if (acadVersion !== 'AC1015') w.pair(91, 1);
+      w.pair(280, 0);
+      w.pair(281, 0);
     }
   }
   w.pair(0, 'ENDSEC');
@@ -334,16 +442,22 @@ export function writeDxf(state: DrawingState): string {
   });
   table('UCS', '7', 0, () => {});
   const annotative = allEntities.some((e) => e.annotative);
+  // Priority 30: JCAD_DYNAMIC is registered only when a definition or instance payload exists.
+  const dynamicApp = blockList.some((b) => b.dynamic || b.dynamicRetained) || allEntities.some((e) => e.type === 'insert' && (e.dynamic || e.dynamicRetained));
+  // Priority 30.4: JCAD_CONSTRAINTS likewise, only when a set (or its retained payload) exists.
+  const constraintsApp = state.constraints !== undefined || state.constraintsRetained !== undefined;
   const columnMtext = allEntities.some((e) => e.type === 'mtext' ? e.columns : e.type === 'leader' && e.textColumns);
   const layerTransparency = state.layers.some((l) => l.transparency !== undefined);
   const inactiveMtext = allEntities.some((e) => entityMTextBackground(e)?.flags === 0);
   // Experimental 3D solids (polyface meshes with JCAD_3D data); a 2D drawing writes none of this.
   const solids = state.model3d?.solids ?? [];
   const model3dApp = solids.length > 0 || dims3d.length > 0;
-  table('APPID', '9', (tableList.length ? 3 : 2) + (annotative ? 1 : 0) + (columnMtext ? 1 : 0) + (layerTransparency ? 1 : 0) + (inactiveMtext ? 1 : 0) + (model3dApp ? 1 : 0), () => {
+  table('APPID', '9', (tableList.length ? 3 : 2) + (annotative ? 1 : 0) + (columnMtext ? 1 : 0) + (layerTransparency ? 1 : 0) + (inactiveMtext ? 1 : 0) + (model3dApp ? 1 : 0) + (dynamicApp ? 1 : 0) + (constraintsApp ? 1 : 0), () => {
     record('APPID', '9', 'AcDbRegAppTableRecord', 'ACAD');
     record('APPID', '9', 'AcDbRegAppTableRecord', DIMSTYLE_APP);
     if (tableList.length) record('APPID', '9', 'AcDbRegAppTableRecord', TABLE_APP);
+    if (dynamicApp) record('APPID', '9', 'AcDbRegAppTableRecord', DYNAMIC_APP);
+    if (constraintsApp) record('APPID', '9', 'AcDbRegAppTableRecord', CONSTRAINTS_APP);
     if (annotative) record('APPID', '9', 'AcDbRegAppTableRecord', ANNO_APP);
     if (columnMtext) record('APPID', '9', 'AcDbRegAppTableRecord', MTEXT_COLUMNS_APP);
     if (layerTransparency) record('APPID', '9', 'AcDbRegAppTableRecord', LAYER_TRANSPARENCY_APP);
@@ -397,7 +511,7 @@ export function writeDxf(state: DrawingState): string {
   // BLOCKS
   w.pair(0, 'SECTION');
   w.pair(2, 'BLOCKS');
-  const blockShell = (owner: string, name: string, base: { x: number; y: number }, flags: number, description: string | undefined, body: () => void, path = '') => {
+  const blockShell = (owner: string, name: string, base: { x: number; y: number }, flags: number, description: string | undefined, body: () => void, path = '', xdataBody?: () => void) => {
     w.pair(0, 'BLOCK');
     w.pair(5, w.nextHandle());
     w.pair(330, owner);
@@ -412,6 +526,10 @@ export function writeDxf(state: DrawingState): string {
     w.pair(3, name);
     w.pair(1, path);
     if (description) w.pair(4, description);
+    // XDATA on the BLOCK record itself (priority 30 definition carrier): after the
+    // AcDbBlockBegin groups, before the first block entity — the only position that
+    // attaches the payload to the BLOCK object.
+    if (xdataBody) xdataBody();
     body();
     w.pair(0, 'ENDBLK');
     w.pair(5, w.nextHandle());
@@ -420,7 +538,19 @@ export function writeDxf(state: DrawingState): string {
     w.pair(8, '0');
     w.pair(100, 'AcDbBlockEnd');
   };
-  blockShell(MODEL_SPACE, '*Model_Space', { x: 0, y: 0 }, 0, undefined, () => {});
+  blockShell(MODEL_SPACE, '*Model_Space', { x: 0, y: 0 }, 0, undefined, () => {}, '', () => {
+    // Priority 30.4 drawing-level carrier: the constraint set rides the
+    // *Model_Space BLOCK record (the drawing's one always-present record),
+    // the same attachment JCAD_DYNAMIC uses on named BLOCK records. A
+    // modeled set is re-encoded canonically against the entities being
+    // written; a retained payload is re-emitted verbatim (chunked only),
+    // never re-escaped or re-shaped. A constraints-free drawing emits
+    // nothing here (and registers no APPID above): the fixed point holds.
+    const payload = state.constraints ? encodeConstraints(state.constraints, state.entities.map((e) => e.id)) : state.constraintsRetained;
+    if (payload === undefined) return;
+    w.pair(1001, CONSTRAINTS_APP);
+    for (const chunk of chunkDynamicPayload(payload)) w.pair(1000, chunk);
+  });
   blockShell(PAPER_SPACE, '*Paper_Space', { x: 0, y: 0 }, 0, undefined, () => {});
   // Layouts after the first keep their paper space in *Paper_Space0, *Paper_Space1 ...
   const writePaperEntity = (e: Entity, owner: string) => writeEntityAnno(w, e, owner, state.blocks, dimBlocks, extras);
@@ -441,7 +571,14 @@ export function writeDxf(state: DrawingState): string {
         w.pair(70, attdefFlags(a));
         if (a.justification?.vertical) w.pair(74, a.justification.vertical);
       }
-    }, b.xref?.path ?? '');
+    }, b.xref?.path ?? '', () => {
+      // A modeled definition is re-encoded canonically; a retained payload is
+      // re-emitted verbatim (chunked only), never re-escaped or re-shaped.
+      const payload = b.dynamic ? encodeDynamicDefinition(b.dynamic, b.entities.map((e) => e.id)) : b.dynamicRetained;
+      if (payload === undefined) return;
+      w.pair(1001, DYNAMIC_APP);
+      for (const chunk of chunkDynamicPayload(payload)) w.pair(1000, chunk);
+    });
   }
   for (const [t, name] of tableList) {
     const owner = blockRecordHandles.get(name)!;
@@ -449,11 +586,10 @@ export function writeDxf(state: DrawingState): string {
       for (const part of tableParts(t)) writeEntity(w, part, owner, state.blocks, undefined, extras);
     });
   }
-  for (const d of dimEntities) {
-    const name = dimBlocks.get(d.id)!;
+  for (const { name, dimension } of dimPictures) {
     const owner = blockRecordHandles.get(name)!;
     blockShell(owner, name, { x: 0, y: 0 }, 1, undefined, () => {
-      for (const part of dimensionParts(d)) writeEntity(w, { ...part, color: part.color === 'ByLayer' ? 0 : part.color } as Entity, owner, state.blocks);
+      for (const part of dimensionParts(dimension)) writeEntity(w, { ...part, color: part.color === 'ByLayer' ? 0 : part.color } as Entity, owner, state.blocks);
     });
   }
   for (const d of dims3d) {
@@ -488,6 +624,16 @@ export function writeDxf(state: DrawingState): string {
   w.pair(0, 'ENDSEC');
 
   // OBJECTS: root dictionary with the mandatory ACAD_GROUP entry
+  if (createCannoVariable || createAnnoVariable) {
+    variableDictionary = w.nextHandle();
+    if (createCannoVariable) cannoVariable = w.nextHandle();
+    if (createAnnoVariable) annoVariable = w.nextHandle();
+  }
+  // Allocated here too — never at plan time (the structuralKeys invariant above).
+  if (createScaleList) {
+    scaleListDictionary = w.nextHandle();
+    scaleObject = w.nextHandle();
+  }
   w.pair(0, 'SECTION');
   w.pair(2, 'OBJECTS');
   w.pair(0, 'DICTIONARY');
@@ -501,9 +647,18 @@ export function writeDxf(state: DrawingState): string {
   w.pair(350, layoutPlan.dictionary);
   w.pair(3, 'ACAD_PLOTSTYLENAME');
   w.pair(350, plotStyleDictionary);
+  if (scaleListDictionary) {
+    w.pair(3, 'ACAD_SCALELIST');
+    w.pair(350, scaleListDictionary);
+  }
   if (imageDict) {
     w.pair(3, 'ACAD_IMAGE_DICT');
     w.pair(350, imageDict);
+  }
+  if (variableDictionary) {
+    // AutoCAD keeps the variable dictionary as the root dictionary's last entry.
+    w.pair(3, 'AcDbVariableDictionary');
+    w.pair(350, variableDictionary);
   }
   w.pair(0, 'DICTIONARY');
   w.pair(5, 'D');
@@ -523,6 +678,56 @@ export function writeDxf(state: DrawingState): string {
   w.pair(0, 'ACDBPLACEHOLDER');
   w.pair(5, normalPlotStyle);
   w.pair(330, plotStyleDictionary);
+  if (variableDictionary) {
+    // The variable dictionary and its DICTIONARYVARs, in AutoCAD's exact shape.
+    w.pair(0, 'DICTIONARY');
+    w.pair(5, variableDictionary);
+    w.pair(330, 'C');
+    w.pair(100, 'AcDbDictionary');
+    w.pair(281, 1);
+    if (cannoVariable) { w.pair(3, 'CANNOSCALE'); w.pair(350, cannoVariable); }
+    if (annoVariable) { w.pair(3, 'ANNOALLVISIBLE'); w.pair(350, annoVariable); }
+    const dictionaryVariable = (handle: string, val: string) => {
+      w.pair(0, 'DICTIONARYVAR');
+      w.pair(5, handle);
+      w.pair(102, '{ACAD_REACTORS');
+      w.pair(330, variableDictionary);
+      w.pair(102, '}');
+      w.pair(330, variableDictionary);
+      w.pair(100, 'DictionaryVariables');
+      w.pair(280, 0);
+      w.pair(1, val);
+    };
+    if (cannoVariable) dictionaryVariable(cannoVariable, state.header!.cannoscale!);
+    if (annoVariable) dictionaryVariable(annoVariable, '0');
+  }
+  if (scaleListDictionary && scaleObject && scaleRatio) {
+    // Specimen shape (N1 AC1032 / Q10 AC1015 / Q12 AC1032 HANDBUILT fixtures): a
+    // plain DICTIONARY owned by the root named-objects dictionary, its single
+    // entry keyed 'A0' — the first key of AutoCAD's A0..D2 sequence — pointing at
+    // the SCALE object for the current annotation scale. Groups 140/141 carry
+    // the ratio parsed from the scale name (paper units / drawing units,
+    // formatted as AutoCAD writes them); group 290 marks the unit scale 1:1.
+    w.pair(0, 'DICTIONARY');
+    w.pair(5, scaleListDictionary);
+    w.pair(330, 'C');
+    w.pair(100, 'AcDbDictionary');
+    w.pair(281, 1);
+    w.pair(3, 'A0');
+    w.pair(350, scaleObject);
+    w.pair(0, 'SCALE');
+    w.pair(5, scaleObject);
+    w.pair(102, '{ACAD_REACTORS');
+    w.pair(330, scaleListDictionary);
+    w.pair(102, '}');
+    w.pair(330, scaleListDictionary);
+    w.pair(100, 'AcDbScale');
+    w.pair(70, 0);
+    w.pair(300, state.header!.cannoscale!);
+    w.pair(140, scaleRatio.numerator);
+    w.pair(141, scaleRatio.denominator);
+    w.pair(290, scaleRatio.unit ? 1 : 0);
+  }
   if (imageDict) {
     w.pair(0, 'DICTIONARY');
     w.pair(5, imageDict);

@@ -1,5 +1,7 @@
 import type { Editor } from '../app/editor';
-import type { ColorSpec, Entity } from '../core/entities';
+import type { ColorSpec, Entity, InsertEntity } from '../core/entities';
+import type { DynamicParameterEditValue } from '../core/parametric/apply';
+import { dynamicParameterRows, setDynamicParameterValue, type DynamicParameterRow } from '../tools/parametric-properties';
 import { splinePoints, imageLabel, textWidth, translateEntity, rotateEntity } from '../core/entities';
 import { textAnchor, textJustification } from '../core/text-placement';
 import * as g from '../core/geometry';
@@ -7,6 +9,7 @@ import { PATTERN_NAMES } from '../core/hatch';
 import { aciToCss, ACI_NAMES } from '../render/palette';
 import { icon } from './icons';
 import { GeometryBudgetError } from '../core/geometry-budget-error';
+import { ConstraintPolicyError } from '../core/constraints/policy';
 import { isViewportFrame, viewTwist } from '../core/layouts';
 import type { Dimension3D, Solid3D } from '../model3d/types';
 import { dimensionById, replaceDimension3D, replaceSolid, solidById } from '../model3d/model';
@@ -42,6 +45,26 @@ export class PropertiesPalette {
   toggle(): void {
     this.el.classList.toggle('hidden');
     this.render();
+  }
+
+  /**
+   * Run one palette edit that commits through a document transaction.
+   * A deliberate refusal — the geometry budget (GeometryBudgetError) or
+   * the constraint policy (ConstraintPolicyError, review round 2 C08) —
+   * leaves the document unchanged by construction; the palette reports
+   * the refusal on the command log and re-renders, so the field shows
+   * the unchanged value instead of the error escaping the change handler
+   * (which left the stale typed value on screen with no explanation).
+   * Any other error still throws.
+   */
+  private runEdit(fn: () => void): void {
+    try {
+      fn();
+    } catch (error) {
+      if (!(error instanceof GeometryBudgetError) && !(error instanceof ConstraintPolicyError)) throw error;
+      this.editor.log(error.message);
+      this.render();
+    }
   }
 
   private row(label: string, value: string | HTMLElement): HTMLElement {
@@ -142,13 +165,7 @@ export class PropertiesPalette {
       return all.every((e) => e[key] === first) ? String(first ?? '') : '*VARIES*';
     };
     const patchAll = (patch: LayerColorPatch) => {
-      try {
-        patchMixedSelection(doc, sel, solids.map((s) => s.id), dims3d.map((d) => d.id), patch);
-      } catch (error) {
-        if (!(error instanceof GeometryBudgetError)) throw error;
-        this.editor.log(error.message);
-        this.render();
-      }
+      this.runEdit(() => patchMixedSelection(doc, sel, solids.map((s) => s.id), dims3d.map((d) => d.id), patch));
     };
     if (sel.length === 0) {
       b.appendChild(this.row('Layer', this.select(layers, doc.currentLayer, (v) => doc.setCurrentLayer(v))));
@@ -164,7 +181,7 @@ export class PropertiesPalette {
         this.select(layerVal === '*VARIES*' ? [['*VARIES*', '*VARIES*'], ...layers] : layers, layerVal, (v) => {
           if (v === '*VARIES*') return;
           if (mixed) patchAll({ layer: v });
-          else doc.replaceEntities(sel.map((e) => ({ ...e, layer: v })));
+          else this.runEdit(() => doc.replaceEntities(sel.map((e) => ({ ...e, layer: v }))));
         }),
       ),
     );
@@ -175,7 +192,7 @@ export class PropertiesPalette {
         patchAll({ color: v === 'ByLayer' ? 'ByLayer' : parseInt(v, 10) });
         return;
       }
-      doc.replaceEntities(sel.map((e) => ({ ...e, color: v === 'ByLayer' ? ('ByLayer' as const) : parseInt(v, 10), trueColor: undefined, colorName: undefined, colorLayer: undefined })));
+      this.runEdit(() => doc.replaceEntities(sel.map((e) => ({ ...e, color: v === 'ByLayer' ? ('ByLayer' as const) : parseInt(v, 10), trueColor: undefined, colorName: undefined, colorLayer: undefined }))));
     });
     const swatchWrap = document.createElement('span');
     swatchWrap.className = 'prop-color';
@@ -190,12 +207,7 @@ export class PropertiesPalette {
     const e = sel[0]!;
     const num = (v: number) => v.toFixed(4);
     const patch = (p: Partial<Entity>) => {
-      try { doc.replaceEntities([{ ...e, ...p } as Entity]); }
-      catch (error) {
-        if (!(error instanceof GeometryBudgetError)) throw error;
-        this.editor.log(error.message);
-        this.render();
-      }
+      this.runEdit(() => doc.replaceEntities([{ ...e, ...p } as Entity]));
     };
     const numInput = (v: number, fn: (n: number) => void) =>
       this.input(num(v), (s) => {
@@ -238,7 +250,7 @@ export class PropertiesPalette {
           const rotationInput = numInput(g.deg(viewTwist(e.vport.view)), (n) => {
             if (e.vport.view.locked) return;
             const edited: typeof e = { ...e, vport: { ...e.vport, view: { ...e.vport.view, twist: g.rad(n) } } };
-            doc.replaceEntities([edited]);
+            this.runEdit(() => doc.replaceEntities([edited]));
           });
           rotationInput.disabled = Boolean(e.vport.view.locked);
           rotationInput.title = e.vport.view.locked ? 'Unlock the viewport with MVIEW before changing its view rotation.' : 'Degrees; positive turns the model counterclockwise on the sheet.';
@@ -278,6 +290,17 @@ export class PropertiesPalette {
         b.appendChild(this.row('Rows', arrayInput(e.rows ?? 1, (n) => Number.isSafeInteger(n) && n > 0 && n <= 65535 && patch({ rows: n }))));
         b.appendChild(this.row('Column spacing', arrayInput(e.columnSpacing ?? 0, (n) => patch({ columnSpacing: n }))));
         b.appendChild(this.row('Row spacing', arrayInput(e.rowSpacing ?? 0, (n) => patch({ rowSpacing: n }))));
+        if (block && (block.dynamic || block.dynamicRetained !== undefined)) {
+          // Dynamic-block parameters (30.4): rows from the pure builder in
+          // tools/parametric-properties.ts; commits go through
+          // setDynamicParameter, never through the entity `patch` above —
+          // a parameter edit is a document transition, not a field write.
+          const dynRows = dynamicParameterRows(block, e);
+          if (dynRows.length) {
+            b.appendChild(this.section('Parameters'));
+            for (const r of dynRows) b.appendChild(this.dynamicParameterRow(e, r));
+          }
+        }
         if (block && block.attributes.length) {
           b.appendChild(this.section('Attributes'));
           for (const a of block.attributes) {
@@ -315,7 +338,7 @@ export class PropertiesPalette {
               e.solid ? 'SOLID' : e.pattern,
               (v) => {
                 const { patternLines: _custom, ...rest } = e;
-                doc.replaceEntities([{ ...rest, pattern: v, solid: v === 'SOLID', patternType: 1 }]);
+                this.runEdit(() => doc.replaceEntities([{ ...rest, pattern: v, solid: v === 'SOLID', patternType: 1 }]));
               },
             ),
           ),
@@ -325,7 +348,7 @@ export class PropertiesPalette {
           const known = PATTERN_NAMES.includes(e.pattern);
           const setPattern = (p: { angle?: number; scale?: number }) => {
             const { patternLines, ...rest } = e;
-            doc.replaceEntities([known ? { ...rest, ...p } : { ...rest, patternLines, ...p }]);
+            this.runEdit(() => doc.replaceEntities([known ? { ...rest, ...p } : { ...rest, patternLines, ...p }]));
           };
           b.appendChild(this.row('Angle', numInput((e.angle * 180) / Math.PI, (n) => setPattern({ angle: (n * Math.PI) / 180 }))));
           b.appendChild(this.row('Scale', numInput(e.scale, (n) => n > 0 && setPattern({ scale: n }))));
@@ -361,6 +384,43 @@ export class PropertiesPalette {
   }
 
   /**
+   * One row of the dynamic Parameters section. Distance/angle are numeric
+   * inputs (angles shown in degrees, the palette convention; the model
+   * value is radians), flip a toggle, visibility a state choice, lookup a
+   * row choice with a Custom entry. Every commit routes through
+   * setDynamicParameterValue (apply.ts); a refusal is logged there and
+   * the re-render shows the unchanged stored value.
+   */
+  private dynamicParameterRow(e: InsertEntity, row: DynamicParameterRow): HTMLElement {
+    const commit = (value: DynamicParameterEditValue) => {
+      setDynamicParameterValue(this.editor, e.id, row.id, value);
+      this.render();
+    };
+    switch (row.kind) {
+      case 'distance':
+        return this.row(row.name, this.input(row.value.toFixed(4), (s) => {
+          const n = parseFloat(s);
+          if (Number.isFinite(n)) commit(n);
+          else this.render();
+        }));
+      case 'angle':
+        return this.row(row.name, this.input(((row.value * 180) / Math.PI).toFixed(4), (s) => {
+          const n = parseFloat(s);
+          if (Number.isFinite(n)) commit((n * Math.PI) / 180);
+          else this.render();
+        }));
+      case 'flip':
+        return this.row(row.name, this.select([['1', 'Flipped'], ['0', 'Not flipped']], row.value ? '1' : '0', (v) => commit(v === '1')));
+      case 'visibility':
+        return this.row(row.name, this.select(row.options.map((o): [string, string] => [o, o]), row.value, (v) => commit(v)));
+      case 'lookup':
+        return this.row(row.name, this.select([['', 'Custom'], ...row.options.map((o): [string, string] => [o, o])], row.value ?? '', (v) => commit(v === '' ? null : v)));
+      case 'note':
+        return this.row(row.name, row.text);
+    }
+  }
+
+  /**
    * Experimental 3D solids (rows from src/tools3d/properties.ts), with any selected 3D dimensions
    * (counted in the header, included in the Layer and Color edits): layer and colour for all of
    * them, name, the editable parameters (milestone 4: sizes and segment counts of primitives and
@@ -376,25 +436,13 @@ export class PropertiesPalette {
     header.textContent = dims.length ? mixedSelectionLabel(0, solids.length, dims.length) : solids.length === 1 ? '3D Solid' : `3D Solids (${solids.length})`;
     b.appendChild(header);
     const patchAll = (patch: LayerColorPatch) => {
-      try {
-        patchMixedSelection(doc, [], solids.map((s) => s.id), dims.map((d) => d.id), patch);
-      } catch (error) {
-        if (!(error instanceof GeometryBudgetError)) throw error;
-        this.editor.log(error.message);
-        this.render();
-      }
+      this.runEdit(() => patchMixedSelection(doc, [], solids.map((s) => s.id), dims.map((d) => d.id), patch));
     };
     const update = (fn: (s: Solid3D) => Solid3D) => {
-      try {
-        doc.updateModel3D((m) => solids.reduce((acc, s) => {
-          const cur = solidById(acc, s.id);
-          return cur ? replaceSolid(acc, fn(cur)) : acc;
-        }, m));
-      } catch (error) {
-        if (!(error instanceof GeometryBudgetError)) throw error;
-        this.editor.log(error.message);
-        this.render();
-      }
+      this.runEdit(() => doc.updateModel3D((m) => solids.reduce((acc, s) => {
+        const cur = solidById(acc, s.id);
+        return cur ? replaceSolid(acc, fn(cur)) : acc;
+      }, m)));
     };
     const common = (key: 'layer' | 'color') => {
       const first = String(solids[0]![key]);
@@ -451,10 +499,10 @@ export class PropertiesPalette {
     header.textContent = dims.length === 1 ? '3D Dimension' : `3D Dimensions (${dims.length})`;
     b.appendChild(header);
     const update = (fn: (d: Dimension3D) => Dimension3D) => {
-      doc.updateModel3D((m) => dims.reduce((acc, d) => {
+      this.runEdit(() => doc.updateModel3D((m) => dims.reduce((acc, d) => {
         const cur = dimensionById(acc, d.id);
         return cur ? replaceDimension3D(acc, fn(cur)) : acc;
-      }, m));
+      }, m)));
     };
     const common = (key: 'layer' | 'color') => {
       const first = String(dims[0]![key]);

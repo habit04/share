@@ -1,0 +1,437 @@
+{
+  "note": "HANDBUILT dynamic objects; AutoCAD headless evaluation",
+  "acadver": "26.0",
+  "definitionIsDynamic": true,
+  "definitionEntities": [
+    {
+      "type": "LWPOLYLINE",
+      "layer": "0",
+      "closed": true,
+      "vertices": [
+        [
+          0,
+          0
+        ],
+        [
+          100,
+          0
+        ],
+        [
+          100,
+          60
+        ],
+        [
+          0,
+          60
+        ]
+      ]
+    },
+    {
+      "type": "CIRCLE",
+      "layer": "0",
+      "center": [
+        30,
+        30,
+        0
+      ],
+      "radius": 10
+    },
+    {
+      "type": "LINE",
+      "layer": "0",
+      "start": [
+        70,
+        20,
+        0
+      ],
+      "end": [
+        90,
+        40,
+        0
+      ]
+    },
+    {
+      "type": "ATTDEF",
+      "layer": "0",
+      "tag": "TAG1",
+      "position": [
+        10,
+        45,
+        0
+      ],
+      "height": 5,
+      "default": "P-100"
+    }
+  ],
+  "instances": [
+    {
+      "instance": "A",
+      "set": "untouched",
+      "blockName": "P30_LINEAR_STRETCH",
+      "isAnonymous": false,
+      "effectiveName": "P30_LINEAR_STRETCH",
+      "isDynamicBlock": true,
+      "insertion": [
+        0,
+        0,
+        0
+      ],
+      "rotationDeg": 0,
+      "properties": [
+        {
+          "name": "Distance1",
+          "value": 100,
+          "readOnly": false,
+          "allowed": [
+            80,
+            100,
+            120,
+            140
+          ],
+          "units": "Distance"
+        },
+        {
+          "name": "Origin",
+          "value": {
+            "Z": 0,
+            "Y": 30,
+            "X": 0
+          },
+          "readOnly": true,
+          "allowed": [],
+          "units": "NoUnits"
+        }
+      ],
+      "extents": [
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          100,
+          60,
+          0
+        ]
+      ],
+      "blockEntities": [
+        {
+          "type": "LWPOLYLINE",
+          "layer": "0",
+          "closed": true,
+          "vertices": [
+            [
+              0,
+              0
+            ],
+            [
+              100,
+              0
+            ],
+            [
+              100,
+              60
+            ],
+            [
+              0,
+              60
+            ]
+          ]
+        },
+        {
+          "type": "CIRCLE",
+          "layer": "0",
+          "center": [
+            30,
+            30,
+            0
+          ],
+          "radius": 10
+        },
+        {
+          "type": "LINE",
+          "layer": "0",
+          "start": [
+            70,
+            20,
+            0
+          ],
+          "end": [
+            90,
+            40,
+            0
+          ]
+        },
+        {
+          "type": "ATTDEF",
+          "layer": "0",
+          "tag": "TAG1",
+          "position": [
+            10,
+            45,
+            0
+          ],
+          "height": 5,
+          "default": "P-100"
+        }
+      ],
+      "attributes": [
+        {
+          "tag": "TAG1",
+          "text": "P-100",
+          "position": [
+            10,
+            45,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "instance": "B",
+      "set": "ok",
+      "blockName": "*U2",
+      "isAnonymous": true,
+      "effectiveName": "P30_LINEAR_STRETCH",
+      "isDynamicBlock": true,
+      "insertion": [
+        200,
+        0,
+        0
+      ],
+      "rotationDeg": 0,
+      "properties": [
+        {
+          "name": "Distance1",
+          "value": 120,
+          "readOnly": false,
+          "allowed": [
+            80,
+            100,
+            120,
+            140
+          ],
+          "units": "Distance"
+        },
+        {
+          "name": "Origin",
+          "value": {
+            "Z": 0,
+            "Y": 30,
+            "X": 0
+          },
+          "readOnly": true,
+          "allowed": [],
+          "units": "NoUnits"
+        }
+      ],
+      "extents": [
+        [
+          200,
+          0,
+          0
+        ],
+        [
+          320,
+          60,
+          0
+        ]
+      ],
+      "blockEntities": [
+        {
+          "type": "LWPOLYLINE",
+          "layer": "0",
+          "closed": true,
+          "vertices": [
+            [
+              0,
+              0
+            ],
+            [
+              120,
+              0
+            ],
+            [
+              120,
+              60
+            ],
+            [
+              0,
+              60
+            ]
+          ]
+        },
+        {
+          "type": "CIRCLE",
+          "layer": "0",
+          "center": [
+            30,
+            30,
+            0
+          ],
+          "radius": 10
+        },
+        {
+          "type": "LINE",
+          "layer": "0",
+          "start": [
+            90,
+            20,
+            0
+          ],
+          "end": [
+            110,
+            40,
+            0
+          ]
+        },
+        {
+          "type": "ATTDEF",
+          "layer": "0",
+          "tag": "TAG1",
+          "position": [
+            10,
+            45,
+            0
+          ],
+          "height": 5,
+          "default": "P-100"
+        }
+      ],
+      "attributes": [
+        {
+          "tag": "TAG1",
+          "text": "P-100",
+          "position": [
+            210,
+            45,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "instance": "C",
+      "set": "ok",
+      "blockName": "*U2",
+      "isAnonymous": true,
+      "effectiveName": "P30_LINEAR_STRETCH",
+      "isDynamicBlock": true,
+      "insertion": [
+        400,
+        0,
+        0
+      ],
+      "rotationDeg": 29.999999999999996,
+      "properties": [
+        {
+          "name": "Distance1",
+          "value": 120,
+          "readOnly": false,
+          "allowed": [
+            80,
+            100,
+            120,
+            140
+          ],
+          "units": "Distance"
+        },
+        {
+          "name": "Origin",
+          "value": {
+            "Z": 0,
+            "Y": 30,
+            "X": 0
+          },
+          "readOnly": true,
+          "allowed": [],
+          "units": "NoUnits"
+        }
+      ],
+      "extents": [
+        [
+          370,
+          0,
+          0
+        ],
+        [
+          503.92304845413264,
+          111.96152422706632,
+          0
+        ]
+      ],
+      "blockEntities": [
+        {
+          "type": "LWPOLYLINE",
+          "layer": "0",
+          "closed": true,
+          "vertices": [
+            [
+              0,
+              0
+            ],
+            [
+              120,
+              0
+            ],
+            [
+              120,
+              60
+            ],
+            [
+              0,
+              60
+            ]
+          ]
+        },
+        {
+          "type": "CIRCLE",
+          "layer": "0",
+          "center": [
+            30,
+            30,
+            0
+          ],
+          "radius": 10
+        },
+        {
+          "type": "LINE",
+          "layer": "0",
+          "start": [
+            90,
+            20,
+            0
+          ],
+          "end": [
+            110,
+            40,
+            0
+          ]
+        },
+        {
+          "type": "ATTDEF",
+          "layer": "0",
+          "tag": "TAG1",
+          "position": [
+            10,
+            45,
+            0
+          ],
+          "height": 5,
+          "default": "P-100"
+        }
+      ],
+      "attributes": [
+        {
+          "tag": "TAG1",
+          "text": "P-100",
+          "position": [
+            386.16025403784437,
+            43.97114317029974,
+            0
+          ]
+        }
+      ]
+    }
+  ]
+}

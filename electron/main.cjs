@@ -135,6 +135,8 @@ const xrefIpc = registerXrefIpc(ctx);
 app.on('will-quit', () => xrefIpc.dispose());
 registerMenuIpc(ctx);
 registerUpdatesIpc(ctx);
+const { registerAiIpc } = require('./main/ipc-ai.cjs');
+registerAiIpc(ctx);
 const fontMetricsHost = process.platform === 'win32' ? createFontMetricsHost() : null;
 if (fontMetricsHost) ipcMain.handle('font-metrics', (_event, request) => fontMetricsHost.read(request).catch(() => null));
 if (fontMetricsHost) ipcMain.handle('pdf-font', async (_event, request) => {
