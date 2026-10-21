@@ -74,4 +74,14 @@ describe('P31C preserved drawing signature', () => {
     expect(() => parseSignatureRecordJson('{"status":"verified-by-autocad"}')).toThrow();
     expect(() => parseSignatureRecordJson('{}')).toThrow();
   });
+
+  it('(e2) refuses a payload encoding with non-alphabet characters instead of silently stripping them', () => {
+    const rec = capturePreservedSignature({ payload, contentDigest: digestOf('state-v1'), sourceFormat: 'DWG' });
+    const stored = JSON.parse(signatureRecordToJson(rec)) as { payloadBase64: string };
+    const dirty = `${stored.payloadBase64} ##\n`;
+    expect(() => parseSignatureRecordJson(JSON.stringify({ ...stored, payloadBase64: dirty }))).toThrow();
+    // other malformed encodings refuse too: bad length, misplaced padding
+    expect(() => parseSignatureRecordJson(JSON.stringify({ ...stored, payloadBase64: 'abc' }))).toThrow();
+    expect(() => parseSignatureRecordJson(JSON.stringify({ ...stored, payloadBase64: 'ab==cd==' }))).toThrow();
+  });
 });

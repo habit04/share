@@ -135,3 +135,48 @@ describe('P31A DST XML subset interop', () => {
     expect(back.sheets[0]?.drawingPath).toBe('a&b.dwg');
   });
 });
+
+describe('P31A DST preservation regressions (checkpoint-1 acceptance b3/b4)', () => {
+  const DST_ATTR = `<AcSmSheetSet Version="3"><Name>Plant A</Name><AcSmSubset SubId="7"><Name>Electrical</Name><AcSmSheet DataOwner="smith"><Number fmt="p">E-101</Number><Title>Power plan</Title><LayoutName>Layout1</LayoutName><FilePath>drawings/power.dwg</FilePath></AcSmSheet></AcSmSubset></AcSmSheetSet>`;
+
+  it('(b3) attributes on modeled DST elements are preserved and re-emitted, not silently dropped', () => {
+    const set = parseDstSubsetXml(DST_ATTR);
+    expect(set.dstAttributes).toEqual({ Version: '3' });
+    expect(set.dstSubsetAttributes).toEqual({ Electrical: { SubId: '7' } });
+    expect(set.sheets[0]?.dstAttributes).toEqual({ DataOwner: 'smith' });
+    expect(set.sheets[0]?.dstLeafAttributes).toEqual({ Number: { fmt: 'p' } });
+    const xml = toDstSubsetXml(set);
+    expect(xml).toContain('<AcSmSheetSet Version="3">');
+    expect(xml).toContain('<AcSmSubset SubId="7">');
+    expect(xml).toContain('<AcSmSheet DataOwner="smith">');
+    expect(xml).toContain('<Number fmt="p">E-101</Number>');
+    // and they survive a second round trip (parse the re-emission)
+    const back = parseDstSubsetXml(xml);
+    expect(back.dstAttributes).toEqual({ Version: '3' });
+    expect(back.sheets[0]?.dstAttributes).toEqual({ DataOwner: 'smith' });
+    expect(back.sheets[0]?.dstLeafAttributes).toEqual({ Number: { fmt: 'p' } });
+  });
+
+  it('(b3) DST attributes also survive the JSON form', () => {
+    const set = parseDstSubsetXml(DST_ATTR);
+    const back = parseSheetSetJson(sheetSetToJson(set));
+    expect(back).toEqual(set);
+    expect(back.sheets[0]?.dstLeafAttributes).toEqual({ Number: { fmt: 'p' } });
+  });
+
+  it('(b4) an unknown element nested inside a modeled leaf is preserved, never silently discarded', () => {
+    const xml = `<AcSmSheetSet><Name>Plant A</Name><AcSmSheet><Number>E-101</Number><Title>Plan <Emph>North</Emph> Wing</Title><LayoutName>Layout1</LayoutName><FilePath>drawings/power.dwg</FilePath></AcSmSheet></AcSmSheetSet>`;
+    const set = parseDstSubsetXml(xml);
+    // the leaf's own text is still the concatenation of its text nodes
+    expect(set.sheets[0]?.title).toBe('Plan  Wing');
+    // and the nested element is carried verbatim in opaqueFragments
+    expect(set.opaqueFragments?.join('\n')).toContain('<Emph>North</Emph>');
+    const out = toDstSubsetXml(set);
+    expect(out).toContain('<Emph>North</Emph>');
+  });
+
+  it('malformed attribute syntax in a DST document throws (atomic refusal, no partial set)', () => {
+    expect(() => parseDstSubsetXml('<AcSmSheetSet Version=3><Name>X</Name></AcSmSheetSet>')).toThrow();
+    expect(() => parseDstSubsetXml('<AcSmSheetSet Version="3><Name>X</Name></AcSmSheetSet>')).toThrow();
+  });
+});
