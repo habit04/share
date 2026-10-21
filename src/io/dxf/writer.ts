@@ -280,6 +280,8 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
   const extras: WriteExtras = { ...emptyExtras(), arrowSize: ds.arrowSize * (ds.scale || 1) };
   const allEntities: Entity[] = [...state.entities, ...layoutPlan.entities];
   for (const b of blockList) allEntities.push(...b.entities);
+  // P17: hatch boundary refs resolve against everything this writer emits.
+  extras.entityById = new Map(allEntities.map((e) => [e.id, e]));
   // LTYPE340 points forward to STYLE. Reserve real target handles before writing LTYPE.
   const textStyles = textStylesForWrite(state), shapeStyles = Object.entries(shapeStylesOf(state));
   for (const lt of linetypes) {

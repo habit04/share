@@ -106,7 +106,7 @@ function writeSpline(w: Writer, e: SplineEntity, owner: string): void {
   }
 }
 
-function writeHatch(w: Writer, e: HatchEntity, owner: string): void {
+function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtras): void {
   if (e.gradient) {
     const problem = hatchGradientDataProblem(e.gradient);
     if (problem) throw new Error(`Cannot preserve hatch gradient in DXF: ${problem}`);
@@ -122,9 +122,16 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string): void {
   w.pair(230, 1);
   w.pair(2, e.solid ? 'SOLID' : e.pattern || 'ANSI31');
   w.pair(70, e.solid ? 1 : 0);
-  // Non-associative: the links to boundary objects are not kept (97 = 0), and a bare associative
-  // flag makes AutoCAD's AUDIT repair the hatch.
-  w.pair(71, 0);
+  // P17 associative hatches: the per-loop boundary objects that resolve to
+  // entities this writer emits are named (97 count + one 330 each, the
+  // boundary's reserved handle). The flag is written only when at least one
+  // link is emitted — a bare associative flag makes AutoCAD's AUDIT repair
+  // the hatch. Unresolvable refs are omitted (the document detaches erased
+  // boundaries; imported raw handles live on HatchLoop.boundaryHandles).
+  const loopRefs = e.loops.map((l) => (l.boundaryRefs ?? [])
+    .map((id) => extras?.entityById?.get(id))
+    .filter((b): b is Entity => !!b));
+  w.pair(71, loopRefs.some((refs) => refs.length > 0) ? 1 : 0);
   w.pair(91, e.loops.length);
   e.loops.forEach((l, i) => {
     const hasBulge = !!l.bulges && l.bulges.some((b) => Math.abs(b) > 1e-12);
@@ -137,7 +144,9 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string): void {
       w.pair(20, p.y);
       if (hasBulge) w.pair(42, l.bulges![k] ?? 0);
     });
-    w.pair(97, 0);
+    const refs = loopRefs[i]!;
+    w.pair(97, refs.length);
+    for (const b of refs) w.pair(330, w.reserveEntityHandle(b));
   });
   w.pair(75, e.style ?? 0);
   const custom = !e.solid && !findPattern(e.pattern);
@@ -234,7 +243,7 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
       writeSpline(w, e, owner);
       break;
     case 'hatch':
-      writeHatch(w, e, owner);
+      writeHatch(w, e, owner, extras);
       break;
     case 'leader':
       // P18: only a mleader carrying modeled native data writes natively;
