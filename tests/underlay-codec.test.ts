@@ -159,6 +159,51 @@ describe('underlay entity codec', () => {
   });
 });
 
+describe('underlay entity codec — default-valued groups (acceptance F-A)', () => {
+  it('an absent group 70 stays absent: the writer invents nothing', () => {
+    // Acceptance probe C1.1: no 70 in the record; the old writer always
+    // emitted [70, "2"] (the parse default), inventing a group.
+    const groups = G([[999, 'a'], [340, 'AA'], [10, '1'], [20, '2'], [41, '2']]);
+    const r = parseUnderlayEntity('pdf', groups, 'x');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.flags).toBe(2); // the model default still applies
+    expect(multiset(writeUnderlayEntity(r.value))).toEqual(multiset(groups));
+    const again = parseUnderlayEntity('pdf', writeUnderlayEntity(r.value), 'x');
+    expect(again.ok && again.value).toEqual(r.value);
+  });
+
+  it('explicit default-valued groups survive the round trip (acceptance C2.3)', () => {
+    const groups = G([[340, 'AA'], [8, '0'], [10, '0'], [20, '0'], [41, '1'], [42, '1'], [50, '0'], [70, '2']]);
+    const r = parseUnderlayEntity('pdf', groups, 'x');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(multiset(writeUnderlayEntity(r.value))).toEqual(multiset(groups));
+    const again = parseUnderlayEntity('pdf', writeUnderlayEntity(r.value), 'x');
+    expect(again.ok && again.value).toEqual(r.value);
+  });
+
+  it('non-canonical default spellings round-trip verbatim, never canonicalized away', () => {
+    const groups = G([[340, 'AA'], [10, '0'], [20, '0'], [41, '1.0'], [42, '1.00'], [50, '0.0'], [70, '02']]);
+    const r = parseUnderlayEntity('pdf', groups, 'x');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(multiset(writeUnderlayEntity(r.value))).toEqual(multiset(groups));
+    const again = parseUnderlayEntity('pdf', writeUnderlayEntity(r.value), 'x');
+    expect(again.ok && again.value).toEqual(r.value);
+  });
+
+  it('a default first value with a non-default duplicate keeps both groups', () => {
+    const groups = G([[340, 'AA'], [10, '0'], [20, '0'], [41, '1'], [41, '9']]);
+    const r = parseUnderlayEntity('pdf', groups, 'x');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.scaleX).toBe(1); // first value modeled
+    expect(r.value.retainedGroups).toEqual([[41, '1'], [41, '9']]);
+    expect(multiset(writeUnderlayEntity(r.value))).toEqual(multiset(groups));
+  });
+});
+
 describe('underlay definition codec', () => {
   it('parses a PDFDEFINITION; the stored path survives byte-for-byte', () => {
     const r = parseUnderlayDefinition('pdf', pdfDefGroups, 'fallback');
