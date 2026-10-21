@@ -64,18 +64,34 @@ is a historical integration log, not a feature matrix.)
   display/plot op list: frame + cross + label without decoded content
   (the IMAGE-without-a-bitmap behaviour), an `image` op when a decoder
   supplies content, a transformed `clip-frame` op when clipping is on,
-  and no ops at all when the underlay is off.
+  and no ops at all when the underlay is off. Pairing is guarded
+  (acceptance F-B): `validateUnderlayPair` names a placement/definition
+  mismatch, the display list serves no ops for a mismatched pair, and
+  corners/bounds raise `UnderlayCorrespondenceError` — a placement is
+  only ever served the definition it references, never silently
+  re-pointed at another file.
 - `src/io/dxf/underlay-codec.ts` — group codec for the three
   `*UNDERLAY` entity records and the three `*DEFINITION` objects.
   Modeled groups are parsed; **every** other group is retained
   verbatim, in order (duplicate scalars: first value modeled, the rest
   retained); malformed modeled data refuses the whole record
   atomically with a reason. Subclass (100) markers are regenerated
-  canonically on write. Round-trip preserves the group multiset.
+  canonically on write. Round-trip preserves the group multiset —
+  including for defaults (acceptance F-A): a modelled group whose value
+  equals the canonical default the writer omits (layer "0", unit
+  scales, rotation 0, flags = on) also rides `retainedGroups` verbatim,
+  and an absent group 70 is never invented on write, so explicit
+  defaults stay explicit and absence stays absent.
 - `src/io/underlay-adapter.ts` — the bounded adapter seam. Today it is
   a probe using only in-repo code: PDF header/version/`%%EOF` checks
-  and a page count (page-tree `/Count`, else page-object count marked
-  inexact), DWF `(DWF V…)` signature identification, DGN refused as
+  and a page count. The count is the largest `/Count` found, but
+  `pageCountExact` is earned, never assumed (acceptance F-C): exact
+  only when the scan covered the whole file, the reported count is a
+  page-tree node's own `/Count` (a dictionary carrying `/Kids`), and
+  the page objects the scan itself found do not outnumber it — any
+  other count is reported as the document's claim, marked inexact,
+  exactly as the page-object fallback already was. DWF `(DWF V…)`
+  signature identification, DGN refused as
   `unsupported` until a decoder is admitted. Hard caps on input bytes,
   scanned bytes, page count and deadline; cooperative cancellation;
   typed refusals; never throws; performs no I/O and never writes the
@@ -86,6 +102,13 @@ is a historical integration log, not a feature matrix.)
 - References stay references: nothing flattens an underlay into
   drawing geometry, and the referenced source file is never touched.
 - No silent loss: unmodeled DXF data rides `retainedGroups` end to end.
+- Integration obligations (for the admitted wiring slice): assemble
+  definitions through `validateUnderlayDefinitions` and REPORT
+  duplicate handles/ids as collisions — two definition records can
+  share a handle and derive the same id, and a handle/id-keyed assembly
+  must never silently overwrite one with the other; resolve each
+  placement's definition through `validateUnderlayPair` and surface
+  mismatches instead of serving the pair.
 - Refusal is atomic at every layer (validation, codec parse, probe).
 - No xref coupling: the model never registers as an xref block and
   never touches `XrefStore`/`XrefSnapshot` or xref limits.
