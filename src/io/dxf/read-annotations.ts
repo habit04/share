@@ -291,6 +291,13 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
   const accs: MLeaderCtxAcc[] = [newAcc()];
   let cur = accs[0]!;
   let contextSections = 0;
+  // AMENDMENT-P18-S3-B (acceptance finding F-T): per-section termination —
+  // sectionTerminated[i] turns true when the i-th CONTEXT_DATA section's own
+  // 301 close arrives. Sections close in opener order (the depth machine's
+  // 301 clears every CONTEXT entry at once), so a 301 discharges the most
+  // recent still-open section; a section superseded by a later opener, or
+  // still open when the record's groups end, stays unterminated.
+  const sectionTerminated: boolean[] = [];
   let depth: string[] = [];
   let lastLeaderPoint: g.Point | undefined;
   let doglegVec: g.Point | undefined;
@@ -327,6 +334,7 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
     const top = depth[depth.length - 1];
     if (p.code === 300 && p.value.startsWith('CONTEXT_DATA')) {
       contextSections += 1;
+      sectionTerminated.push(false);
       if (contextSections > 1) {
         cur = newAcc();
         accs.push(cur);
@@ -336,6 +344,8 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
     }
     if (p.code === 301) {
       depth = depth.filter((d) => d !== 'CONTEXT');
+      const openIdx = sectionTerminated.lastIndexOf(false);
+      if (openIdx >= 0) sectionTerminated[openIdx] = true;
       contextClosed = true;
       continue;
     }
@@ -523,17 +533,22 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
   // Modelling is whole-entity or not at all — the slice-2 resolves-whole
   // discipline: an additional context with no usable group 40 (its scale is
   // its identity; the primary's fallback chain does not apply), a non-finite
-  // leader point, MTEXT text in any context of a block-signalled record
-  // (hybrid), or a context block handle resolving to a different (or no)
+  // leader point, an additional section left UNTERMINATED (AMENDMENT-P18-S3-B:
+  // its 301 close never arrives before the record ends, so the fragment would
+  // otherwise be completed by the fallbacks below and re-emitted as fact —
+  // acceptance finding F-T), MTEXT text in any context of a block-signalled
+  // record (hybrid), or a context block handle resolving to a different (or no)
   // block name than the primary's withholds native data entirely; the caller
   // reports the multi-context simplification. Fallbacks inside a context
   // mirror the primary's chains with the primary's RESOLVED values in place
-  // of the style/standard step.
+  // of the style/standard step. The PRIMARY section's termination is not
+  // judged here — its posture is the pre-existing slices-1/2 one.
   let contexts: MLeaderContext[] | undefined;
   let contextsWithheld = false;
   if (accs.length > 1) {
     const built: MLeaderContext[] = [];
     let ok = true;
+    if (sectionTerminated.slice(1).some((t) => !t)) ok = false;
     for (const acc of accs.slice(1)) {
       const accPlain = acc.text ? mtextFromDxf(acc.text) : '';
       if (!(acc.scaleFactor !== undefined && Number.isFinite(acc.scaleFactor) && acc.scaleFactor > 0)) ok = false;
