@@ -78,6 +78,35 @@ describe('host dispatcher: authentication, capabilities, staleness', () => {
     s.dispose();
   }, 60_000);
 
+  it('refuses a replayed mutating envelope: the first application stands exactly once and the session stays usable', async () => {
+    const ed = makeEditor();
+    const { s, rpc, responses } = await loadedSession(ed, ['document.write']);
+    const firstText = { type: 'text', position: { x: 0, y: 0 }, text: 'apply once' };
+    const replay = () => rpc('replay-1', 'document.add', [firstText]);
+    replay();
+    await tick();
+    expect(responses().filter((r) => r.id === 'replay-1')).toHaveLength(1);
+    expect(responses().find((r) => r.id === 'replay-1')).toMatchObject({ ok: true });
+    expect(ed.doc.entities).toHaveLength(1);
+
+    // Byte-identical replay of the authenticated envelope: refused with no
+    // second response, no handler execution and no second application.
+    replay();
+    await tick();
+    expect(responses().filter((r) => r.id === 'replay-1')).toHaveLength(1);
+    expect(ed.doc.entities).toHaveLength(1);
+    expect(ed.doc.entities[0]).toMatchObject({ type: 'text', text: 'apply once' });
+    expect(s.denials.some((d) => d.code === 'replay' && d.method === 'document.add')).toBe(true);
+
+    // The refusal does not poison the session: the next legitimate envelope,
+    // carrying a fresh id, executes normally.
+    rpc('replay-2', 'document.add', [{ type: 'text', position: { x: 1, y: 1 }, text: 'legitimate next' }]);
+    await tick();
+    expect(responses().find((r) => r.id === 'replay-2')).toMatchObject({ ok: true });
+    expect(ed.doc.entities).toHaveLength(2);
+    s.dispose();
+  }, 60_000);
+
   it('denies undeclared capabilities and unknown methods with explicit error codes', async () => {
     const ed = makeEditor();
     const { s, rpc, responses } = await loadedSession(ed, ['document.read']);
