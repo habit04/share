@@ -11,16 +11,46 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
-### Fixed
+## [0.6.0] - 2026-10-21
 
-- Bound legacy settings migration during startup and stop with a visible error
-  if settings cannot be read completely. Failed migration keeps existing settings
-  intact instead of allowing an empty checkpoint to acknowledge it permanently.
-- Include the project license and third-party notices in the application archive;
-  packaged CI verifies both against their exact source bytes.
+### Upgrade notes
+
+- Windows x64 feature update from v0.5.2. Adds the AI Assistant panel (an offline demo until
+  you connect a provider), JCad-authored dynamic blocks and 2D constraints, PDFs with editing
+  restrictions and wider PDF font embedding. Startup no longer stops or hangs on the
+  one-time legacy settings migration.
 
 ### Added
 
+- AI Assistant panel, opened from the **AI** button in the status bar and docked beside
+  Properties. Without a key it runs a clearly labeled offline demo that makes no network
+  requests. Optionally connect OpenAI or Claude with your own key (kept in the main process,
+  encrypted by the operating system or held for the session only); Ask sends only the shown
+  snapshot of the objects you selected. Draft / Edit mode turns a description into a
+  previewed change list for basic 2D lines, circles and rectangles and moves, copies,
+  rotations or deletions of selected objects; nothing changes until you choose Apply Changes,
+  which is one undoable edit, and follow-up instructions can refine the staged preview first.
+- External references, stage 1: a read-only loading core and Windows read broker that resolve
+  and load referenced DXF files without ever writing them. It is not yet wired into the
+  drawing view or any command, so external references still display as before (a named
+  placeholder frame).
+- JCad-authored dynamic blocks (linear, angle, flip, visibility and lookup parameters;
+  stretch, move, rotate, uniform-scale, flip and rectangular-array actions) evaluate per
+  instance and round-trip through DXF as labeled JCad data; per-instance edits are one undo
+  step through DYNSET, the Properties palette or dynamic grips. A bounded 2D constraint
+  engine adds CONADD, CONEDIT, CONDELETE, CONSOLVE and CONSTATUS for model-space lines,
+  circles, arcs, polylines and points. Other CAD programs show the authored geometry, and
+  native dynamic-block and constraint evaluation remain unmodeled. Known limit: raw extents
+  of constraint-dimension text are computed by AutoCAD's renderer and are not stored in the
+  file, so JCad's raw extents can differ from AutoCAD's reported extents by up to about
+  0.267 drawing units; geometry and record parity are exact (see
+  `docs/P30-RAW-EXTENTS-LIMIT.md`). Saving a new drawing with an annotation scale such as
+  1:4 is also preserved without a predefined scale list.
+- Windows Vector PDF offers an opt-in **PDF with editing restrictions (for preview/print
+  fonts)**, so fonts that allow only preview/print embedding can be embedded. The exported
+  PDF requests AES-256 permissions that allow printing, copying and accessibility but deny
+  editing, comments, form filling and page assembly; some viewers ignore these flags. When
+  no such font is used, the PDF is exported without restrictions and the log says so.
 - Windows font metrics and vector PDF embedding now select the TrueType collection
   face matching the requested family and style (priority 12.1), instead of always
   using face 0. Metrics, glyph mappings, embedding permissions and the embedded
@@ -28,7 +58,7 @@ messages). The date of each version is the date of the commit that set that vers
   face 0, and unmatched family/style requests keep the existing explicit failures.
   Regular faces are preferred for unspecified style flags regardless of collection
   order. Windows source Plot/IPC checks cover regular, bold and cross-family faces;
-  packaged-app acceptance remains pending.
+  packaged-app acceptance of collection-face selection is still partial (known limitation).
 - Captured vector PDF export now point-validates only the glyphs a plot uses (plus their
   composite components and capital A), removing the whole-face point-budget obstacle for
   eligible large fonts. Installed SimSun still fails its existing bitmap/origin guard;
@@ -50,8 +80,27 @@ messages). The date of each version is the date of the commit that set that vers
   instance (priority 12.6 slice 1a). Both readers validate fvar records, legal referenced
   name IDs and default/style identity; ambiguous weight/width, varying optical size,
   conflicting named defaults and color formats keep explicit reported refusals.
-  Named-instance selection and true instancing remain deferred. Combined native Windows
-  acceptance is still required before release.
+  Named-instance selection and true instancing remain deferred, and combined native
+  Windows acceptance of variable-font instancing is still partial (known limitation).
+
+### Fixed
+
+- Text shaping on Windows no longer fails on its first request because the shaping engine
+  was imported from a plain drive path; the engine now loads from a file URL and only when
+  shaping is actually requested, so unrelated startup work no longer loads it.
+- Startup never blocks or wedges on a settings migration failure: the window opens, the
+  failure is logged, and the failed leg is retried on the next launch. The legacy settings
+  store is read in-process in the main process by a read-only reader, with no hidden window
+  and without reopening the store through Chromium. A corrupt or undecodable legacy store is
+  preserved as a copy, and an unreadable preferences checkpoint is moved aside with its bytes
+  kept; existing settings are never replaced by an empty result, and a new installation
+  skips the legacy import.
+- Saving on Windows no longer reports a raw "file not found" (ENOENT) error when a file is
+  replaced or removed during the save's post-pin content checks; it reports the existing
+  path-changed error instead. Regression coverage for large (33-file) project saves now has
+  a realistic time budget.
+- Include the project license and third-party notices in the application archive;
+  packaged CI verifies both against their exact source bytes.
 
 ## [0.5.2] - 2026-10-15
 
@@ -1368,7 +1417,8 @@ First release.
 
 - Renamed the application to JCad Electrical.
 
-[Unreleased]: https://github.com/habit04/share/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/habit04/share/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/habit04/share/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/habit04/share/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/habit04/share/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/habit04/share/compare/v0.4.9...v0.5.0
