@@ -16,7 +16,7 @@ import { mtextFromDxf, hasFormatting } from '../../core/mtext';
 import { isEscapedPlainContent } from './write-annotations';
 import { cellOwners } from '../../core/table';
 import type { MTextAttachment, MTextColumns } from '../../core/mtext';
-import { STANDARD_MLEADER_STYLE, type MLeaderBlockAttribute, type MLeaderBlockContent, type MLeaderNative, type MLeaderStyleRetained } from '../../core/multileader';
+import { STANDARD_MLEADER_STYLE, type MLeaderBlockAttribute, type MLeaderBlockContent, type MLeaderContext, type MLeaderNative, type MLeaderStyleRetained } from '../../core/multileader';
 
 export function readDimStyleFromEntity(o: Obj, styles: Map<string, DimStyle>, fallback: DimStyle, textStyleHandles?: ReadonlyMap<string, string>): DimStyle {
   const name = str(o, 3);
@@ -238,46 +238,76 @@ export function mleaderBlockContentSignalled(o: Obj): boolean {
 }
 
 /**
+ * How many CONTEXT_DATA sections a MULTILEADER record carries (slice 3,
+ * PROPOSAL-P18-S3). The read-entities.ts caller reports multi-context records
+ * from this count — modelled ones by an informational note, withheld ones by a
+ * `simplified` entry (R-MLEADER-18 reporting) — using the same opener test
+ * readMLeader's depth machine uses.
+ */
+export function mleaderContextSectionCount(o: Obj): number {
+  let n = 0;
+  for (const p of o.groups) if (p.code === 300 && p.value.startsWith('CONTEXT_DATA')) n += 1;
+  return n;
+}
+
+/** Per-CONTEXT_DATA-section capture for readMLeader (slice 3). Fields mirror the
+ *  modelled context groups one-for-one; the trailing-section groups stay
+ *  record-level in readMLeader (the file carries them once, for the entity). */
+interface MLeaderCtxAcc {
+  paths: g.Point[][];
+  text: string;
+  textPos?: g.Point;
+  textHeight?: number;
+  textWidth?: number;
+  textRotation: number;
+  textDir?: g.Point;
+  attachment?: number;
+  arrowSize?: number;
+  firstDogleg?: g.Point;
+  scaleFactor?: number;
+  landingGap?: number;
+  textStyleHandle?: string;
+  blockHandleCtx?: string;
+  blockPos?: g.Point;
+  ctxBasePos?: g.Point;
+  blockScaleCtx?: g.Point;
+  blockRotationCtx?: number;
+}
+
+/**
  * MULTILEADER: leader lines, landing and MTEXT content from the CONTEXT_DATA section.
  * Block content is not drawn (noted by the caller); missing parts degrade to what is present.
  */
 export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: ReadContext): LeaderEntity | null {
   const gs = o.groups;
-  const paths: g.Point[][] = [];
-  let text = '';
-  let textPos: g.Point | undefined;
-  let textHeight: number | undefined;
-  let textWidth: number | undefined;
-  let textRotation = 0;
-  let textDir: g.Point | undefined;
-  let attachment: number | undefined;
-  let arrowSize: number | undefined;
+  // Slice 3 (PROPOSAL-P18-S3): capture is PER CONTEXT_DATA section. The first
+  // section's accumulator is the primary (its finalize below is the exact
+  // slice-1/2 path, so single-context records produce the slice-1/2 model
+  // field-for-field); each further opener starts a new accumulator. Before
+  // slice 3 these accumulators were flat per record, which merged every
+  // section into one representation — the last context's scalars won and the
+  // MTEXT text concatenated (the proposal's current-head retention gap).
+  const newAcc = (): MLeaderCtxAcc => ({ paths: [], text: '', textRotation: 0 });
+  const accs: MLeaderCtxAcc[] = [newAcc()];
+  let cur = accs[0]!;
+  let contextSections = 0;
   let depth: string[] = [];
   let lastLeaderPoint: g.Point | undefined;
   let doglegVec: g.Point | undefined;
   let doglegLen: number | undefined;
   let line: g.Point[] | null = null;
   const sectionLines: g.Point[][] = [];
-  let firstDogleg: g.Point | undefined;
   let commonArrow: number | undefined;
   let commonDogleg: number | undefined;
   let lineType = 1;
-  // P18 native capture: context scale / landing gap / text style, trailing style + content type.
-  let scaleFactor: number | undefined;
-  let landingGap: number | undefined;
-  let textStyleHandle: string | undefined;
+  // P18 native capture: trailing style + content type (record-level).
   let styleHandle: string | undefined;
   let contentTypeRaw: number | undefined;
-  // P18 slice 2 block-content capture (PROPOSAL-P18-S2): context 341/15/16/46 with
-  // fallbacks (context 10 base point; trailing 344/10/43), and the trailing
-  // attribute entries (330 ATTDEF handle / 177 definition index / 44 width /
-  // 302 text). Trailing groups are only collected after CONTEXT_DATA closes —
-  // before it, a 330 is the entity's owner, not an attribute.
-  let blockHandleCtx: string | undefined;
-  let blockPos: g.Point | undefined;
-  let ctxBasePos: g.Point | undefined;
-  let blockScaleCtx: g.Point | undefined;
-  let blockRotationCtx: number | undefined;
+  // P18 slice 2 block-content capture (PROPOSAL-P18-S2): the trailing attribute
+  // entries (330 ATTDEF handle / 177 definition index / 44 width / 302 text)
+  // and trailing block fallbacks (344/10/43) are record-level. Trailing groups
+  // are only collected after CONTEXT_DATA closes — before it, a 330 is the
+  // entity's owner, not an attribute.
   let contextClosed = false;
   let blockHandleTrail: string | undefined;
   let blockScaleTrail: g.Point | undefined;
@@ -285,8 +315,8 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
   const pendingAttrs: Array<{ index?: number; width?: number; text?: string }> = [];
   const endSection = () => {
     // A LEADER{} section: each of its lines runs arrow -> ... -> last leader point, then the landing.
-    for (const l of sectionLines) paths.push(lastLeaderPoint ? [...l, lastLeaderPoint] : l);
-    if (!firstDogleg && lastLeaderPoint && doglegVec && doglegLen) firstDogleg = g.scale(g.normalize(doglegVec), doglegLen);
+    for (const l of sectionLines) cur.paths.push(lastLeaderPoint ? [...l, lastLeaderPoint] : l);
+    if (!cur.firstDogleg && lastLeaderPoint && doglegVec && doglegLen) cur.firstDogleg = g.scale(g.normalize(doglegVec), doglegLen);
     sectionLines.length = 0;
     lastLeaderPoint = undefined;
     doglegVec = undefined;
@@ -296,6 +326,11 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
     const p = gs[k]!;
     const top = depth[depth.length - 1];
     if (p.code === 300 && p.value.startsWith('CONTEXT_DATA')) {
+      contextSections += 1;
+      if (contextSections > 1) {
+        cur = newAcc();
+        accs.push(cur);
+      }
       depth.push('CONTEXT');
       continue;
     }
@@ -338,52 +373,52 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
     if (top === 'CONTEXT') {
       switch (p.code) {
         case 40:
-          scaleFactor = flt(p.value);
+          cur.scaleFactor = flt(p.value);
           break;
         case 41:
-          textHeight = flt(p.value);
+          cur.textHeight = flt(p.value);
           break;
         case 140:
-          arrowSize = flt(p.value);
+          cur.arrowSize = flt(p.value);
           break;
         case 145:
-          landingGap = flt(p.value);
+          cur.landingGap = flt(p.value);
           break;
         case 340:
-          textStyleHandle = p.value.trim().toUpperCase();
+          cur.textStyleHandle = p.value.trim().toUpperCase();
           break;
         case 341:
-          blockHandleCtx = p.value.trim().toUpperCase();
+          cur.blockHandleCtx = p.value.trim().toUpperCase();
           break;
         case 15:
-          blockPos = { x: flt(p.value), y: nextY() };
+          cur.blockPos = { x: flt(p.value), y: nextY() };
           break;
         case 16:
-          blockScaleCtx = { x: flt(p.value), y: nextY() };
+          cur.blockScaleCtx = { x: flt(p.value), y: nextY() };
           break;
         case 46:
-          blockRotationCtx = flt(p.value);
+          cur.blockRotationCtx = flt(p.value);
           break;
         case 10:
-          ctxBasePos = { x: flt(p.value), y: nextY() };
+          cur.ctxBasePos = { x: flt(p.value), y: nextY() };
           break;
         case 304:
-          text += p.value;
+          cur.text += p.value;
           break;
         case 12:
-          textPos = { x: flt(p.value), y: nextY() };
+          cur.textPos = { x: flt(p.value), y: nextY() };
           break;
         case 13:
-          textDir = { x: flt(p.value), y: nextY() };
+          cur.textDir = { x: flt(p.value), y: nextY() };
           break;
         case 42:
-          textRotation = flt(p.value);
+          cur.textRotation = flt(p.value);
           break;
         case 43:
-          textWidth = flt(p.value);
+          cur.textWidth = flt(p.value);
           break;
         case 171:
-          attachment = int(p.value);
+          cur.attachment = int(p.value);
           break;
         default:
           break;
@@ -408,14 +443,17 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
       else if (p.code === 302 && pendingAttrs.length) pendingAttrs[pendingAttrs.length - 1]!.text = p.value;
     }
   }
+  const primary = accs[0]!;
+  const paths = primary.paths;
   const main = paths.shift();
   if (!main || main.length < 2) return null;
   const ds = ctx.dimStyle;
-  const size = arrowSize ?? commonArrow ?? ds.arrowSize * (ds.scale || 1);
-  const dogleg = firstDogleg ?? undefined;
+  const size = primary.arrowSize ?? commonArrow ?? ds.arrowSize * (ds.scale || 1);
+  const dogleg = primary.firstDogleg ?? undefined;
   void commonDogleg;
-  const plain = text ? mtextFromDxf(text) : '';
-  const rot = textDir && (textDir.x !== 0 || textDir.y !== 0) ? Math.atan2(textDir.y, textDir.x) : textRotation;
+  const plain = primary.text ? mtextFromDxf(primary.text) : '';
+  const rot = primary.textDir && (primary.textDir.x !== 0 || primary.textDir.y !== 0) ? Math.atan2(primary.textDir.y, primary.textDir.x) : primary.textRotation;
+  const entityTextHeight = primary.textHeight && primary.textHeight > 0 ? primary.textHeight : ds.textHeight;
   // P18: MTEXT-content multileaders are modeled natively. Block content
   // (context 296 = 1, or trailing content type 1) is modeled in slice 2 ONLY
   // when it resolves whole: the block record handle names a block, that block
@@ -427,14 +465,14 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
   // The trigger decision comes from the SAME predicate the caller reports
   // by (mleaderBlockContentSignalled) — one implementation, no drift (F-1).
   const isBlockContent = mleaderBlockContentSignalled(o);
-  const textStyleName = textStyleHandle ? ctx.textStyleHandles?.get(textStyleHandle) : undefined;
+  const textStyleName = primary.textStyleHandle ? ctx.textStyleHandles?.get(primary.textStyleHandle) : undefined;
   // V-1 (AMENDMENT-P18-S2-A): the source style's retained values for the groups no
   // entity field supplies, keyed by the same style handle the name came from; an
   // absent map (read paths that build their own context) keeps the slice-1 fallback.
   const styleRetained = styleHandle ? ctx.mleaderStyleValues?.get(styleHandle) : undefined;
   let block: MLeaderBlockContent | undefined;
   if (isBlockContent && !plain) {
-    const handle = blockHandleCtx ?? blockHandleTrail;
+    const handle = primary.blockHandleCtx ?? blockHandleTrail;
     const name = handle ? ctx.blockRecordNames?.get(handle) : undefined;
     const def = name !== undefined ? ctx.blocks?.[name] : undefined;
     if (name !== undefined && def) {
@@ -451,9 +489,9 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
       if (ok) {
         block = {
           name,
-          position: blockPos ?? ctxBasePos ?? main[main.length - 1]!,
-          scale: blockScaleCtx ?? blockScaleTrail ?? { x: 1, y: 1 },
-          rotation: blockRotationCtx ?? blockRotationTrail ?? 0,
+          position: primary.blockPos ?? primary.ctxBasePos ?? main[main.length - 1]!,
+          scale: primary.blockScaleCtx ?? blockScaleTrail ?? { x: 1, y: 1 },
+          rotation: primary.blockRotationCtx ?? blockRotationTrail ?? 0,
           attributes,
         };
       }
@@ -475,17 +513,72 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
   }
   const nativeCommon = {
     styleName: (styleHandle ? ctx.mleaderStyles?.get(styleHandle) : undefined) ?? 'Standard',
-    scaleFactor: scaleFactor && scaleFactor > 0 ? scaleFactor : STANDARD_MLEADER_STYLE.scaleFactor,
-    landingGap: landingGap && landingGap >= 0 ? landingGap : STANDARD_MLEADER_STYLE.landingGap,
+    scaleFactor: primary.scaleFactor && primary.scaleFactor > 0 ? primary.scaleFactor : STANDARD_MLEADER_STYLE.scaleFactor,
+    landingGap: primary.landingGap && primary.landingGap >= 0 ? primary.landingGap : STANDARD_MLEADER_STYLE.landingGap,
     leaderLineType: (lineType === 0 || lineType === 2 ? lineType : 1) as 0 | 1 | 2,
     ...(textStyleName ? { textStyleName } : {}),
     ...(effectiveRetained ? { styleRetained: effectiveRetained } : {}),
   };
-  const mleader: MLeaderNative | undefined = block
-    ? { contentType: 'block', ...nativeCommon, block }
-    : isBlockContent
-      ? undefined
-      : { contentType: plain || contentTypeRaw === 2 ? 'mtext' : 'none', ...nativeCommon };
+  // Slice 3: additional contexts finalize (PROPOSAL-P18-S3 reader rules).
+  // Modelling is whole-entity or not at all — the slice-2 resolves-whole
+  // discipline: an additional context with no usable group 40 (its scale is
+  // its identity; the primary's fallback chain does not apply), a non-finite
+  // leader point, MTEXT text in any context of a block-signalled record
+  // (hybrid), or a context block handle resolving to a different (or no)
+  // block name than the primary's withholds native data entirely; the caller
+  // reports the multi-context simplification. Fallbacks inside a context
+  // mirror the primary's chains with the primary's RESOLVED values in place
+  // of the style/standard step.
+  let contexts: MLeaderContext[] | undefined;
+  let contextsWithheld = false;
+  if (accs.length > 1) {
+    const built: MLeaderContext[] = [];
+    let ok = true;
+    for (const acc of accs.slice(1)) {
+      const accPlain = acc.text ? mtextFromDxf(acc.text) : '';
+      if (!(acc.scaleFactor !== undefined && Number.isFinite(acc.scaleFactor) && acc.scaleFactor > 0)) ok = false;
+      if (acc.paths.some((path) => path.some((pt) => !Number.isFinite(pt.x) || !Number.isFinite(pt.y)))) ok = false;
+      if (isBlockContent && accPlain) ok = false;
+      if (isBlockContent && acc.blockHandleCtx) {
+        const accName = ctx.blockRecordNames?.get(acc.blockHandleCtx);
+        if (!block || accName !== block.name) ok = false;
+      }
+      const accRot = acc.textDir && (acc.textDir.x !== 0 || acc.textDir.y !== 0) ? Math.atan2(acc.textDir.y, acc.textDir.x) : acc.textRotation;
+      const accStyleName = acc.textStyleHandle ? ctx.textStyleHandles?.get(acc.textStyleHandle) : undefined;
+      const lastPath = acc.paths[acc.paths.length - 1];
+      const lastPt = lastPath ? lastPath[lastPath.length - 1] : undefined;
+      built.push({
+        scaleFactor: acc.scaleFactor ?? NaN,
+        landingGap: acc.landingGap && acc.landingGap >= 0 ? acc.landingGap : nativeCommon.landingGap,
+        textHeight: acc.textHeight && acc.textHeight > 0 ? acc.textHeight : entityTextHeight,
+        arrowSize: acc.arrowSize ?? size,
+        paths: acc.paths,
+        ...(acc.firstDogleg && g.len(acc.firstDogleg) > 1e-12 ? { dogleg: acc.firstDogleg } : {}),
+        ...(accPlain ? { text: accPlain, ...(hasFormatting(acc.text) ? { raw: acc.text } : {}) } : {}),
+        ...(accStyleName ? { textStyleName: accStyleName } : {}),
+        ...(accPlain && acc.textPos ? { textPosition: acc.textPos } : {}),
+        ...(Math.abs(accRot) > 1e-12 ? { textRotation: accRot } : {}),
+        ...(acc.textWidth && acc.textWidth > 0 ? { textWidth: acc.textWidth } : {}),
+        ...(acc.attachment && acc.attachment >= 1 && acc.attachment <= 9 ? { textAttachment: acc.attachment } : {}),
+        ...(block ? {
+          block: {
+            position: acc.blockPos ?? acc.ctxBasePos ?? lastPt ?? block.position,
+            scale: acc.blockScaleCtx ?? block.scale,
+            rotation: acc.blockRotationCtx ?? block.rotation,
+          },
+        } : {}),
+      });
+    }
+    if (ok) contexts = built;
+    else contextsWithheld = true;
+  }
+  const mleader: MLeaderNative | undefined = contextsWithheld
+    ? undefined
+    : block
+      ? { contentType: 'block', ...nativeCommon, block, ...(contexts ? { contexts } : {}) }
+      : isBlockContent
+        ? undefined
+        : { contentType: plain || contentTypeRaw === 2 ? 'mtext' : 'none', ...nativeCommon, ...(contexts ? { contexts } : {}) };
   return {
     ...base,
     type: 'leader',
@@ -495,11 +588,11 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
     ...(dogleg && g.len(dogleg) > 1e-12 ? { dogleg } : {}),
     ...(lineType === 2 ? { spline: true } : {}),
     ...(paths.length ? { extraPaths: paths } : {}),
-    ...(plain ? { text: plain, ...(hasFormatting(text) ? { raw: text } : {}) } : {}),
-    ...(textPos && plain ? { textPosition: textPos } : {}),
-    textHeight: textHeight && textHeight > 0 ? textHeight : ds.textHeight,
-    ...(attachment && attachment >= 1 && attachment <= 9 ? { textAttachment: attachment as MTextAttachment } : {}),
-    ...(textWidth && textWidth > 0 ? { textWidth } : {}),
+    ...(plain ? { text: plain, ...(hasFormatting(primary.text) ? { raw: primary.text } : {}) } : {}),
+    ...(primary.textPos && plain ? { textPosition: primary.textPos } : {}),
+    textHeight: entityTextHeight,
+    ...(primary.attachment && primary.attachment >= 1 && primary.attachment <= 9 ? { textAttachment: primary.attachment as MTextAttachment } : {}),
+    ...(primary.textWidth && primary.textWidth > 0 ? { textWidth: primary.textWidth } : {}),
     ...(Math.abs(rot) > 1e-12 ? { textRotation: rot } : {}),
     kind: 'mleader',
     ...(mleader ? { mleader } : {}),
