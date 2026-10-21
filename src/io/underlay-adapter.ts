@@ -45,7 +45,15 @@ export interface UnderlayProbeInfo {
   /** Format version as stored in the file header, when it carries one. */
   readonly version?: string;
   readonly pageCount?: number;
-  /** True only when the count came from the document's own page tree. */
+  /**
+   * True only when the count is verified by the scan's own evidence:
+   * the scan covered the whole file, the reported count is a page-tree
+   * node's own /Count (a dictionary carrying /Kids — a bare dictionary's
+   * /Count is a number, not a tree), and the page objects the scan found
+   * do not outnumber it. Otherwise pageCount is the document's claim (or
+   * a page-object floor), marked inexact rather than dressed as fact
+   * (acceptance F-C).
+   */
   readonly pageCountExact: boolean;
   /** True when rendering content still needs an admitted decoder. */
   readonly needsDecoder: boolean;
@@ -114,6 +122,7 @@ function probePdf(bytes: Uint8Array, budget: Budget): UnderlayProbeResult {
 
   const { windows, complete } = scanWindows(bytes.length, budget.caps.maxScanBytes);
   let maxCount: number | null = null;
+  let treeCount: number | null = null;
   let pageObjects = 0;
   for (const [from, to] of windows) {
     const refusal = spent(budget);
@@ -121,14 +130,28 @@ function probePdf(bytes: Uint8Array, budget: Budget): UnderlayProbeResult {
     const text = latin1(bytes, from, to);
     for (const m of text.matchAll(/\/Count\s+(\d+)/g)) {
       const n = Number(m[1]);
-      if (Number.isSafeInteger(n) && (maxCount === null || n > maxCount)) maxCount = n;
+      if (!Number.isSafeInteger(n)) continue;
+      if (maxCount === null || n > maxCount) maxCount = n;
+      // Attribute the count to a page-tree node when its enclosing
+      // dictionary (nearest << … >> span) carries /Kids.
+      const at = m.index;
+      if (at !== undefined) {
+        const start = text.lastIndexOf('<<', at);
+        const end = text.indexOf('>>', at);
+        if (start >= 0 && end > at && text.slice(start, end).includes('/Kids') && (treeCount === null || n > treeCount)) treeCount = n;
+      }
     }
     pageObjects += [...text.matchAll(/\/Type\s*\/Page(?!s)/g)].length;
   }
 
   if (maxCount !== null) {
     if (maxCount > budget.caps.maxPages) return fail('too-many-pages', `PDF claims ${maxCount} pages, over the ${budget.caps.maxPages}-page cap`);
-    return { ok: true, info: { kind: 'pdf', ...(version ? { version } : {}), pageCount: maxCount, pageCountExact: true, needsDecoder: true } };
+    // F-C: exact is earned, never assumed — complete scan, the reported
+    // count is a page-tree node's own, and the page-object evidence the
+    // scan itself gathered does not contradict it. A count failing any
+    // leg is still reported, marked as the claim it is.
+    const exact = complete && treeCount === maxCount && pageObjects <= maxCount;
+    return { ok: true, info: { kind: 'pdf', ...(version ? { version } : {}), pageCount: maxCount, pageCountExact: exact, needsDecoder: true } };
   }
   if (pageObjects > 0) {
     if (pageObjects > budget.caps.maxPages) return fail('too-many-pages', `PDF has over the ${budget.caps.maxPages}-page cap`);
