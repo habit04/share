@@ -582,9 +582,11 @@ export function mleaderPrimaryContext(e: LeaderEntity): MLeaderContext {
 
 /**
  * The context of a native multileader whose scale factor IS the annotation
- * scale `scaleValue` (paper units per model unit — the quantity
- * cannoscaleValue returns for a scale name), or undefined when no context
- * carries that scale. Matching is by canonical scale NAME (formatScale
+ * scale `scaleValue` (DRAWING units per PAPER unit — the annotative factor
+ * `annotativeScaleFor` returns; for the scale name '1:2' the factor is 2,
+ * which is the group-40 value AutoCAD itself stores for that context —
+ * verified on the lead's handbuilt fixtures, RULING-P18-S3-D (2)), or
+ * undefined when no context carries that scale. Matching is by canonical scale NAME (formatScale
  * equality at this module's formatting precision), so all scale arithmetic
  * stays in this module (RULING-P18 C4: no private scale mechanism); the
  * primary is searched first, then the additional contexts in file order.
@@ -648,7 +650,11 @@ export function annotativeEntity(e: Entity, f: number): Entity {
   if (e.type === 'leader' && f > 0) {
     const le = e as LeaderEntity;
     if (le.mleader?.contexts?.length) {
-      const match = mleaderContextForScale(le, 1 / f);
+      // S3-D (RULING-P18-S3-D (2)): the match target is the annotative factor
+      // f ITSELF — a context's stored group 40 is in the same units (drawing
+      // units per paper unit). The reciprocal this call site applied before
+      // S3-D encoded Recipe #4's refuted assumption.
+      const match = mleaderContextForScale(le, f);
       if (match) return leaderWithMLeaderContext(le, match);
     }
   }
