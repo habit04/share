@@ -15,7 +15,7 @@ import { splineWorkProblem, SplineWorkLimitError, isValidNurbs, nurbsPoints, int
 import { LoopBuilder, edgeArc, fitPatternToLines, findPattern } from '../../core/hatch';
 import type { ReadContext } from './read-core';
 import { hasFields, evaluateFields } from '../../core/fields';
-import { readMTextColumns, readDimension, readDimStyleFromEntity, readLeader, readMLeader, readImage, readTable, readJcadTable, restoreCoveredCells } from './read-annotations';
+import { readMTextColumns, readDimension, readDimStyleFromEntity, readLeader, readMLeader, mleaderBlockContentSignalled, readImage, readTable, readJcadTable, restoreCoveredCells } from './read-annotations';
 import type { MTextAttachment, MTextBackground } from '../../core/mtext';
 import { mtextFromDxf, hasFormatting } from '../../core/mtext';
 import { readTextPlacement } from './read-text';
@@ -459,13 +459,15 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
     case 'MLEADER': {
       const ml = readMLeader(o, base, ctx);
       if (ml) {
-        // Block content is signalled by CONTEXT_DATA group 296 = 1 OR by the
-        // trailing content-type group 172 = 1 (R-MLEADER-18 requires the
-        // report for BOTH triggers). The trailing 172 is the record's LAST
-        // group 172: the context's own 172 is the text flow direction and
-        // always precedes it.
-        const last172 = [...o.groups].reverse().find((x) => x.code === 172)?.value.trim();
-        const blockSignalled = o.groups.some((x) => x.code === 296 && x.value.trim() === '1') || last172 === '1';
+        // Block content is signalled per mleaderBlockContentSignalled —
+        // the SAME predicate readMLeader acts on (context 296 nonzero, or
+        // trailing content type 1; R-MLEADER-18 requires the report for
+        // BOTH triggers). One shared implementation keeps reporting TOTAL:
+        // every record whose native block data readMLeader withheld is
+        // either modelled (noted below) or reported here — the exact-'1'
+        // string match this replaced silently missed 296 = '2' / '01' and
+        // trailing 172 = '01' (acceptance finding F-1).
+        const blockSignalled = mleaderBlockContentSignalled(o);
         if (blockSignalled) {
           if (ml.mleader?.contentType === 'block') {
             // Slice 2: modelled natively — informational note only, no simplification.
