@@ -84,6 +84,19 @@ export function worldPatternLines(pattern: HatchPattern, angle: number, scale: n
 export interface HatchLoop {
   readonly points: readonly Point[];
   readonly bulges?: readonly number[];
+  /**
+   * P17 (PROPOSAL-P17): document entity ids of this loop's associative
+   * boundary source objects (the DXF boundary-path 97/330 list), in file
+   * order. Absent = the loop is not associative. The entity model is the
+   * source of truth; see src/core/hatch-assoc.ts for refresh/detach rules.
+   */
+  readonly boundaryRefs?: readonly string[];
+  /**
+   * P17: raw source-file handles of boundary objects that could not be
+   * resolved to an imported entity. Retained for reporting and in-session
+   * fidelity; never written back as 330 (they name objects not in the file).
+   */
+  readonly boundaryHandles?: readonly string[];
 }
 
 /**
