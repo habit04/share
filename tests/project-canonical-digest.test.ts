@@ -145,7 +145,7 @@ describe('canonical digest — definition (RULING-P31 G1–G7)', () => {
     const withMeta = minimalState({
       entities: [line('e1')],
       meta: { author: 'someone', producer: 'test' },
-    } as DrawingState);
+    });
     expect(drawingContentDigest(withMeta)).toBe(d0);
     const withRecord = {
       ...plain,
@@ -282,7 +282,7 @@ describe('canonical digest — maximally populated fixtures (G4 completeness)', 
       layouts: [{
         name: 'Layout1',
         paper: { id: 'a4', width: 297, height: 210, units: 'mm', orientation: 'landscape' },
-        plotScale: 1,
+        plotScale: '1:1',
         margins: { left: 10, bottom: 10, right: 10, top: 10 },
         entities: [line('paper-1')],
         viewports: [{
@@ -304,7 +304,7 @@ describe('canonical digest — save/reopen stability GATE (acceptance example 1,
     entities: [
       line('g-line'),
       { id: 'g-circle', type: 'circle', layer: '0', color: 3, center: { x: 5, y: 5 }, radius: 3 },
-      { id: 'g-text', type: 'text', layer: '0', color: 'ByLayer', position: { x: 1, y: 1 }, text: 'Gate', height: 2.5, align: 'left' },
+      { id: 'g-text', type: 'text', layer: '0', color: 'ByLayer', position: { x: 1, y: 1 }, text: 'Gate', height: 2.5, rotation: 0, align: 'left' },
       { id: 'g-poly', type: 'polyline', layer: '0', color: 'ByLayer', points: [{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 4 }], closed: true, bulges: [0, 0, 0] },
     ],
     blocks: {
