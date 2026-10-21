@@ -82,7 +82,14 @@ function createOpenedSourceProofs(options = {}) {
     const sameCanonical = pin.canonicalPath === original.canonicalPath || pin.canonicalPath === expected.canonicalPath;
     const sameNative = pin.fileVersion !== null && pin.fileVersion.dev === expected.fileVersion.dev && pin.fileVersion.ino === expected.fileVersion.ino;
     if (mode === 'save-as' && !sameLogical && !sameCanonical && !sameNative) return 'copy';
-    if (!pin.exists || !pin.fileVersion || (!sameCanonical && !sameNative) || (mode === 'in-place' || sameLogical) && pin.canonicalPath !== expected.canonicalPath || fileVersionKey(pin.fileVersion) !== fileVersionKey(expected.fileVersion)) throw changed();
+    // captureContentTarget supplied a fresh coherent read/hash, not just metadata.
+    // Only normal Save may compare across a ctime-only transition. Canonical path,
+    // dev/ino, size, mtime and SHA remain exact; Save As keeps the full version.
+    // This comparison never changes the pin used by admission/write-time guards
+    // or advances the lineage before a verified physical commit.
+    const comparisonVersion = mode === 'in-place' && pin.fileVersion
+      ? { ...pin.fileVersion, ctimeNs: expected.fileVersion.ctimeNs } : pin.fileVersion;
+    if (!pin.exists || !pin.fileVersion || (!sameCanonical && !sameNative) || (mode === 'in-place' || sameLogical) && pin.canonicalPath !== expected.canonicalPath || fileVersionKey(comparisonVersion) !== fileVersionKey(expected.fileVersion)) throw changed();
     return 'source';
   }
   /** Legacy omission never adopts an active source baseline by its path.

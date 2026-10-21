@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import { EventEmitter } from 'node:events';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import fs from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -11,6 +12,8 @@ import { decodeDxfBytes } from '../src/io/encoding';
 
 const sourceUrl = new URL('../electron/main/ipc-drawings.cjs', import.meta.url);
 const require = createRequire(sourceUrl), source = readFileSync(sourceUrl, 'utf8');
+// Identify the real bounded drawing read without depending on function names in stacks.
+const drawingReads = new AsyncLocalStorage<boolean>();
 type Handler = (ev: unknown, ...args: unknown[]) => unknown;
 type Binding = { index: number; path: string; childTicket: string; identityPath: string; exists: true } | { index: number; path: string; missing: true };
 type Opened = { path: string; identityPath: string; kind: 'dxf'; text: string };
@@ -85,6 +88,10 @@ function setup() {
   const enqueueWrite = atomic.createCanonicalWriteQueue(), module = { exports: {} as { registerDrawingIpc(ctx: unknown, opts: unknown): void } };
   new Function('require', 'module', source)((name: string) => {
     if (name === 'electron') return { dialog };
+    if (name === '../resource-limits.cjs') {
+      const limits = require(name);
+      return { ...limits, readLimitedFile: (...args: unknown[]) => drawingReads.run(true, () => Reflect.apply(limits.readLimitedFile, limits, args)) };
+    }
     if (name === './app-data.cjs') return { enqueueWrite, writeUserFile: (file: string, text: string, opts: unknown) => enqueueWrite(file, key => atomic.atomicWriteFile(file, text, { ...(opts as object), expectedDestination: key })) };
     if (name === './dwg.cjs') return { decodeDxf: decode, readDwgWithProgress: () => { throw new Error('No native DWG decoder in this DXF test.'); } };
     if (name === '../portable-dwg.cjs') return { createPortableDwgExporter: () => ({ status: () => ({ available: false }), export: () => { throw new Error('No native writer fixture.'); } }) };
@@ -165,7 +172,7 @@ async function holdNativeVersion(file: string, beforeRead?: () => Promise<void>)
     ? options?.bigint ? large : ordinary : lstat(name, options)) as typeof fs.lstat);
   let readIntervened = false;
   vi.spyOn(fs, 'open').mockImplementation(async (...args: Parameters<typeof fs.open>) => {
-    const drawingRead = new Error().stack?.includes('readLimitedFile'), handle = await open(...args);
+    const drawingRead = drawingReads.getStore() === true, handle = await open(...args);
     if (String(args[0]) === file && (args[1] === 0 || args[1] === 'r')) {
       handle.stat = (async options => options?.bigint ? large : ordinary) as typeof handle.stat;
       if (drawingRead && beforeRead) {
@@ -190,7 +197,7 @@ describe.runIf(process.platform === 'win32')('bounded project saves through prod
     const before = await fs.stat(file!, { bigint: true }), { batch, manifest } = await f.bind([file!]), binding = child(manifest[0]!);
     const nativeOpen = fs.open; let changed = false;
     vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
-      const drawingRead = new Error().stack?.includes('readLimitedFile'), handle = await nativeOpen(...args);
+      const drawingRead = drawingReads.getStore() === true, handle = await nativeOpen(...args);
       if (!drawingRead || String(args[0]) !== file) return handle;
       return new Proxy(handle, { get(target, key) {
         if (key === 'read') return async (...values: any[]) => {
