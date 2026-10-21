@@ -91,6 +91,75 @@ describe('PDF probe', () => {
   });
 });
 
+describe('PDF probe page-count exactness (acceptance F-C)', () => {
+  /** A /Count in a bare dictionary — no /Kids, so not a page-tree node. */
+  function pdfBareCount(count: number, pageObjs: number): Uint8Array {
+    let body = `%PDF-1.4\n2 0 obj << /Type /Pages /Count ${count} >> endobj\n`;
+    for (let i = 0; i < pageObjs; i += 1) body += `${i + 3} 0 obj << /Type /Page >> endobj\n`;
+    return enc(`${body}%%EOF\n`);
+  }
+
+  /** A real page-tree node (carries /Kids) plus its page objects. */
+  function pdfTreeCount(count: number, pageObjs: number): Uint8Array {
+    const kids = Array.from({ length: pageObjs }, (_, i) => `${i + 3} 0 R`).join(' ');
+    let body = `%PDF-1.4\n2 0 obj << /Type /Pages /Count ${count} /Kids [${kids}] >> endobj\n`;
+    for (let i = 0; i < pageObjs; i += 1) body += `${i + 3} 0 obj << /Type /Page /Parent 2 0 R >> endobj\n`;
+    return enc(`${body}%%EOF\n`);
+  }
+
+  it('a lying bare /Count in a complete scan is a claim, not an exact count (acceptance C4.4)', () => {
+    const r = probeUnderlay('pdf', pdfBareCount(5, 1)); // claims 5, exactly 1 page object
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.info.pageCount).toBe(5); // still reported — as the claim it is
+    expect(r.info.pageCountExact).toBe(false);
+  });
+
+  it('a /Count from an incomplete scan is never exact (acceptance C4.5)', () => {
+    const filler = 'x'.repeat(6000);
+    const bytes = enc(`%PDF-1.4\n<< /Type /Pages /Count 3 >>\n${filler}\n%%EOF\n`);
+    const caps: UnderlayCaps = { ...DEFAULT_UNDERLAY_CAPS, maxScanBytes: 1024 };
+    const r = probeUnderlay('pdf', bytes, caps);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.info.pageCount).toBe(3);
+    expect(r.info.pageCountExact).toBe(false);
+  });
+
+  it('a bare-dictionary /Count is inexact even when numerically consistent (not verifiable as the tree count)', () => {
+    const r = probeUnderlay('pdf', pdfBareCount(1, 1));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.info.pageCount).toBe(1);
+    expect(r.info.pageCountExact).toBe(false);
+  });
+
+  it('a tree count contradicted by more page objects than it claims is inexact', () => {
+    const r = probeUnderlay('pdf', pdfTreeCount(2, 3)); // tree claims 2, scan finds 3 page objects
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.info.pageCount).toBe(2);
+    expect(r.info.pageCountExact).toBe(false);
+  });
+
+  it('a consistent page-tree count stays exact (complete scan, tree node, not contradicted)', () => {
+    const r = probeUnderlay('pdf', pdfTreeCount(2, 2));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.info.pageCount).toBe(2);
+    expect(r.info.pageCountExact).toBe(true);
+  });
+
+  it('when the largest /Count is not a page-tree node count, the count stands but exactness does not', () => {
+    const bytes = enc('%PDF-1.5\n<< /Type /Pages /Count 2 /Kids [<< /Type /Pages /Count 12 >>] >>\n%%EOF\n');
+    const r = probeUnderlay('pdf', bytes);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.info.pageCount).toBe(12); // largest-count heuristic unchanged
+    expect(r.info.pageCountExact).toBe(false);
+  });
+});
+
 describe('DWF / DGN probes', () => {
   it('a DWF signature is identified; decoding stays behind the admitted-decoder gate', () => {
     const r = probeUnderlay('dwf', enc('(DWF V06.00)rest of file'));
