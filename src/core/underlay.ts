@@ -104,6 +104,75 @@ export function validateUnderlayPlacement(p: UnderlayPlacement): readonly string
   return problems;
 }
 
+/**
+ * The correspondence problems between a placement and a definition, or []
+ * when the definition is the one the placement references. A placement
+ * points at exactly one definition, by handle (CONTRACTS §7.4: a
+ * reference is never silently re-pointed); serving a placement with any
+ * other definition would display and plot a file the drawing does not
+ * reference under it, so the serving functions below refuse mismatched
+ * pairs, and integration code assembles pairs through this check.
+ * Handles are DXF hex and compare case-insensitively.
+ */
+export function validateUnderlayPair(p: UnderlayPlacement, def: UnderlayDefinition): readonly string[] {
+  const wanted = p.definitionHandle.trim().toUpperCase();
+  if (!wanted) return ['placement has no definition reference to correspond to'];
+  if (!def.handle || !def.handle.trim()) {
+    return [`placement references definition ${wanted} but the supplied definition (${def.id}) carries no handle`];
+  }
+  const actual = def.handle.trim().toUpperCase();
+  if (actual !== wanted) {
+    return [`placement references definition ${wanted} but was paired with definition ${actual} (${def.sourcePath})`];
+  }
+  return [];
+}
+
+/**
+ * The assembly problems in a set of definitions, or [] when every
+ * definition is uniquely keyed. Two records can carry the same handle
+ * (a duplicated *DEFINITION object — the codec parses such records
+ * independently, and they derive the same id); keying an assembly by
+ * handle or id would silently overwrite one with the other. Integration
+ * MUST run this check when assembling definitions and report collisions
+ * — never overwrite (acceptance F-B, adjacent fact C1.3).
+ */
+export function validateUnderlayDefinitions(defs: readonly UnderlayDefinition[]): readonly string[] {
+  const problems: string[] = [];
+  const byHandle = new Map<string, UnderlayDefinition>();
+  const byId = new Map<string, UnderlayDefinition>();
+  for (const def of defs) {
+    if (def.handle && def.handle.trim()) {
+      const key = def.handle.trim().toUpperCase();
+      const prior = byHandle.get(key);
+      if (prior) {
+        problems.push(`duplicate definition handle ${key}: "${prior.sourcePath}" (${prior.id}) and "${def.sourcePath}" (${def.id}) — a handle-keyed assembly must report the collision, not overwrite`);
+      } else byHandle.set(key, def);
+    }
+    const priorId = byId.get(def.id);
+    if (priorId) {
+      problems.push(`duplicate definition id ${def.id}: "${priorId.sourcePath}" and "${def.sourcePath}" — an id-keyed assembly must report the collision, not overwrite`);
+    } else byId.set(def.id, def);
+  }
+  return problems;
+}
+
+/** Typed refusal raised by the geometry functions on a mismatched pair. */
+export class UnderlayCorrespondenceError extends Error {
+  readonly placementId: string;
+  readonly definitionId: string;
+  constructor(problem: string, placementId: string, definitionId: string) {
+    super(problem);
+    this.name = 'UnderlayCorrespondenceError';
+    this.placementId = placementId;
+    this.definitionId = definitionId;
+  }
+}
+
+function assertCorresponds(p: UnderlayPlacement, def: UnderlayDefinition): void {
+  const problems = validateUnderlayPair(p, def);
+  if (problems.length > 0) throw new UnderlayCorrespondenceError(problems[0]!, p.id, def.id);
+}
+
 /** Transform one underlay-coordinate point into world coordinates. */
 function toWorld(p: UnderlayPlacement, q: Point): Point {
   const sx = q.x * p.scaleX;
@@ -118,8 +187,12 @@ function toWorld(p: UnderlayPlacement, q: Point): Point {
  * insertion corner and going counter-clockwise in underlay coordinates.
  * Without a known page extent the unit frame is used — the frame a
  * not-yet-decoded underlay occupies until a probe supplies the real size.
+ * Refuses a mismatched pair (UnderlayCorrespondenceError): geometry has
+ * no honest "empty" answer for a definition the placement does not
+ * reference.
  */
 export function underlayCorners(p: UnderlayPlacement, def: UnderlayDefinition): readonly Point[] {
+  assertCorresponds(p, def);
   const w = def.extent && Number.isFinite(def.extent.width) && def.extent.width > 0 ? def.extent.width : 1;
   const h = def.extent && Number.isFinite(def.extent.height) && def.extent.height > 0 ? def.extent.height : 1;
   return [
@@ -181,6 +254,10 @@ export interface UnderlayContent {
 }
 
 export function underlayDisplayList(p: UnderlayPlacement, def: UnderlayDefinition, content?: UnderlayContent): readonly UnderlayDisplayOp[] {
+  // A mismatched pair is refused by serving nothing at all — never the
+  // wrong file's image, frame or label, on screen or on paper (F-B).
+  // Callers report the pairing through validateUnderlayPair.
+  if (validateUnderlayPair(p, def).length > 0) return [];
   if (!underlayIsOn(p)) return [];
   const corners = underlayCorners(p, def);
   const ops: UnderlayDisplayOp[] = [];
