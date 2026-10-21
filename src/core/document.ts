@@ -21,6 +21,7 @@ import type { ConstraintSet } from './constraints/model';
 import { enforceConstraintPolicy } from './constraints/policy';
 import { noteSignatureEdit, type PreservedSignatureRecord } from '../project/drawing-signature';
 import { validateDataLinks, type DataLink } from '../project/data-links';
+import { detachErasedBoundaries, hatchUpdatesForBoundaryEdits, remapHatchBoundaryRefs } from './hatch-assoc';
 
 import type { Model3D } from '../model3d/types';
 import { model3dOf, withModel3D } from '../model3d/model';
@@ -515,7 +516,14 @@ export class Drawing {
    */
   addEntities(entities: readonly Entity[], applyDefaults = true, intent?: CadGraphEditIntent): void {
     if (entities.length === 0) return;
-    const list = applyDefaults ? this.withEntityDefaults(entities) : entities;
+    let list = applyDefaults ? this.withEntityDefaults(entities) : entities;
+    // P17: a declared clone batch copies boundary + hatch together; the copies'
+    // associations must name the copied boundaries, not the originals.
+    if (intent?.cloneBatches?.length) {
+      const idMap = new Map<string, string>();
+      for (const batch of intent.cloneBatches) for (const [from, to] of Object.entries(batch.entityIds)) idMap.set(from, to);
+      if (idMap.size > 0) list = remapHatchBoundaryRefs(list, idMap);
+    }
     this.transact((s) => ({ ...s, entities: [...s.entities, ...list] }), intent);
   }
 
@@ -567,8 +575,11 @@ export class Drawing {
     const set = new Set(ids);
     if (set.size === 0) return;
     this.transact((s) => {
-      const entities = s.entities.filter((e) => !set.has(e.id));
-      return entities.length === s.entities.length ? s : { ...s, entities };
+      const kept = s.entities.filter((e) => !set.has(e.id));
+      if (kept.length === s.entities.length) return s;
+      // P17: erasing a boundary detaches its hatches in the same step
+      // (loop geometry frozen, the reference dropped — never left dangling).
+      return { ...s, entities: detachErasedBoundaries(kept, set) };
     });
   }
 
@@ -578,7 +589,7 @@ export class Drawing {
     const map = new Map(replacements.map((e) => [e.id, e]));
     this.transact((s) => {
       let changed = false;
-      const entities = s.entities.map((e) => {
+      const replaced = s.entities.map((e) => {
         const r = map.get(e.id);
         if (r && r !== e) {
           changed = true;
@@ -586,7 +597,14 @@ export class Drawing {
         }
         return e;
       });
-      return changed ? { ...s, entities } : s;
+      if (!changed) return s;
+      // P17: associative hatches whose boundary was replaced are refreshed
+      // from the new boundary geometry inside this same transaction, so the
+      // boundary edit and the fill update are exactly one undo step.
+      const updates = hatchUpdatesForBoundaryEdits(replaced, new Set(map.keys()));
+      if (updates.length === 0) return { ...s, entities: replaced };
+      const updateMap = new Map(updates.map((e) => [e.id, e]));
+      return { ...s, entities: replaced.map((e) => updateMap.get(e.id) ?? e) };
     }, intent);
   }
 
