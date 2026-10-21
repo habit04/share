@@ -809,6 +809,8 @@ describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency
       // that single ULP and the patterns are asserted element-wise at 12 digits.
       const gasPattern = s.header!.linetypes[0]!.pattern!;
       const fencePattern = s.header!.linetypes[1]!.pattern!;
+      expect(gasPattern).toHaveLength(3);
+      expect(fencePattern).toHaveLength(4);
       [12.7, -5.08, -6.35].forEach((v, i) => close(gasPattern[i], v, 12));
       [6.35, -2.54, -2.54, 25.4].forEach((v, i) => close(fencePattern[i], v, 12));
       expect(s.header!.linetypes[0]!.complex!.elements[1]).toMatchObject({ flags: 2, shapeNumber: 0,
