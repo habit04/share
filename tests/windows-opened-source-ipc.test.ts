@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import { EventEmitter } from 'node:events';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -27,7 +29,7 @@ afterEach(async () => {
   await fs.rm(dir, { recursive: true, force: true });
 });
 
-function setup() {
+function setup(afterDecode?: () => Promise<void>) {
   const registry = createPathRegistry(), handlers = new Map<string, Handler>(), log = { reject: vi.fn() };
   const frame = { processId: 1, routingId: 1, parent: null, url: 'jcad://app/index.html' };
   const contents = Object.assign(new EventEmitter(), { isDestroyed: () => false, mainFrame: frame });
@@ -41,7 +43,7 @@ function setup() {
   new Function('require', 'module', source)((name: string) => {
     if (name === 'electron') return { dialog };
     if (name === './app-data.cjs') return { enqueueWrite, writeUserFile: (file: string, text: string, opts: unknown) => enqueueWrite(file, (key: string) => atomic.atomicWriteFile(file, text, { ...(opts as object), expectedDestination: key })) };
-    if (name === './dwg.cjs') return { decodeDxf: (bytes: Uint8Array) => Promise.resolve(decodeDxfBytes(bytes)), readDwgWithProgress: () => { throw new Error('This gate uses native DXF files; it does not validate the DWG reader.'); } };
+    if (name === './dwg.cjs') return { decodeDxf: async (bytes: Uint8Array) => { const decoded = decodeDxfBytes(bytes); await afterDecode?.(); return decoded; }, readDwgWithProgress: () => { throw new Error('This gate uses native DXF files; it does not validate the DWG reader.'); } };
     if (name === '../portable-dwg.cjs') return { createPortableDwgExporter: () => ({ status: () => ({ available: false }), export: () => { throw new Error('This gate does not certify native DWG conversion.'); } }) };
     return require(name);
   }, module);
@@ -69,8 +71,163 @@ function editedFixture(x: number) {
   drawing.undo(); drawing.redo(); return writeDxf(drawing.snapshot);
 }
 const hint = (opened: Opened, mode: Hint['mode'] = 'in-place'): Hint => ({ proof: opened.openedSourceProof, path: opened.path, mode });
+const attrib = promisify(execFile);
+async function archiveAttribute(file: string, enabled: boolean) {
+  await attrib(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'attrib.exe'), [enabled ? '+A' : '-A', file], { windowsHide: true, timeout: 5000 });
+}
+const clockDrawing = (text: string) => [0, 'SECTION', 2, 'HEADER', 9, '$ACADVER', 1, 'AC1032', 0, 'ENDSEC',
+  0, 'SECTION', 2, 'ENTITIES', 0, 'TEXT', 8, '0', 10, 1, 20, 2, 40, 2.5, 1, text, 0, 'ENDSEC', 0, 'EOF', ''].join('\r\n');
+
+/** Real native reads with a deterministic change after the first returned bytes. */
+function afterFirstSourceRead(file: string, change: () => Promise<void>) {
+  const nativeOpen = fs.open;
+  let changed = false;
+  vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+    const handle = await nativeOpen(...args);
+    if (path.resolve(String(args[0])) !== file) return handle;
+    return new Proxy(handle, { get(target, key) {
+      if (key === 'read') return async (...values: any[]) => {
+        const result = await (target.read as any)(...values);
+        if (!changed && result.bytesRead > 0) { changed = true; await change(); }
+        return result;
+      };
+      const value = Reflect.get(target, key);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  });
+}
 
 describe.runIf(process.platform === 'win32')('completed Open evidence through production save IPC and native files', () => {
+  it.each(['archive', 'readonly'])('saves new bytes in place after an actual NTFS %s attribute change after Open', async attribute => {
+    const f = setup(), file = path.join(dir, 'Original.dxf'), next = editedFixture(113);
+    await fs.writeFile(file, nativeFixture);
+    if (attribute === 'archive') await archiveAttribute(file, true); else await fs.chmod(file, 0o444);
+    try {
+      const opened = await f.open(file), before = await fs.stat(file, { bigint: true });
+      if (attribute === 'archive') await archiveAttribute(file, false); else await fs.chmod(file, 0o666);
+      const after = await fs.stat(file, { bigint: true });
+      expect(after.ctimeNs).not.toBe(before.ctimeNs);
+      for (const field of ['dev', 'ino', 'size', 'mtimeNs'] as const) expect(after[field]).toBe(before[field]);
+      const receipt = await f.save(file, next, hint(opened));
+      expect(receipt.openedSourceProof).toMatch(/^[a-f0-9]{48}$/);
+      expect(await fs.readFile(file, 'utf8')).toBe(next); expect(await fs.readFile(`${file}.bak`, 'utf8')).toBe(nativeFixture);
+      expect((await f.open(file)).text).toBe(next);
+    } finally { await fs.chmod(file, 0o666); }
+  });
+
+  it.each(['same-size bytes', 'delete-recreate', 'rename-replacement', 'ctime and bytes', 'mtime', 'size'])('still refuses %s after Open without touching the outside file or backup', async change => {
+    const f = setup(), file = path.join(dir, 'Original.dxf'), modified = new Date('2020-01-01T00:00:00Z');
+    const original = clockDrawing('CLOCK_ORIGINAL'), external = clockDrawing('CLOCK_EXTERNAL');
+    expect(Buffer.byteLength(original)).toBe(Buffer.byteLength(external));
+    await fs.writeFile(file, original); await fs.utimes(file, modified, modified); await archiveAttribute(file, true);
+    if (change === 'delete-recreate') await fs.link(file, path.join(dir, 'Held-original.dxf'));
+    const opened = await f.open(file), before = await fs.stat(file, { bigint: true });
+    await fs.writeFile(`${file}.bak`, 'KEEP OLDER BACKUP');
+    if (change === 'delete-recreate') { await fs.unlink(file); await fs.writeFile(file, original); }
+    else if (change === 'rename-replacement') {
+      const replacement = path.join(dir, 'Replacement.dxf'); await fs.writeFile(replacement, original); await fs.rename(replacement, file);
+    } else if (change === 'same-size bytes' || change === 'ctime and bytes') await fs.writeFile(file, external);
+    else if (change === 'size') await fs.appendFile(file, '\r\n');
+    await fs.utimes(file, modified, change === 'mtime' ? new Date('2020-01-01T00:00:01Z') : modified);
+    if (change === 'ctime and bytes') await archiveAttribute(file, false);
+    const after = await fs.stat(file, { bigint: true }), outside = await fs.readFile(file);
+    if (change === 'delete-recreate' || change === 'rename-replacement') expect(after.ino).not.toBe(before.ino);
+    if (change === 'same-size bytes' || change === 'ctime and bytes') { expect(after.size).toBe(before.size); expect(after.mtimeNs).toBe(before.mtimeNs); }
+    await expect(f.save(file, editedFixture(114), hint(opened))).rejects.toThrow(/ERR_OPENED_SOURCE_CHANGED/);
+    expect(await fs.readFile(file)).toEqual(outside); expect(await fs.readFile(`${file}.bak`, 'utf8')).toBe('KEEP OLDER BACKUP');
+    expect((await fs.readdir(dir)).filter(name => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('keeps Save As to the source strict after metadata-only changes, while a separate copy remains permitted', async () => {
+    const f = setup(), file = path.join(dir, 'Original.dxf'), copy = path.join(dir, 'Copy.dxf'), next = editedFixture(115);
+    await fs.writeFile(file, nativeFixture); await archiveAttribute(file, true); const opened = await f.open(file);
+    await archiveAttribute(file, false);
+    await expect(f.save(file, next, hint(opened, 'save-as'))).rejects.toThrow(/ERR_OPENED_SOURCE_CHANGED/);
+    f.registry.grant(copy); const receipt = await f.save(copy, next, hint(opened, 'save-as'));
+    expect(receipt.openedSourceProof).toMatch(/^[a-f0-9]{48}$/);
+    expect(await fs.readFile(file, 'utf8')).toBe(nativeFixture); expect(await fs.readFile(copy, 'utf8')).toBe(next);
+    await expect(fs.stat(`${file}.bak`)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('refuses a fresh-hash read error after a ctime-only change without consuming the usable original proof', async () => {
+    const f = setup(), file = path.join(dir, 'Original.dxf'), next = editedFixture(116);
+    await fs.writeFile(file, nativeFixture); await fs.writeFile(`${file}.bak`, 'KEEP'); await archiveAttribute(file, true);
+    const opened = await f.open(file); await archiveAttribute(file, false);
+    const nativeOpen = fs.open;
+    vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+      if (String(args[0]) === file) throw Object.assign(new Error('deliberate read refusal'), { code: 'EACCES' });
+      return nativeOpen(...args);
+    });
+    await expect(f.save(file, next, hint(opened))).rejects.toThrow(/EACCES/);
+    expect(await fs.readFile(file, 'utf8')).toBe(nativeFixture); expect(await fs.readFile(`${file}.bak`, 'utf8')).toBe('KEEP');
+    vi.restoreAllMocks();
+    const receipt = await f.save(file, next, hint(opened));
+    expect(receipt.openedSourceProof).toMatch(/^[a-f0-9]{48}$/); expect(await fs.readFile(file, 'utf8')).toBe(next);
+  });
+
+  it('still refuses bytes changed during the fresh Save re-read after a metadata-only transition', async () => {
+    const f = setup(), file = path.join(dir, 'Original.dxf'), modified = new Date('2020-01-01T00:00:00Z');
+    const original = clockDrawing('CLOCK_ORIGINAL'), external = clockDrawing('CLOCK_EXTERNAL');
+    await fs.writeFile(file, original); await fs.utimes(file, modified, modified); await archiveAttribute(file, true);
+    const opened = await f.open(file); await archiveAttribute(file, false);
+    afterFirstSourceRead(file, async () => { await fs.writeFile(file, external); await fs.utimes(file, modified, modified); });
+    await expect(f.save(file, editedFixture(117), hint(opened))).rejects.toThrow(/ERR_WINDOWS_PATH_CHANGED/);
+    vi.restoreAllMocks();
+    expect(await fs.readFile(file, 'utf8')).toBe(external); await expect(fs.stat(`${file}.bak`)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('opens unchanged bytes after native metadata-only ctime movement during the first read, and binds a usable save proof', async () => {
+    const f = setup(), file = path.join(dir, 'Original.dxf'), modified = new Date('2020-01-01T00:00:00Z');
+    await fs.writeFile(file, nativeFixture); await fs.utimes(file, modified, modified);
+    const before = await fs.stat(file, { bigint: true });
+    afterFirstSourceRead(file, async () => { await fs.utimes(file, new Date('2021-01-01T00:00:00Z'), modified); });
+    const opened = await f.open(file), after = await fs.stat(file, { bigint: true });
+    expect(after.ctimeNs).not.toBe(before.ctimeNs); expect(after.mtimeNs).toBe(before.mtimeNs);
+    expect(after.ino).toBe(before.ino); expect(opened.text).toBe(nativeFixture);
+    vi.restoreAllMocks();
+    const receipt = await f.save(file, editedFixture(111), hint(opened));
+    expect(receipt.openedSourceProof).toMatch(/^[a-f0-9]{48}$/);
+    expect(await fs.readFile(`${file}.bak`, 'utf8')).toBe(nativeFixture);
+  });
+
+  it('uses the last content-verified native version after metadata changes during decoding', async () => {
+    const file = path.join(dir, 'Original.dxf'), modified = new Date('2020-01-01T00:00:00Z');
+    await fs.writeFile(file, nativeFixture); await fs.utimes(file, modified, modified);
+    const before = await fs.stat(file, { bigint: true });
+    const f = setup(async () => { await fs.utimes(file, new Date('2021-01-01T00:00:00Z'), modified); });
+    const opened = await f.open(file), after = await fs.stat(file, { bigint: true });
+    expect(after.ctimeNs).not.toBe(before.ctimeNs); expect(after.mtimeNs).toBe(before.mtimeNs);
+    expect(opened.text).toBe(nativeFixture);
+    const receipt = await f.save(file, editedFixture(112), hint(opened));
+    expect(receipt.openedSourceProof).toMatch(/^[a-f0-9]{48}$/);
+    expect(await fs.readFile(`${file}.bak`, 'utf8')).toBe(nativeFixture);
+  });
+
+  it.each(['different-bytes', 'different-mtime'])('still refuses %s during an Open without minting a save baseline', async change => {
+    const f = setup(), file = path.join(dir, 'Original.dxf'), modified = new Date('2020-01-01T00:00:00Z');
+    await fs.writeFile(file, nativeFixture); await fs.utimes(file, modified, modified);
+    afterFirstSourceRead(file, async () => {
+      if (change === 'different-bytes') await fs.writeFile(file, `${nativeFixture[0] === '0' ? '1' : '0'}${nativeFixture.slice(1)}`);
+      await fs.utimes(file, modified, change === 'different-mtime' ? new Date('2020-01-01T00:00:01Z') : modified);
+    });
+    await expect(f.open(file)).rejects.toThrow(/ERR_WINDOWS_PATH_CHANGED/);
+    expect(await fs.readdir(dir)).toEqual(['Original.dxf']);
+  });
+
+  it('refuses a same-byte replacement during decoding even when its size and mtime match', async () => {
+    const file = path.join(dir, 'Original.dxf'), modified = new Date('2020-01-01T00:00:00Z');
+    await fs.writeFile(file, nativeFixture); await fs.utimes(file, modified, modified);
+    const before = await fs.stat(file, { bigint: true });
+    const f = setup(async () => {
+      const temp = path.join(dir, 'Replacement.dxf'); await fs.writeFile(temp, nativeFixture);
+      await fs.utimes(temp, modified, modified); await fs.rename(temp, file);
+    });
+    await expect(f.open(file)).rejects.toThrow(/ERR_WINDOWS_PATH_CHANGED/);
+    const after = await fs.stat(file, { bigint: true });
+    expect(after.ino).not.toBe(before.ino); expect(after.size).toBe(before.size); expect(after.mtimeNs).toBe(before.mtimeNs);
+    expect(await fs.readFile(file, 'utf8')).toBe(nativeFixture); expect(await fs.readdir(dir)).toEqual(['Original.dxf']);
+  });
+
   it('returns an opaque proof for the completed native read and refuses external edits before either later save bind', async () => {
     const f = setup(), file = path.join(dir, 'Original.dxf'), outside = editedFixture(999);
     await fs.writeFile(file, nativeFixture); await fs.writeFile(`${file}.bak`, 'OLDER BACKUP');

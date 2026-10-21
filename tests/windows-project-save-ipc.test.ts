@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import { EventEmitter } from 'node:events';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import fs from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -11,6 +12,8 @@ import { decodeDxfBytes } from '../src/io/encoding';
 
 const sourceUrl = new URL('../electron/main/ipc-drawings.cjs', import.meta.url);
 const require = createRequire(sourceUrl), source = readFileSync(sourceUrl, 'utf8');
+// Identify the real bounded drawing read without depending on function names in stacks.
+const drawingReads = new AsyncLocalStorage<boolean>();
 type Handler = (ev: unknown, ...args: unknown[]) => unknown;
 type Binding = { index: number; path: string; childTicket: string; identityPath: string; exists: true } | { index: number; path: string; missing: true };
 type Opened = { path: string; identityPath: string; kind: 'dxf'; text: string };
@@ -85,6 +88,10 @@ function setup() {
   const enqueueWrite = atomic.createCanonicalWriteQueue(), module = { exports: {} as { registerDrawingIpc(ctx: unknown, opts: unknown): void } };
   new Function('require', 'module', source)((name: string) => {
     if (name === 'electron') return { dialog };
+    if (name === '../resource-limits.cjs') {
+      const limits = require(name);
+      return { ...limits, readLimitedFile: (...args: unknown[]) => drawingReads.run(true, () => Reflect.apply(limits.readLimitedFile, limits, args)) };
+    }
     if (name === './app-data.cjs') return { enqueueWrite, writeUserFile: (file: string, text: string, opts: unknown) => enqueueWrite(file, key => atomic.atomicWriteFile(file, text, { ...(opts as object), expectedDestination: key })) };
     if (name === './dwg.cjs') return { decodeDxf: decode, readDwgWithProgress: () => { throw new Error('No native DWG decoder in this DXF test.'); } };
     if (name === '../portable-dwg.cjs') return { createPortableDwgExporter: () => ({ status: () => ({ available: false }), export: () => { throw new Error('No native writer fixture.'); } }) };
@@ -165,7 +172,7 @@ async function holdNativeVersion(file: string, beforeRead?: () => Promise<void>)
     ? options?.bigint ? large : ordinary : lstat(name, options)) as typeof fs.lstat);
   let readIntervened = false;
   vi.spyOn(fs, 'open').mockImplementation(async (...args: Parameters<typeof fs.open>) => {
-    const drawingRead = new Error().stack?.includes('readLimitedFile'), handle = await open(...args);
+    const drawingRead = drawingReads.getStore() === true, handle = await open(...args);
     if (String(args[0]) === file && (args[1] === 0 || args[1] === 'r')) {
       handle.stat = (async options => options?.bigint ? large : ordinary) as typeof handle.stat;
       if (drawingRead && beforeRead) {
@@ -184,6 +191,31 @@ const clockDxf = (text: string) => [0, 'SECTION', 2, 'HEADER', 9, '$ACADVER', 1,
   0, 'SECTION', 2, 'ENTITIES', 0, 'TEXT', 8, '0', 10, 1, 20, 2, 40, 2.5, 1, text, 0, 'ENDSEC', 0, 'EOF', ''].join('\r\n');
 
 describe.runIf(process.platform === 'win32')('bounded project saves through production IPC and native NTFS files', () => {
+  it('keeps an admitted project calculation input pinned when only ctime changes during its native read', async () => {
+    const f = setup(), [file] = await f.files(1), modified = new Date('2020-01-01T00:00:00Z');
+    await fs.utimes(file!, modified, modified);
+    const before = await fs.stat(file!, { bigint: true }), { batch, manifest } = await f.bind([file!]), binding = child(manifest[0]!);
+    const nativeOpen = fs.open; let changed = false;
+    vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+      const drawingRead = drawingReads.getStore() === true, handle = await nativeOpen(...args);
+      if (!drawingRead || String(args[0]) !== file) return handle;
+      return new Proxy(handle, { get(target, key) {
+        if (key === 'read') return async (...values: any[]) => {
+          const result = await (target.read as any)(...values);
+          if (!changed && result.bytesRead > 0) { changed = true; await fs.utimes(file!, new Date('2021-01-01T00:00:00Z'), modified); }
+          return result;
+        };
+        const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value;
+      } });
+    });
+    await expect(f.invoke('open-project-save-batch-drawing', batch, binding.childTicket)).rejects.toThrow(/ERR_WINDOWS_PATH_CHANGED/);
+    expect(changed).toBe(true); expect(f.decode).not.toHaveBeenCalled();
+    const after = await fs.stat(file!, { bigint: true });
+    expect(after.ctimeNs).not.toBe(before.ctimeNs); expect(after.mtimeNs).toBe(before.mtimeNs);
+    expect(await fs.readFile(file!, 'utf8')).toBe(nativeFixture);
+    await expect(f.invoke('cancel-project-save-batch', batch)).rejects.toThrow(/ERR_SAVE_TICKET/);
+  });
+
   it('refuses a changed same-size calculation input before decoding even when every native version field collides', async () => {
     const f = setup(), file = path.join(dir, 'Clock.dxf'), original = clockDxf('CLOCK_ORIGINAL'), external = clockDxf('CLOCK_EXTERNAL');
     expect(Buffer.byteLength(original)).toBe(Buffer.byteLength(external)); await fs.writeFile(file, original); f.registry.grant(file);

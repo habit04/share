@@ -55,12 +55,16 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     if (process.platform !== 'win32') return { bytes: await readLimitedFile(fs, file, MAX_DRAWING_BYTES), identityPath: undefined };
     const changed = () => Object.assign(new Error('ERR_WINDOWS_PATH_CHANGED: the drawing changed while it was opened. Open it again.'), { code: 'ERR_WINDOWS_PATH_CHANGED' });
     const version = (stat) => [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String).join(':');
+    // Windows ctime also changes for metadata updates. A standalone Open may
+    // accept that transition only after a fresh, coherent hash matches the
+    // bytes already read. An admitted project batch keeps its exact version.
+    const readVersion = expectedPin ? version : (stat) => [stat.dev, stat.ino, stat.size, stat.mtimeNs].map(String).join(':');
     const nativeVersion = (stat) => Object.freeze({ dev: String(stat.dev), ino: String(stat.ino), size: String(stat.size), mtimeNs: String(stat.mtimeNs), ctimeNs: String(stat.ctimeNs) });
     /** @type {{version:string,size:bigint,identityPath:string|undefined,fileVersion:import('../windows-path-identity.cjs').FileVersion,sha256?:string}|undefined} */ let captured;
     const observe = async () => {
       const stat = await fs.stat(file, { bigint: true }), canonical = await identityPath(file);
-      if (canonical && (version(await fs.stat(canonical, { bigint: true })) !== version(stat) || await identityPath(file) !== canonical)) throw changed();
-      return { version: version(stat), size: stat.size, identityPath: canonical, fileVersion: nativeVersion(stat) };
+      if (canonical && (readVersion(await fs.stat(canonical, { bigint: true })) !== readVersion(stat) || await identityPath(file) !== canonical)) throw changed();
+      return { version: readVersion(stat), size: stat.size, identityPath: canonical, fileVersion: nativeVersion(stat) };
     };
     const check = async () => {
       if (!captured) throw changed();
@@ -68,8 +72,9 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
       if (current.version !== captured.version || current.identityPath !== captured.identityPath) throw changed();
       if (captured.sha256) {
         try {
-          const digest = await coherentFileDigest(file, { fs, maxBytes: MAX_DRAWING_BYTES, expectedCanonicalPath: captured.identityPath });
-          if (digest.sha256 !== captured.sha256 || version(digest.version) !== captured.version) throw changed();
+          const digest = await coherentFileDigest(file, { fs, maxBytes: MAX_DRAWING_BYTES, expectedCanonicalPath: captured.identityPath, expectedVersion: current.fileVersion });
+          if (digest.sha256 !== captured.sha256 || readVersion(digest.version) !== captured.version) throw changed();
+          captured.fileVersion = digest.version;
         } catch (error) {
           // Standalone opens have no admission wrapper; preserve the code in IPC error text.
           if (error?.code === 'ERR_WINDOWS_PATH_CHANGED') throw changed();
@@ -80,7 +85,7 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     const bytes = await readLimitedFile(fs, file, MAX_DRAWING_BYTES, undefined, {
       async beforeRead(handle) {
         const held = await handle.stat({ bigint: true }), current = await observe();
-        if (version(held) !== current.version) throw changed();
+        if (readVersion(held) !== current.version) throw changed();
         if (expectedPin) {
           const original = expectedPin.fileVersion;
           if (!original || current.identityPath !== expectedPin.canonicalPath || current.version !== [original.dev, original.ino, original.size, original.mtimeNs, original.ctimeNs].join(':')) throw changed();
@@ -88,7 +93,7 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
         captured = current;
       },
       async afterRead(handle, content) {
-        if (!captured || version(await handle.stat({ bigint: true })) !== captured.version || BigInt(content.byteLength) !== captured.size) throw changed();
+        if (!captured || readVersion(await handle.stat({ bigint: true })) !== captured.version || BigInt(content.byteLength) !== captured.size) throw changed();
         captured.sha256 = createHash('sha256').update(content).digest('hex');
         if (expectedPin && captured.sha256 !== expectedPin.fileVersion?.sha256) throw changed();
         await check();
@@ -96,8 +101,12 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     });
     await check();
     if (!captured?.identityPath || !captured.sha256) throw changed();
-    const sourceEvidence = Object.freeze({ canonicalPath: captured.identityPath, fileVersion: Object.freeze({ ...captured.fileVersion, sha256: captured.sha256 }) });
-    return { bytes, identityPath: captured.identityPath, sourceEvidence, check };
+    const verified = captured, canonicalPath = captured.identityPath, sha256 = captured.sha256;
+    return { bytes, identityPath: canonicalPath, check,
+      // Decoding may take time. Publish the last hash-verified version rather
+      // than a pre-decode ctime that would make the next valid Save fail.
+      get sourceEvidence() { return Object.freeze({ canonicalPath, fileVersion: Object.freeze({ ...verified.fileVersion, sha256 }) }); },
+    };
   }
   if (saveOrder) ipcMain.handle('resolve-path-identity', async (_ev, file) => {
     if (!pathPolicy.known(file, 'resolve-path-identity')) return null;
