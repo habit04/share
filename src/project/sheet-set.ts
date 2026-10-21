@@ -95,6 +95,7 @@ export function moveSheet(set: SheetSet, sheetId: string, toIndex: number): Shee
   if (from < 0) return set;
   const sheets = [...set.sheets];
   const [entry] = sheets.splice(from, 1);
+  if (!entry) return set;
   const target = Math.max(0, Math.min(sheets.length, Math.trunc(toIndex)));
   sheets.splice(target, 0, entry);
   return { ...set, sheets };
@@ -244,7 +245,7 @@ export function parseSheetSetJson(text: string): SheetSet {
 // ------------------------------------------------------------- DST XML subset
 
 const XML_ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' };
-const xmlEscape = (s: string): string => s.replace(/[&<>"']/g, (ch) => XML_ESCAPES[ch]);
+const xmlEscape = (s: string): string => s.replace(/[&<>"']/g, (ch) => XML_ESCAPES[ch] ?? ch);
 const xmlUnescape = (s: string): string => s
   .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
 

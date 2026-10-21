@@ -90,12 +90,14 @@ const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 function bytesToBase64(bytes: Uint8Array): string {
   let out = '';
   for (let i = 0; i < bytes.length; i += 3) {
-    const a = bytes[i];
-    const b = i + 1 < bytes.length ? bytes[i + 1] : 0;
-    const c = i + 2 < bytes.length ? bytes[i + 2] : 0;
-    out += B64[a >> 2] + B64[((a & 3) << 4) | (b >> 4)];
-    out += i + 1 < bytes.length ? B64[((b & 15) << 2) | (c >> 6)] : '=';
-    out += i + 2 < bytes.length ? B64[c & 63] : '=';
+    const a = bytes[i] ?? 0;
+    const hasB = i + 1 < bytes.length;
+    const hasC = i + 2 < bytes.length;
+    const b = hasB ? (bytes[i + 1] ?? 0) : 0;
+    const c = hasC ? (bytes[i + 2] ?? 0) : 0;
+    out += B64.charAt(a >> 2) + B64.charAt(((a & 3) << 4) | (b >> 4));
+    out += hasB ? B64.charAt(((b & 15) << 2) | (c >> 6)) : '=';
+    out += hasC ? B64.charAt(c & 63) : '=';
   }
   return out;
 }

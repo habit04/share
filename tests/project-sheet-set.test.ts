@@ -25,19 +25,22 @@ import {
 } from '../src/project/sheet-set';
 
 const resolver = (files: Record<string, readonly string[]>): SheetSetLinkResolver =>
-  (path) => (path in files ? { exists: true, layouts: files[path] } : { exists: false, layouts: [] });
+  (path) => {
+    const layouts = files[path];
+    return layouts ? { exists: true, layouts } : { exists: false, layouts: [] };
+  };
 
 describe('P31A sheet-set model', () => {
   it('creates an empty set and adds sheets with stable ids that survive reordering', () => {
     let set = createSheetSet({ name: 'Plant A' });
     set = addSheet(set, { number: 'E-101', title: 'Power plan', drawingPath: 'drawings/power.dwg', layoutName: 'Layout1' });
     set = addSheet(set, { number: 'E-102', title: 'Lighting plan', drawingPath: 'drawings/lighting.dwg', layoutName: 'Layout1' });
-    const [idA, idB] = set.sheets.map((s) => s.id);
+    const [idA = '', idB = ''] = set.sheets.map((s) => s.id);
     expect(idA).toBeTruthy();
     expect(idA).not.toBe(idB);
     const moved = moveSheet(set, idB, 0);
     expect(moved.sheets.map((s) => s.id)).toEqual([idB, idA]);
-    expect(moved.sheets[0].number).toBe('E-102');
+    expect(moved.sheets[0]?.number).toBe('E-102');
     // original untouched (immutable updates)
     expect(set.sheets.map((s) => s.id)).toEqual([idA, idB]);
   });
@@ -76,14 +79,14 @@ describe('P31A sheet-set model', () => {
     set = addSheet(set, { number: '1', title: 'A', drawingPath: 'old-name.dwg', layoutName: 'Layout1' });
     const issues = validateSheetSetLinks(set, resolver({ 'new-name.dwg': ['Layout1'] }));
     expect(issues).toHaveLength(1);
-    expect(issues[0].kind).toBe('missing-drawing');
-    expect(set.sheets[0].drawingPath).toBe('old-name.dwg');
+    expect(issues[0]?.kind).toBe('missing-drawing');
+    expect(set.sheets[0]?.drawingPath).toBe('old-name.dwg');
   });
 
   it('produces \\AcSm field values matching the fields.ts context keys', () => {
     let set = createSheetSet({ name: 'Plant A' });
     set = addSheet(set, { number: 'E-101', title: 'Power plan', drawingPath: 'a.dwg', layoutName: 'Layout1' });
-    const values = sheetFieldValues(set, set.sheets[0].id);
+    const values = sheetFieldValues(set, set.sheets[0]?.id ?? '');
     expect(values['Sheet.Number']).toBe('E-101');
     expect(values['Sheet.Title']).toBe('Power plan');
     expect(values['SheetSet.Name']).toBe('Plant A');
@@ -105,7 +108,7 @@ describe('P31A DST XML subset interop', () => {
     const set = parseDstSubsetXml(DST);
     expect(set.name).toBe('Plant A');
     expect(set.sheets.map((s) => s.number)).toEqual(['E-101', 'E-001']);
-    expect(set.sheets[0].subset).toBe('Electrical');
+    expect(set.sheets[0]?.subset).toBe('Electrical');
     expect(set.opaqueFragments?.join('\n')).toContain('FutureComponent');
     expect(set.opaqueFragments?.join('\n')).toContain('VendorExtension');
   });
@@ -128,7 +131,7 @@ describe('P31A DST XML subset interop', () => {
     expect(xml).toContain('R&amp;D &lt;notes&gt;');
     const back = parseDstSubsetXml(xml);
     expect(back.name).toBe('A & B <Plant>');
-    expect(back.sheets[0].title).toBe('R&D <notes>');
-    expect(back.sheets[0].drawingPath).toBe('a&b.dwg');
+    expect(back.sheets[0]?.title).toBe('R&D <notes>');
+    expect(back.sheets[0]?.drawingPath).toBe('a&b.dwg');
   });
 });
