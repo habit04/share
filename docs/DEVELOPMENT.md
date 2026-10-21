@@ -409,6 +409,7 @@ hands them to the modules in one context (`context.cjs`). No module requires Ele
 | `save-order.cjs` | — | Windows renderer ownership, save tickets, guarded backup preparation and committed identity receipts |
 | `ipc-plot.cjs` | 99 | plot to PDF, vector PDF, print |
 | `ipc-shx.cjs` | — | guarded one-use Windows SHX font/shape picker, without general file grants |
+| `startup-migration.cjs` | — | the startup legacy-storage migration gate (P-MIG): checkpoint / marker / extraction decision and the migration failure flag |
 | `ipc-stores.cjs` | 178 | autosave, user library, plugins, catalog packs |
 | `updates.cjs` | 45 | app info, external links, update checks and status |
 | `handover.cjs` | 86 | files handed over by the OS and by a second launch |

@@ -65,6 +65,15 @@ contextBridge.exposeInMainWorld('jcad', {
     cancelProjectSaveBatch: (batch) => ipcRenderer.invoke('cancel-project-save-batch', batch),
     fontMetrics: (request) => ipcRenderer.invoke('font-metrics', request),
     pdfFont: (request) => ipcRenderer.invoke('pdf-font', request),
+    // Read-only DXF xref broker (priority 20.2): begin a main-owned context, identify and read
+    // already-granted references through it, cancel/close. No path is granted by these calls;
+    // the main process checks its existing file policy before any filesystem contact.
+    beginXrefContext: (info) => ipcRenderer.invoke('xref-begin-context', info && typeof info === 'object' ? { docId: String(info.docId ?? ''), contentGeneration: typeof info.contentGeneration === 'number' || typeof info.contentGeneration === 'string' ? info.contentGeneration : -1, hostAnchor: String(info.hostAnchor ?? '') } : undefined),
+    identifyXref: (token, path) => ipcRenderer.invoke('xref-identify', String(token ?? ''), String(path ?? '')),
+    readXref: (token, ticket, maxBytes) => ipcRenderer.invoke('xref-read', String(token ?? ''), String(ticket ?? ''), typeof maxBytes === 'number' ? maxBytes : -1),
+    cancelXref: (token) => ipcRenderer.invoke('xref-cancel', String(token ?? '')),
+    closeXrefContext: (token) => ipcRenderer.invoke('xref-close-context', String(token ?? '')),
+    retireXrefDocContexts: (docId) => ipcRenderer.invoke('xref-retire-doc-contexts', String(docId ?? '')),
     openShxFont: () => ipcRenderer.invoke('open-shx-font'),
     dwgExportStatus: () => ipcRenderer.invoke('dwg-export-status'),
     saveDwg: (path, text, admission) => ipcRenderer.invoke('save-dwg', path, text, admission),

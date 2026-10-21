@@ -143,6 +143,13 @@ export class Editor {
   }
 
   constructor(canvas: HTMLCanvasElement) {
+    // Host-tab close retires that document's xref broker contexts in the
+    // main process (Stage-1 fix A). The bridge is resolved lazily (it is
+    // assigned after construction) and the signal is fire-and-forget: a
+    // missing bridge or a refused signal must never block a tab close.
+    this.sessions.onDocClosed = (docId) => {
+      this.fileBridge?.retireXrefDocContexts?.(docId)?.catch(() => {});
+    };
     this.viewport = new Viewport(canvas, this.doc);
     this.doc.ensureBlocks([...LIBRARY_SYMBOLS, WIRE_DOT, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW]);
     this.applySettings();

@@ -99,8 +99,43 @@ function installAssetHandler({ protocol, net, root }) {
   });
 }
 
-/** Read the old file-origin storage without executing the old application or any plugins. */
-async function legacyStorage({ BrowserWindow, protocol, indexFile }) {
+/**
+ * The legacy-storage extraction deadline (P-MIG). The migration runs before the main window
+ * exists, so a hidden window whose load or script stalls would otherwise block startup forever:
+ * the extraction gets one bounded window of time, then startup proceeds without the values.
+ */
+const MIGRATION_DEADLINE_MS = 15_000;
+
+/**
+ * Race `work` against the migration deadline. The race subscribes to `work`, so a late
+ * settlement (including a rejection after the window is destroyed) is never unhandled.
+ * @param {Promise<Record<string, string> | null>} work
+ * @param {number} deadlineMs
+ * @returns {Promise<Record<string, string> | null>}
+ */
+function migrationDeadline(work, deadlineMs) {
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Legacy storage migration timed out after ${deadlineMs} ms`)), deadlineMs);
+  });
+  return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Read the old file-origin storage without executing the old application or any plugins.
+ *
+ * On success this resolves `{ values, ok: true }`, where `values` is exactly what the extraction
+ * script returned (a null-prototype dictionary, or null when the script declined an oversize
+ * store). On timeout or error it resolves `{ values: {}, ok: false }` and logs once through the
+ * injected `logError` (the app's logMainError, injected so this module stays Electron-free):
+ * the caller must then proceed with no legacy values and must NOT mark the migration complete,
+ * so the next launch retries. Test C (2026-10-18) measured the migration completing in ~50 ms
+ * on direct launches; the deadline is latent hardening, not a response to a reproduced hang.
+ * @param {{ BrowserWindow: typeof import('electron').BrowserWindow, protocol: import('electron').Protocol, indexFile: string, deadlineMs?: number, logError?: ((kind: string, error: unknown) => void) | null }} deps
+ * @returns {Promise<{ values: Record<string, string> | null, ok: boolean }>}
+ */
+async function legacyStorage({ BrowserWindow, protocol, indexFile, deadlineMs = MIGRATION_DEADLINE_MS, logError = null }) {
   // With file privileges fused off, Chromium denies access to the legacy file-origin store.
   // Relax origin checks only for this hidden, sandboxed migration window. Its exact file URL
   // serves constant HTML with default-src 'none'; no application, plugin or remote code runs.
@@ -117,23 +152,30 @@ async function legacyStorage({ BrowserWindow, protocol, indexFile }) {
       } catch { return new Response('', { status: 403 }); }
     });
     handling = true;
-    await window.loadFile(indexFile);
-    return await window.webContents.executeJavaScript(`(() => {
-      const result = Object.create(null); const encoder = new TextEncoder(); let size = 2;
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i), value = key === null ? null : localStorage.getItem(key);
-        if (key === null || value === null) continue;
-        // Include UTF-8 encoding and JSON escaping/overhead, rather than counting characters.
-        size += encoder.encode(JSON.stringify([key, value])).byteLength;
-        if (size > 8 * 1024 * 1024) return null;
-        result[key] = value;
-      }
-      return result;
-    })()`);
+    const extract = (async () => {
+      await window.loadFile(indexFile);
+      return await window.webContents.executeJavaScript(`(() => {
+        const result = Object.create(null); const encoder = new TextEncoder(); let size = 2;
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i), value = key === null ? null : localStorage.getItem(key);
+          if (key === null || value === null) continue;
+          // Include UTF-8 encoding and JSON escaping/overhead, rather than counting characters.
+          size += encoder.encode(JSON.stringify([key, value])).byteLength;
+          if (size > 8 * 1024 * 1024) return null;
+          result[key] = value;
+        }
+        return result;
+      })()`);
+    })();
+    const values = await migrationDeadline(extract, deadlineMs);
+    return { values, ok: true };
+  } catch (error) {
+    if (logError) logError('renderer preference migration', error);
+    return { values: {}, ok: false };
   } finally {
     window.destroy();
     if (handling) protocol.unhandle('file');
   }
 }
 
-module.exports = { APP_URL, WORKER_CSP, assetPath, assetResponseHeaders, installAssetHandler, legacyStorage, rendererStartUrl, servedPath, withAssetHeaders };
+module.exports = { APP_URL, MIGRATION_DEADLINE_MS, WORKER_CSP, assetPath, assetResponseHeaders, installAssetHandler, legacyStorage, rendererStartUrl, servedPath, withAssetHeaders };

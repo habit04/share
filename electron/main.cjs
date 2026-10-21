@@ -12,6 +12,7 @@
  *   ipc-plot.cjs      plot to PDF, vector PDF, print
  *   ipc-stores.cjs    autosave, user library, plugins, catalog packs
  *   ipc-shx.cjs       explicit Windows SHX font / shape selection, read-only
+ *   startup-migration.cjs  the startup legacy-storage migration gate (P-MIG)
  *   updates.cjs       app info, external links, update checks and status
  *   handover.cjs      files handed over by the OS and by a second launch
  */
@@ -44,7 +45,9 @@ const { dwgHost, readDwg, registerDwgIpc } = require('./main/dwg.cjs');
 const { registerDrawingIpc } = require('./main/ipc-drawings.cjs');
 const { registerPlotIpc } = require('./main/ipc-plot.cjs');
 const { registerStoreIpc } = require('./main/ipc-stores.cjs');
+const { registerXrefIpc } = require('./main/ipc-xrefs.cjs');
 const { registerShxIpc } = require('./main/ipc-shx.cjs');
+const { runStartupMigration } = require('./main/startup-migration.cjs');
 const { registerUpdatesIpc } = require('./main/updates.cjs');
 const { createHandover } = require('./main/handover.cjs');
 const { createFontMetricsHost } = require('./font-metrics-host.cjs');
@@ -105,7 +108,11 @@ function senderWindow(/** @type {Electron.IpcMainInvokeEvent} */ ev) {
  * check paths - and the main window.
  * @type {import('./main/context.cjs').MainContext}
  */
-const ctx = { ipcMain, rejections, registry, pathPolicy, senderWindow, mainWindow: null, openFilesReady: false, handedOverProjects: new Set() };
+const ctx = { ipcMain, rejections, registry, pathPolicy, senderWindow, mainWindow: null, openFilesReady: false, handedOverProjects: new Set(),
+  // Set when the startup legacy-storage migration did not complete (P-MIG): the migration must
+  // not be marked complete for this launch - neither by the migrated checkpoint below nor by a
+  // close-time checkpoint (electron/main/window.cjs) - so the next launch retries the extraction.
+  legacyMigrationFailed: false };
 ipcMain.handle('gpu-diagnostics', () => gpuCollector.get());
 
 function loadPersistedPaths() {
@@ -124,6 +131,8 @@ registerDrawingIpc(ctx, { takeHandedOverProject });
 registerPlotIpc(ctx);
 registerStoreIpc(ctx);
 registerShxIpc(ctx);
+const xrefIpc = registerXrefIpc(ctx);
+app.on('will-quit', () => xrefIpc.dispose());
 registerMenuIpc(ctx);
 registerUpdatesIpc(ctx);
 const { registerAiIpc } = require('./main/ipc-ai.cjs');
@@ -184,17 +193,18 @@ app.whenReady().then(async () => {
   installPermissionHandlers(session.defaultSession, () => (ctx.mainWindow && !ctx.mainWindow.isDestroyed() ? ctx.mainWindow.webContents : null));
   installAssetHandler({ protocol, net, root: path.join(__dirname, '..', 'dist') });
   if (!DEV_URL) {
-    try {
-      const checkpoint = await readRendererPreferences();
-      if (checkpoint !== null) rendererStorage = { values: checkpoint, source: 'checkpoint' };
-      else if (!fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated'))) {
-        const values = fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')) ? await legacyStorage({ BrowserWindow, protocol, indexFile: path.join(__dirname, '..', 'dist', 'index.html') }) : {};
-        rendererStorage = values === null ? null : { values, source: 'legacy' };
-      }
-    } catch (error) {
-      // An unreadable/corrupt checkpoint must not fall back to stale legacy values.
-      logMainError('renderer preference migration', error);
-    }
+    // The startup legacy-storage migration gate (P-MIG) lives in
+    // electron/main/startup-migration.cjs: it decides the startup storage and writes
+    // ctx.legacyMigrationFailed (only a failed migration LEG sets it - see that module),
+    // binding the real units here.
+    rendererStorage = await runStartupMigration({
+      ctx,
+      readCheckpoint: readRendererPreferences,
+      markerExists: () => fsSync.existsSync(path.join(stateDir(), 'renderer-origin-migrated')),
+      legacyStoreExists: () => fsSync.existsSync(path.join(stateDir(), 'Local Storage', 'leveldb')),
+      runLegacy: () => legacyStorage({ BrowserWindow, protocol, indexFile: path.join(__dirname, '..', 'dist', 'index.html'), logError: logMainError }),
+      logError: logMainError,
+    });
   }
   loadPersistedPaths();
   handOverFiles(drawingArgs(process.argv, process.cwd()));
@@ -218,6 +228,10 @@ ipcMain.on('renderer-storage-migration', (event) => {
 });
 ipcMain.handle('renderer-storage-migrated', async (event) => {
   try {
+    // A failed startup migration (P-MIG) must not be marked complete: this checkpoint is the
+    // only write of the migration marker file, and it would also make the next launch take the
+    // checkpoint branch and never retry the legacy extraction. Skip it; the next launch retries.
+    if (ctx.legacyMigrationFailed) return false;
     const values = await checkpointRendererPreferences(event.sender, true);
     rendererStorage = { values, source: 'checkpoint' };
     flushRendererPreferences(event.sender);
