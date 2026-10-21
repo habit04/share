@@ -7,7 +7,7 @@ exception: they were **written by hand from the public DXF reference** (see
 the header comment of `tests/interchange-fixtures.test.ts`) and had never
 been saved by AutoCAD.
 
-On 2026-10-21 four of the five were replaced by **genuine AutoCAD 2027
+On 2026-10-21 all five were replaced by **genuine AutoCAD 2027
 R2018 saves** (the lead's headless build from the fixtures' recipes; AUDIT 0
 at build and at reopen; all AC1032, `$ACADMAINTVER` group 90 value 427,
 `$LASTSAVEDBY` Autodesk), one commit per fixture on
@@ -21,25 +21,32 @@ at build and at reopen; all AC1032, `$ACADMAINTVER` group 90 value 427,
   `318b3215dececf196ef4623cfa8742a29d315c282e172b553f3b8d6a2df0cab8`
 - `r2018-truecolor-linetypes.dxf` — SHA-256
   `57156d1465c190551d0dfe45b104291f5791a751e026e8cc6c02bc90f2fcf78d`
+- `r2018-table.dxf` — SHA-256
+  `83b59f3c5701a0bcb95e66a8371e78bd051d735e2e19549c06d1e790815dfde3`
 
 The differences between each genuine save and the recipe it was built from
 are recorded in the lead's per-fixture checklists; the test re-pins that
 discharge them are listed in the swap delivery's README, one commit per
 fixture, each traced to a checklist item.
 
-`r2018-table.dxf` is **still the hand-authored synthetic** (SHA-256
-`8993e9afcff1b891e08d746ea47c9608c070c82df22cc614dc5c063b4da0fcd3`). Its
-genuine counterpart was built and verified the same way, but the swap of
-that one file is held: importing the genuine file produces the AutoCAD
-template's retained-object report items (`kept` retentions), which the
-import-report assertion in `tests/interchange-fixtures.test.ts` — written
-against the synthetic's minimal content — does not admit, and no checklist
-item or recipe flag authorises re-pinning that assertion. It lands, with its
-four checklist-traced re-pins, when the lead rules on that assertion.
+The table landed last, as a follow-on commit. Its four re-pins are
+checklist-traced (row heights #8; cell raws #11/#12; the title position
+derived from #8), and its import-report predicate replacement is authorised
+by **the lead's census-predicate ruling (2026-10-21)**: the
+census-shape predicate in `tests/interchange-fixtures.test.ts` — every
+import-report item is (STYLE, unsupported) or the ACAD_TABLE editing note —
+is replaced by the strict no-loss form: (1) zero items with a dropped, lost
+or simplified disposition (the one sanctioned ACAD_TABLE editing note
+excepted), and (2) every item that is not a kept retention is (STYLE,
+unsupported) or that note, with the note asserted present exactly once. The
+genuine file is a full AutoCAD template drawing; its ~100 import-report
+items are overwhelmingly `kept` retentions of template furniture, which the
+original predicate — written against the synthetic's minimal content — did
+not admit.
 
-## The synthetic marker (r2018-table.dxf, still)
+## The synthetic marker (retired with the table swap)
 
-The hand-authored file declares `$ACADVER AC1032` but carries
+The hand-authored files declared `$ACADVER AC1032` but carried
 `$ACADMAINTVER` as group **70**, value **105**. Genuine AutoCAD R2018
 output writes that variable as group **90**, value **427** (the genuine
 R2018 fixtures in this directory — `r2018-complex-linetypes.dxf`,
@@ -47,16 +54,16 @@ R2018 fixtures in this directory — `r2018-complex-linetypes.dxf`,
 `r2018-ordinate-dimensions.dxf`, `r2018-shx-text.dxf`,
 `r2018-viewport-polygon.dxf`, `r2018-field-object-reference.dxf`,
 `r2018-minsert.dxf`, `r2018-unicode-metadata.dxf`,
-`r2018-views-fields.dxf` — all carry `90 / 427`, as do the four genuine
+`r2018-views-fields.dxf` — all carry `90 / 427`, as do the five genuine
 replacements above). The published DXF reference lists `$ACADMAINTVER` at
-group 70, which is where the hand template took it from; AutoCAD itself
+group 70, which is where the hand templates took it from; AutoCAD itself
 switched the group code at R2018. AutoCAD 2027 **refuses** a group-70
 `$ACADMAINTVER` at AC1032 ("Error 50 in drawing header … drawing
-discarded"), so the remaining synthetic file is not native-openable as a
-complete drawing — a fact this directory already records for one of the
-older fixtures (`r2018-complex-linetypes.md`: the older truecolor fixture
-"is not native-openable as a complete drawing: AutoCAD rejects its header
-at `$ACADMAINTVER = 105`").
+discarded"), so the synthetic files were not native-openable as complete
+drawings — a fact this directory already records for one of the older
+fixtures (`r2018-complex-linetypes.md`: the older truecolor fixture "is
+not native-openable as a complete drawing: AutoCAD rejects its header at
+`$ACADMAINTVER = 105`").
 
 JCad's writer never emits `$ACADMAINTVER`; the pair reaches a written file
 only through the cad-graph header-retention path, which re-emits a read
@@ -67,7 +74,7 @@ reconciled at integration.)
 
 ## Consumers (as of the fixture swap, base c01de5d3)
 
-- `r2018-table.dxf` (still synthetic): `tests/interchange-fixtures.test.ts`,
+- `r2018-table.dxf`: `tests/interchange-fixtures.test.ts`,
   `tests/helpers/autocad-export.ts`, `tests/fixtures/manifest.json` (the
   fixed-point sweep).
 - `r2018-dimensions.dxf`: `tests/interchange-fixtures.test.ts`,
@@ -94,8 +101,9 @@ reconciled at integration.)
 ## Assertion dependence on the bogus header pair
 
 No test names `$ACADMAINTVER` or asserts the value 105. Whole-file and
-fixed-point comparisons over the remaining synthetic fixture (the
-interchange fixed-point sweep, the table round trips) implicitly carry the
-retained `70 / 105` pair today: replacing that fixture will move those
-comparisons and must land as its own disclosed change — as the four
-replacements above did.
+fixed-point comparisons over the synthetic fixtures (the interchange
+fixed-point sweep, the table round trips) implicitly carried the retained
+`70 / 105` pair: each replacement moved those comparisons and landed as
+its own disclosed change — the five replacements above, the table last
+under the lead's census-predicate ruling (2026-10-21). No synthetic
+fixture of the five remains.

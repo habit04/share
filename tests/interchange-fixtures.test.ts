@@ -963,9 +963,22 @@ describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1
     const t = ofType<TableEntity>(s.entities, 'table')[0]!;
 
     it('one native table: insertion point, direction, row heights, column widths', () => {
-      expect(importReportOf(s)?.items.every((i) => (i.type === 'STYLE' && i.action === 'unsupported') || (i.type === 'ACAD_TABLE' && i.reason.includes('native table editing')))).toBe(true);
+      // Import-report predicate in the strict no-loss form the lead authorised for the genuine
+      // template file (census-predicate ruling, 2026-10-21) — not a loosening: (1) nothing is
+      // lost: no 'dropped' item (the report's lost disposition — not imported, lost on save)
+      // and no 'simplified' item beyond the one sanctioned ACAD_TABLE editing note; (2) every
+      // item that is not a 'kept' retention is (STYLE, unsupported) or that note. That is the
+      // original census predicate applied to the non-retained subset: the template's kept
+      // furniture (SCALE, VISUALSTYLE, XRECORD, ...) no longer trips it, and no new unsupported
+      // or simplified class can enter. The note is pinned to exactly one occurrence by the
+      // 'editing note exactly once' test below — an import-leg property: the round-trip report
+      // carries no ACAD_TABLE item (the written carrier returns as an INSERT kept item).
+      const items = importReportOf(s)?.items ?? [];
+      const isEditingNote = (i: (typeof items)[number]) => i.type === 'ACAD_TABLE' && i.reason.includes('native table editing');
+      expect(items.filter((i) => i.action === 'dropped' || (i.action === 'simplified' && !isEditingNote(i)))).toEqual([]);
+      expect(items.every((i) => i.action === 'kept' || (i.type === 'STYLE' && i.action === 'unsupported') || isEditingNote(i))).toBe(true);
       expect(s.entities).toHaveLength(1);
-      expect(t).toMatchObject({ layer: 'TABLES', rotation: 0, rowHeights: [9, 7, 7, 7], columnWidths: [40, 25, 25] });
+      expect(t).toMatchObject({ layer: 'TABLES', rotation: 0, rowHeights: [9.666666666666668, 12.33333333333333, 7, 7], columnWidths: [40, 25, 25] });
       closePt(t.position, 10, 200);
     });
 
@@ -977,8 +990,8 @@ describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1
         ['MOTOR M1', '8,2', '20 A'],
       ]);
       expect(t.cells[0]![0]!.span).toEqual({ rows: 1, cols: 3 });
-      expect(t.cells[2]![2]!.raw).toBe('{\\fArial|b1;16 A}');
-      expect(t.cells[3]![2]!.raw).toBe('\\C1;20 A');
+      expect(t.cells[2]![2]!.raw).toBe('{\\fArial|b1|i0|c0|p34;16 A}');
+      expect(t.cells[3]![2]!.raw).toBe('{\\C1;20 A}');
       expect(t.cells[3]![0]!.height).toBe(3);
       expect(t.cells[3]![1]!.attachment).toBe(6);
     });
@@ -989,9 +1002,19 @@ describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1
       // Five horizontal lines (the title row is not split), four vertical (two stop under the title).
       expect(geo.lines).toHaveLength(9);
       expect(geo.texts.map((m) => m.text)).toEqual(['PANEL SCHEDULE', 'CIRCUIT', 'LOAD (A)', 'BREAKER', 'LIGHTING', '12,5', '16 A', 'MOTOR M1', '8,2', '20 A']);
-      closePt(geo.texts[0]!.position, 55, 195.5);
+      closePt(geo.texts[0]!.position, 55, 195.16666666666666);
       expect(geo.texts[7]!.height).toBe(3);
     });
+  });
+
+  it('the import report carries the ACAD_TABLE editing note exactly once (census-predicate ruling, 2026-10-21)', () => {
+    // The one sanctioned simplification of the genuine file: reading its native table reports
+    // once that native table editing is not modeled. Asserted on the import leg — the
+    // round-tripped state's report carries no ACAD_TABLE item at all (the written JCAD_TABLE
+    // carrier returns as an INSERT kept item), so the count is an import property.
+    const notes = (importReportOf(f.imported)?.items ?? []).filter((i) => i.type === 'ACAD_TABLE' && i.reason.includes('native table editing'));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]!.action).toBe('simplified');
   });
 
   it('lost as the matrix says: written as an INSERT of an anonymous block with JCAD_TABLE XDATA, not as ACAD_TABLE', () => {
