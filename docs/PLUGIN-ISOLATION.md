@@ -122,8 +122,11 @@ return — which the acceptance tests exercise.
 - **API differences a migrating plugin must accept** (v2 = v1 shapes, async delivery):
   every `jcad.*` call returns a promise (command `run` handlers are typically `async`);
   `document.transact` takes an (async) function and resolves after the batch commits —
-  `add` inside a transaction resolves with the assigned ids *at commit*, and reads inside
-  the callback see committed state, not the staged writes; `ui.openDialog` accepts
+  mutating calls inside the callback are staged by the realm proxy and resolve
+  *provisionally* (entity ids are pre-assigned by the proxy and become real only when
+  the batch commits; if the host rolls the batch back, `transact()` rejects and the
+  provisional results are void), and reads inside the callback see committed state, not
+  the staged writes; `ui.openDialog` accepts
   data-only options (`title/html/text/width/buttons`) — `onOpen` DOM wiring does not
   cross the realm, use `ui.prompt`/`ui.pick` or a follow-up dialog instead;
   `plugin.onUnload` callbacks run on graceful unload (forced termination skips them);
@@ -137,10 +140,15 @@ return — which the acceptance tests exercise.
 
 - Not wired into `PluginHost` / application start-up (PROPOSAL-P25 pending admission).
 - Linux/Node `worker_threads` evidence proves the realm, protocol and host logic; it does
-  **not** prove the Electron packaged worker path. The packaged renderer CSP serves
-  worker scripts under `assets/worker/` with the main process's worker CSP — whether that
-  policy permits the bootstrap's `new Function` and Blob/file worker construction must be
-  verified in the Windows/Electron gate before any rollout claim.
+  **not** prove the Electron packaged worker path. Concrete blocker, verified at base:
+  `electron/renderer-origin.cjs` serves worker scripts (`assets/worker/*`) with
+  `WORKER_CSP = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src
+  'self'; base-uri 'none'"` — there is no `'unsafe-eval'`, so the bootstrap's
+  `new Function('jcad', code)` would be refused in the packaged renderer. Executing
+  user-supplied plugin code in a packaged worker therefore needs a lead-owned decision
+  (e.g. main-process-vetted plugin script resources under `jcad://`, analogous to
+  `pluginsEval` for the page) — Electron containment is frozen for P25 and this slice
+  does not touch it. The Windows/packaged gate owns this item.
 - A realm plugin with `document.read` can still *exfiltrate what it read* through any
   output channel it also holds (e.g. `ui.log`, `files.save`); capabilities reduce the
   surface, they do not make a granted-read plugin trustworthy. Network stubs (T8) are

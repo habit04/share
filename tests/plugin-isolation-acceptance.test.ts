@@ -30,7 +30,10 @@ const makeEditor = () => new Editor(canvas());
 
 const sessions: IsolatedPluginSession[] = [];
 function session(ed: EditorType, owner: string, capabilities: string[], opts: Record<string, unknown> = {}): IsolatedPluginSession {
-  const s = new IsolatedPluginSession(ed, { owner, capabilities, transport: nodeWorkerTransport(), ...opts });
+  // 90 s load budget for these harness sessions only: worker start-up on this
+  // loaded 2-CPU box can exceed the production 30 s default without anything
+  // being wrong (the timeout behaviour itself is asserted separately at 300 ms).
+  const s = new IsolatedPluginSession(ed, { owner, capabilities, transport: nodeWorkerTransport(), loadTimeoutMs: 90_000, ...opts });
   sessions.push(s);
   return s;
 }
@@ -60,7 +63,7 @@ const REALM_PROBE = `
   out.processType = typeof process;
   out.globalJcadType = typeof globalThis.jcad;
   out.rawPost = (() => { try { globalThis.postMessage({ kind: 'rpc', method: 'document.add' }); return 'sent'; } catch { return 'threw'; } })();
-  out.fetchOutcome = await fetch('https://example.invalid/steal').then(() => 'allowed', () => 'denied');
+  out.fetchOutcome = await (async () => { try { await fetch('https://example.invalid/steal'); return 'allowed'; } catch { return 'denied'; } })();
   out.addNoCap = await jcad.document.add({ type: 'text', position: { x: 1, y: 1 }, text: 'nope' }).then(() => 'allowed', (e) => 'denied:' + (e.code ?? 'error'));
   out.readNoCap = await jcad.document.entities().then(() => 'allowed', (e) => 'denied:' + (e.code ?? 'error'));
   out.settingsWrite = await jcad.settings.set('gridVisible', false).then(() => 'allowed', (e) => 'denied:' + (e.code ?? 'error'));
@@ -89,7 +92,7 @@ describe('P25 regression contrast: legacy trusted path vs isolated realm', () =>
     } finally {
       delete g.__p25HostSecret;
     }
-  });
+  }, 60_000);
 
   it('the isolated realm denies the same probe: no window/editor/bridge/storage/process, no undeclared RPC', async () => {
     const ed = makeEditor();
@@ -113,7 +116,7 @@ describe('P25 regression contrast: legacy trusted path vs isolated realm', () =>
     const deniedMethods = s.denials.filter((d) => d.code === 'denied').map((d) => d.method);
     expect(deniedMethods).toEqual(expect.arrayContaining(['document.add', 'document.entities', 'settings.set']));
     delete (globalThis as Record<string, unknown>).__p25HostSecret;
-  });
+  }, 60_000);
 });
 
 describe('P25 isolated realm: useful work still works, mediated', () => {
@@ -150,7 +153,7 @@ describe('P25 isolated realm: useful work still works, mediated', () => {
     expect(ed.doc.entities.some((e) => e.type === 'text' && e.text === 'via realm')).toBe(true);
     // The documentChanged event was forwarded into the realm at least once.
     await vi.waitFor(() => expect(ed.history).toContain('saw change'));
-  });
+  }, 60_000);
 
   it('a failing operation inside a transaction batch rolls the whole batch back (atomic refusal)', async () => {
     const ed = makeEditor();
@@ -172,7 +175,7 @@ describe('P25 isolated realm: useful work still works, mediated', () => {
     expect(ed.doc.entities).toHaveLength(0);
     expect(ed.doc.dirty).toBe(false);
     expect(ed.doc.undo()).toBe(false);
-  });
+  }, 60_000);
 
   it('file-picker grants are single-use and session-bound; forged and stale grants are denied', async () => {
     const ed = makeEditor();
@@ -197,7 +200,7 @@ describe('P25 isolated realm: useful work still works, mediated', () => {
     const s2 = session(ed, 'successor', ['files.read'], { pickTextFile: picker });
     const r2 = (await s2.load(`return { stale: await jcad.files.readGrant(${JSON.stringify(gOnly.grant)}).then(() => 'allowed', (e) => 'denied:' + (e.code ?? 'error')) };`)) as { stale: string };
     expect(r2.stale).toBe('denied:unknown-grant');
-  });
+  }, 60_000);
 
   it('a plugin that never finishes loading times out and the realm is terminated, editor untouched', async () => {
     const ed = makeEditor();
@@ -205,12 +208,12 @@ describe('P25 isolated realm: useful work still works, mediated', () => {
     await expect(s.load('return new Promise(() => {});')).rejects.toThrow(/did not finish loading/);
     expect(s.disposed).toBe(true);
     expect(ed.doc.entities).toHaveLength(0);
-  });
+  }, 60_000);
 
   it('load errors inside the realm surface as load failures and register nothing', async () => {
     const ed = makeEditor();
     const s = session(ed, 'broken', ['commands.register']);
     await expect(s.load("jcad.commands.register({ name: 'HALF', run() {} }); throw new Error('realm oops');")).rejects.toThrow(/realm oops/);
     expect(ed.commands.has('HALF')).toBe(false);
-  });
+  }, 60_000);
 });

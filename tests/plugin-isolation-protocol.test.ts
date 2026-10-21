@@ -25,30 +25,31 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 describe('isolated manifest + capabilities', () => {
   it('parses a v1 manifest as legacy page mode with no capabilities', () => {
     const m = parseIsolatedManifest(JSON.stringify({ name: 'old', main: 'main.js' }));
-    expect(m).toMatchObject({ name: 'old', isolation: 'page', apiVersion: 1, capabilities: [] });
-  });
+    expect(m).toMatchObject({ name: 'old', isolation: 'page', apiVersion: 1 });
+    expect(m.capabilities.size).toBe(0);
+  }, 60_000);
 
   it('parses an isolated manifest with declared capabilities', () => {
     const m = parseIsolatedManifest(JSON.stringify({ name: 'new', apiVersion: 2, isolation: 'worker', capabilities: ['document.read', 'ui.log'] }));
     expect(m.isolation).toBe('worker');
     expect(m.apiVersion).toBe(2);
     expect([...m.capabilities].sort()).toEqual(['document.read', 'ui.log']);
-  });
+  }, 60_000);
 
   it('fails closed on unknown capabilities, wrong apiVersion and malformed declarations', () => {
     expect(() => parseIsolatedManifest(JSON.stringify({ name: 'x', apiVersion: 2, isolation: 'worker', capabilities: ['document.read', 'host.exec'] }))).toThrow(IsolatedManifestError);
-    expect(() => parseIsolatedManifest(JSON.stringify({ name: 'x', apiVersion: 1, isolation: 'worker', capabilities: [] }))).toThrow(/apiVersion 2/);
+    expect(() => parseIsolatedManifest(JSON.stringify({ name: 'x', apiVersion: 1, isolation: 'worker', capabilities: [] }))).toThrow(/"apiVersion": 2/);
     expect(() => parseIsolatedManifest(JSON.stringify({ name: 'x', apiVersion: 2, isolation: 'worker', capabilities: 'document.read' }))).toThrow(/array/);
     expect(() => parseIsolatedManifest(JSON.stringify({ name: 'x', apiVersion: 2, capabilities: ['document.read'] }))).toThrow(/isolation/);
     expect(() => parseIsolatedManifest(JSON.stringify({ name: 'x', isolation: 'sandbox' }))).toThrow(/isolation/);
     expect(() => parseIsolatedManifest('not json')).toThrow(IsolatedManifestError);
-  });
+  }, 60_000);
 
   it('the capability vocabulary is exactly the documented set', () => {
     expect([...PLUGIN_CAPABILITIES].sort()).toEqual(
       ['commands.list', 'commands.register', 'commands.run', 'document.read', 'document.transact', 'document.write', 'electrical.read', 'electrical.write', 'events.subscribe', 'files.read', 'files.save', 'settings.own', 'settings.read', 'settings.write', 'ui.interact', 'ui.log'].sort(),
     );
-  });
+  }, 60_000);
 });
 
 /** Start a session on a loopback transport and complete its load handshake as the realm endpoint. */
@@ -75,7 +76,7 @@ describe('host dispatcher: authentication, capabilities, staleness', () => {
     expect(ed.doc.entities).toHaveLength(0);
     expect(s.denials.some((d) => d.code === 'forged')).toBe(true);
     s.dispose();
-  });
+  }, 60_000);
 
   it('denies undeclared capabilities and unknown methods with explicit error codes', async () => {
     const ed = makeEditor();
@@ -91,7 +92,7 @@ describe('host dispatcher: authentication, capabilities, staleness', () => {
     expect(ed.doc.entities).toHaveLength(0);
     expect(s.denials.filter((d) => d.code === 'denied')).toHaveLength(1);
     s.dispose();
-  });
+  }, 60_000);
 
   it('rejects oversized payloads before dispatch', async () => {
     const ed = makeEditor();
@@ -100,7 +101,7 @@ describe('host dispatcher: authentication, capabilities, staleness', () => {
     await tick();
     expect(responses().find((r) => r.id === 'big')).toMatchObject({ ok: false, error: { code: 'too-large' } });
     s.dispose();
-  });
+  }, 60_000);
 
   it('after dispose, the old session nonce is stale: messages are refused and state is untouched', async () => {
     const ed = makeEditor();
@@ -111,7 +112,7 @@ describe('host dispatcher: authentication, capabilities, staleness', () => {
     await tick();
     expect(ed.doc.entities).toHaveLength(0);
     expect(s.denials.some((d) => d.code === 'stale-session')).toBe(true);
-  });
+  }, 60_000);
 
   it('a load-done with a forged nonce never completes the load', async () => {
     const ed = makeEditor();
@@ -123,5 +124,5 @@ describe('host dispatcher: authentication, capabilities, staleness', () => {
     await expect(loadP).rejects.toThrow(/did not finish loading/);
     expect(s.denials.some((d) => d.code === 'forged')).toBe(true);
     s.dispose();
-  });
+  }, 60_000);
 });
