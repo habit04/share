@@ -84,12 +84,40 @@ const MAX_GRANTS = 32;
  * counter (`r1`, `r2`, …) and host->realm call responses echo the host's
  * monotonic call ids, so an id is the envelope's single-use sequence token
  * beside the session nonce. Retention is a FIFO window: when the bound is
- * exceeded the oldest consumed id is forgotten. 4096 envelopes is far
- * beyond an interactive plugin session's burst scale, and the set dies
- * with the session (dispose clears it; a new session has a fresh id +
- * nonce pair, so old envelopes fail authentication there anyway).
+ * exceeded the oldest consumed id leaves the set — but leaving the set no
+ * longer re-opens replay (X2-W): every eviction also raises a per-kind
+ * eviction watermark (the highest counter ever evicted for that kind,
+ * O(1) state per kind), and an authenticated envelope whose counter is at
+ * or below its kind's watermark is refused as a replay even though its id
+ * is no longer in the set. Ids that do not carry their kind's counter
+ * grammar are governed by the set alone. 4096 envelopes is far beyond an
+ * interactive plugin session's burst scale, and the state dies with the
+ * session (dispose clears it; a new session has a fresh id + nonce pair,
+ * so old envelopes fail authentication there anyway).
  */
 const MAX_CONSUMED_ENVELOPE_IDS = 4096;
+
+/**
+ * The counter grammar of the consumable envelope kinds, from the minting
+ * code (docs/PLUGIN-ISOLATION.md §3, envelope id grammar): `rpc` ids are
+ * `r<counter>` minted by the realm bootstrap's monotonic counter;
+ * `call-res` ids are `c<counter>` echoing the host's own call counter.
+ * Returns the id's counter, or null when the id does not carry its kind's
+ * grammar (no ordering is defined for such ids).
+ */
+const ENVELOPE_ID_GRAMMAR: Readonly<Record<string, RegExp>> = {
+  rpc: /^r(\d+)$/,
+  'call-res': /^c(\d+)$/,
+};
+
+function envelopeIdCounter(kind: string, id: string): number | null {
+  const grammar = ENVELOPE_ID_GRAMMAR[kind];
+  if (!grammar) return null;
+  const match = grammar.exec(id);
+  if (!match) return null;
+  const counter = Number(match[1]);
+  return Number.isSafeInteger(counter) ? counter : null;
+}
 const STAGEABLE: ReadonlySet<string> = new Set(['document.add', 'document.replace', 'document.remove', 'electrical.setAttributes']);
 
 /** Method -> required capability. A method absent here does not exist. settings.* is special-cased (key-dependent). */
@@ -167,6 +195,8 @@ export class IsolatedPluginSession {
   private readonly picker: (accept: string) => Promise<{ name: string; text: string } | null>;
   private readonly pendingCalls = new Map<string, PendingCall>();
   private readonly consumedEnvelopeIds = new Set<string>();
+  /** Per-kind eviction watermark (X2-W): the highest envelope-id counter ever evicted from the consumed set, per envelope kind. */
+  private readonly evictionWatermarks = new Map<string, number>();
   private readonly grants = new Map<string, Grant>();
   private readonly eventSubscriptions = new Map<string, () => void>();
   private callSeq = 0;
@@ -255,6 +285,7 @@ export class IsolatedPluginSession {
     }
     this.grants.clear();
     this.consumedEnvelopeIds.clear();
+    this.evictionWatermarks.clear();
     this.eventSubscriptions.clear();
     try {
       this.handle.dispose();
@@ -302,18 +333,44 @@ export class IsolatedPluginSession {
    * any async dispatch, so a replay that arrives while the first envelope
    * is still executing is refused as well. Ids are remembered in receipt
    * order and evicted oldest-first beyond MAX_CONSUMED_ENVELOPE_IDS.
+   *
+   * Eviction does not re-open replay (X2-W): an evicted id raises its
+   * kind's eviction watermark, and an authenticated envelope whose counter
+   * is at or below its kind's watermark is refused the same way. For `rpc`
+   * this is exact — the realm channel delivers in mint order, so a
+   * first-use rpc id can never arrive at or below the watermark. For
+   * `call-res` (received in completion order) one exception applies, and
+   * it is exact rather than heuristic: a response whose host call is
+   * still pending has never been answered — accepting an answer is what
+   * removes the pending entry — so it is a first response however late it
+   * arrives, and it is consumed normally instead of refused.
    */
   private consumeEnvelopeId(raw: Record<string, unknown>): boolean {
     if (typeof raw.id !== 'string' || raw.id.length === 0) return false;
-    const key = `${String(raw.kind)}:${raw.id}`;
+    const kind = String(raw.kind);
+    const key = `${kind}:${raw.id}`;
     if (this.consumedEnvelopeIds.has(key)) {
       this.recordDenial(typeof raw.method === 'string' ? raw.method : undefined, 'replay', `replayed ${String(raw.kind)} envelope "${raw.id}" dropped`);
       return true;
+    }
+    const counter = envelopeIdCounter(kind, raw.id);
+    const watermark = this.evictionWatermarks.get(kind);
+    if (counter !== null && watermark !== undefined && counter <= watermark) {
+      if (!(kind === 'call-res' && this.pendingCalls.has(raw.id))) {
+        this.recordDenial(typeof raw.method === 'string' ? raw.method : undefined, 'replay', `replayed ${String(raw.kind)} envelope "${raw.id}" dropped`);
+        return true;
+      }
     }
     this.consumedEnvelopeIds.add(key);
     if (this.consumedEnvelopeIds.size > MAX_CONSUMED_ENVELOPE_IDS) {
       const oldest = this.consumedEnvelopeIds.values().next().value as string;
       this.consumedEnvelopeIds.delete(oldest);
+      const sep = oldest.indexOf(':');
+      const evictedKind = oldest.slice(0, sep);
+      const evictedCounter = envelopeIdCounter(evictedKind, oldest.slice(sep + 1));
+      if (evictedCounter !== null && evictedCounter > (this.evictionWatermarks.get(evictedKind) ?? 0)) {
+        this.evictionWatermarks.set(evictedKind, evictedCounter);
+      }
     }
     return false;
   }

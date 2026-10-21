@@ -102,6 +102,19 @@ and the Electron packaged-worker CSP check (Windows/packaged gate, §6).
   monotonic counter and copied verbatim by the realm's call handler — monotone in mint
   order, but received in callback *completion* order. No other authenticated envelope
   carries a consumable id (`load-done` has none).
+- **Single-use enforcement (X2 + X2-W)**: the host consumes each authenticated
+  envelope's `kind:id` synchronously on receipt, strictly after authentication and
+  before validation/dispatch; a replay is dropped with no effect and recorded as a
+  `replay` denial. Consumption is remembered in a bounded FIFO set (4,096 ids per
+  session). Eviction from that set raises a per-kind **eviction watermark** — the
+  highest counter ever evicted for the kind — and an envelope whose counter is at
+  or below its kind's watermark is refused as a replay even after its id has left
+  the set, so the window can no longer be waited out. Out-of-order in-flight ids
+  *above* the watermark are unaffected. One exact exception: a `call-res` whose
+  host call is still pending has never been answered (answering removes the
+  pending entry), so a genuinely late first response is consumed normally even
+  below the watermark. Ids outside their kind's counter grammar are governed by
+  the set alone. Dispose clears the set and the watermarks.
 - **Transactions**: the realm proxy collects mutating calls made inside
   `jcad.document.transact(fn)` and sends them as one `document.transactBatch` RPC; the
   host applies them inside a single v1 `transact` (one undo step, atomic). Reads inside a
