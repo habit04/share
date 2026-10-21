@@ -458,9 +458,26 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
     case 'MULTILEADER':
     case 'MLEADER': {
       const ml = readMLeader(o, base, ctx);
-      if (ml && o.groups.some((x) => x.code === 296 && x.value.trim() === '1')) {
-        ctx.notes?.push('MULTILEADER block content is not drawn; the leader and its text are kept.');
-        reportObj(ctx, o, 'simplified', 'its block content is not kept; the leader and its text are');
+      if (ml) {
+        // Block content is signalled by CONTEXT_DATA group 296 = 1 OR by the
+        // trailing content-type group 172 = 1 (R-MLEADER-18 requires the
+        // report for BOTH triggers). The trailing 172 is the record's LAST
+        // group 172: the context's own 172 is the text flow direction and
+        // always precedes it.
+        const last172 = [...o.groups].reverse().find((x) => x.code === 172)?.value.trim();
+        const blockSignalled = o.groups.some((x) => x.code === 296 && x.value.trim() === '1') || last172 === '1';
+        if (blockSignalled) {
+          if (ml.mleader?.contentType === 'block') {
+            // Slice 2: modelled natively — informational note only, no simplification.
+            ctx.notes?.push('MULTILEADER block content is kept as native data; it is not drawn.');
+          } else if (!ml.mleader) {
+            ctx.notes?.push('MULTILEADER block content is not drawn; the leader and its text are kept.');
+            reportObj(ctx, o, 'simplified', 'its block content is not kept; the leader and its text are');
+          }
+          // A native (non-block) mleader attached despite the signal cannot
+          // occur for a real block signal — readMLeader withholds native data
+          // for block content it cannot model — so nothing is reported.
+        }
       }
       return ml;
     }
