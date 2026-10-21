@@ -92,6 +92,16 @@ and the Electron packaged-worker CSP check (Windows/packaged gate, §6).
   reverse call into the realm; events flow the same way. Disposing the session disposes
   the v1 handle (commands/listeners removed), rejects pending calls, clears grants and
   terminates the worker.
+- **Envelope id grammar** (established from source for X2/X2-W): the host consumes
+  single-use ids for exactly two realm→host kinds. `rpc` ids are minted only by the
+  realm bootstrap's `rpc()` (`realm-bootstrap.ts`) as `r<counter>` from a closure-local
+  monotonic counter — plugin code can reach neither the counter nor the send function,
+  sends happen synchronously at mint time, and the worker channel delivers in send
+  order, so host receipt order equals counter order. `call-res` ids echo the host's
+  own call ids, minted by `invokeRealm` (`host.ts`) as `c<counter>` from a per-session
+  monotonic counter and copied verbatim by the realm's call handler — monotone in mint
+  order, but received in callback *completion* order. No other authenticated envelope
+  carries a consumable id (`load-done` has none).
 - **Transactions**: the realm proxy collects mutating calls made inside
   `jcad.document.transact(fn)` and sends them as one `document.transactBatch` RPC; the
   host applies them inside a single v1 `transact` (one undo step, atomic). Reads inside a

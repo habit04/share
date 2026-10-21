@@ -155,3 +155,173 @@ describe('host dispatcher: authentication, capabilities, staleness', () => {
     s.dispose();
   }, 60_000);
 });
+
+describe('host dispatcher: X2-W eviction watermark', () => {
+  // LEAD RULING — P25-X2-W: the X2 consumed set is a 4,096-id FIFO window and
+  // eviction must not re-open replay. Each kind's eviction watermark (the
+  // highest counter ever evicted for that kind) keeps an evicted id refused,
+  // while out-of-order in-flight ids above the watermark still execute. The
+  // ids below are shaped exactly as the shipped clients mint them — realm rpc
+  // ids `r<counter>` from the bootstrap's monotonic counter, host call ids
+  // `c<counter>` echoed back in call-res envelopes (docs/PLUGIN-ISOLATION.md,
+  // envelope id grammar).
+  const waitFor = async (cond: () => boolean, what: string) => {
+    for (let i = 0; i < 4000 && !cond(); i++) await tick();
+    expect(cond(), what).toBe(true);
+  };
+  const replayDenials = (s: IsolatedPluginSession) => s.denials.filter((d) => d.code === 'replay');
+
+  it('keeps the first envelope refused after 4,097 envelopes evict it (the lead\'s named X2-W test)', async () => {
+    const ed = makeEditor();
+    const { s, rpc, responses } = await loadedSession(ed, ['document.write', 'ui.log']);
+    const firstText = { type: 'text', position: { x: 0, y: 0 }, text: 'watermark-first' };
+    rpc('r1', 'document.add', [firstText]);
+    await waitFor(() => responses().filter((r) => r.id === 'r1').length === 1, 'first envelope answered');
+    expect(responses().find((r) => r.id === 'r1')).toMatchObject({ ok: true });
+    expect(ed.doc.entities).toHaveLength(1);
+
+    // 4,096 further envelopes (r2..r4097): the 4,097th receipt evicts r1 from
+    // the consumed set. Only the watermark can still refuse its replay.
+    for (let n = 2; n <= 4097; n++) rpc(`r${n}`, 'ui.log', ['flood']);
+    await waitFor(() => responses().length >= 4097, 'flood answered');
+    rpc('r1', 'document.add', [firstText]);
+    await tick();
+    await tick();
+    expect(responses().filter((r) => r.id === 'r1')).toHaveLength(1);
+    expect(ed.doc.entities).toHaveLength(1);
+    expect(replayDenials(s).some((d) => d.method === 'document.add')).toBe(true);
+
+    // The second-oldest id is still inside the window: refused via the set.
+    rpc('r2', 'ui.log', ['flood']);
+    await tick();
+    await tick();
+    expect(responses().filter((r) => r.id === 'r2')).toHaveLength(1);
+
+    // One more envelope evicts r2 too; its replay is now refused via the
+    // watermark instead of the set (same observable refusal).
+    rpc('r4098', 'ui.log', ['flood']);
+    await waitFor(() => responses().filter((r) => r.id === 'r4098').length === 1, 'r4098 answered');
+    rpc('r2', 'ui.log', ['flood']);
+    await tick();
+    await tick();
+    expect(responses().filter((r) => r.id === 'r2')).toHaveLength(1);
+
+    // The refusals do not poison the session: a fresh envelope still executes.
+    rpc('r4099', 'document.add', [{ type: 'text', position: { x: 1, y: 1 }, text: 'after' }]);
+    await waitFor(() => responses().filter((r) => r.id === 'r4099').length === 1, 'r4099 answered');
+    expect(ed.doc.entities).toHaveLength(2);
+    s.dispose();
+  }, 120_000);
+
+  it('executes an out-of-order in-flight id above the watermark and refuses a never-consumed id below it', async () => {
+    const ed = makeEditor();
+    const { s, rpc, responses } = await loadedSession(ed, ['ui.log']);
+    // Receipts r2..r3999, r4001..r4098 (r4000 withheld, in flight), then r4000
+    // itself: the 4,097th receipt evicts r2, setting the rpc watermark to 2.
+    for (let n = 2; n <= 4098; n++) {
+      if (n !== 4000) rpc(`r${n}`, 'ui.log', ['x']);
+    }
+    rpc('r4000', 'ui.log', ['x']);
+    await waitFor(() => responses().filter((r) => r.id === 'r4000').length === 1, 'withheld envelope answered');
+    expect(responses().find((r) => r.id === 'r4000')).toMatchObject({ ok: true });
+
+    // r1 was never consumed, but its counter is at/below the watermark. The
+    // genuine realm channel delivers in mint order, so a first-use envelope
+    // can never arrive like this; the safe posture is refusal with no effect.
+    const before = replayDenials(s).length;
+    rpc('r1', 'ui.log', ['x']);
+    await tick();
+    await tick();
+    expect(responses().filter((r) => r.id === 'r1')).toHaveLength(0);
+    expect(replayDenials(s).length).toBe(before + 1);
+    s.dispose();
+  }, 120_000);
+
+  it('keeps the per-kind watermarks independent', async () => {
+    const ed = makeEditor();
+    const { s, transport, hs, rpc } = await loadedSession(ed, ['ui.log']);
+    const callRes = (id: string, ok = true, value: unknown = null) =>
+      transport.emit({ kind: 'call-res', v: 2, session: hs.session, nonce: hs.realmNonce, id, ok, value });
+    for (let n = 1; n <= 4097; n++) rpc(`r${n}`, 'ui.log', ['x']); // evicts r1; rpc watermark 1
+
+    // A host call minted now carries id c1 — counter 1, level with the rpc
+    // watermark but a different kind namespace: its response must be accepted.
+    const p = s.invokeRealm('cb-one', []);
+    const callMsg = transport.inbox.find((m) => (m as { kind?: string }).kind === 'call') as { id: string };
+    expect(callMsg.id).toBe('c1');
+    callRes('c1', true, 'answer-1');
+    await expect(p).resolves.toBe('answer-1');
+    // Replaying that response is refused (consumed set).
+    const before = replayDenials(s).length;
+    callRes('c1', true, 'answer-1');
+    await tick();
+    expect(replayDenials(s).length).toBe(before + 1);
+    s.dispose();
+
+    // Inverse direction, fresh session: call-res traffic alone (which evicts
+    // c1 and sets the call-res watermark to 1) must not refuse rpc ids, and
+    // the evicted c1 itself is refused via its own kind's watermark.
+    const ed2 = makeEditor();
+    const second = await loadedSession(ed2, ['ui.log']);
+    const callRes2 = (id: string) =>
+      second.transport.emit({ kind: 'call-res', v: 2, session: second.hs.session, nonce: second.hs.realmNonce, id, ok: true, value: null });
+    for (let n = 1; n <= 4097; n++) callRes2(`c${n}`);
+    second.rpc('r1', 'ui.log', ['x']);
+    await waitFor(() => second.responses().filter((r) => r.id === 'r1').length === 1, 'rpc r1 answered');
+    expect(second.responses().find((r) => r.id === 'r1')).toMatchObject({ ok: true });
+    const before2 = replayDenials(second.s).length;
+    callRes2('c1');
+    await tick();
+    expect(replayDenials(second.s).length).toBe(before2 + 1);
+    second.s.dispose();
+  }, 120_000);
+
+  it('accepts a genuinely late first response for a still-pending call below the watermark, but refuses a non-pending one', async () => {
+    const ed = makeEditor();
+    const { s, transport, hs, rpc } = await loadedSession(ed, ['ui.log']);
+    const callRes = (id: string, ok = true, value: unknown = null) =>
+      transport.emit({ kind: 'call-res', v: 2, session: hs.session, nonce: hs.realmNonce, id, ok, value });
+    // The host mints call c1; its response is withheld (a slow realm callback).
+    const p = s.invokeRealm('slow-callback', []);
+    // An unrelated call-res c2 is consumed first, then 4,096 rpc envelopes
+    // evict it from the window: the call-res watermark becomes 2 while c1 is
+    // still pending.
+    callRes('c2');
+    for (let n = 1; n <= 4096; n++) rpc(`r${n}`, 'ui.log', ['x']);
+    // The first response for pending c1 arrives with counter 1 <= watermark 2.
+    // It has never been consumed — an accepted response settles and un-pends
+    // the call — so it is accepted, not refused as a replay.
+    callRes('c1', true, 'late-answer');
+    await expect(p).resolves.toBe('late-answer');
+    // A second copy is a replay (no longer pending; also in the consumed set).
+    const before = replayDenials(s).length;
+    callRes('c1', true, 'late-answer');
+    await tick();
+    expect(replayDenials(s).length).toBe(before + 1);
+    // c2's copy: evicted from the set, not pending, counter at the watermark —
+    // refused via the watermark.
+    callRes('c2');
+    await tick();
+    expect(replayDenials(s).length).toBe(before + 2);
+    s.dispose();
+  }, 120_000);
+
+  it('forged envelopes neither consume ids nor advance the watermark', async () => {
+    const ed = makeEditor();
+    const { s, rpc, responses } = await loadedSession(ed, ['document.write', 'ui.log']);
+    rpc('r1', 'document.add', [{ type: 'text', position: { x: 0, y: 0 }, text: 'genuine later' }], 'attacker-guess');
+    rpc('r5000', 'ui.log', ['x'], 'attacker-guess');
+    await tick();
+    expect(ed.doc.entities).toHaveLength(0);
+    expect(s.denials.filter((d) => d.code === 'forged')).toHaveLength(2);
+    // The genuine r1 still executes: the forged copy burned nothing.
+    rpc('r1', 'document.add', [{ type: 'text', position: { x: 0, y: 0 }, text: 'genuine later' }]);
+    await waitFor(() => responses().filter((r) => r.id === 'r1').length === 1, 'genuine r1 answered');
+    expect(ed.doc.entities).toHaveLength(1);
+    // A genuine r2 executes too: the forged r5000 raised no watermark over it.
+    rpc('r2', 'ui.log', ['x']);
+    await waitFor(() => responses().filter((r) => r.id === 'r2').length === 1, 'genuine r2 answered');
+    expect(replayDenials(s)).toHaveLength(0);
+    s.dispose();
+  }, 60_000);
+});
