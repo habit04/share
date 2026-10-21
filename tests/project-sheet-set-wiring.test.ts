@@ -18,6 +18,16 @@
  * implementation: at head 38a8704 every case fails (the surface does not
  * exist — the host module is absent and the new fields/parameter are not
  * declared).
+ *
+ * ADDENDUM — RULING-P31-A-WIRING conformance delta (the proposal was
+ * ADMITTED WITH CONDITIONS C1–C8 after the prototype above): tests (8)–(9)
+ * are condition C3's evidence (same-drawing disambiguation, confined to
+ * src/app/sheet-set-host.ts + these tests) and tests (10)–(11b) are
+ * condition C2's evidence (load rebinding: the session layer re-derives or
+ * clears DocumentSession.sheetId on every session content/file change).
+ * Written before the conformance implementation: at head 3a3e63b every new
+ * case fails — sheetForDrawing first-matches on path alone, and nothing in
+ * the session layer re-derives or clears a binding on content replacement.
  */
 import { describe, expect, it } from 'vitest';
 import { Drawing } from '../src/core/document';
@@ -32,7 +42,7 @@ import {
 } from '../src/project/sheet-set';
 import { SheetSetHost } from '../src/app/sheet-set-host';
 import { parseProject, serializeProject, type Project } from '../src/app/project';
-import { SessionManager, type DocumentSession, type SessionHost } from '../src/app/sessions';
+import { applySaveResult, SessionManager, type DocumentSession, type SessionHost } from '../src/app/sessions';
 import { fieldContextFor, sheetFieldContextFor } from '../src/tools/drafting-annot';
 import type { DrawingState } from '../src/core/document';
 
@@ -242,5 +252,188 @@ describe('PROPOSAL-P31-A-WIRING (FILED-UNADMITTED prototype)', () => {
     host.openSet(JSON.stringify(set), 'sets/other.json');
     expect(host.dirty).toBe(false);
     expect(host.lastIssues).toEqual([]);
+  });
+});
+
+describe('RULING-P31-A-WIRING C3 — same-drawing disambiguation', () => {
+  /** One drawing file, two layouts recorded as two sheets (the lead's DST recipe shape). */
+  function multiLayoutSet(): { set: SheetSet; firstId: string; secondId: string } {
+    let set = createSheetSet({ name: 'Multi' });
+    set = addSheet(set, { number: 'M-1', title: 'First layout sheet', drawingPath: 'drawings/multi.dwg', layoutName: 'Layout1' });
+    set = addSheet(set, { number: 'M-2', title: 'Second layout sheet', drawingPath: 'drawings/multi.dwg', layoutName: 'Layout2' });
+    const [first, second] = set.sheets;
+    return { set, firstId: first!.id, secondId: second!.id };
+  }
+
+  function docOnLayout(layout: string | null): Drawing {
+    const doc = new Drawing({ entities: [], layouts: [defaultLayout('Layout1'), defaultLayout('Layout2')] });
+    doc.filePath = 'drawings/multi.dwg';
+    if (layout) doc.setSpace({ layout });
+    return doc;
+  }
+
+  it('(8) two sheets recording one drawing bind each session to its OWN layout\'s sheet', () => {
+    const { set, firstId, secondId } = multiLayoutSet();
+    const host = new SheetSetHost();
+    host.openSet(JSON.stringify(set), 'sets/multi.json');
+    const docA = docOnLayout('Layout1');
+    const sessionA = { filePath: 'drawings/multi.dwg', state: docA.snapshot } as DocumentSession;
+    expect(host.bindSession(sessionA, sessionA.filePath)?.id).toBe(firstId);
+    expect(sessionA.sheetId).toBe(firstId);
+    expect(evaluateFields('%<\\AcSm Sheet.Number>%', sheetFieldContextFor(host, docA, sessionA))).toBe('M-1');
+    const docB = docOnLayout('Layout2');
+    const sessionB = { filePath: 'drawings/multi.dwg', state: docB.snapshot } as DocumentSession;
+    // the second sheet in file order: a path-only first-match would serve M-1 here
+    expect(host.bindSession(sessionB, sessionB.filePath)?.id).toBe(secondId);
+    expect(sessionB.sheetId).toBe(secondId);
+    expect(evaluateFields('%<\\AcSm Sheet.Number>%', sheetFieldContextFor(host, docB, sessionB))).toBe('M-2');
+    // a decided bind leaves no ambiguity on the host's binding issue list
+    expect(host.bindingIssues).toEqual([]);
+  });
+
+  it('(9) where the layout cannot disambiguate, the session stays UNBOUND and the ambiguity is surfaced', () => {
+    const { set, firstId, secondId } = multiLayoutSet();
+    const host = new SheetSetHost();
+    host.openSet(JSON.stringify(set), 'sets/multi.json');
+    // Model tab: the session document has no relevant layout, so neither
+    // candidate may be served — never the first by file order
+    const docModel = docOnLayout(null);
+    const sessionModel = { filePath: 'drawings/multi.dwg', state: docModel.snapshot } as DocumentSession;
+    expect(host.bindSession(sessionModel, sessionModel.filePath)).toBeUndefined();
+    expect(sessionModel.sheetId).toBeUndefined();
+    expect(evaluateFields('%<\\AcSm Sheet.Number>%', sheetFieldContextFor(host, docModel, sessionModel))).toBe(FIELD_UNAVAILABLE);
+    expect(host.bindingIssues).toHaveLength(1);
+    expect(host.bindingIssues[0]?.kind).toBe('ambiguous-drawing');
+    expect(host.bindingIssues[0]?.drawingPath).toBe('drawings/multi.dwg');
+    expect(host.bindingIssues[0]?.sheetIds).toEqual([firstId, secondId]);
+    // an active layout that no candidate records is equally undecidable
+    const docOther = new Drawing({ entities: [], layouts: [defaultLayout('Layout1'), defaultLayout('Layout2'), defaultLayout('Layout3')] });
+    docOther.filePath = 'drawings/multi.dwg';
+    docOther.setSpace({ layout: 'Layout3' });
+    const sessionOther = { filePath: 'drawings/multi.dwg', state: docOther.snapshot } as DocumentSession;
+    expect(host.bindSession(sessionOther, sessionOther.filePath)).toBeUndefined();
+    expect(sessionOther.sheetId).toBeUndefined();
+    expect(host.bindingIssues).toHaveLength(1);
+    // two sheets recording the same drawing AND the same layout: even a
+    // matching active layout cannot choose between them
+    let dup = createSheetSet({ name: 'Dup layout' });
+    dup = addSheet(dup, { number: 'D-1', title: 'One', drawingPath: 'drawings/dup.dwg', layoutName: 'Layout1' });
+    dup = addSheet(dup, { number: 'D-2', title: 'Two', drawingPath: 'drawings/dup.dwg', layoutName: 'Layout1' });
+    const host2 = new SheetSetHost();
+    host2.openSet(JSON.stringify(dup), 'sets/dup-layout.json');
+    const docDup = new Drawing({ entities: [], layouts: [defaultLayout('Layout1')] });
+    docDup.filePath = 'drawings/dup.dwg';
+    docDup.setSpace({ layout: 'Layout1' });
+    const sessionDup = { filePath: 'drawings/dup.dwg', state: docDup.snapshot } as DocumentSession;
+    expect(host2.bindSession(sessionDup, sessionDup.filePath)).toBeUndefined();
+    expect(sessionDup.sheetId).toBeUndefined();
+    expect(host2.bindingIssues).toHaveLength(1);
+    expect(host2.bindingIssues[0]?.sheetIds).toHaveLength(2);
+  });
+});
+
+describe('RULING-P31-A-WIRING C2 — load rebinding', () => {
+  /**
+   * A SessionManager over a fake host whose live document is the power
+   * drawing. When `wireHook` is set, the manager's session-file-changed
+   * hook is composed with the SheetSetHost exactly as the app layer will
+   * compose it: re-derive the binding from the session's NEW file path.
+   */
+  function managerWith(setHost: SheetSetHost, wireHook: boolean): { doc: Drawing; fakeHost: SessionHost; mgr: SessionManager } {
+    const doc = new Drawing({ entities: [], layouts: [defaultLayout('Layout1')] });
+    doc.filePath = 'drawings/power.dwg';
+    const fakeHost: SessionHost = {
+      doc,
+      viewport: { center: { x: 0, y: 0 }, scale: 1 },
+      selection: new Set<string>(),
+      loadState(state: DrawingState, path: string | null) {
+        doc.load(state, path);
+      },
+    };
+    const mgr = new SessionManager(fakeHost);
+    if (wireHook) {
+      mgr.onSessionFileChanged = (s) => {
+        setHost.bindSession(s, s.filePath);
+      };
+    }
+    return { doc, fakeHost, mgr };
+  }
+
+  it('(10) a bound session whose content is replaced evaluates the NEW drawing\'s values or #### — never the previous drawing\'s', () => {
+    const { set, powerId, coverId } = sampleSet();
+    const host = new SheetSetHost();
+    host.openSet(JSON.stringify(set), 'sets/plant-a.json');
+    const { doc, mgr } = managerWith(host, true);
+    const id = mgr.current.id;
+    host.bindSession(mgr.current, mgr.current.filePath);
+    expect(mgr.current.sheetId).toBe(powerId);
+    expect(evaluateFields('%<\\AcSm Sheet.Number>%', sheetFieldContextFor(host, doc, mgr.current))).toBe('E-101');
+    // open a different drawing INTO the session: the binding re-derives
+    // against the new file — the cover sheet's values, not the power sheet's
+    const coverDoc = new Drawing({ entities: [], layouts: [defaultLayout('Layout1')] });
+    expect(mgr.loadInto(id, coverDoc.snapshot, 'drawings/cover.dwg')).toBe(true);
+    expect(mgr.current.sheetId).toBe(coverId);
+    expect(evaluateFields('%<\\AcSm Sheet.Number>%', sheetFieldContextFor(host, doc, mgr.current))).toBe('E-001');
+    // replace again with a drawing no sheet records: unbound and #### —
+    // never the previous drawing's E-001
+    const otherDoc = new Drawing({ entities: [] });
+    expect(mgr.loadInto(id, otherDoc.snapshot, 'drawings/other.dwg')).toBe(true);
+    expect(mgr.current.sheetId).toBeUndefined();
+    expect(evaluateFields('%<\\AcSm Sheet.Number>%', sheetFieldContextFor(host, doc, mgr.current))).toBe(FIELD_UNAVAILABLE);
+  });
+
+  it('(10b) with NO re-derivation hook connected, a replaced session\'s binding is CLEARED by the session layer itself', () => {
+    const { set, powerId } = sampleSet();
+    const host = new SheetSetHost();
+    host.openSet(JSON.stringify(set), 'sets/plant-a.json');
+    const { doc, mgr } = managerWith(host, false);
+    const id = mgr.current.id;
+    host.bindSession(mgr.current, mgr.current.filePath);
+    expect(mgr.current.sheetId).toBe(powerId);
+    const coverDoc = new Drawing({ entities: [], layouts: [defaultLayout('Layout1')] });
+    expect(mgr.loadInto(id, coverDoc.snapshot, 'drawings/cover.dwg')).toBe(true);
+    // the stale id did not survive onto the different drawing: worst case
+    // is an unbound session (####), never the previous drawing's values
+    expect(mgr.current.sheetId).toBeUndefined();
+    expect(evaluateFields('%<\\AcSm Sheet.Number>%', sheetFieldContextFor(host, doc, mgr.current))).toBe(FIELD_UNAVAILABLE);
+  });
+
+  it('(11) save-as re-derives the binding against the new path; a plain save keeps it', () => {
+    const { set, powerId, coverId } = sampleSet();
+    const host = new SheetSetHost();
+    host.openSet(JSON.stringify(set), 'sets/plant-a.json');
+    const { doc, fakeHost, mgr } = managerWith(host, true);
+    const session = mgr.current;
+    host.bindSession(session, session.filePath);
+    expect(session.sheetId).toBe(powerId);
+    // plain save at the same path: the file did not change, binding kept
+    expect(applySaveResult(mgr, fakeHost, session.id, doc.snapshot, 'drawings/power.dwg', session.contentGeneration)).toBe('clean');
+    expect(mgr.current.sheetId).toBe(powerId);
+    // save-as onto the cover drawing's path: the binding follows the file
+    const s2 = mgr.current;
+    expect(applySaveResult(mgr, fakeHost, s2.id, doc.snapshot, 'drawings/cover.dwg', s2.contentGeneration)).toBe('clean');
+    expect(mgr.current.sheetId).toBe(coverId);
+    expect(evaluateFields('%<\\AcSm Sheet.Number>%', sheetFieldContextFor(host, doc, mgr.current))).toBe('E-001');
+    // save-as onto a path no sheet records: unbound and ####, never E-001
+    const s3 = mgr.current;
+    expect(applySaveResult(mgr, fakeHost, s3.id, doc.snapshot, 'drawings/other.dwg', s3.contentGeneration)).toBe('clean');
+    expect(mgr.current.sheetId).toBeUndefined();
+    expect(evaluateFields('%<\\AcSm Sheet.Number>%', sheetFieldContextFor(host, doc, mgr.current))).toBe(FIELD_UNAVAILABLE);
+  });
+
+  it('(11b) a save result recorded for a PARKED session re-derives that session\'s binding too', () => {
+    const { set, powerId, coverId } = sampleSet();
+    const host = new SheetSetHost();
+    host.openSet(JSON.stringify(set), 'sets/plant-a.json');
+    const { fakeHost, mgr } = managerWith(host, true);
+    const coverDoc = new Drawing({ entities: [], layouts: [defaultLayout('Layout1')] });
+    const idx = mgr.addInBackground(coverDoc.snapshot, 'drawings/cover.dwg');
+    const parked = mgr.all[idx]!;
+    host.bindSession(parked, parked.filePath);
+    expect(parked.sheetId).toBe(coverId);
+    // the parked tab's save completes under the power drawing's path
+    expect(applySaveResult(mgr, fakeHost, parked.id, parked.state, 'drawings/power.dwg', parked.contentGeneration)).toBe('clean');
+    expect(parked.filePath).toBe('drawings/power.dwg');
+    expect(parked.sheetId).toBe(powerId);
   });
 });
