@@ -7,7 +7,10 @@
  * host->realm message. Neither nonce is ever placed on a global, in plugin
  * code, or in any value the realm proxy hands to plugin code, so plugin code
  * cannot forge a message (threat T5) — and after dispose the session id +
- * nonce pair is dead, so replayed messages are stale (threat T6).
+ * nonce pair is dead, so replayed messages are stale (threat T6). Within a
+ * live session each envelope also carries a single-use sequence id (`id`:
+ * minted from a monotonic counter by the sender), which the host consumes
+ * on first receipt; a replayed envelope is dropped with no effect (X2).
  */
 
 /** Protocol version of the isolated realm API (manifest apiVersion 2). */

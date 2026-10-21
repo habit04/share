@@ -7,10 +7,12 @@
  * affect the editor through this session's dispatcher, which for every call:
  *   1. authenticates the envelope (session id + per-session realm nonce);
  *      unauthenticated messages are recorded as denials and never answered;
- *   2. validates the payload (plain data, depth/string/total-size limits);
- *   3. checks the method's required capability against the manifest set —
+ *   2. consumes the envelope's per-session sequence id — a replayed envelope
+ *      is recorded and dropped before dispatch, so it has no effect (X2);
+ *   3. validates the payload (plain data, depth/string/total-size limits);
+ *   4. checks the method's required capability against the manifest set —
  *      refusal happens BEFORE any editor state is touched (atomic, T9);
- *   4. executes against the v1 API handle, so undo/redo/dirty, entity
+ *   5. executes against the v1 API handle, so undo/redo/dirty, entity
  *      validation, cad-graph reconciliation and settings allow-lists are
  *      exactly v1's semantics.
  *
@@ -76,6 +78,18 @@ interface PendingCall {
 const GRANT_TTL_MS = 60_000;
 const MAX_IN_FLIGHT_CALLS = 64;
 const MAX_GRANTS = 32;
+/**
+ * How many authenticated envelope ids one session remembers as consumed
+ * (X2 single-use). The realm mints RPC ids from a monotonic per-session
+ * counter (`r1`, `r2`, …) and host->realm call responses echo the host's
+ * monotonic call ids, so an id is the envelope's single-use sequence token
+ * beside the session nonce. Retention is a FIFO window: when the bound is
+ * exceeded the oldest consumed id is forgotten. 4096 envelopes is far
+ * beyond an interactive plugin session's burst scale, and the set dies
+ * with the session (dispose clears it; a new session has a fresh id +
+ * nonce pair, so old envelopes fail authentication there anyway).
+ */
+const MAX_CONSUMED_ENVELOPE_IDS = 4096;
 const STAGEABLE: ReadonlySet<string> = new Set(['document.add', 'document.replace', 'document.remove', 'electrical.setAttributes']);
 
 /** Method -> required capability. A method absent here does not exist. settings.* is special-cased (key-dependent). */
@@ -152,6 +166,7 @@ export class IsolatedPluginSession {
   private readonly callTimeoutMs: number;
   private readonly picker: (accept: string) => Promise<{ name: string; text: string } | null>;
   private readonly pendingCalls = new Map<string, PendingCall>();
+  private readonly consumedEnvelopeIds = new Set<string>();
   private readonly grants = new Map<string, Grant>();
   private readonly eventSubscriptions = new Map<string, () => void>();
   private callSeq = 0;
@@ -239,6 +254,7 @@ export class IsolatedPluginSession {
       this.pendingCalls.delete(id);
     }
     this.grants.clear();
+    this.consumedEnvelopeIds.clear();
     this.eventSubscriptions.clear();
     try {
       this.handle.dispose();
@@ -265,14 +281,41 @@ export class IsolatedPluginSession {
         this.onLoadDone(raw);
         return;
       case 'rpc':
+        if (this.consumeEnvelopeId(raw)) return;
         void this.onRpc(raw);
         return;
       case 'call-res':
+        if (this.consumeEnvelopeId(raw)) return;
         this.onCallResponse(raw);
         return;
       default:
         this.recordDenial(undefined, 'forged', `unknown message kind "${String(raw.kind)}" dropped`);
     }
+  }
+
+  /**
+   * Consume an authenticated envelope's single-use sequence id (X2).
+   * Returns true — after recording the replay — when this session has
+   * already consumed the same kind+id, in which case the caller drops the
+   * envelope without dispatch: no handler runs, no response is sent and no
+   * state changes. Consumption happens synchronously on receipt, before
+   * any async dispatch, so a replay that arrives while the first envelope
+   * is still executing is refused as well. Ids are remembered in receipt
+   * order and evicted oldest-first beyond MAX_CONSUMED_ENVELOPE_IDS.
+   */
+  private consumeEnvelopeId(raw: Record<string, unknown>): boolean {
+    if (typeof raw.id !== 'string' || raw.id.length === 0) return false;
+    const key = `${String(raw.kind)}:${raw.id}`;
+    if (this.consumedEnvelopeIds.has(key)) {
+      this.recordDenial(typeof raw.method === 'string' ? raw.method : undefined, 'replay', `replayed ${String(raw.kind)} envelope "${raw.id}" dropped`);
+      return true;
+    }
+    this.consumedEnvelopeIds.add(key);
+    if (this.consumedEnvelopeIds.size > MAX_CONSUMED_ENVELOPE_IDS) {
+      const oldest = this.consumedEnvelopeIds.values().next().value as string;
+      this.consumedEnvelopeIds.delete(oldest);
+    }
+    return false;
   }
 
   private onLoadDone(raw: Record<string, unknown>): void {
