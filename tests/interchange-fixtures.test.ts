@@ -1,9 +1,9 @@
 /**
- * Interchange fixtures (tests/fixtures/interchange/): the R2000 files and r2018-table.dxf were
- * written by hand from the public DXF reference, laid out the way AutoCAD 2000 (AC1015) and
- * AutoCAD 2018 (AC1032) save them; r2018-dimensions.dxf, r2018-image-inches.dxf,
- * r2018-mtext.dxf and r2018-truecolor-linetypes.dxf are genuine AutoCAD 2027 R2018 saves that
- * replaced hand-authored originals in the 2026-10-21 fixture swap (see
+ * Interchange fixtures (tests/fixtures/interchange/): the R2000 files were written by hand
+ * from the public DXF reference, laid out the way AutoCAD 2000 (AC1015) saves them;
+ * r2018-dimensions.dxf, r2018-image-inches.dxf, r2018-mtext.dxf, r2018-table.dxf and
+ * r2018-truecolor-linetypes.dxf are genuine AutoCAD 2027 R2018 saves that replaced
+ * hand-authored originals in the 2026-10-21 fixture swap (see
  * tests/fixtures/interchange/PROVENANCE.md). None comes from JCad's writer. Each fixture is
  * checked after import (the bytes decoded as the app decodes them, then readDxf) and again
  * after a writeDxf -> readDxf round trip.
@@ -807,7 +807,8 @@ describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency
       // checklist #19; FENCELINE1 6.349999999999999), one ULP below the canonical double, and
       // JCad's writer canonicalises them on save - so the two legs' pattern doubles differ by
       // that single ULP and the patterns are asserted element-wise at 12 digits.
-      const [gasPattern, fencePattern] = s.header!.linetypes.map((l) => l.pattern!);
+      const gasPattern = s.header!.linetypes[0]!.pattern!;
+      const fencePattern = s.header!.linetypes[1]!.pattern!;
       [12.7, -5.08, -6.35].forEach((v, i) => close(gasPattern[i], v, 12));
       [6.35, -2.54, -2.54, 25.4].forEach((v, i) => close(fencePattern[i], v, 12));
       expect(s.header!.linetypes[0]!.complex!.elements[1]).toMatchObject({ flags: 2, shapeNumber: 0,
