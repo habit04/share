@@ -23,12 +23,14 @@ import {
   verifyPreservedSignature,
   type PreservedSignatureRecord,
 } from '../src/project/drawing-signature';
-import type { Entity, Layer } from '../src/core/entities';
+import type { Entity, Layer, LineEntity } from '../src/core/entities';
 
 const layer0: Layer = { name: '0', color: 7, visible: true, locked: false, lineWeight: -1 };
 const layer1: Layer = { name: 'L1', color: 3, visible: true, locked: false, lineWeight: -1 };
 
-const line = (id: string): Entity => ({
+// Typed as LineEntity (not the Entity union) so test (3) can spread a line and
+// override its `b` endpoint without a union excess-property error (TS2322).
+const line = (id: string): LineEntity => ({
   id, type: 'line', layer: '0', color: 'ByLayer', a: { x: 0, y: 0 }, b: { x: 10, y: 5 },
 });
 
