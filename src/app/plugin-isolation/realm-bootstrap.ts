@@ -31,6 +31,7 @@ export function realmBootstrapMain(): void {
     // In a Node worker the main script runs in a CommonJS scope where
     // `require` exists; in a browser worker it does not (typeof is safe).
     if (typeof require === 'function') {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- deliberate scope probe: this function is serialised into a worker realm, where a static import cannot be used to detect the Node transport
       const wt = require('node:worker_threads') as { parentPort: typeof nodePort };
       if (wt && wt.parentPort) nodePort = wt.parentPort;
     }
