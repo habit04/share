@@ -15,7 +15,7 @@ import { splineWorkProblem, SplineWorkLimitError, isValidNurbs, nurbsPoints, int
 import { LoopBuilder, edgeArc, fitPatternToLines, findPattern } from '../../core/hatch';
 import type { ReadContext } from './read-core';
 import { hasFields, evaluateFields } from '../../core/fields';
-import { readMTextColumns, readDimension, readDimStyleFromEntity, readLeader, readMLeader, mleaderBlockContentSignalled, mleaderContextSectionCount, readImage, readTable, readJcadTable, restoreCoveredCells } from './read-annotations';
+import { readMTextColumns, readDimension, readDimStyleFromEntity, readLeader, readMLeader, mleaderBlockContentSignalled, resolveMLeaderContextChain, readImage, readTable, readJcadTable, restoreCoveredCells } from './read-annotations';
 import type { MTextAttachment, MTextBackground } from '../../core/mtext';
 import { mtextFromDxf, hasFormatting } from '../../core/mtext';
 import { readTextPlacement } from './read-text';
@@ -480,13 +480,19 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
           // occur for a real block signal — readMLeader withholds native data
           // for block content it cannot model — so nothing is reported.
         }
-        // Slice 3 (PROPOSAL-P18-S3 item (1)): multi-context (annotative)
-        // records are reported from the CONTEXT_DATA section count, the same
-        // posture as block content above — modelled contexts earn the
-        // informational note only; withheld ones (readMLeader attached no
-        // native data) earn the note + a `simplified` entry. Both the block
-        // and the context entries may fire for one record; wordings distinct.
-        if (mleaderContextSectionCount(o) > 1) {
+        // Slice 3 + S3-D (PROPOSAL-P18-S3 item (1); RULING-P18-S3-D (1)(iii)
+        // amending the (2)(b) counting pin): multi-context (annotative)
+        // records are reported from THE chain resolution's additional-context
+        // count across both storage layouts — the same single implementation
+        // readMLeader joins through — the same posture as block content
+        // above: modelled contexts earn the informational note only; withheld
+        // ones (readMLeader attached no native data) earn the note + a
+        // `simplified` entry. The caller also fires when an engaged chain is
+        // dangling, unparseable or in both-dialects conflict — a withheld
+        // record always reports. Both the block and the context entries may
+        // fire for one record; wordings distinct.
+        const chain = resolveMLeaderContextChain(o, ctx);
+        if (chain.additional >= 1 || chain.dangling || chain.unparseable || chain.conflict) {
           if (ml.mleader?.contexts) {
             ctx.notes?.push('MULTILEADER annotative contexts are kept as native data; the first context is drawn.');
           } else if (!ml.mleader) {

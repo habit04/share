@@ -14,7 +14,7 @@ import { diffDimStyles, STANDARD_DIMSTYLE, DIMSTYLES_META_KEY } from '../../core
 import { DxfReadError, tokenize, objects, has, str, num, isIntegerText } from './groups';
 import { decodeUnicodeEscapes, textStyleOf, textStylesMeta, shapeStylesMeta } from '../encoding';
 import type { TextStyle } from '../encoding';
-import type { Pair } from './groups';
+import type { Obj, Pair } from './groups';
 import type { Linetype, LinetypeShapeStyle } from '../../core/linetypes';
 import type { ReadContext } from './read-core';
 import { LayoutReader } from '../dxf-layouts';
@@ -252,6 +252,30 @@ function blockRecordNamesOf(pairs: readonly Pair[]): Map<string, string> {
   return out;
 }
 
+/**
+ * The OBJECTS DICTIONARY records and ACDB_MLEADEROBJECTCONTEXTDATA_CLASS records,
+ * by upper-case handle (P18 S3-D, RULING-P18-S3-D (1)(i)): AutoCAD stores a
+ * multileader's additional annotative contexts as objects behind the entity's
+ * extension dictionary, so readMLeader joins through these maps. Of the exact
+ * shape of the pre-scans above; OBJECTS comes last, read first.
+ */
+function mleaderContextDataOf(pairs: readonly Pair[]): { dictionaries: Map<string, Obj>; contextObjects: Map<string, Obj> } {
+  const dictionaries = new Map<string, Obj>();
+  const contextObjects = new Map<string, Obj>();
+  for (let i = 0; i + 1 < pairs.length; i += 1) {
+    if (pairs[i]!.code !== 0 || pairs[i]!.value !== 'SECTION' || pairs[i + 1]!.value !== 'OBJECTS') continue;
+    let j = i + 2;
+    while (j < pairs.length && !(pairs[j]!.code === 0 && pairs[j]!.value === 'ENDSEC')) j += 1;
+    for (const o of objects(pairs as Pair[], i + 2, j)) {
+      if (!has(o, 5)) continue;
+      if (o.kind === 'DICTIONARY') dictionaries.set(str(o, 5).toUpperCase(), o);
+      else if (o.kind === 'ACDB_MLEADEROBJECTCONTEXTDATA_CLASS') contextObjects.set(str(o, 5).toUpperCase(), o);
+    }
+    i = j;
+  }
+  return { dictionaries, contextObjects };
+}
+
 /** The reader proper; DIMSTYLE records are collected into `dimStyles`. */
 function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string, DimStyle>, report: ImportReportBuilder, raw: RawDxfEntity[]): DrawingState {
   if (text.length > (opts.maxSourceLength ?? DXF_READ_LIMITS.maxSourceLength)) throw new DxfReadError('DXF exceeds the source text size limit.', 1);
@@ -280,6 +304,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     mleaderStyles: mleaderStyleNamesOf(pairs),
     mleaderStyleValues: mleaderStyleValuesOf(pairs),
     blockRecordNames: blockRecordNamesOf(pairs),
+    mleaderContextData: mleaderContextDataOf(pairs),
     consumedBlocks: new Set(),
     notes: opts.notes ?? [],
     report,

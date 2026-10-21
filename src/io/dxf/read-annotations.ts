@@ -4,7 +4,7 @@
  * tables JCad writes (an INSERT with the cell data as JCAD_TABLE XDATA).
  */
 import type { Obj, Pair } from './groups';
-import type { DimStyle, Entity, LeaderEntity, ImageEntity, TableEntity, TableCell } from '../../core/entities';
+import type { AttributeDef, DimStyle, Entity, LeaderEntity, ImageEntity, TableEntity, TableCell } from '../../core/entities';
 import { str, xdata, num, pt, has, flt, int, afterSubclass, pointList, DxfReadError, isIntegerText } from './groups';
 import { dimStyleFromRecordPairs, dimStyleOverrideName, dimVarValue, arrowFromBlockName, arrowBlockName, DIM_ARROWS, DIM_VARIABLES, ordinateDimensionProblem } from '../../core/dimension';
 import { DIMSTYLE_APP, MTEXT_COLUMNS_APP, TABLE_APP, isRealText, isRealCode, isIntCode } from './codes';
@@ -238,16 +238,194 @@ export function mleaderBlockContentSignalled(o: Obj): boolean {
 }
 
 /**
- * How many CONTEXT_DATA sections a MULTILEADER record carries (slice 3,
- * PROPOSAL-P18-S3). The read-entities.ts caller reports multi-context records
- * from this count — modelled ones by an informational note, withheld ones by a
- * `simplified` entry (R-MLEADER-18 reporting) — using the same opener test
- * readMLeader's depth machine uses.
+ * THE ONE chain resolution (slice 3 + S3-D, RULING-P18-S3-D (1)(iv)): how a
+ * MULTILEADER record's additional annotative contexts are stored, counted and
+ * — for readMLeader — materialised. readMLeader's join and the read-entities
+ * caller's reporting consume THIS resolution and no other; a second chain
+ * walk is the F-1 drift class. A record's contexts live in one of two
+ * layouts: inline CONTEXT_DATA sections (the slice-3 dialect — still read,
+ * never written after S3-D), or, as AutoCAD writes them, CONTEXT objects in
+ * OBJECTS behind the entity's extension dictionary (entity 102/360 subgroup
+ * -> extension dictionary -> 'AcDbContextDataManager' entry (360) -> manager
+ * dictionary -> 'ACDB_ANNOTATIONSCALES' entry (350) -> scales dictionary ->
+ * its entries (350, in entry order) -> ACDB_MLEADEROBJECTCONTEXTDATA_CLASS
+ * objects). An object is a context of THIS entity only through that chain:
+ * no global scale matching, and SCALE objects are never consulted — the
+ * object's stored group 40 is authoritative (RULING-P18-S3-D (1)(ii)(alpha)).
  */
-export function mleaderContextSectionCount(o: Obj): number {
-  let n = 0;
-  for (const p of o.groups) if (p.code === 300 && p.value.startsWith('CONTEXT_DATA')) n += 1;
-  return n;
+export interface MLeaderContextChain {
+  /** Inline CONTEXT_DATA sections in the record (the primary included). */
+  inlineSections: number;
+  /** Additional annotative contexts across BOTH layouts: inline sections
+   *  beyond the first, plus resolved context objects minus the default. */
+  additional: number;
+  /** The extension-dictionary chain is present and carries the manager entry. */
+  engaged: boolean;
+  /** A link of an engaged chain names no dictionary / no object, or a record
+   *  that is not a context-data object: whole-entity withholding leg. */
+  dangling: boolean;
+  /** A resolved object does not parse as a context (its annot-scale header or
+   *  its group 40 is missing or unusable): whole-entity withholding leg, its
+   *  failure folded into the (2)(a) conditions like the inline ones. */
+  unparseable: boolean;
+  /** Inline additional sections AND an engaged chain: both-dialects
+   *  withholding leg — two competing additional-context sources, never merged. */
+  conflict: boolean;
+  /** Synthetic CONTEXT_DATA sections for the resolved non-default objects, in
+   *  dictionary order, for readMLeader's capture loop (300 opener + the
+   *  object's stored group 40 + its body groups + 301 close). Empty unless
+   *  the chain resolves cleanly. */
+  objectSections: Pair[][];
+}
+
+/** One dictionary entry's target handle (the pair after its group-3 key). */
+const dictEntryTarget = (dict: Obj, keyUpper: string): string | undefined => {
+  for (let k = 0; k + 1 < dict.groups.length; k += 1) {
+    const p = dict.groups[k]!;
+    if (p.code === 3 && p.value.trim().toUpperCase() === keyUpper) {
+      const q = dict.groups[k + 1]!;
+      if (q.code === 350 || q.code === 360) return q.value.trim().toUpperCase();
+    }
+  }
+  return undefined;
+};
+
+interface ResolvedContextObject {
+  /** Group 290 = 1 at the AcDbObjectContextData level (the default object). */
+  isDefault: boolean;
+  /** The object's stored group 40, verbatim text. */
+  scaleText: string;
+  /** The CONTEXT_DATA body groups (everything after the header's group 40). */
+  body: Pair[];
+}
+
+/**
+ * Parse one context-data object's header (RULING-P18-S3-D (1)(ii), fixture
+ * facts F2/F4): the default flag is the group 290 between the
+ * AcDbObjectContextData and AcDbAnnotScaleObjectContextData subclass markers;
+ * the body's first group is the one after the header's group 40. The object's
+ * group 340 (its SCALE reference) is header material, never body: it is not
+ * consulted (the stored 40 is authoritative) and never reaches the capture.
+ */
+const parseContextObject = (o: Obj): ResolvedContextObject | null => {
+  const gs = o.groups;
+  const objAt = gs.findIndex((p) => p.code === 100 && p.value.trim() === 'AcDbObjectContextData');
+  if (objAt < 0) return null;
+  const annotAt = gs.findIndex((p, i) => i > objAt && p.code === 100 && p.value.trim() === 'AcDbAnnotScaleObjectContextData');
+  if (annotAt < 0) return null;
+  let isDefault = false;
+  for (let i = objAt + 1; i < annotAt; i += 1) {
+    if (gs[i]!.code === 290) {
+      isDefault = int(gs[i]!.value) === 1;
+      break;
+    }
+  }
+  // The header is rigid (F2): the annot-scale marker is followed by the
+  // SCALE reference (340, optional) and then the group 40 — positionally.
+  // A first-40-anywhere search would mistake the body's own dogleg-length
+  // 40 for the header's when the header's is missing, completing a corrupt
+  // object by fallback: exactly the fabrication class S3-B closed inline.
+  let at40 = annotAt + 1;
+  if (gs[at40]?.code === 340) at40 += 1;
+  if (gs[at40]?.code !== 40) return null;
+  const scaleText = gs[at40]!.value;
+  if (!Number.isFinite(flt(scaleText))) return null;
+  return { isDefault, scaleText, body: gs.slice(at40 + 1) };
+};
+
+export function resolveMLeaderContextChain(o: Obj, ctx: ReadContext): MLeaderContextChain {
+  let inlineSections = 0;
+  for (const p of o.groups) if (p.code === 300 && p.value.startsWith('CONTEXT_DATA')) inlineSections += 1;
+  const inlineAdditional = Math.max(0, inlineSections - 1);
+  const none: MLeaderContextChain = {
+    inlineSections,
+    additional: inlineAdditional,
+    engaged: false,
+    dangling: false,
+    unparseable: false,
+    conflict: false,
+    objectSections: [],
+  };
+  // Scope edge (RULING-P18-S3-D (1)(ii)(zeta)): an objects-only primary (an
+  // engaged chain on a record with NO inline section) is outside the S3-D
+  // admission — the pre-existing no-inline-section posture stands, untouched.
+  if (inlineSections === 0) return none;
+  const data = ctx.mleaderContextData;
+  if (!data) return none;
+  // The entity's own extension-dictionary subgroup (102 '{ACAD_XDICTIONARY'
+  // followed by its 360 soft pointer) — the chain's first link.
+  let extHandle: string | undefined;
+  for (let k = 0; k + 1 < o.groups.length; k += 1) {
+    if (o.groups[k]!.code === 102 && o.groups[k]!.value.includes('ACAD_XDICTIONARY') && o.groups[k + 1]!.code === 360) {
+      extHandle = o.groups[k + 1]!.value.trim().toUpperCase();
+      break;
+    }
+  }
+  if (!extHandle) return none;
+  const ext = data.dictionaries.get(extHandle);
+  // A present subgroup whose 360 names no dictionary dangles (W3 leg).
+  if (!ext) return { ...none, engaged: true, dangling: true };
+  // Engagement is ONLY via the manager entry (RULING-P18-S3-D (1)(ii)(beta)):
+  // an extension dictionary without one carries no object contexts at all —
+  // no note, no simplified, no withholding, whatever else it holds.
+  const managerHandle = dictEntryTarget(ext, 'ACDBCONTEXTDATAMANAGER');
+  if (!managerHandle) return none;
+  const engaged: MLeaderContextChain = { ...none, engaged: true, conflict: inlineAdditional >= 1 };
+  const manager = data.dictionaries.get(managerHandle);
+  if (!manager) return { ...engaged, dangling: true };
+  const scalesHandle = dictEntryTarget(manager, 'ACDB_ANNOTATIONSCALES');
+  if (!scalesHandle) return { ...engaged, dangling: true };
+  const scales = data.dictionaries.get(scalesHandle);
+  if (!scales) return { ...engaged, dangling: true };
+  // The scales dictionary's entries, in entry order (= the contexts' file order).
+  const handles: string[] = [];
+  for (let k = 0; k + 1 < scales.groups.length; k += 1) {
+    if (scales.groups[k]!.code === 3 && scales.groups[k + 1]!.code === 350) handles.push(scales.groups[k + 1]!.value.trim().toUpperCase());
+  }
+  const resolved: ResolvedContextObject[] = [];
+  for (const h of handles) {
+    const obj = data.contextObjects.get(h);
+    if (!obj) return { ...engaged, dangling: true };
+    const parsed = parseContextObject(obj);
+    if (!parsed) return { ...engaged, unparseable: true };
+    resolved.push(parsed);
+  }
+  // The FIRST 290 = 1 object is THE default and is excluded from contexts
+  // (its body is never cross-checked against the inline section — the inline
+  // section is authoritative for the primary); any FURTHER 290 = 1 object is
+  // modelled as an additional context (the no-dedup pin stands). If no object
+  // is flagged, none is excluded. An empty scales dictionary adds nothing
+  // and is not a leg.
+  let defaultSeen = false;
+  const additionals: ResolvedContextObject[] = [];
+  for (const r of resolved) {
+    if (r.isDefault && !defaultSeen) {
+      defaultSeen = true;
+      continue;
+    }
+    additionals.push(r);
+  }
+  const objectSections = additionals.map((r) => [
+    { code: 300, value: 'CONTEXT_DATA{' },
+    { code: 40, value: r.scaleText },
+    ...r.body,
+    { code: 301, value: 'CONTEXT_DATA}' },
+  ]);
+  return { ...engaged, additional: inlineAdditional + additionals.length, objectSections };
+}
+
+/**
+ * How many ADDITIONAL annotative contexts a MULTILEADER record carries,
+ * across both storage layouts (slice 3 + S3-D): the RULING-P18-S3 (2)(b)
+ * counting pin AS AMENDED by RULING-P18-S3-D (1)(iii) — one implementation,
+ * the chain resolution above, shared by readMLeader and the caller. The
+ * read-entities.ts caller reports multi-context records from this count —
+ * modelled ones by an informational note, withheld ones by a `simplified`
+ * entry (R-MLEADER-18 reporting) — and also fires on a dangling or
+ * both-dialects chain (a withheld record always reports).
+ */
+export function mleaderContextSectionCount(o: Obj, ctx: ReadContext): number {
+  return resolveMLeaderContextChain(o, ctx).additional;
 }
 
 /** Per-CONTEXT_DATA-section capture for readMLeader (slice 3). Fields mirror the
@@ -280,6 +458,15 @@ interface MLeaderCtxAcc {
  */
 export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: ReadContext): LeaderEntity | null {
   const gs = o.groups;
+  // S3-D: the ONE chain resolution — the resolved non-default context objects
+  // ride the capture loop below as synthetic CONTEXT_DATA sections appended
+  // after the record's own groups, parsed by the SAME accumulator/finalize
+  // machinery as inline sections, so every (2)(a) withholding condition and
+  // fallback chain applies to object contexts unchanged (RULING-P18-S3-D
+  // (1)(ii)(delta)). The record's own trailing groups are all consumed before
+  // the synthetic sections begin, so nothing record-level is disturbed.
+  const chain = resolveMLeaderContextChain(o, ctx);
+  const seq: Pair[] = chain.objectSections.length ? [...gs, ...chain.objectSections.flat()] : gs;
   // Slice 3 (PROPOSAL-P18-S3): capture is PER CONTEXT_DATA section. The first
   // section's accumulator is the primary (its finalize below is the exact
   // slice-1/2 path, so single-context records produce the slice-1/2 model
@@ -319,7 +506,7 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
   let blockHandleTrail: string | undefined;
   let blockScaleTrail: g.Point | undefined;
   let blockRotationTrail: number | undefined;
-  const pendingAttrs: Array<{ index?: number; width?: number; text?: string }> = [];
+  const pendingAttrs: Array<{ handle?: string; index?: number; width?: number; text?: string }> = [];
   const endSection = () => {
     // A LEADER{} section: each of its lines runs arrow -> ... -> last leader point, then the landing.
     for (const l of sectionLines) cur.paths.push(lastLeaderPoint ? [...l, lastLeaderPoint] : l);
@@ -329,8 +516,8 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
     doglegVec = undefined;
     doglegLen = undefined;
   };
-  for (let k = 0; k < gs.length; k += 1) {
-    const p = gs[k]!;
+  for (let k = 0; k < seq.length; k += 1) {
+    const p = seq[k]!;
     const top = depth[depth.length - 1];
     if (p.code === 300 && p.value.startsWith('CONTEXT_DATA')) {
       contextSections += 1;
@@ -369,7 +556,7 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
       depth.pop();
       continue;
     }
-    const nextY = () => flt(gs[k + 1]?.code === p.code + 10 ? gs[k + 1]!.value : undefined);
+    const nextY = () => flt(seq[k + 1]?.code === p.code + 10 ? seq[k + 1]!.value : undefined);
     if (top === 'LINE') {
       if (p.code === 10) line?.push({ x: flt(p.value), y: nextY() });
       continue;
@@ -447,7 +634,7 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
       if (p.code === 344) blockHandleTrail = p.value.trim().toUpperCase();
       else if (p.code === 10) blockScaleTrail = { x: flt(p.value), y: nextY() };
       else if (p.code === 43) blockRotationTrail = flt(p.value);
-      else if (p.code === 330) pendingAttrs.push({});
+      else if (p.code === 330) pendingAttrs.push({ handle: p.value.trim().toUpperCase() });
       else if (p.code === 177 && pendingAttrs.length) pendingAttrs[pendingAttrs.length - 1]!.index = int(p.value);
       else if (p.code === 44 && pendingAttrs.length) pendingAttrs[pendingAttrs.length - 1]!.width = flt(p.value);
       else if (p.code === 302 && pendingAttrs.length) pendingAttrs[pendingAttrs.length - 1]!.text = p.value;
@@ -489,12 +676,38 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
       let ok = true;
       const attributes: MLeaderBlockAttribute[] = [];
       for (const pa of pendingAttrs) {
-        const defAttr = pa.index !== undefined && pa.index >= 0 ? def.attributes[pa.index] : undefined;
-        if (!defAttr) {
+        // S3-D (exposed by the lead's Fixture F): resolve the entry by its
+        // ATTDEF HANDLE — the entry's own 330 names the definition attribute
+        // outright, and a definition attribute's cadIdentity IS that handle —
+        // validated against the entry's 177 index under EITHER numbering:
+        // AutoCAD writes the 1-based ordinal (F: 1 and 2 for PART/REV), the
+        // slice-2 specimens the 0-based position. An index consistent with
+        // neither leaves the entry dangling (the slice-2 resolves-whole
+        // posture, unchanged); with no resolvable handle the index alone is
+        // the key, as before. The stored model index is the definition
+        // position either way. A group-44 width of 0 is AutoCAD's "no width"
+        // (the model admits only positive widths), not a zero width.
+        const byHandle = pa.handle ? def.attributes.find((a) => (a as { cadIdentity?: string }).cadIdentity?.toUpperCase() === pa.handle) : undefined;
+        let defAttr: AttributeDef | undefined;
+        let index: number | undefined;
+        if (byHandle) {
+          // The handle is authoritative; the index must corroborate it under
+          // one of the two numberings, or the entry contradicts itself and
+          // dangles — it never silently lands on the index's other attribute.
+          const p = def.attributes.indexOf(byHandle);
+          if (pa.index === undefined || pa.index === p || pa.index === p + 1) {
+            defAttr = byHandle;
+            index = p;
+          }
+        } else {
+          defAttr = pa.index !== undefined && pa.index >= 0 ? def.attributes[pa.index] : undefined;
+          index = pa.index;
+        }
+        if (!defAttr || index === undefined) {
           ok = false;
           break;
         }
-        attributes.push({ index: pa.index!, tag: defAttr.tag, value: pa.text ?? '', ...(pa.width !== undefined ? { width: pa.width } : {}) });
+        attributes.push({ index, tag: defAttr.tag, value: pa.text ?? '', ...(pa.width !== undefined && pa.width > 0 ? { width: pa.width } : {}) });
       }
       if (ok) {
         block = {
@@ -587,6 +800,12 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
     if (ok) contexts = built;
     else contextsWithheld = true;
   }
+  // S3-D: the object path's own legs withhold whole-entity even when the
+  // inline capture is clean — a dangling join, an unparseable referenced
+  // object, or the both-dialects conflict (RULING-P18-S3-D (1)(v) + (3)(iii)).
+  // The result is the same withheld shape as every other leg: no native data,
+  // the primary-only legacy entity, the caller reporting note + `simplified`.
+  if (chain.dangling || chain.unparseable || chain.conflict) contextsWithheld = true;
   const mleader: MLeaderNative | undefined = contextsWithheld
     ? undefined
     : block
