@@ -1291,6 +1291,18 @@ export function entityGeometryWork(entity: Entity): number {
     case 'leader':
       work += entity.vertices.length + (entity.text?.length ?? 0) + (entity.raw?.length ?? 0) + (entity.textColumns?.heights.length ?? 0) + (entity.mleader?.styleName.length ?? 0);
       for (const path of entity.extraPaths ?? []) work += path.length;
+      // AMENDMENT-P18-S3-C (LEAD RULING — P18 O-B): charge each native
+      // context's stored geometry — its leader-line path points and its
+      // text/raw, mirroring the primary's own charges above — so the
+      // document geometry budget (geometry-budget.ts) sees context
+      // geometry. Without this, a multi-context multileader charged as
+      // its primary alone and the stored-geometry aggregate cap could be
+      // exceeded by an arbitrary factor through contexts alone
+      // (acceptance observation O-B).
+      for (const context of entity.mleader?.contexts ?? []) {
+        for (const path of context.paths) work += path.length;
+        work += (context.text?.length ?? 0) + (context.raw?.length ?? 0);
+      }
       break;
     case 'text':
       work += entity.text.length;
