@@ -131,7 +131,10 @@ export function writePaperSpaceFlag(w: Writer, spaceOwner: string): void {
 
 export function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: string, subclass: string, spaceOwner = owner, extensionDictionary?: string): void {
   w.pair(0, kind);
-  const handle = w.reservedEntityHandles.get(e) ?? w.nextHandle();
+  // Reserve (rather than merely allocate) so a later record that references
+  // this entity — P17: a hatch's boundary-path 330 — names the same handle.
+  // Allocation order, and therefore every emitted handle, is unchanged.
+  const handle = w.reserveEntityHandle(e);
   w.pair(5, handle);
   w.anchor(handle, { kind: 'entity', id: e.id });
   // An extension dictionary rides between the handle and the owner, exactly
@@ -220,6 +223,8 @@ export interface WriteExtras {
   imageReactors: Map<ImageEntity, { reactor: string; image?: string; def: string }>;
   /** Native-table write data per table: its *T picture block (name + BLOCK_RECORD handle) and TABLESTYLE handle. */
   tableBlocks: Map<TableEntity, { name: string; recordHandle: string; styleHandle: string; roundtrip?: TableRoundtripPlan }>;
+  /** P17: every entity the writer will emit, by id — a hatch's boundary refs resolve through it. */
+  entityById?: ReadonlyMap<string, Entity>;
   /** DIMASZ × DIMSCALE of the header style (leaders store their arrow size as an override when it differs). */
   arrowSize: number;
 }

@@ -65,9 +65,9 @@ function readHatchLoop(c: Cursor): HatchLoop | null {
       pts.push(c.point(10));
       bulges.push(hasBulge && c.code === 42 ? flt(c.take(42)) : 0);
     }
-    c.sourceHandles(c.take(97));
+    const refs = c.sourceHandles(c.take(97));
     if (pts.length < 2) return null;
-    return { points: pts, ...(bulges.some((v) => Math.abs(v) > 1e-12) ? { bulges } : {}) };
+    return { points: pts, ...(bulges.some((v) => Math.abs(v) > 1e-12) ? { bulges } : {}), ...(refs.length ? { boundaryRefs: refs } : {}) };
   }
   const nEdges = c.count(c.required(c.seek(93, 3), 93), 93);
   for (let k = 0; k < nEdges; k += 1) {
@@ -126,8 +126,9 @@ function readHatchLoop(c: Cursor): HatchLoop | null {
       b.polyline(pts);
     } else throw new HatchReadError(`unsupported hatch edge type ${type}`);
   }
-  c.sourceHandles(c.seek(97, 2));
-  return b.loop();
+  const refs = c.sourceHandles(c.seek(97, 2));
+  const loop = b.loop();
+  return loop && refs.length ? { ...loop, boundaryRefs: refs } : loop;
 }
 
 /** Native AcDbHatch gradient data is independent of the ordinary pattern angle/scale. */

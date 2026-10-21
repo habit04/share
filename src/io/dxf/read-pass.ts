@@ -9,7 +9,8 @@ import type { Obj } from './groups';
 import type { RawDxfEntity } from '../import-report';
 import { isPointerCode, isRealCode, isRealText, isIntCode, PRECISION_CODES, isQuietXdataApp, ANNO_APP } from './codes';
 import { str, num, isIntegerText, shortText, invalidPrecision, precisionRequirement, has, HatchReadError, xdata } from './groups';
-import type { BlockDef, Entity, InsertEntity, TextEntity, AttributeAppearance } from '../../core/entities';
+import type { BlockDef, Entity, HatchEntity, InsertEntity, TextEntity, AttributeAppearance } from '../../core/entities';
+import type { HatchLoop } from '../../core/hatch';
 import type { ReadContext } from './read-core';
 import * as g from '../../core/geometry';
 import { reportObj, commonProps, commonAppearanceObject, reportDynamicDefinition } from './read-core';
@@ -224,6 +225,67 @@ function applyExtrusion(o: Obj, e: Entity, ctx: ReadContext): Entity {
   return e;
 }
 
+/**
+ * P17: resolve the boundary source handles the hatch reader captured on
+ * each loop (HatchLoop.boundaryRefs holds raw handles at this stage) to
+ * document entity ids, via the cadIdentity map of THIS entity list (a
+ * hatch and its boundaries live in the same space / block definition).
+ * Resolved loops keep entity ids; unresolved handles move to
+ * boundaryHandles — retained, reported, never written back as links. A
+ * bare associative flag with no resolvable link is cleared and reported
+ * (the writer cannot emit a flag without links; AutoCAD's AUDIT would
+ * repair it). Runs per list, in the LEADER-340 post-pass pattern.
+ */
+function resolveHatchAssociations(list: Entity[], hatchObjs: ReadonlyMap<HatchEntity, Obj>, ctx: ReadContext): void {
+  if (hatchObjs.size === 0) return;
+  const byHandle = new Map<string, string>();
+  for (const e of list) if (e.cadIdentity) byHandle.set(e.cadIdentity.trim().toUpperCase(), e.id);
+  for (const [hatch, o] of hatchObjs) {
+    const at = list.indexOf(hatch);
+    if (at < 0) continue;
+    let kept = 0;
+    let total = 0;
+    const unresolved: string[] = [];
+    let touched = false;
+    const loops: HatchLoop[] = hatch.loops.map((loop) => {
+      const handles = loop.boundaryRefs;
+      if (!handles || handles.length === 0) return loop;
+      total += handles.length;
+      const ids: string[] = [];
+      const raw: string[] = [...(loop.boundaryHandles ?? [])];
+      for (const h of handles) {
+        const id = byHandle.get(h.trim().toUpperCase());
+        if (id !== undefined && id !== hatch.id) ids.push(id);
+        else {
+          raw.push(h);
+          unresolved.push(h);
+        }
+      }
+      kept += ids.length;
+      touched = true;
+      const { boundaryRefs: _refs, boundaryHandles: _raw, ...rest } = loop;
+      return {
+        ...rest,
+        ...(ids.length ? { boundaryRefs: ids } : {}),
+        ...(raw.length ? { boundaryHandles: raw } : {}),
+      };
+    });
+    if (!touched) {
+      if (hatch.associative) {
+        const { associative: _a, ...rest } = hatch;
+        list[at] = { ...rest, loops: hatch.loops };
+        reportObj(ctx, o, 'simplified', 'associative hatch boundary links are not kept; its boundary geometry is kept and saved non-associative');
+      }
+      continue;
+    }
+    const { associative: _a, ...rest } = hatch;
+    list[at] = { ...rest, loops, ...(kept > 0 ? { associative: true } : {}) };
+    if (unresolved.length > 0) {
+      reportObj(ctx, o, 'simplified', `associative hatch: ${kept} of ${total} boundary links kept; unresolved boundary object handle(s) ${unresolved.join(', ')} are retained as raw handles on the loop and are not written back`);
+    }
+  }
+}
+
 /** Parse a list of entity objects, folding ATTRIB/SEQEND into inserts and VERTEX into polylines. */
 export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): Entity[] {
   const out: Entity[] = [];
@@ -253,7 +315,8 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
       reportObj(ctx, o, 'dropped', `invalid DSTYLE ${name} precision "${shortText(badPrecision[1])}": expected ${precisionRequirement(name)}`);
       return null;
     }
-    if (e.type === 'hatch' && e.associative) reportObj(ctx, o, 'simplified', 'associative hatch boundary links are not kept; its boundary geometry is kept and saved non-associative');
+    // P17: associative hatch boundary links are resolved after the pass
+    // (resolveHatchAssociations below) and reported there, not here.
     if (o.kind === 'ACAD_TABLE') reportObj(ctx, o, 'simplified', 'table cells, sizes and supported style defaults are kept; formulas, style font names, advanced borders and fills are not modeled; DXF export writes a native ACAD_TABLE');
     if (e.type === 'hatch' && e.gradient) {
       const gradientProblem = hatchGradientRenderProblem(e.gradient);
@@ -293,6 +356,8 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
   // LEADER -> MTEXT associations (340), resolved after the pass.
   const annotations = new Map<string, number>();
   const leaders: Array<{ index: number; handle: string }> = [];
+  // P17: hatch objects whose boundary links are resolved after the pass.
+  const hatchObjs = new Map<HatchEntity, Obj>();
   let i = 0;
   while (i < objs.length) {
     const o = objs[i]!;
@@ -404,6 +469,7 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
       i = j;
       continue;
     }
+    if (e && e.type === 'hatch') hatchObjs.set(e, o);
     if (e && e.type === 'insert') {
       const attribObjs: Obj[] = [];
       let j = i + 1;
@@ -435,6 +501,7 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
     if (e) out.push(e);
     i += 1;
   }
+  resolveHatchAssociations(out, hatchObjs, ctx);
   if (!leaders.length) return out;
   const drop = new Set<number>();
   for (const l of leaders) {
