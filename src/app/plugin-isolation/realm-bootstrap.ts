@@ -97,7 +97,9 @@ export function realmBootstrapMain(): void {
     // pre-assigned by the proxy) and the transact promise itself rejects if
     // the host rolls the batch back — plugins must treat transact() as the
     // commit point. Reads during a transaction go to the host and see
-    // committed state.
+    // committed state. Any OTHER mutating call is refused while a transact
+    // callback runs (see direct() below): it would take effect immediately
+    // and survive a rollback, breaking the §3/T9 atomicity promise (F-2).
     let staged: Array<{ method: string; args: unknown[] }> | null = null;
     let idSeq = 0;
     const provisionalId = (): string => `iso-${Date.now().toString(36)}-${++idSeq}`;
@@ -138,22 +140,44 @@ export function realmBootstrapMain(): void {
       return rpc(method, args);
     };
 
+    // F-2 (slice-1 acceptance): only the mutating() methods above can be
+    // staged. Every other call goes through direct(): read-only methods may
+    // run while a transaction is being staged (they see committed state),
+    // but a non-stageable MUTATING call is refused while a transact
+    // callback is active — executed immediately, it would survive the
+    // batch's rollback and silently break atomicity (§3 / T9). Fail-closed,
+    // like the rest of the realm: the plugin calls it outside transact().
+    const READ_ONLY = new Set([
+      'document.info', 'document.entities', 'document.entity', 'document.selection',
+      'document.layers', 'document.currentLayer', 'document.blocks', 'document.extents',
+      'document.header', 'settings.get', 'settings.keys', 'commands.list',
+      'geometry.bounds', 'electrical.components', 'electrical.wires',
+    ]);
+    const direct = (method: string, args: unknown[]): Promise<unknown> => {
+      if (staged && !READ_ONLY.has(method)) {
+        return Promise.reject(new Error(
+          `"${method}" cannot run inside document.transact in the isolated realm: it takes effect immediately and cannot be rolled back. Call it before or after the transaction instead.`,
+        ));
+      }
+      return rpc(method, args);
+    };
+
     const doc = {
-      info: () => rpc('document.info', []),
-      entities: (filter?: unknown) => rpc('document.entities', [filter ?? null]),
-      entity: (id: string) => rpc('document.entity', [id]),
-      selection: () => rpc('document.selection', []),
-      select: (ids: string[]) => rpc('document.select', [ids]),
+      info: () => direct('document.info', []),
+      entities: (filter?: unknown) => direct('document.entities', [filter ?? null]),
+      entity: (id: string) => direct('document.entity', [id]),
+      selection: () => direct('document.selection', []),
+      select: (ids: string[]) => direct('document.select', [ids]),
       add: (input: unknown) => mutating('document.add', [input]),
       replace: (input: unknown) => mutating('document.replace', [input]),
       remove: (ids: unknown) => mutating('document.remove', [ids]),
-      layers: () => rpc('document.layers', []),
-      currentLayer: () => rpc('document.currentLayer', []),
-      blocks: () => rpc('document.blocks', []),
-      extents: () => rpc('document.extents', []),
-      header: () => rpc('document.header', []),
-      undo: () => rpc('document.undo', []),
-      redo: () => rpc('document.redo', []),
+      layers: () => direct('document.layers', []),
+      currentLayer: () => direct('document.currentLayer', []),
+      blocks: () => direct('document.blocks', []),
+      extents: () => direct('document.extents', []),
+      header: () => direct('document.header', []),
+      undo: () => direct('document.undo', []),
+      redo: () => direct('document.redo', []),
       transact: (fn: () => unknown) => {
         if (staged) return Promise.reject(new Error('transact cannot be nested in the isolated API; finish the outer transaction first.'));
         if (typeof fn !== 'function') return Promise.reject(new TypeError('transact needs a function.'));
@@ -195,53 +219,58 @@ export function realmBootstrapMain(): void {
           if (!spec || typeof spec.run !== 'function') throw new TypeError('commands.register needs { name, run(jcad, arg) }.');
           const callback = registerCallback(spec.run as (...args: never[]) => unknown, 'command');
           const meta = { name: spec.name, aliases: spec.aliases ?? [], description: spec.description ?? '', override: spec.override === true };
-          return rpc('commands.register', [meta, callback]).then(() => () => rpc('commands.unregister', [String(spec.name)]));
+          return direct('commands.register', [meta, callback]).then(() => () => direct('commands.unregister', [String(spec.name)]));
         },
-        run: (cmdName: string, arg?: string) => rpc('commands.run', [cmdName, arg ?? null]),
-        list: () => rpc('commands.list', []),
+        run: (cmdName: string, arg?: string) => direct('commands.run', [cmdName, arg ?? null]),
+        list: () => direct('commands.list', []),
       },
       document: doc,
       electrical: {
-        components: () => rpc('electrical.components', []),
-        wires: () => rpc('electrical.wires', []),
+        components: () => direct('electrical.components', []),
+        wires: () => direct('electrical.wires', []),
         setAttributes: (id: string, values: Record<string, unknown>) => mutating('electrical.setAttributes', [id, values]),
-        crossReference: () => rpc('electrical.crossReference', []),
+        crossReference: () => direct('electrical.crossReference', []),
       },
       ui: {
-        log: (msg: unknown) => rpc('ui.log', [typeof msg === 'string' ? msg : JSON.stringify(msg) ?? String(msg)]),
-        prompt: (text: string, dflt?: string) => rpc('ui.prompt', [text, dflt ?? null]),
+        log: (msg: unknown) => direct('ui.log', [typeof msg === 'string' ? msg : JSON.stringify(msg) ?? String(msg)]),
+        prompt: (text: string, dflt?: string) => direct('ui.prompt', [text, dflt ?? null]),
         pick: {
-          point: (prompt?: string) => rpc('ui.pickPoint', [prompt ?? null]),
-          entities: (prompt?: string) => rpc('ui.pickEntities', [prompt ?? null]),
+          point: (prompt?: string) => direct('ui.pickPoint', [prompt ?? null]),
+          entities: (prompt?: string) => direct('ui.pickEntities', [prompt ?? null]),
         },
-        alert: (msg: string, title?: string) => rpc('ui.alert', [String(msg), title ?? null]),
-        confirm: (msg: string, title?: string) => rpc('ui.confirm', [String(msg), title ?? null]),
-        openDialog: (options: unknown) => rpc('ui.openDialog', [options]),
+        alert: (msg: string, title?: string) => direct('ui.alert', [String(msg), title ?? null]),
+        confirm: (msg: string, title?: string) => direct('ui.confirm', [String(msg), title ?? null]),
+        openDialog: (options: unknown) => direct('ui.openDialog', [options]),
       },
       events: {
         on: (ev: string, fn: (payload?: unknown) => void) => {
+          // events.on is synchronous, so the F-2 refusal throws here instead
+          // of rejecting (a rejected fire-and-forget RPC would be swallowed).
+          if (staged) {
+            throw new Error('"events.on" cannot run inside document.transact in the isolated realm: a subscription takes effect immediately and cannot be rolled back. Subscribe before or after the transaction instead.');
+          }
           const callback = registerCallback(fn as (...args: never[]) => unknown, 'event');
           eventsByFn.set(fn, callback);
           void rpc('events.on', [ev, callback]).catch(() => undefined);
-          return () => rpc('events.off', [ev, callback]);
+          return () => direct('events.off', [ev, callback]);
         },
         off: (ev: string, fn: (payload?: unknown) => void) => {
           const callback = eventsByFn.get(fn);
-          if (callback) return rpc('events.off', [ev, callback]);
+          if (callback) return direct('events.off', [ev, callback]);
           return Promise.resolve(false);
         },
       },
       settings: {
-        get: (key: string) => rpc('settings.get', [key]),
-        set: (key: string, value: unknown) => rpc('settings.set', [key, value]),
-        keys: () => rpc('settings.keys', []),
+        get: (key: string) => direct('settings.get', [key]),
+        set: (key: string, value: unknown) => direct('settings.set', [key, value]),
+        keys: () => direct('settings.keys', []),
       },
       files: {
-        requestRead: (accept?: string) => rpc('files.requestRead', [accept ?? null]),
-        readGrant: (grant: string) => rpc('files.readGrant', [grant]),
+        requestRead: (accept?: string) => direct('files.requestRead', [accept ?? null]),
+        readGrant: (grant: string) => direct('files.readGrant', [grant]),
         readText: (accept?: string) =>
-          rpc('files.requestRead', [accept ?? null]).then((g) => rpc('files.readGrant', [(g as { grant: string }).grant])),
-        saveText: (fileName: string, text: string, filterName?: string) => rpc('files.saveText', [fileName, text, filterName ?? null]),
+          direct('files.requestRead', [accept ?? null]).then((g) => direct('files.readGrant', [(g as { grant: string }).grant])),
+        saveText: (fileName: string, text: string, filterName?: string) => direct('files.saveText', [fileName, text, filterName ?? null]),
       },
       geometry: {
         // Pure math runs locally in the realm; bounds reads the drawing, so it is an RPC.
@@ -249,7 +278,7 @@ export function realmBootstrapMain(): void {
         angle: (from: { x: number; y: number }, to: { x: number; y: number }) => Math.atan2(to.y - from.y, to.x - from.x),
         polar: (from: { x: number; y: number }, angle: number, distance: number) => ({ x: from.x + Math.cos(angle) * distance, y: from.y + Math.sin(angle) * distance }),
         midpoint: (a: { x: number; y: number }, b: { x: number; y: number }) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }),
-        bounds: (items: unknown[]) => rpc('geometry.bounds', [items]),
+        bounds: (items: unknown[]) => direct('geometry.bounds', [items]),
         rad: (deg: number) => (deg * Math.PI) / 180,
         deg: (rad: number) => (rad * 180) / Math.PI,
       },
@@ -282,6 +311,16 @@ export function realmBootstrapMain(): void {
     lock('require', undefined);
     lock('Buffer', undefined);
     lock('jcad', undefined);
+    // F-1 (slice-1 acceptance, CRITICAL): the CommonJS identifiers are own
+    // properties of globalThis under the Node worker_threads realm, and the
+    // unlocked `module` was the bootstrap's real Module instance —
+    // module.require('node:fs') read host files from a zero-capability
+    // plugin. Lock all four alongside the others. (Browser realms have no
+    // CJS globals; defining them as undefined there is a no-op.)
+    lock('module', undefined);
+    lock('exports', undefined);
+    lock('__filename', undefined);
+    lock('__dirname', undefined);
   }
 
   // ---- message pump
