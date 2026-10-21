@@ -28,6 +28,8 @@ const { mleaderContextForScale, mleaderPrimaryContext, leaderWithMLeaderContext 
 import { readDxf, writeDxf } from '../src/io/dxf';
 import { importReportOf } from '../src/io/import-report';
 import { Drawing } from '../src/core/document';
+import { entityGeometryWork } from '../src/core/entities';
+import { MAX_DRAWING_EXPANSION_WORK, validateGeometryBudget } from '../src/core/geometry-budget';
 
 type Lines = string[];
 const styleTableLines: Lines = [
@@ -420,5 +422,58 @@ describe('P18 slice 3 (AMENDMENT-P18-S3-B): unterminated additional CONTEXT_DATA
     expect(l.mleader).toBeDefined();
     expect(l.mleader?.contexts).toBeUndefined();
     expect(l.text).toBe('PUMP P-101');
+  });
+});
+
+// ------------------------------------------------- O-B: geometry-work accounting for contexts
+// Observation O-B (reviews/P18-SLICE3-ACCEPTANCE.md, probe 9), fix ordered by
+// LEAD RULING — P18 O-B (2026-10-21) and filed as AMENDMENT-P18-S3-C
+// (FILED-UNADMITTED): entityGeometryWork charged NOTHING for a multileader's
+// contexts — a constant ~16–21 however much geometry they store — so the
+// document geometry budget (MAX_DRAWING_EXPANSION_WORK aggregate over stored
+// geometry) could be exceeded by an arbitrary factor through contexts alone.
+// The fix charges PER CONTEXT, mirroring the primary (its path points + its
+// text/raw). No budget constant changes; the validator's refusal is its own.
+describe('P18 slice 3 (AMENDMENT-P18-S3-C): entityGeometryWork charges mleader contexts per context', () => {
+  const ctxWith = (points: number, textLen: number): MLeaderContext => ({
+    scaleFactor: 0.5, landingGap: 0.09, textHeight: 0.25, arrowSize: 0.2,
+    paths: [Array.from({ length: points }, (_, i) => ({ x: i, y: 0 }))],
+    text: 'C'.repeat(textLen),
+  });
+  const contextFree = (): LeaderEntity => {
+    const e = authored();
+    const { contexts: _dropped, ...nativeRest } = e.mleader!;
+    return { ...e, mleader: nativeRest };
+  };
+
+  it('pins: charges for non-mleader entities and context-free mleaders are unchanged in value', () => {
+    expect(entityGeometryWork({ id: 'l1', type: 'line', layer: '0', color: 'ByLayer', a: { x: 0, y: 0 }, b: { x: 1, y: 1 } })).toBe(1);
+    // 1 base + 2 vertices + 10 text chars + 8 style-name chars ('Standard').
+    expect(entityGeometryWork(contextFree())).toBe(21);
+  });
+
+  it('charges each context its path points + text, mirroring the primary', () => {
+    // Primary 21 + context (3 points + 4 chars) + context (5 points + 6 chars).
+    expect(entityGeometryWork(authored([ctxWith(3, 4), ctxWith(5, 6)]))).toBe(39);
+  });
+
+  it('a many-context entity whose true stored geometry exceeds the cap is refused by the existing budget validation', () => {
+    // 200 contexts x (5,200 path points + 100 text chars) = 1,060,000 of
+    // context work alone — over the 1,000,000 aggregate cap. Pre-fix the
+    // charge is the context-free 21 and the state validates: the hole.
+    const e = authored(Array.from({ length: 200 }, () => ctxWith(5200, 100)));
+    expect(entityGeometryWork(e)).toBe(21 + 200 * 5300);
+    expect(entityGeometryWork(e)).toBeGreaterThan(MAX_DRAWING_EXPANSION_WORK);
+    const state = { ...new Drawing().snapshot, entities: [e] };
+    expect(() => validateGeometryBudget(state)).toThrow(/Drawing expansion exceeds the safe geometry budget/);
+  });
+
+  it('an ordinary imported multi-context leader validates fine, charged proportionally', () => {
+    const s = readDxf(twoCtxDxf);
+    const l = s.entities[0] as LeaderEntity;
+    // Primary 21 + the one context (2 path points + 10 text chars).
+    expect(entityGeometryWork(l)).toBe(33);
+    const state = { ...new Drawing().snapshot, entities: [l] };
+    expect(() => validateGeometryBudget(state)).not.toThrow();
   });
 });
