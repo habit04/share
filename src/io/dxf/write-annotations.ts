@@ -259,6 +259,186 @@ export function writeLeader(w: Writer, e: LeaderEntity, owner: string, extras: W
   });
 }
 
+// ONE view per context of a native multileader (slice 3): the primary first
+// — built from the entity fields with the exact slice-1/2 values — then each
+// additional context from its record, in the same shape. Since S3-D the
+// views are consumed two ways from this ONE construction: writeMLeader emits
+// the primary's view as the entity's single inline CONTEXT_DATA section, and
+// writer.ts's OBJECTS context-objects block emits EVERY view (the primary's
+// included) as a context object — the same body, without the 300/301
+// section wrappers (RULING-P18-S3-D (1)(vi) + Amendment 2 (ii)).
+export interface MLeaderCtxView {
+  scaleFactor: number;
+  basePoint: g.Point;
+  textHeight: number;
+  arrowSize: number;
+  landingGap: number;
+  block?: { position: g.Point; scale: g.Point; rotation: number };
+  hasText: boolean;
+  text?: string;
+  raw?: string;
+  textStyleName: string;
+  textPosition: g.Point;
+  textRotation: number;
+  textWidth: number;
+  textLineSpacing: number;
+  attachment: number;
+  paths: readonly (readonly g.Point[])[];
+  dogleg?: g.Point;
+}
+export function emitMLeaderContext(w: Writer, v: MLeaderCtxView, blockRecordHandle: string | undefined, section: boolean): void {
+  const vDoglegLength = v.dogleg ? g.len(v.dogleg) : 0;
+  // CONTEXT_DATA{ ... } — for block content the context base point (10) is the
+  // block position, as AutoCAD writes it; otherwise the last leader point.
+  if (section) w.pair(300, 'CONTEXT_DATA{');
+  w.pair(40, v.scaleFactor);
+  w.pair(10, v.basePoint.x);
+  w.pair(20, v.basePoint.y);
+  w.pair(30, 0);
+  w.pair(41, v.textHeight);
+  w.pair(140, v.arrowSize);
+  w.pair(145, v.landingGap);
+  w.pair(174, 1);
+  w.pair(175, 1);
+  w.pair(176, 0);
+  w.pair(177, 0);
+  w.pair(290, 1);
+  if (v.block) {
+    // Slice 2 block content in CONTEXT_DATA: signal, record, placement. The 47
+    // transformation matrix (derived from position/scale/rotation), the 93
+    // block colour and the 14 normal are NOT written — the model is 2D with
+    // normal (0,0,1) and Z scale 1 (36), as PROPOSAL-P18-S2 documents.
+    w.pair(296, 1);
+    w.pair(341, blockRecordHandle!);
+    w.pair(15, v.block.position.x);
+    w.pair(25, v.block.position.y);
+    w.pair(35, 0);
+    w.pair(16, v.block.scale.x);
+    w.pair(26, v.block.scale.y);
+    w.pair(36, 1);
+    w.pair(46, v.block.rotation);
+  }
+  if (v.hasText) {
+    const source = formattedSource({ text: v.text!, ...(v.raw ? { raw: v.raw } : {}) }) ?? mtextToDxf(v.text!);
+    w.pair(304, source);
+    w.pair(11, 0);
+    w.pair(21, 0);
+    w.pair(31, 1);
+    const styleHandle = w.textStyleHandles.get(v.textStyleName.toUpperCase()) ?? w.textStyleHandles.get('STANDARD');
+    if (styleHandle) w.pair(340, styleHandle);
+    w.pair(12, v.textPosition.x);
+    w.pair(22, v.textPosition.y);
+    w.pair(32, 0);
+    w.pair(13, Math.cos(v.textRotation));
+    w.pair(23, Math.sin(v.textRotation));
+    w.pair(33, 0);
+    w.pair(42, v.textRotation);
+    w.pair(43, v.textWidth);
+    w.pair(44, 0);
+    w.pair(45, v.textLineSpacing);
+  }
+  w.pair(170, 1);
+  w.pair(90, -1073741824);
+  if (v.hasText) {
+    w.pair(171, v.attachment);
+    w.pair(172, 5);
+  }
+  // One LEADER{ cluster per distinct landing point; its LEADER_LINE{ blocks are
+  // the leader lines that share that landing (the specimen's shape).
+  const paths = v.paths.filter((p) => p.length >= 2);
+  const clusters = new Map<string, { landing: g.Point; lines: g.Point[][] }>();
+  for (const path of paths) {
+    const landing = path[path.length - 1]!;
+    const key = `${landing.x},${landing.y}`;
+    const cluster = clusters.get(key) ?? { landing, lines: [] };
+    cluster.lines.push(path.slice(0, -1));
+    clusters.set(key, cluster);
+  }
+  let firstCluster = true;
+  for (const cluster of clusters.values()) {
+    w.pair(302, 'LEADER{');
+    w.pair(290, 1);
+    w.pair(291, 1);
+    w.pair(10, cluster.landing.x);
+    w.pair(20, cluster.landing.y);
+    w.pair(30, 0);
+    if (firstCluster && v.dogleg && vDoglegLength > 1e-12) {
+      const dir = g.normalize(v.dogleg);
+      w.pair(11, dir.x);
+      w.pair(21, dir.y);
+      w.pair(31, 0);
+    }
+    w.pair(90, 0);
+    if (firstCluster && vDoglegLength > 1e-12) w.pair(40, vDoglegLength);
+    cluster.lines.forEach((line, idx) => {
+      w.pair(304, 'LEADER_LINE{');
+      for (const p of line) {
+        w.pair(10, p.x);
+        w.pair(20, p.y);
+        w.pair(30, 0);
+      }
+      w.pair(91, idx);
+      w.pair(305, '}');
+    });
+    w.pair(303, '}');
+    firstCluster = false;
+  }
+  if (section) w.pair(301, '}');
+}
+
+export function mleaderContextViews(e: LeaderEntity): MLeaderCtxView[] {
+  const native = e.mleader!;
+  const block = native.contentType === 'block' ? native.block : undefined;
+  const hasText = native.contentType === 'mtext' && !!e.text;
+  const lastMain = e.vertices[e.vertices.length - 1] ?? { x: 0, y: 0 };
+  const primary: MLeaderCtxView = {
+    scaleFactor: native.scaleFactor,
+    basePoint: block ? block.position : lastMain,
+    textHeight: e.textHeight,
+    arrowSize: e.arrowSize,
+    landingGap: native.landingGap,
+    ...(block ? { block: { position: block.position, scale: block.scale, rotation: block.rotation } } : {}),
+    hasText,
+    ...(e.text ? { text: e.text } : {}),
+    ...(e.raw ? { raw: e.raw } : {}),
+    textStyleName: native.textStyleName ?? textStyleOf(e) ?? 'Standard',
+    textPosition: e.textPosition ?? (e.dogleg ? g.add(lastMain, e.dogleg) : lastMain),
+    textRotation: e.textRotation ?? 0,
+    textWidth: e.textWidth ?? 0,
+    textLineSpacing: e.textLineSpacing ?? 1,
+    attachment: leaderTextAttachment(e),
+    paths: [[...e.vertices], ...(e.extraPaths ?? [])],
+    ...(e.dogleg ? { dogleg: e.dogleg } : {}),
+  };
+  const rest = (native.contexts ?? []).map((c): MLeaderCtxView => {
+    const cMain = c.paths[0];
+    const cLast = cMain && cMain.length ? cMain[cMain.length - 1]! : { x: 0, y: 0 };
+    return {
+      scaleFactor: c.scaleFactor,
+      basePoint: c.block ? c.block.position : cLast,
+      textHeight: c.textHeight,
+      arrowSize: c.arrowSize,
+      landingGap: c.landingGap,
+      ...(c.block ? { block: c.block } : {}),
+      hasText: native.contentType === 'mtext' && !!c.text,
+      ...(c.text ? { text: c.text } : {}),
+      ...(c.raw ? { raw: c.raw } : {}),
+      textStyleName: c.textStyleName ?? native.textStyleName ?? textStyleOf(e) ?? 'Standard',
+      textPosition: c.textPosition ?? (c.dogleg ? g.add(cLast, c.dogleg) : cLast),
+      textRotation: c.textRotation ?? 0,
+      textWidth: c.textWidth ?? 0,
+      // Per-context line spacing is not a modelled group in this codec (the
+      // reader does not capture group 45 for any context, the primary
+      // included); additional contexts write the constant.
+      textLineSpacing: 1,
+      attachment: c.textAttachment ?? leaderTextAttachment(e),
+      paths: c.paths,
+      ...(c.dogleg ? { dogleg: c.dogleg } : {}),
+    };
+  });
+  return [primary, ...rest];
+}
+
 /**
  * P18: a native MULTILEADER (AcDbMLeader) for a `kind: 'mleader'` entity that
  * carries modeled native data (MTEXT, no content, or — slice 2 — block
@@ -301,174 +481,8 @@ export function writeMLeader(w: Writer, e: LeaderEntity, owner: string): void {
   const hasText = native.contentType === 'mtext' && !!e.text;
   const lastMain = e.vertices[e.vertices.length - 1] ?? { x: 0, y: 0 };
   const doglegLength = e.dogleg ? g.len(e.dogleg) : 0;
-  // ONE CONTEXT_DATA section per context (slice 3): the primary first — built
-  // from the entity fields with the exact slice-1/2 values, so single-context
-  // output is byte-identical — then each additional context from its record,
-  // in the same shape. The block record handle is shared (one content block
-  // per entity, resolved above before any group was written).
-  interface CtxView {
-    scaleFactor: number;
-    basePoint: g.Point;
-    textHeight: number;
-    arrowSize: number;
-    landingGap: number;
-    block?: { position: g.Point; scale: g.Point; rotation: number };
-    hasText: boolean;
-    text?: string;
-    raw?: string;
-    textStyleName: string;
-    textPosition: g.Point;
-    textRotation: number;
-    textWidth: number;
-    textLineSpacing: number;
-    attachment: number;
-    paths: readonly (readonly g.Point[])[];
-    dogleg?: g.Point;
-  }
-  const emitContext = (v: CtxView): void => {
-    const vDoglegLength = v.dogleg ? g.len(v.dogleg) : 0;
-    // CONTEXT_DATA{ ... } — for block content the context base point (10) is the
-    // block position, as AutoCAD writes it; otherwise the last leader point.
-    w.pair(300, 'CONTEXT_DATA{');
-    w.pair(40, v.scaleFactor);
-    w.pair(10, v.basePoint.x);
-    w.pair(20, v.basePoint.y);
-    w.pair(30, 0);
-    w.pair(41, v.textHeight);
-    w.pair(140, v.arrowSize);
-    w.pair(145, v.landingGap);
-    w.pair(174, 1);
-    w.pair(175, 1);
-    w.pair(176, 0);
-    w.pair(177, 0);
-    w.pair(290, 1);
-    if (v.block) {
-      // Slice 2 block content in CONTEXT_DATA: signal, record, placement. The 47
-      // transformation matrix (derived from position/scale/rotation), the 93
-      // block colour and the 14 normal are NOT written — the model is 2D with
-      // normal (0,0,1) and Z scale 1 (36), as PROPOSAL-P18-S2 documents.
-      w.pair(296, 1);
-      w.pair(341, blockRecordHandle!);
-      w.pair(15, v.block.position.x);
-      w.pair(25, v.block.position.y);
-      w.pair(35, 0);
-      w.pair(16, v.block.scale.x);
-      w.pair(26, v.block.scale.y);
-      w.pair(36, 1);
-      w.pair(46, v.block.rotation);
-    }
-    if (v.hasText) {
-      const source = formattedSource({ text: v.text!, ...(v.raw ? { raw: v.raw } : {}) }) ?? mtextToDxf(v.text!);
-      w.pair(304, source);
-      w.pair(11, 0);
-      w.pair(21, 0);
-      w.pair(31, 1);
-      const styleHandle = w.textStyleHandles.get(v.textStyleName.toUpperCase()) ?? w.textStyleHandles.get('STANDARD');
-      if (styleHandle) w.pair(340, styleHandle);
-      w.pair(12, v.textPosition.x);
-      w.pair(22, v.textPosition.y);
-      w.pair(32, 0);
-      w.pair(13, Math.cos(v.textRotation));
-      w.pair(23, Math.sin(v.textRotation));
-      w.pair(33, 0);
-      w.pair(42, v.textRotation);
-      w.pair(43, v.textWidth);
-      w.pair(44, 0);
-      w.pair(45, v.textLineSpacing);
-    }
-    w.pair(170, 1);
-    w.pair(90, -1073741824);
-    if (v.hasText) {
-      w.pair(171, v.attachment);
-      w.pair(172, 5);
-    }
-    // One LEADER{ cluster per distinct landing point; its LEADER_LINE{ blocks are
-    // the leader lines that share that landing (the specimen's shape).
-    const paths = v.paths.filter((p) => p.length >= 2);
-    const clusters = new Map<string, { landing: g.Point; lines: g.Point[][] }>();
-    for (const path of paths) {
-      const landing = path[path.length - 1]!;
-      const key = `${landing.x},${landing.y}`;
-      const cluster = clusters.get(key) ?? { landing, lines: [] };
-      cluster.lines.push(path.slice(0, -1));
-      clusters.set(key, cluster);
-    }
-    let firstCluster = true;
-    for (const cluster of clusters.values()) {
-      w.pair(302, 'LEADER{');
-      w.pair(290, 1);
-      w.pair(291, 1);
-      w.pair(10, cluster.landing.x);
-      w.pair(20, cluster.landing.y);
-      w.pair(30, 0);
-      if (firstCluster && v.dogleg && vDoglegLength > 1e-12) {
-        const dir = g.normalize(v.dogleg);
-        w.pair(11, dir.x);
-        w.pair(21, dir.y);
-        w.pair(31, 0);
-      }
-      w.pair(90, 0);
-      if (firstCluster && vDoglegLength > 1e-12) w.pair(40, vDoglegLength);
-      cluster.lines.forEach((line, idx) => {
-        w.pair(304, 'LEADER_LINE{');
-        for (const p of line) {
-          w.pair(10, p.x);
-          w.pair(20, p.y);
-          w.pair(30, 0);
-        }
-        w.pair(91, idx);
-        w.pair(305, '}');
-      });
-      w.pair(303, '}');
-      firstCluster = false;
-    }
-    w.pair(301, '}');
-  };
-  emitContext({
-    scaleFactor: native.scaleFactor,
-    basePoint: block ? block.position : lastMain,
-    textHeight: e.textHeight,
-    arrowSize: e.arrowSize,
-    landingGap: native.landingGap,
-    ...(block ? { block: { position: block.position, scale: block.scale, rotation: block.rotation } } : {}),
-    hasText,
-    ...(e.text ? { text: e.text } : {}),
-    ...(e.raw ? { raw: e.raw } : {}),
-    textStyleName: native.textStyleName ?? textStyleOf(e) ?? 'Standard',
-    textPosition: e.textPosition ?? (e.dogleg ? g.add(lastMain, e.dogleg) : lastMain),
-    textRotation: e.textRotation ?? 0,
-    textWidth: e.textWidth ?? 0,
-    textLineSpacing: e.textLineSpacing ?? 1,
-    attachment: leaderTextAttachment(e),
-    paths: [[...e.vertices], ...(e.extraPaths ?? [])],
-    ...(e.dogleg ? { dogleg: e.dogleg } : {}),
-  });
-  for (const c of native.contexts ?? []) {
-    const cMain = c.paths[0];
-    const cLast = cMain && cMain.length ? cMain[cMain.length - 1]! : { x: 0, y: 0 };
-    emitContext({
-      scaleFactor: c.scaleFactor,
-      basePoint: c.block ? c.block.position : cLast,
-      textHeight: c.textHeight,
-      arrowSize: c.arrowSize,
-      landingGap: c.landingGap,
-      ...(c.block ? { block: c.block } : {}),
-      hasText: native.contentType === 'mtext' && !!c.text,
-      ...(c.text ? { text: c.text } : {}),
-      ...(c.raw ? { raw: c.raw } : {}),
-      textStyleName: c.textStyleName ?? native.textStyleName ?? textStyleOf(e) ?? 'Standard',
-      textPosition: c.textPosition ?? (c.dogleg ? g.add(cLast, c.dogleg) : cLast),
-      textRotation: c.textRotation ?? 0,
-      textWidth: c.textWidth ?? 0,
-      // Per-context line spacing is not a modelled group in this codec (the
-      // reader does not capture group 45 for any context, the primary
-      // included); additional contexts write the constant.
-      textLineSpacing: 1,
-      attachment: c.textAttachment ?? leaderTextAttachment(e),
-      paths: c.paths,
-      ...(c.dogleg ? { dogleg: c.dogleg } : {}),
-    });
-  }
+  const views = mleaderContextViews(e);
+  emitMLeaderContext(w, views[0]!, blockRecordHandle, true);
   // Common MLeader data after the context section (specimen order).
   const styleHandle = w.mleaderStyleHandles.get(native.styleName.toUpperCase());
   if (styleHandle) w.pair(340, styleHandle);

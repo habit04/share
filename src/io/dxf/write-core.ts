@@ -41,6 +41,13 @@ export class Writer {
    *  loop as each ATTDEF is written; a block mleader's attribute entry (group 330) must name
    *  the handle of this file, which only the writer knows. */
   readonly blockAttdefHandles = new Map<string, string>();
+  /** P18 S3-D (Amendment 2 (iv)): extension-dictionary chain handles per
+   *  multi-context native mleader — extension, manager and scales dictionary
+   *  handles plus one context-object handle per context INCLUDING the
+   *  primary's, in dictionary order. Allocated by W-ALLOC-18; consumed by
+   *  writeEntityCommon's gated subgroup and writer.ts's W-OBJECTS
+   *  context-objects block. */
+  readonly mleaderContextChains = new WeakMap<Entity, MLeaderContextChainHandles>();
   readonly dimensionStyles = new Map<string, DimStyle>();
   readonly reservedEntityHandles = new WeakMap<Entity, string>();
   reserveEntityHandle(entity: Entity): string {
@@ -76,6 +83,19 @@ function colorCode(c: ColorSpec): number {
   return c === 'ByLayer' ? 256 : c;
 }
 
+/**
+ * P18 S3-D (Amendment 2 (iv)): the extension-dictionary chain handles of one
+ * native multileader carrying annotative contexts — see Writer's
+ * mleaderContextChains field. `objects` holds one handle per context object,
+ * the primary's first (dictionary order).
+ */
+export interface MLeaderContextChainHandles {
+  extension: string;
+  manager: string;
+  scales: string;
+  objects: string[];
+}
+
 /** Block-record handles of paper-space layouts while writeDxf runs: their entities get group 67 = 1 (Track E). */
 let paperOwners: ReadonlySet<string> = new Set();
 
@@ -101,9 +121,22 @@ export function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: str
   // where AutoCAD puts it (the genuine AC1015 table control): 102 block, the
   // hard-owner 360, 102 close. Only the native table's roundtrip chain uses
   // this today (P22 F-2 successor).
-  if (extensionDictionary) {
+  // P18 S3-D (Amendment 2 (v)): the ONE gated insertion — a native mleader
+  // carrying annotative contexts names its extension dictionary here, in
+  // the fixture-verified position (after group 5, before group 330).
+  // Entities without a chain entry emit byte-identical output.
+  // Composition (lead ruling at the P18 rebase onto the P22 PR-fix head):
+  // the explicit parameter is consulted first, the mleader context-chain
+  // map second. The two mechanisms serve disjoint entity kinds (ACAD_TABLE
+  // vs MULTILEADER), so both naming one entity is a programming error.
+  const contextChain = w.mleaderContextChains.get(e);
+  if (extensionDictionary && contextChain) {
+    throw new Error(`Entity ${e.id} has both an explicit extension dictionary and an mleader context chain; only one mechanism may name an entity's extension dictionary.`);
+  }
+  const extensionDictHandle = extensionDictionary ?? contextChain?.extension;
+  if (extensionDictHandle) {
     w.pair(102, '{ACAD_XDICTIONARY');
-    w.pair(360, extensionDictionary);
+    w.pair(360, extensionDictHandle);
     w.pair(102, '}');
   }
   w.pair(330, owner);

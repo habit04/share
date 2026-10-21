@@ -15,7 +15,7 @@ import type { LeaderEntity } from '../src/core/entities';
 import { translateEntity, rotateEntity, scaleEntityBy, mirrorEntityAcross } from '../src/core/entities';
 import { mleaderNativeProblem } from '../src/core/multileader';
 import type { MLeaderContext } from '../src/core/multileader';
-import { annotativeEntity, cannoscaleValue } from '../src/core/layouts';
+import { annotativeEntity } from '../src/core/layouts';
 import * as layouts from '../src/core/layouts';
 // The slice-3 layouts exports, read through the namespace so this file still
 // collects at the slice-2 head (where they do not exist) and each case fails
@@ -66,6 +66,20 @@ const twoCtxDxf = dxfOf([...mlHead, ...ctx1, ...ctx2, ...trailingMText]);
 const reportOf = (state: ReturnType<typeof readDxf>) =>
   (importReportOf(state)?.items ?? []).map((i) => ({ type: i.type, action: i.action, reason: i.reason }));
 const ctxCount = (dxf: string) => (dxf.match(/CONTEXT_DATA\{/g) ?? []).length;
+/** S3-D: the (290 default flag, group 40) header pairs of the written
+ *  ACDB_MLEADEROBJECTCONTEXTDATA_CLASS records, in file order. */
+const objectHeaders = (dxf: string): Array<[string, string]> => {
+  const lines = dxf.split(/\r?\n/);
+  const headers: Array<[string, string]> = [];
+  for (let i = 0; i + 1 < lines.length; i += 2) {
+    if (lines[i]!.trim() !== '0' || lines[i + 1]!.trim() !== 'ACDB_MLEADEROBJECTCONTEXTDATA_CLASS') continue;
+    const groups: Array<[string, string]> = [];
+    for (let j = i + 2; j + 1 < lines.length && lines[j]!.trim() !== '0'; j += 2) groups.push([lines[j]!.trim(), lines[j + 1]!]);
+    const at = groups.findIndex(([c, v]) => c === '100' && v.trim() === 'AcDbObjectContextData');
+    headers.push([groups.slice(at).find(([c]) => c === '290')![1].trim(), groups.slice(at).find(([c]) => c === '40')![1].trim()]);
+  }
+  return headers;
+};
 
 describe('P18 slice 3: two-context MTEXT multileader imports as modelled contexts', () => {
   it('keeps the primary intact (no doubled text, no overwritten scale) and models the second context', () => {
@@ -99,7 +113,12 @@ describe('P18 slice 3: two-context MTEXT multileader imports as modelled context
   it('write -> read is a fixed point with both contexts in file order', () => {
     const s = readDxf(twoCtxDxf);
     const out = writeDxf(s);
-    expect(ctxCount(out)).toBe(2);
+    // S3-D re-pin (RULING-P18-S3-D (1)(vi)): the writer no longer emits the
+    // additional context inline — ONE inline section (the primary) plus the
+    // OBJECTS layout: a context object per context INCLUDING the primary's
+    // (290 = 1), group 40s verbatim, in file order.
+    expect(ctxCount(out)).toBe(1);
+    expect(objectHeaders(out)).toEqual([['1', '1'], ['0', '0.5']]);
     const back = readDxf(out);
     const l = back.entities[0] as LeaderEntity;
     expect(l.mleader).toEqual((s.entities[0] as LeaderEntity).mleader);
@@ -113,7 +132,9 @@ describe('P18 slice 3: two-context MTEXT multileader imports as modelled context
     const d = new Drawing();
     d.addEntities([authored()]);
     const out = writeDxf(d.snapshot);
-    expect(ctxCount(out)).toBe(2);
+    // S3-D re-pin: same object layout as the imported case (see above).
+    expect(ctxCount(out)).toBe(1);
+    expect(objectHeaders(out)).toEqual([['1', '1'], ['0', '0.5']]);
     const back = readDxf(out);
     const l = back.entities[0] as LeaderEntity;
     const cs = l.mleader?.contexts;
@@ -159,7 +180,15 @@ describe('P18 slice 3: layouts-routed annotative scale resolution', () => {
     const l = imported();
     expect(mleaderPrimaryContext(l).scaleFactor).toBe(1);
     expect(mleaderPrimaryContext(l).paths).toEqual([[{ x: 7, y: 3 }, { x: 10, y: 5 }]]);
-    expect(mleaderContextForScale(l, cannoscaleValue('1:2'))?.scaleFactor).toBe(0.5);
+    // S3-D re-pin (RULING-P18-S3-D (2) + (3)(viii)): the match argument is
+    // the annotative factor f ITSELF (drawing units per paper unit — the
+    // stored group 40's own units). This specimen's second context stores
+    // 40 = 0.5, which under the corrected convention is the 2:1
+    // representation: it resolves at f = 0.5 and NOT at f = 2 (no 1:2
+    // context exists in this specimen). The pre-S3-D assertion called with
+    // cannoscaleValue('1:2') — the reciprocal convention Recipe #4 refuted.
+    expect(mleaderContextForScale(l, 0.5)?.scaleFactor).toBe(0.5);
+    expect(mleaderContextForScale(l, 2)).toBeUndefined();
     expect(mleaderContextForScale(l, 1)?.scaleFactor).toBe(1);
     expect(mleaderContextForScale(l, 0.25)).toBeUndefined();
     expect(leaderWithMLeaderContext(l, mleaderPrimaryContext(l))).toBe(l);
@@ -167,18 +196,24 @@ describe('P18 slice 3: layouts-routed annotative scale resolution', () => {
 
   it('annotativeEntity shows the matching context representation, not a uniform scale', () => {
     const l = imported();
-    const at2 = annotativeEntity(l, 2) as LeaderEntity; // factor 2 <=> annotation scale 1:2
+    // S3-D re-pin: the specimen's stored-0.5 context is the 2:1
+    // representation, projected at annotative factor 0.5 (CANNOSCALE 2:1).
+    const at2 = annotativeEntity(l, 0.5) as LeaderEntity; // factor 0.5 <=> annotation scale 2:1
     expect(at2).not.toBe(l);
     expect(at2.vertices).toEqual([{ x: 4, y: 1.5 }, { x: 5, y: 2.5 }]);
     expect(at2.textPosition).toEqual({ x: 5.5, y: 2.6 });
-    expect(at2.textHeight).toBeCloseTo(0.25); // the context's own height — NOT doubled
+    expect(at2.textHeight).toBeCloseTo(0.25); // the context's own height — NOT scaled
     expect(at2.mleader?.scaleFactor).toBe(0.5);
     const acs = at2.mleader?.contexts;
     expect(acs).toHaveLength(1);
     expect(acs![0]!.scaleFactor).toBe(1); // old primary demoted, order kept
     // At the primary's own scale the entity is returned unchanged (no double-apply).
     expect(annotativeEntity(l, 1)).toBe(l);
-    // No matching context: today's uniform scaling, untouched.
+    // No matching context (this specimen has no 1:2 context): today's
+    // uniform scaling of the primary, untouched.
+    const at12 = annotativeEntity(l, 2) as LeaderEntity;
+    expect(at12.textHeight).toBeCloseTo(0.5);
+    expect(at12.mleader?.scaleFactor).toBe(1);
     const at4 = annotativeEntity(l, 4) as LeaderEntity;
     expect(at4.textHeight).toBeCloseTo(1);
     expect(at4.vertices).toEqual([{ x: 7, y: 3 }, { x: 10, y: 5 }]);
@@ -317,7 +352,10 @@ describe('P18 slice 3: three-context block-content multileader', () => {
     expect(contexts![1]!.block).toEqual({ position: { x: 2.6, y: 1.25 }, scale: { x: 0.5, y: 0.5 }, rotation: 0.35 });
     expect(notes.join(' ')).toMatch(/annotative contexts are kept as native data/);
     const out = writeDxf(s);
-    expect(ctxCount(out)).toBe(3);
+    // S3-D re-pin: one inline section + one context object per context
+    // (the primary's first, 290 = 1), group 40s verbatim.
+    expect(ctxCount(out)).toBe(1);
+    expect(objectHeaders(out)).toEqual([['1', '1'], ['0', '0.5'], ['0', '0.25']]);
     expect((out.match(/GEAR-9/g) ?? []).length).toBe(1);
     const back = readDxf(out);
     const lb = back.entities.find((e): e is LeaderEntity => e.type === 'leader')!;

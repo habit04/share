@@ -14,7 +14,7 @@ import { findLinetype, patternLength, STANDARD_LINETYPES, complexLinetypeProblem
 import { Writer, setPaperOwners, emptyExtras, writeTextLike, writeTextStyle, writeEntityCommon } from './write-core';
 import { DEFAULT_HEADER } from '../../core/document';
 import { planLayouts, extraBlockRecords, layoutHandleOf, writeLayoutContent, writeLayoutObjects } from '../dxf-layouts';
-import { isScaleName } from '../../core/layouts';
+import { cannoscaleValue, formatScale, isScaleName } from '../../core/layouts';
 import type { WriteExtras } from './write-core';
 import * as g from '../../core/geometry';
 import { dimHeaderVars, dimStylesToWrite, dimStyleXdata } from './dimstyles';
@@ -31,7 +31,7 @@ import { writeRetainedSolid } from './model3d-carriers';
 import type { CadNode } from '../../core/cad-graph';
 import { dimStyleRecordPairs } from '../../core/dimension';
 import { writeEntityAnno, writeEntity } from './write-entities';
-import { tableStyleKey, tablePictureForm, tableRoundtripCells, writeTableRoundtrip } from './write-annotations';
+import { tableStyleKey, tablePictureForm, tableRoundtripCells, writeTableRoundtrip, emitMLeaderContext, mleaderContextViews } from './write-annotations';
 import { attdefFlags } from '../../electrical/symbol-builder-core';
 import { tableParts, dimensionParts } from '../../core/entities';
 import { entityMTextBackground } from '../../core/mtext-background';
@@ -39,6 +39,7 @@ import { materializePolylineWidthFrames } from './polyline-width-blocks';
 import { LAYER_TRANSPARENCY_APP, transparencyToDxf, validColorName } from '../../core/appearance';
 import { namedCameraDisplayCenter, planarNamedCamera } from '../../core/named-view';
 import { annotationScaleRatio, graphAnnotationCarrier, graphTableRoundtripCarriers, preserveDxfCadGraph } from '../cad-graph-dxf';
+import { canonicalCadHandle } from '../../core/cad-graph';
 
 /** Linetype names referenced anywhere in the drawing (layers, entities, block entities). */
 function usedLinetypes(state: DrawingState): Linetype[] {
@@ -90,6 +91,83 @@ function dimensionPictureKey(d: DimensionEntity): string {
     return value;
   };
   return JSON.stringify(dimensionParts(d).map((part) => canonical({ ...part, color: part.color === 'ByLayer' ? 0 : part.color })));
+}
+
+/**
+ * P18 S3-D: the graph copy handed to the cad-graph merge, with the source
+ * annotative chains of MODELLED multi-context multileaders removed.
+ *
+ * Why this exists: the merge retains every source OBJECTS record the writer
+ * does not regenerate through an anchor or a root-dictionary path key — and
+ * an entity's extension-dictionary chain is reachable by neither (it hangs
+ * off the entity record, not the named-objects root), so without this the
+ * writer's own chain (Amendment 2) and the retained source chain would BOTH
+ * be written, growing by one chain per save and resurrecting stale contexts
+ * after edits. The writer owns the chains of the entities it models (the
+ * same principle by which modelled entities are regenerated, not retained);
+ * everything else in the graph is passed through untouched, node for node.
+ * The walk is all-or-nothing per entity and type-checked at every link: a
+ * chain whose shape does not resolve exactly as RULING-P18-S3-D (1)(ii)
+ * pins it is left fully retained. The state's graph is COPIED, never
+ * mutated; with no modelled chain the input state is returned as-is.
+ */
+function graphWithoutModelledContextChains(state: DrawingState, w: Writer, entities: readonly Entity[]): DrawingState {
+  const graph = state.cadGraph;
+  if (!graph) return state;
+  const chained = new Set(entities.filter((e) => w.mleaderContextChains.has(e)).map((e) => e.id));
+  const byHandle = new Map(graph.nodes.flatMap((n) => (n.sourceHandle ? [[canonicalCadHandle(n.sourceHandle), n] as const] : [])));
+  const entryTarget = (node: CadNode, keyUpper: string): CadNode | undefined => {
+    for (let i = 0; i + 1 < node.groups.length; i += 1) {
+      const [code, name] = node.groups[i]!;
+      if (code === 3 && name.trim().toUpperCase() === keyUpper && [350, 360].includes(node.groups[i + 1]![0])) {
+        return byHandle.get(canonicalCadHandle(node.groups[i + 1]![1].trim()));
+      }
+    }
+    return undefined;
+  };
+  const drop = new Set<string>();
+  const stripped = new Map<string, CadNode>();
+  for (const node of graph.nodes) {
+    // Only entities the writer itself emits a chain for (W-ALLOC-18 WeakMap).
+    if (node.anchor?.kind !== 'entity' || !chained.has(node.anchor.id)) continue;
+    let at = -1;
+    for (let i = 0; i + 1 < node.groups.length; i += 1) {
+      if (node.groups[i]![0] === 102 && node.groups[i]![1].includes('ACAD_XDICTIONARY') && node.groups[i + 1]![0] === 360) {
+        at = i;
+        break;
+      }
+    }
+    if (at < 0) continue;
+    const ext = byHandle.get(canonicalCadHandle(node.groups[at + 1]![1].trim()));
+    if (!ext || ext.type !== 'DICTIONARY') continue;
+    const manager = entryTarget(ext, 'ACDBCONTEXTDATAMANAGER');
+    if (!manager || manager.type !== 'DICTIONARY') continue;
+    const scales = entryTarget(manager, 'ACDB_ANNOTATIONSCALES');
+    if (!scales || scales.type !== 'DICTIONARY') continue;
+    const objects: CadNode[] = [];
+    let resolves = true;
+    for (let i = 0; i + 1 < scales.groups.length; i += 1) {
+      if (scales.groups[i]![0] !== 3 || scales.groups[i + 1]![0] !== 350) continue;
+      const target = byHandle.get(canonicalCadHandle(scales.groups[i + 1]![1].trim()));
+      if (!target || target.type !== 'ACDB_MLEADEROBJECTCONTEXTDATA_CLASS') {
+        resolves = false;
+        break;
+      }
+      objects.push(target);
+    }
+    if (!resolves) continue;
+    for (const n of [ext, manager, scales, ...objects]) drop.add(n.id);
+    // The entity node's own extension subgroup is writer-generated now too
+    // (Amendment 2 (v)); strip the source copy (and reindex its references)
+    // so the merge has no stale subgroup metadata to splice back in.
+    const groups = node.groups.filter((_, i) => i < at || i > at + 2);
+    const references = (node.references ?? []).flatMap((ref) =>
+      ref.groupIndex >= at && ref.groupIndex <= at + 2 ? [] : [{ ...ref, groupIndex: ref.groupIndex > at + 2 ? ref.groupIndex - 3 : ref.groupIndex }],
+    );
+    stripped.set(node.id, { ...node, groups, ...(node.references ? { references } : {}) });
+  }
+  if (!drop.size) return state;
+  return { ...state, cadGraph: { ...graph, nodes: graph.nodes.filter((n) => !drop.has(n.id)).map((n) => stripped.get(n.id) ?? n) } };
 }
 
 export function writeDxf(state: DrawingState): string {
@@ -237,6 +315,26 @@ export function writeDxf(state: DrawingState): string {
   // mleader => the map stays empty and nothing changes.
   if ([...mleaderStyles.values()].some((d) => d.contentType === 1)) {
     for (const [name, handle] of blockRecordHandles) w.blockRecordHandles.set(name.toUpperCase(), handle);
+  }
+  // P18 S3-D (Amendment 2 (i), W-ALLOC-18 extended): for each native mleader
+  // carrying annotative contexts, in allEntities order, pre-allocate its
+  // extension-dictionary chain handles — THREE dictionary handles (extension,
+  // manager, scales; the filing asked for one, the lead's fixtures decide
+  // three) plus one context-object handle per context INCLUDING the primary's.
+  // The entity's own handle is reserved here too, so the OBJECTS block can
+  // name it as the extension dictionary's owner (330) after ENTITIES is
+  // written. No contexts => no allocation, no output: byte-identical.
+  let mleaderContextObjectCount = 0;
+  for (const e of allEntities) {
+    if (e.type !== 'leader' || e.kind !== 'mleader' || !e.mleader?.contexts?.length) continue;
+    w.reserveEntityHandle(e);
+    const extension = w.nextHandle();
+    const manager = w.nextHandle();
+    const scales = w.nextHandle();
+    const objects: string[] = [];
+    for (let i = 0; i <= e.mleader.contexts.length; i += 1) objects.push(w.nextHandle());
+    w.mleaderContextChains.set(e, { extension, manager, scales, objects });
+    mleaderContextObjectCount += objects.length;
   }
   // Choose the highest native format required anywhere, including associated text/attributes.
   const appearances = [...allEntities, ...state.layers, ...blockList.flatMap((b) => b.attributes),
@@ -387,6 +485,22 @@ export function writeDxf(state: DrawingState): string {
     if (mleaderDict) {
       // P18: registered like the other OBJECTS-resident classes above.
       cls('MLEADERSTYLE', 'AcDbMLeaderStyle', 0, false, mleaderStyles.size);
+      if (mleaderContextObjectCount) {
+        // P18 S3-D (Amendment 2 (iii)): registered immediately after
+        // MLEADERSTYLE, with the fixture-verified values (Recipe #4 fixtures,
+        // fact F1): app name 'ObjectDBX Classes', group 90 = 1153; group 91
+        // (instance count) omitted at AC1015, exactly as the SCALE
+        // registration below omits it. Written manually because `cls`
+        // hardcodes the 'ISM' application name.
+        w.pair(0, 'CLASS');
+        w.pair(1, 'ACDB_MLEADEROBJECTCONTEXTDATA_CLASS');
+        w.pair(2, 'AcDbMLeaderObjectContextData');
+        w.pair(3, 'ObjectDBX Classes');
+        w.pair(90, 1153);
+        if (acadVersion !== 'AC1015') w.pair(91, mleaderContextObjectCount);
+        w.pair(280, 0);
+        w.pair(281, 0);
+      }
     }
     if (createCannoVariable || createAnnoVariable) {
       // AutoCAD's specimen registration (the HANDBUILT fixtures): app name
@@ -1041,10 +1155,94 @@ export function writeDxf(state: DrawingState): string {
       }
     }
   }
+  if (mleaderContextObjectCount) {
+    // P18 S3-D (Amendment 2 (ii)): the context-object chains, one per
+    // multi-context native mleader, in allEntities order, immediately after
+    // the MLEADERSTYLE block: extension dictionary -> manager dictionary ->
+    // scales dictionary -> the context objects (the primary's first, then
+    // the additionals in model order). Group order mirrors the lead's
+    // AutoCAD 2027 fixtures group-for-group (facts F1/F3): the manager entry
+    // is a 360 SOFT pointer, the scales entry and the scales dictionary's
+    // '*A<n>' entries are 350 pointers, each object carries 70 = 4 and the
+    // 290 default flag on the primary's object only. An object's group 340
+    // (its SCALE reference) rides ONLY when this file's own scale-list
+    // emission includes that context's scale (RULING-P18-S3-D (5)(vi)(alpha)
+    // — in practice the writer-created SCALE object for the current
+    // cannoscale, matched by canonical scale NAME through layouts.ts's
+    // machinery); otherwise the object is emitted WITHOUT a 340 and nothing
+    // is fabricated ((5)(vi)(beta)) — no native annotative claim stands for
+    // out-of-list scales until the lead's native gate answers it.
+    for (const e of allEntities) {
+      const chain = w.mleaderContextChains.get(e);
+      if (!chain || e.type !== 'leader' || !e.mleader) continue;
+      const entityHandle = w.reservedEntityHandles.get(e)!;
+      const views = mleaderContextViews(e);
+      let blockRecordHandle: string | undefined;
+      if (e.mleader.contentType === 'block') {
+        blockRecordHandle = w.blockRecordHandles.get(e.mleader.block!.name.toUpperCase());
+        if (!blockRecordHandle) throw new Error(`Cannot write native MULTILEADER contexts: content block "${e.mleader.block!.name}" has no block record in this file.`);
+      }
+      const scaleHandleFor = (scaleFactor: number): string | undefined =>
+        scaleListDictionary && scaleObject && state.header?.cannoscale !== undefined &&
+        formatScale(1 / scaleFactor) === formatScale(cannoscaleValue(state.header.cannoscale))
+          ? scaleObject
+          : undefined;
+      // Extension dictionary (owner: the entity itself).
+      w.pair(0, 'DICTIONARY');
+      w.pair(5, chain.extension);
+      w.pair(330, entityHandle);
+      w.pair(100, 'AcDbDictionary');
+      w.pair(280, 1);
+      w.pair(281, 1);
+      w.pair(3, 'AcDbContextDataManager');
+      w.pair(360, chain.manager);
+      // Manager dictionary (owner/reactor: the extension dictionary).
+      w.pair(0, 'DICTIONARY');
+      w.pair(5, chain.manager);
+      w.pair(102, '{ACAD_REACTORS');
+      w.pair(330, chain.extension);
+      w.pair(102, '}');
+      w.pair(330, chain.extension);
+      w.pair(100, 'AcDbDictionary');
+      w.pair(281, 1);
+      w.pair(3, 'ACDB_ANNOTATIONSCALES');
+      w.pair(350, chain.scales);
+      // Scales dictionary (owner/reactor: the manager dictionary).
+      w.pair(0, 'DICTIONARY');
+      w.pair(5, chain.scales);
+      w.pair(102, '{ACAD_REACTORS');
+      w.pair(330, chain.manager);
+      w.pair(102, '}');
+      w.pair(330, chain.manager);
+      w.pair(100, 'AcDbDictionary');
+      w.pair(281, 1);
+      views.forEach((v, i) => {
+        w.pair(3, `*A${i + 1}`);
+        w.pair(350, chain.objects[i]!);
+      });
+      // The context objects themselves, in the same (dictionary) order.
+      views.forEach((v, i) => {
+        w.pair(0, 'ACDB_MLEADEROBJECTCONTEXTDATA_CLASS');
+        w.pair(5, chain.objects[i]!);
+        w.pair(102, '{ACAD_REACTORS');
+        w.pair(330, chain.scales);
+        w.pair(102, '}');
+        w.pair(330, chain.scales);
+        w.pair(100, 'AcDbObjectContextData');
+        w.pair(70, 4);
+        w.pair(290, i === 0 ? 1 : 0);
+        w.pair(100, 'AcDbAnnotScaleObjectContextData');
+        const scaleRef = scaleHandleFor(v.scaleFactor);
+        if (scaleRef) w.pair(340, scaleRef);
+        w.pair(40, v.scaleFactor);
+        emitMLeaderContext(w, v, blockRecordHandle, false);
+      });
+    }
+  }
   w.pair(0, 'ENDSEC');
   w.pair(0, 'EOF');
   // The handle seed must exceed every handle used in the file.
   // AC1015 is read in the $DWGCODEPAGE page: non-ASCII goes out as \U+XXXX escapes (see io/encoding.ts).
-  const plain = preserveDxfCadGraph(w.toString(), state, w.cadAnchors);
+  const plain = preserveDxfCadGraph(w.toString(), mleaderContextObjectCount ? graphWithoutModelledContextChains(state, w, allEntities) : state, w.cadAnchors);
   return encodeDxfText(plain.replace('HANDSEED_PLACEHOLDER', (w.lastHandle() + 1).toString(16).toUpperCase()), acadVersion);
 }
