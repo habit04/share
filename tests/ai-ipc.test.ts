@@ -223,9 +223,10 @@ afterEach(() => { if (harness) rmSync(harness.dir, { recursive: true, force: tru
 describe('ai IPC registration (guarded context)', () => {
   beforeEach(() => { harness = makeHarness(); });
 
-  it('registers exactly the twelve ai channels through the context ipcMain', () => {
+  it('registers exactly the fourteen ai channels through the context ipcMain', () => {
     expect([...harness.handlers.keys()].sort()).toEqual([
-      'ai-ask', 'ai-cancel', 'ai-draft', 'ai-draft-refine', 'ai-forget-key', 'ai-get-state', 'ai-set-enabled',
+      'ai-ask', 'ai-cancel', 'ai-draft', 'ai-draft-refine', 'ai-forget-key', 'ai-get-state',
+      'ai-live-checks-cancel', 'ai-live-checks-run', 'ai-set-enabled',
       'ai-set-key', 'ai-set-model', 'ai-set-provider', 'ai-test-connection', 'ai-usage',
     ]);
   });

@@ -11,7 +11,7 @@ import { FixtureDraftProvider } from '../ai/fixture-draft';
 import { LiveProvider, LiveDraftProvider } from '../ai/live-provider';
 import { serializeSnapshot } from '../ai/snapshot';
 import { INSUNIT_NAMES } from '../core/units';
-import type { WindowAiConnection, AiConnectionState } from '../ai/host-bridge';
+import type { WindowAiConnection, AiConnectionState, AiLiveChecksReport } from '../ai/host-bridge';
 import { aiBindingsEqual, AiError, type AiBinding, type AiDraftProvider, type AiProvider, type AiSnapshot } from '../ai/types';
 import { icon } from './icons';
 
@@ -61,6 +61,35 @@ function retentionNote(provider: string): string {
 
 function probeNote(provider: string): string {
   return `Test Connection makes a real ${providerLabel(provider)} API call with a fixed message and no drawing content. It may incur a small charge on your account.`;
+}
+
+/** Fixed warning shown above the live-checks controls (docs/AI-LIVE-CHECKS.md). */
+const LIVE_CHECKS_NOTE = 'Live checks make up to four real OpenAI/Anthropic API calls — a connection probe, one question, one draft and one refinement — about a fixed test drawing that is not yours. They may incur a small charge on your account. Nothing in your drawing is sent, changed, or saved.';
+
+/**
+ * Render a live-checks report exactly as the harness core renders it
+ * (electron/ai-live-checks-core.cjs formatReportText, including its
+ * provider labels): the report is the acceptance artifact, so its text
+ * must not drift between the main process and this panel.
+ */
+function liveChecksReportText(report: AiLiveChecksReport): string {
+  const labels: Readonly<Record<string, string>> = { openai: 'OpenAI', anthropic: 'Anthropic Claude' };
+  const label = (report.provider ? labels[report.provider] : undefined) ?? report.provider ?? 'No provider';
+  const lines = [`JCad live provider checks — ${label} · ${report.model ?? 'no model'}`];
+  if (report.status === 'refused') {
+    lines.push(`Result: REFUSED (${report.refusal ?? 'unknown reason'}) — no provider call was made.`);
+    return lines.join('\n');
+  }
+  const verdict = { pass: 'PASS', fail: 'FAIL', cancelled: 'CANCELLED' }[report.status] ?? report.status.toUpperCase();
+  const tokens = report.totals.tokens
+    ? `, ${report.totals.tokens.inputTokens} input / ${report.totals.tokens.outputTokens} output tokens reported`
+    : '';
+  lines.push(`Result: ${verdict} — ${report.totals.attempts} service attempt(s) in ${report.totals.durationMs} ms${tokens}.`);
+  report.checks.forEach((check, index) => {
+    const usage = check.usage ? ` [${check.usage.inputTokens ?? '?'} in / ${check.usage.outputTokens ?? '?'} out tokens]` : '';
+    lines.push(`${index + 1}. ${check.title} — ${check.status.toUpperCase()}${check.errorKind ? ` (${check.errorKind})` : ''} — ${check.detail ?? ''}${usage}`);
+  });
+  return lines.join('\n');
 }
 
 function credentialNote(problem: string): string {
@@ -144,7 +173,15 @@ export class AiAssistantPanel {
     saveKeyBtn: HTMLButtonElement; forgetKeyBtn: HTMLButtonElement; testBtn: HTMLButtonElement;
     probeNoteEl: HTMLElement; retentionEl: HTMLElement;
     enableCheck: HTMLInputElement; stateEl: HTMLElement; errorEl: HTMLElement;
+    liveRunBtn: HTMLButtonElement; liveCancelBtn: HTMLButtonElement;
+    liveConfirmEl: HTMLElement; liveConfirmText: HTMLElement;
+    liveConfirmBtn: HTMLButtonElement; liveConfirmCancelBtn: HTMLButtonElement;
+    liveResultEl: HTMLElement;
   } | null = null;
+  /** Live provider checks: a run is main-side; the panel only starts/cancels it and renders the report. */
+  private liveChecksRunning = false;
+  /** The destination a shown live-checks confirmation is pinned to; any settings change clears it. */
+  private liveConfirm: { provider: string; model: string } | null = null;
   /** Provider the settings controls were last rendered for (preset rebuilds). */
   private renderedProvider: string | null = null;
   private connectionBusy = false;
@@ -912,6 +949,7 @@ export class AiAssistantPanel {
   private hide(): void {
     this.draftUiEpoch += 1;
     this.clearKeyInput();
+    this.resetLiveChecksConfirm();
     // A staged preview must not linger on the canvas with no panel to act on it.
     this.draftController.invalidate();
     this.clearDraftOverlay();
@@ -930,6 +968,9 @@ export class AiAssistantPanel {
     if (this.disposed || this.connectionBusy) return null;
     this.connectionBusy = true;
     const epoch = ++this.connectionEpoch;
+    // Any connection operation supersedes a pending live-checks
+    // confirmation: its pinned destination may be about to change.
+    this.liveConfirm = null;
     if (invalidate) {
       this.draftConfigEpoch += 1;
       this.controller.cancel();
@@ -970,6 +1011,31 @@ export class AiAssistantPanel {
     els.forgetKeyBtn.disabled = !ready || !(this.connState?.keyPresent || this.connState?.keyStored);
     els.testBtn.disabled = !ready || !this.connState?.keyPresent || !!this.connState?.credentialProblem;
     els.enableCheck.disabled = !ready || !this.connState?.keyPresent || !!this.connState?.credentialProblem;
+    // Live checks spend real provider calls, so they need the full
+    // precondition set the host enforces: key present, provider enabled,
+    // no credential or configuration problem.
+    const liveReady = ready && !!this.connState?.keyPresent && !!this.connState?.enabled
+      && !this.connState?.credentialProblem && !this.connState?.configProblem;
+    els.liveRunBtn.disabled = !liveReady || this.liveChecksRunning;
+    els.liveConfirmBtn.disabled = !liveReady || this.liveChecksRunning;
+    els.liveCancelBtn.disabled = !this.liveChecksRunning;
+    this.renderLiveChecks();
+  }
+
+  /** Show exactly one of: Run button, inline confirmation, Cancel while running. */
+  private renderLiveChecks(): void {
+    const els = this.settingsEls;
+    if (!els) return;
+    const confirming = !this.liveChecksRunning && this.liveConfirm !== null;
+    els.liveRunBtn.classList.toggle('hidden', this.liveChecksRunning || confirming);
+    els.liveCancelBtn.classList.toggle('hidden', !this.liveChecksRunning);
+    els.liveConfirmEl.classList.toggle('hidden', !confirming);
+  }
+
+  /** Drop a pending live-checks confirmation without touching a running run. */
+  private resetLiveChecksConfirm(): void {
+    this.liveConfirm = null;
+    this.renderLiveChecks();
   }
 
   // ------------------------------------------------------------ connection
@@ -1088,6 +1154,49 @@ export class AiAssistantPanel {
     probeNoteEl.className = 'ai-note';
     probeNoteEl.textContent = probeNote('openai');
 
+    // Live provider checks (docs/AI-LIVE-CHECKS.md): a manual, two-step
+    // acceptance aid under Test Connection. The first click only reveals
+    // the confirmation; the run itself executes main-side over the
+    // payload-free channel and this panel just renders its report.
+    const liveBlock = document.createElement('div');
+    liveBlock.className = 'ai-live-checks';
+    const liveLabel = document.createElement('div');
+    liveLabel.className = 'ai-section-label';
+    liveLabel.textContent = 'Live provider checks';
+    const liveNoteEl = document.createElement('div');
+    liveNoteEl.className = 'ai-note';
+    liveNoteEl.textContent = LIVE_CHECKS_NOTE;
+    const liveButtons = document.createElement('div');
+    liveButtons.className = 'ai-buttons';
+    const liveRunBtn = document.createElement('button');
+    liveRunBtn.className = 'ai-live-checks-run';
+    liveRunBtn.textContent = 'Run Live Checks';
+    liveRunBtn.addEventListener('click', () => this.showLiveChecksConfirm());
+    const liveCancelBtn = document.createElement('button');
+    liveCancelBtn.className = 'ai-live-checks-cancel hidden';
+    liveCancelBtn.textContent = 'Cancel checks';
+    liveCancelBtn.addEventListener('click', () => { void this.cancelLiveChecks(); });
+    liveButtons.append(liveRunBtn, liveCancelBtn);
+    const liveConfirmEl = document.createElement('div');
+    liveConfirmEl.className = 'ai-live-checks-confirm hidden';
+    const liveConfirmText = document.createElement('div');
+    liveConfirmText.className = 'ai-note';
+    const liveConfirmButtons = document.createElement('div');
+    liveConfirmButtons.className = 'ai-buttons';
+    const liveConfirmBtn = document.createElement('button');
+    liveConfirmBtn.className = 'ai-live-checks-confirm-run';
+    liveConfirmBtn.textContent = 'Run checks';
+    liveConfirmBtn.addEventListener('click', () => { void this.runLiveChecks(); });
+    const liveConfirmCancelBtn = document.createElement('button');
+    liveConfirmCancelBtn.className = 'ai-live-checks-confirm-cancel';
+    liveConfirmCancelBtn.textContent = 'Cancel';
+    liveConfirmCancelBtn.addEventListener('click', () => this.resetLiveChecksConfirm());
+    liveConfirmButtons.append(liveConfirmBtn, liveConfirmCancelBtn);
+    liveConfirmEl.append(liveConfirmText, liveConfirmButtons);
+    const liveResultEl = document.createElement('pre');
+    liveResultEl.className = 'ai-sent ai-live-checks-result hidden';
+    liveBlock.append(liveLabel, liveNoteEl, liveButtons, liveConfirmEl, liveResultEl);
+
     const enableRow = document.createElement('div');
     enableRow.className = 'ai-field-row';
     const enableCheck = document.createElement('input');
@@ -1109,13 +1218,15 @@ export class AiAssistantPanel {
 
     section.append(
       label, accountNote, stateEl, providerRow, modelRow, keyLabel, keyInput, persistRow, keyButtons,
-      probeNoteEl, enableRow, retention, errorEl,
+      probeNoteEl, liveBlock, enableRow, retention, errorEl,
     );
     this.settingsEls = {
       providerSelect, modelSelect, modelCustom, keyLabel, keyInput,
       persistSession, persistEncrypted,
       saveKeyBtn, forgetKeyBtn, testBtn, probeNoteEl, retentionEl: retention,
       enableCheck, stateEl, errorEl,
+      liveRunBtn, liveCancelBtn, liveConfirmEl, liveConfirmText,
+      liveConfirmBtn, liveConfirmCancelBtn, liveResultEl,
     };
     return section;
   }
@@ -1218,6 +1329,75 @@ export class AiAssistantPanel {
     } finally {
       this.finishConnectionOperation(epoch);
     }
+  }
+
+  /**
+   * First click of Run Live Checks: reveal the inline confirmation
+   * naming the live destination. Nothing is invoked — the run starts
+   * only on the second, explicit click (docs/AI-LIVE-CHECKS.md).
+   */
+  private showLiveChecksConfirm(): void {
+    const els = this.settingsEls;
+    const state = this.connState;
+    if (!els || !state || this.liveChecksRunning || this.connectionBusy) return;
+    this.liveConfirm = { provider: state.provider, model: state.model };
+    els.liveConfirmText.textContent = `Run 4 checks against ${providerLabel(state.provider)} · ${state.model} now?`;
+    this.renderLiveChecks();
+  }
+
+  /**
+   * Second click: run the fixed live-checks sequence main-side. The
+   * confirmation was pinned to a destination; if the connection state
+   * has moved since it was shown, the run is refused here and the
+   * confirmation is dropped — a run never starts against a destination
+   * the user did not confirm.
+   */
+  private async runLiveChecks(): Promise<void> {
+    const els = this.settingsEls;
+    if (!els || !this.connection || this.liveChecksRunning) return;
+    const confirm = this.liveConfirm;
+    const state = this.connState;
+    if (!confirm || !state || state.provider !== confirm.provider || state.model !== confirm.model) {
+      this.resetLiveChecksConfirm();
+      return;
+    }
+    // Marked running before the operation starts so the availability
+    // pass it triggers enables Cancel and disables re-entry.
+    this.liveChecksRunning = true;
+    const epoch = this.startConnectionOperation('Running live provider checks…', false);
+    if (epoch === null) {
+      this.liveChecksRunning = false;
+      this.renderLiveChecks();
+      return;
+    }
+    this.renderLiveChecks();
+    // A new run supersedes any earlier report: clear and hide the
+    // previous result at admission, so a rejection of this invocation
+    // can never leave a stale PASS on screen reading as current.
+    els.liveResultEl.textContent = '';
+    els.liveResultEl.classList.add('hidden');
+    try {
+      const report = await this.connection.runLiveChecks();
+      if (!this.currentConnectionOperation(epoch)) return;
+      els.liveResultEl.textContent = liveChecksReportText(report);
+      els.liveResultEl.classList.remove('hidden');
+      if (this.connState) this.setConnState(this.connState);
+    } catch (cause) {
+      if (this.currentConnectionOperation(epoch)) {
+        this.setConnError(cause);
+        if (this.connState) this.setConnState(this.connState);
+      }
+    } finally {
+      this.liveChecksRunning = false;
+      this.finishConnectionOperation(epoch);
+      this.renderLiveChecks();
+    }
+  }
+
+  /** Cancel the active run (owner-checked main-side); the run settles as cancelled. */
+  private async cancelLiveChecks(): Promise<void> {
+    if (!this.connection) return;
+    try { await this.connection.cancelLiveChecks(); } catch { /* The run settles on its own; cancellation is best-effort. */ }
   }
 
   private setConnError(cause: unknown): void {

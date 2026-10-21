@@ -46,6 +46,38 @@ export interface AiProbeResult {
   readonly outputTokens?: number;
 }
 
+/** One check inside a live-checks report (docs/AI-LIVE-CHECKS.md). */
+export interface AiLiveCheckEntry {
+  readonly id: string;
+  readonly title: string;
+  readonly status: 'pass' | 'fail' | 'blocked' | 'skipped' | 'cancelled';
+  readonly detail?: string;
+  readonly errorKind?: string;
+  readonly durationMs?: number;
+  readonly usage?: { readonly inputTokens?: number; readonly outputTokens?: number };
+}
+
+/**
+ * The bounded live-checks report: counts, statuses and error kinds only —
+ * never key material, provider bodies or the Ask answer text. Mirrors the
+ * report the harness core builds in electron/ai-live-checks-core.cjs.
+ */
+export interface AiLiveChecksReport {
+  readonly kind: 'jcad.ai.live-checks-report';
+  readonly version: 1;
+  readonly runTag: string;
+  readonly provider: string | null;
+  readonly model: string | null;
+  readonly status: 'pass' | 'fail' | 'refused' | 'cancelled';
+  readonly refusal: string | null;
+  readonly checks: readonly AiLiveCheckEntry[];
+  readonly totals: {
+    readonly attempts: number;
+    readonly durationMs: number;
+    readonly tokens?: { readonly inputTokens: number; readonly outputTokens: number };
+  };
+}
+
 interface AiIpcErrorPayload {
   readonly kind?: unknown;
   readonly message?: unknown;
@@ -63,6 +95,8 @@ export interface AiPreloadBridge {
   forgetKey(): Promise<AiResult<{ state: AiConnectionState }>>;
   setEnabled(enabled: boolean): Promise<AiResult<{ state: AiConnectionState }>>;
   testConnection(): Promise<AiResult<{ probe: AiProbeResult }>>;
+  runLiveChecks(): Promise<AiResult<{ report: AiLiveChecksReport }>>;
+  cancelLiveChecks(): Promise<AiResult<{ cancelled: boolean }>>;
   ask(request: AiAskRequest): Promise<AiResult<{ answer: unknown }>>;
   draft(request: AiDraftRequest): Promise<AiResult<{ draft: unknown }>>;
   draftRefine(request: AiDraftRefineRequest): Promise<AiResult<{ draft: unknown }>>;
@@ -237,6 +271,32 @@ export class WindowAiConnection {
   async forgetKey(): Promise<AiConnectionState> { return unwrap(await this.raw.forgetKey()).state; }
   async setEnabled(enabled: boolean): Promise<AiConnectionState> { return unwrap(await this.raw.setEnabled(enabled)).state; }
   async testConnection(): Promise<AiProbeResult> { return unwrap(await this.raw.testConnection()).probe; }
+
+  /**
+   * Run the manual live-provider checks (docs/AI-LIVE-CHECKS.md). The
+   * channel takes no payload: the run is the fixed sequence against the
+   * destination the host state already reports, executed main-side with
+   * the key the user saved in these settings — no key material ever
+   * crosses this bridge. Older hosts without the channels fail closed.
+   */
+  async runLiveChecks(): Promise<AiLiveChecksReport> {
+    if (typeof this.raw.runLiveChecks !== 'function') {
+      throw new AiError('host-unavailable', 'The AI host does not support live provider checks. Update JCad before running live checks.');
+    }
+    const { report } = unwrap(await this.raw.runLiveChecks());
+    if (!report || typeof report !== 'object' || Array.isArray(report)
+      || typeof (report as AiLiveChecksReport).status !== 'string'
+      || !Array.isArray((report as AiLiveChecksReport).checks)) {
+      throw new AiError('host-unavailable', 'The AI host returned an invalid live-checks report.');
+    }
+    return report;
+  }
+
+  /** Cancel the running live-checks run, if this window owns one. */
+  async cancelLiveChecks(): Promise<boolean> {
+    if (typeof this.raw.cancelLiveChecks !== 'function') return false;
+    return unwrap(await this.raw.cancelLiveChecks()).cancelled;
+  }
 }
 
 /** The bridge when the app runs in a plain browser (no Electron preload). */
