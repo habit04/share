@@ -48,7 +48,6 @@ const { registerPlotIpc } = require('./main/ipc-plot.cjs');
 const { registerStoreIpc } = require('./main/ipc-stores.cjs');
 const { registerXrefIpc } = require('./main/ipc-xrefs.cjs');
 const { registerShxIpc } = require('./main/ipc-shx.cjs');
-const { runStartupMigration } = require('./main/startup-migration.cjs');
 const { registerUpdatesIpc } = require('./main/updates.cjs');
 const { createHandover } = require('./main/handover.cjs');
 const { createFontMetricsHost } = require('./font-metrics-host.cjs');
