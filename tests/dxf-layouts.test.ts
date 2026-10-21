@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readDxf, writeDxf } from '../src/io/dxf';
+import { annotationScaleRatio } from '../src/io/cad-graph-dxf';
 import { Drawing, type DrawingState } from '../src/core/document';
-import type { Entity, TextEntity, InsertEntity } from '../src/core/entities';
+import type { Entity, TextEntity, InsertEntity, MTextEntity } from '../src/core/entities';
 import { defaultLayout, paperFor, sheetSize, isScaleName, VIEWPORT_LAYER, type Layout } from '../src/core/layouts';
 import { TITLE_BLOCK } from '../src/electrical/templates';
 
@@ -71,7 +72,15 @@ describe('DXF layouts: round trip', () => {
     const links = p.filter(([c]) => c === 340).map(([, v]) => v).filter((h) => layoutHandles.has(h));
     expect(links).toHaveLength(3);
     expect(p.filter(([c, v]) => c === 67 && v === '1').length).toBeGreaterThan(5);
-    expect(p.some(([c, v]) => c === 9 && v === '$CANNOSCALE')).toBe(true);
+    // Q11 F2 rework: the annotation names are never HEADER variables in JCad's output
+    // at any version — AutoCAD keeps the current annotation scale as a DICTIONARYVAR
+    // in the variable dictionary and reports a HEADER $CANNOSCALE as unknown; the
+    // settings on this state ride the dictionary instead (see the round-trip tests
+    // below). This AC1015 write pins the absence at the floor.
+    const verAt = p.findIndex(([c, v]) => c === 9 && v === '$ACADVER');
+    expect(p[verAt + 1]).toEqual([1, 'AC1015']);
+    expect(p.some(([c, v]) => c === 9 && v === '$CANNOSCALE')).toBe(false);
+    expect(p.some(([c, v]) => c === 9 && v === '$ANNOALLVISIBLE')).toBe(false);
     expect(p.some(([c, v]) => c === 1001 && v === 'AcadAnnotative')).toBe(true);
   });
   it('reads layouts back: names, order, paper, margins, plot settings', () => {
@@ -122,10 +131,174 @@ describe('DXF layouts: round trip', () => {
     expect(c.center.x).toBeCloseTo(100, 9);
   });
   it('keeps CANNOSCALE, ANNOALLVISIBLE, annotative flags and no-plot layers', () => {
-    expect(back.header?.cannoscale).toBe('1:4');
-    expect(back.header?.annoAllVisible).toBe(false);
+    // Q11 F2 rework: the annotation values are recovered from the variable dictionary
+    // at every version, never from HEADER pairs. They are asserted on an AC1024 write
+    // of the same state (a transparent layer raises the format), which additionally
+    // pins the placement — no $CANNOSCALE / $ANNOALLVISIBLE pair anywhere, the values
+    // carried by DICTIONARYVAR records; the entity/layer facts below still read from
+    // the AC1015 round trip.
+    const hi = { ...state, layers: state.layers.map((l) => l.name === 'WIRES' ? { ...l, transparency: 64 } : l) };
+    const hiText = writeDxf(hi), hiPairs = pairs(hiText), hiBack = readDxf(hiText);
+    expect(hiPairs.some(([c, v]) => c === 9 && v === '$CANNOSCALE')).toBe(false);
+    expect(hiPairs.some(([c, v]) => c === 9 && v === '$ANNOALLVISIBLE')).toBe(false);
+    expect(hiPairs.some(([c, v]) => c === 3 && v === 'AcDbVariableDictionary')).toBe(true);
+    expect(hiPairs.filter(([c, v]) => c === 0 && v === 'DICTIONARYVAR')).toHaveLength(2);
+    expect(hiBack.header?.cannoscale).toBe('1:4');
+    expect(hiBack.header?.annoAllVisible).toBe(false);
     expect(back.entities.find((e) => e.type === 'text')?.annotative).toBe(true);
     expect(back.layers.find((l) => l.name === 'VIEWPORTS')?.plot).toBe(false);
+  });
+  it('keeps CANNOSCALE 1:4 and ANNOALLVISIBLE off through save/read at AC1015 and AC1032 (Q11 F2 rework no-loss proof)', () => {
+    // The lead's condition on the F2 rework: a drawing carrying BOTH annotation
+    // settings (cannoscale '1:4', annoAllVisible false — the shared fixture state)
+    // keeps both through JCad save -> JCad read at the AC1015 floor and at AC1032,
+    // with the values carried by DICTIONARYVAR records in the variable dictionary,
+    // never by HEADER pairs, and the second save byte-identical.
+    // F2 round 2: the AC1032 leg is a GENUINELY WRITTEN AC1032 output. The earlier
+    // leg spliced the $ACADVER token of an AC1015 write up to AC1032; the Windows
+    // gate found AutoCAD rejects that file ('Group 91 ... expected ... discarded')
+    // because every other version-shaped structure (the CLASS instance counts
+    // above all) still says AC1015. Here an MTEXT with a text-frame background
+    // (flags 16 — the content feature that requires AC1032) raises the seed write
+    // itself, so writeDxf produces a coherent AC1032 file end to end; the extra
+    // MTEXT exists only in that leg's seed state. The legs also pin the Item 1
+    // scale list: exactly one ACAD_SCALELIST holding the '1:4' SCALE entry.
+    const variableValues = (written: string): Record<string, string> => {
+      const p = pairs(written), records: { type: string; groups: Array<[number, string]> }[] = [];
+      for (const [code, value] of p) {
+        if (code === 0) records.push({ type: value, groups: [] });
+        else records.at(-1)?.groups.push([code, value]);
+      }
+      const byHandle = new Map(records.map(r => [r.groups.find(([c]) => c === 5)?.[1], r]));
+      const entriesOf = (record: { groups: Array<[number, string]> }): Array<[string, string]> => {
+        const entries: Array<[string, string]> = [];
+        for (let i = 0; i + 1 < record.groups.length; i += 1) {
+          if (record.groups[i]![0] === 3 && record.groups[i + 1]![0] === 350) entries.push([record.groups[i]![1], record.groups[i + 1]![1]]);
+        }
+        return entries;
+      };
+      const root = records.find(r => r.type === 'DICTIONARY' && entriesOf(r).some(([name]) => name === 'AcDbVariableDictionary'));
+      const dictionaryHandle = root ? entriesOf(root).find(([name]) => name === 'AcDbVariableDictionary')?.[1] : undefined;
+      const dictionary = dictionaryHandle ? byHandle.get(dictionaryHandle) : undefined;
+      const values: Record<string, string> = {};
+      if (dictionary?.type === 'DICTIONARY') for (const [name, handle] of entriesOf(dictionary)) {
+        const variable = byHandle.get(handle);
+        if (variable?.type === 'DICTIONARYVAR') values[name] = variable.groups.find(([c]) => c === 1)?.[1] ?? '';
+      }
+      return values;
+    };
+    const scaleListEntries = (written: string): Array<{ name: string; paper: string; drawing: string; unit: string }> => {
+      const p = pairs(written), records: { type: string; groups: Array<[number, string]> }[] = [];
+      for (const [code, value] of p) {
+        if (code === 0) records.push({ type: value, groups: [] });
+        else records.at(-1)?.groups.push([code, value]);
+      }
+      const byHandle = new Map(records.map(r => [r.groups.find(([c]) => c === 5)?.[1], r]));
+      const entriesOf = (record: { groups: Array<[number, string]> }): Array<[string, string]> => {
+        const entries: Array<[string, string]> = [];
+        for (let i = 0; i + 1 < record.groups.length; i += 1) {
+          if (record.groups[i]![0] === 3 && record.groups[i + 1]![0] === 350) entries.push([record.groups[i]![1], record.groups[i + 1]![1]]);
+        }
+        return entries;
+      };
+      const root = records.find(r => r.type === 'DICTIONARY' && entriesOf(r).some(([name]) => name === 'ACAD_SCALELIST'));
+      const dictionaryHandle = root ? entriesOf(root).find(([name]) => name === 'ACAD_SCALELIST')?.[1] : undefined;
+      const dictionary = dictionaryHandle ? byHandle.get(dictionaryHandle) : undefined;
+      const entries: Array<{ name: string; paper: string; drawing: string; unit: string }> = [];
+      if (dictionary?.type === 'DICTIONARY') for (const [, handle] of entriesOf(dictionary)) {
+        const scale = byHandle.get(handle);
+        if (scale?.type === 'SCALE') entries.push({
+          name: scale.groups.find(([c]) => c === 300)?.[1] ?? '',
+          paper: scale.groups.find(([c]) => c === 140)?.[1] ?? '',
+          drawing: scale.groups.find(([c]) => c === 141)?.[1] ?? '',
+          unit: scale.groups.find(([c]) => c === 290)?.[1] ?? '',
+        });
+      }
+      return entries;
+    };
+    // Both legs start from a read-back state (one save/read in), so the byte fixed
+    // point asserted below is the graph-path invariant the rest of the suite pins;
+    // the model-write -> graph-write transition itself has a pre-existing,
+    // unrelated layer-table asymmetry (an extra BORDER layer record) at the base.
+    const framed: MTextEntity = { id: 'm3', layer: '0', color: 'ByLayer', type: 'mtext', position: { x: 30, y: 30 }, text: 'NOTE', height: 0.25, width: 10, rotation: 0, attachment: 1, lineSpacing: 1, background: { flags: 16, scale: 1.5, color: 'ByLayer' } };
+    const legs: Array<[string, DrawingState]> = [
+      ['AC1015', readDxf(writeDxf(state))],
+      ['AC1032', readDxf(writeDxf({ ...state, entities: [...state.entities, framed] }))],
+    ];
+    for (const [version, source] of legs) {
+      const written = writeDxf(source), writtenPairs = pairs(written), writtenBack = readDxf(written);
+      const verAt = writtenPairs.findIndex(([c, v]) => c === 9 && v === '$ACADVER');
+      expect(writtenPairs[verAt + 1]).toEqual([1, version]);
+      expect(writtenPairs.some(([c, v]) => c === 9 && v === '$CANNOSCALE')).toBe(false);
+      expect(writtenPairs.some(([c, v]) => c === 9 && v === '$ANNOALLVISIBLE')).toBe(false);
+      expect(variableValues(written)).toEqual({ CANNOSCALE: '1:4', ANNOALLVISIBLE: '0' });
+      expect(writtenPairs.filter(([c, v]) => c === 3 && v === 'ACAD_SCALELIST')).toHaveLength(1);
+      expect(scaleListEntries(written)).toEqual([{ name: '1:4', paper: '1.0', drawing: '4.0', unit: '0' }]);
+      expect(writtenBack.header?.cannoscale).toBe('1:4');
+      expect(writtenBack.header?.annoAllVisible).toBe(false);
+      expect(writeDxf(writtenBack)).toBe(written);
+    }
+  });
+  it('registers the DICTIONARYVAR CLASS record on a fresh write that creates variables (Q11 F2 rework C1)', () => {
+    // C1: the model writer's CLASSES registration was keyed on the variable
+    // dictionary handle, which is only allocated later in OBJECTS — dead code
+    // on fresh writes. Pin the record's presence and specimen shape on a
+    // genuine fresh (model-path) write of the shared fixture state: group 91
+    // (instance count) is omitted at AC1015 and carries the created-variable
+    // count above it (here driven to AC1024 by a transparent layer, the same
+    // device the companion round-trip test above uses).
+    const classRecord = (written: string) => {
+      const p = pairs(written), records: Array<[number, string]>[] = [];
+      for (const pair of p) {
+        if (pair[0] === 0) records.push([pair]);
+        else records.at(-1)?.push(pair);
+      }
+      return records.find(r => r.some(([c, v]) => c === 1 && v === 'DICTIONARYVAR'));
+    };
+    const fresh = classRecord(text);
+    expect(fresh).toBeDefined();
+    expect(fresh).toContainEqual([2, 'AcDbDictionaryVar']);
+    expect(fresh).toContainEqual([3, 'ObjectDBX Classes']);
+    expect(fresh!.some(([c]) => c === 91)).toBe(false);
+    const hiVer: DrawingState = { ...state, layers: state.layers.map((l) => l.name === 'WIRES' ? { ...l, transparency: 64 } : l) };
+    const freshHi = classRecord(writeDxf(hiVer));
+    expect(freshHi).toBeDefined();
+    expect(freshHi).toContainEqual([91, '2']);
+  });
+  it('creates the ACAD_SCALELIST entry for the current scale on a fresh graph-less write (Q11 F2 r2 review C1)', () => {
+    // Review C1: the (c) legs above start from read-back states, so their
+    // writes exercise the preserve pass, which creates the list there; the
+    // MODEL writer's own creation (writer.ts, graph-less state) had no
+    // committed pin — disabling it failed nothing. The describe-level `text`
+    // is exactly that write: the shared fixture state carries no cadGraph.
+    expect(state.cadGraph).toBeUndefined();
+    const p = pairs(text), records: Array<[number, string]>[] = [];
+    for (const pair of p) {
+      if (pair[0] === 0) records.push([pair]);
+      else records.at(-1)?.push(pair);
+    }
+    const scales = records.filter(r => r[0]![1] === 'SCALE');
+    expect(scales).toHaveLength(1);
+    expect(scales[0]).toContainEqual([300, '1:4']);
+    expect(scales[0]).toContainEqual([140, '1.0']);
+    expect(scales[0]).toContainEqual([141, '4.0']);
+    expect(scales[0]).toContainEqual([290, '0']);
+    expect(p.filter(([c, v]) => c === 3 && v === 'ACAD_SCALELIST')).toHaveLength(1);
+  });
+  it('annotationScaleRatio parses only plain positive N:M names (Q11 F2 r2 review C2)', () => {
+    // Review C2: the parser is the sole guard between an isScaleName-valid
+    // cannoscale and a fabricated SCALE entry; pin its contract directly.
+    expect(annotationScaleRatio('1:4')).toEqual({ numerator: '1.0', denominator: '4.0', unit: false });
+    expect(annotationScaleRatio('1:1')).toEqual({ numerator: '1.0', denominator: '1.0', unit: true });
+    expect(annotationScaleRatio('3:8')).toEqual({ numerator: '3.0', denominator: '8.0', unit: false });
+    expect(annotationScaleRatio('1:2.5')).toEqual({ numerator: '1.0', denominator: '2.5', unit: false });
+    expect(annotationScaleRatio('1=4')).toBeNull();
+    expect(annotationScaleRatio('1/4')).toBeNull();
+    expect(annotationScaleRatio('0:4')).toBeNull();
+    expect(annotationScaleRatio('1:0')).toBeNull();
+    expect(annotationScaleRatio('1/8" = 1\'-0"')).toBeNull();
+    expect(annotationScaleRatio('')).toBeNull();
+    expect(annotationScaleRatio('abc')).toBeNull();
   });
   it('a second round trip is stable', () => {
     const again = readDxf(writeDxf(back));

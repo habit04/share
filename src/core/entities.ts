@@ -14,6 +14,8 @@ import { mtextBackgroundPolygons, hasMTextFill, hasMTextFrame, entityMTextBackgr
 import { polylineWidthGeometry, polylineWidthFrame, transformWidthFrame, polylineFramePoint, polylineFrameSource, polylineWidthProblem, moveWidthFrameGrip } from './polyline-widths';
 import { appearanceProperties, inheritedTransparency, resolveAlpha, type TransparencySpec } from './appearance';
 import { insertArrayCount, insertArrayInstances, MAX_INSERT_ARRAY_INSTANCES } from './insert-array';
+import { evaluateDynamicBlock, type AttributeActionTransform } from './parametric/evaluate';
+import { dynamicGrips } from './parametric/grips';
 import { hasHatchGradient, hatchGradientDataProblem, hatchGradientFrame, hatchGradientFrameProblem, transformHatchGradientFrame, type HatchGradient, type HatchGradientFrame } from './hatch-gradient';
 
 export type { DimensionEntity, DimStyle, DimKind } from './dimension';
@@ -109,6 +111,14 @@ export interface PolylineEntity extends EntityBase {
   readonly width?: number;
   /** Start/end width of the segment at each vertex (DXF 40/41). Takes precedence over width. */
   readonly widths?: readonly { readonly start: number; readonly end: number }[];
+  /**
+   * Per-vertex persistent identifiers (DXF LWPOLYLINE group 91), parallel to
+   * `points`; an `undefined` entry means that vertex carries no identifier.
+   * Present only when at least one vertex has one. AutoCAD's ASSOC geom
+   * dependencies address vertices by these IDs (Q11 F4), so reader and
+   * writer preserve them verbatim; they are never synthesized or renumbered.
+   */
+  readonly vertexIds?: readonly (number | undefined)[];
   /** Affine display geometry after a nonuniform transform; native block definitions keep their widths. */
   readonly widthFrame?: {
     readonly points: readonly Point[];
@@ -164,8 +174,29 @@ export interface InsertEntity extends EntityBase {
    * insert only), e.g. TAG1 on poles 2 and 3 of a 3-pole device. The value is kept for reports.
    */
   readonly hiddenAttributes?: readonly string[];
-  /** Native per-insert attribute placement, stored in the block's local coordinate system. */
+  /**
+   * Native per-insert attribute placement, stored in the block's local coordinate system,
+   * relative to the AUTHORED attribute definition: for a dynamic block the evaluation's
+   * per-attribute transform (anchors, height and rotation — the whole placement motion,
+   * review R07 + round 3 R2-01) is composed with the stored placement wherever the current
+   * state is rendered or written (see attributePlacementsForDef), so an imported override
+   * describes the attribute's placement in the authored frame — never a pin against
+   * the evaluated placement.
+   */
   readonly attributePlacements?: Readonly<Record<string, TextPlacement & AttributeAppearance & { readonly style?: string }>>;
+  /**
+   * Priority 30: this instance's dynamic parameter values (sparse; absent values take the
+   * definition's defaults). Lives on the insert itself so the expansion cache, keyed by
+   * insert object identity, can never serve stale evaluated geometry. Absent = the block
+   * is static for this instance (or has no dynamic definition).
+   */
+  readonly dynamic?: import('./parametric/instance').DynamicInstanceState;
+  /**
+   * Priority 30: raw JCAD_DYNAMIC instance payload that could not be modeled (malformed
+   * or a newer model version). Retained verbatim for re-export; the instance displays at
+   * the definition's authored (default) state.
+   */
+  readonly dynamicRetained?: string;
 }
 
 export interface EllipseEntity extends EntityBase {
@@ -344,6 +375,19 @@ export interface BlockDef {
   readonly entities: readonly Entity[];
   readonly attributes: readonly AttributeDef[];
   readonly description?: string;
+  /**
+   * Priority 30: JCad's authored dynamic-block definition for this block (parameters +
+   * actions, see core/parametric/definitions.ts). The definition is immutable and shared
+   * by every instance; per-instance values live on the insert (`InsertEntity.dynamic`).
+   * This is JCad's normalized model, not a decoded native evaluation graph.
+   */
+  readonly dynamic?: import('./parametric/definitions').DynamicBlockDefinition;
+  /**
+   * Priority 30: raw JCAD_DYNAMIC definition payload that could not be modeled (malformed
+   * or a newer model version). Retained verbatim for re-export, reported as simplified,
+   * never half-parsed; the block displays and edits as a static block.
+   */
+  readonly dynamicRetained?: string;
   /** External reference (BLOCK flag 4; 8 = overlay): the referenced file's path (DXF group 1). */
   readonly xref?: { readonly path: string; readonly overlay?: boolean };
 }
@@ -1307,6 +1351,618 @@ interface InsertCache {
 /** Only accepted immutable inserts and definitions qualify for identity caching. */
 const insertCache = new WeakMap<InsertEntity, InsertCache>();
 
+/**
+ * Priority 30.1: the block definition ONE expansion of `ins` must use. When the
+ * insert carries dynamic values AND its block carries a dynamic definition, the
+ * definition is evaluated FIRST, in definition space, and the evaluated entities
+ * plus evaluated attribute placements form a derived BlockDef used for this
+ * expansion only. The derived definition is never stored back into document
+ * state; attribute VALUES always come from the insert, unchanged. The stored
+ * block object is returned by identity whenever there is nothing to evaluate,
+ * so static inserts (no dynamic fields on either side) take the exact
+ * pre-30.1 path.
+ *
+ * Evaluation refusal (unsupported member, dependency cycle, limits, invalid
+ * stored values, a block-mismatched instance state, or a retained/unreadable
+ * payload on either side) falls back to the authored base geometry.
+ * Diagnostic gap: the expansion path has no per-expansion diagnostic channel
+ * (ExpansionBudget carries only the truncated/cyclic flags, and
+ * expansionReport is a separate static analysis), so a refusal here cannot be
+ * surfaced in-band; the same states are refused explicitly, with codes, by
+ * evaluateDynamicBlock and by core/parametric/apply.ts on the edit path.
+ *
+ * Exported for the two other consumers that must agree with expansion about
+ * the evaluated definition (review R07): the DXF writer, which writes ATTRIB
+ * positions from the evaluated definition, and the DXF reader, which rebases
+ * imported attribute placements against it.
+ */
+/**
+ * The per-attribute transforms evaluation recorded for one DERIVED
+ * definition, keyed by the derived BlockDef object itself (round 4,
+ * R3-01). expansionBlock is the single producer of evaluated
+ * definitions for expansion, the DXF writer and the DXF reader, and
+ * every consumer composes placements against the exact object it
+ * returned, so identity keying is exact and the record never becomes
+ * document state: it is not serialized, cloned, or compared, and it
+ * dies with the derived definition. Presence of an entry — even an
+ * empty map — is the provenance marker: the definition came from an
+ * evaluation whose recorded transforms are complete for it, so an
+ * attribute with no entry was not moved by that evaluation.
+ */
+const evaluatedAttributeTransforms = new WeakMap<BlockDef, ReadonlyMap<string, AttributeTransform>>();
+
+export function expansionBlock(block: BlockDef, ins: InsertEntity): BlockDef {
+  const definition = block.dynamic;
+  const instance = ins.dynamic;
+  if (!definition || !instance) return block;
+  if (block.dynamicRetained !== undefined || ins.dynamicRetained !== undefined) return block;
+  if (instance.block !== block.name) return block;
+  const result = evaluateDynamicBlock(definition, block.entities, block.attributes, instance);
+  if (!result.ok) return block;
+  const unchanged =
+    result.entities.length === block.entities.length &&
+    result.entities.every((e, i) => e === block.entities[i]) &&
+    result.attributes.length === block.attributes.length &&
+    result.attributes.every((a, i) => a === block.attributes[i]);
+  if (unchanged) return block;
+  const derived: BlockDef = { ...block, entities: result.entities, attributes: result.attributes };
+  evaluatedAttributeTransforms.set(
+    derived,
+    new Map([...result.attributeTransforms].map(([tag, tx]) => [tag, recordedAttributeTransform(tx)] as const)),
+  );
+  return derived;
+}
+
+// ---------------------------------------------------------------------------
+// Attribute placement overrides vs dynamic evaluation (review R07)
+// ---------------------------------------------------------------------------
+
+type AttributePlacement = TextPlacement & AttributeAppearance & { readonly style?: string };
+
+/** A 2D linear map: x' = a*x + b*y, y' = c*x + d*y. */
+interface LinearMap { readonly a: number; readonly b: number; readonly c: number; readonly d: number }
+
+const IDENTITY_MAP: LinearMap = { a: 1, b: 0, c: 0, d: 1 };
+
+/**
+ * The transform evaluation applied to one attribute: everything needed
+ * to re-express a placement written against one definition against the
+ * other, as an ANCHORED affine map (anchor q -> image + linear·(q −
+ * anchor)) plus the scalar parts (height ratio, rotation delta). The
+ * anchored form never forms the absolute offset (the image of the
+ * origin), which overflows for representable transforms whose fixed
+ * point is huge — a rotation by π about (1e308, 0) has absolute offset
+ * 2·1e308 (round 5, R4-01).
+ *
+ * PROVENANCE (round 4, R3-01): the primary source is the transform the
+ * evaluation RECORDED while its action pipeline ran
+ * (EvaluationResult.attributeTransforms), attached by expansionBlock to
+ * the derived definition it produced — see evaluatedAttributeTransforms
+ * below. The record is authoritative and complete for that definition:
+ * an attribute with no record was not moved. It replaces the round-3
+ * snapshot inference as the primary mechanism because inference from
+ * before/after definitions is unsound for flip: a reflection and the
+ * identity can fix the same anchors (an axis through every anchor of
+ * the attribute — left, right, center and FIT placements alike), so
+ * identical authored/effective fields cannot prove "nothing moved",
+ * and no correspondence solve can recover an axis the snapshots do not
+ * show. Snapshot inference (attributeTransformBetween) survives ONLY
+ * as a fallback for definitions that carry no record, and only when no
+ * flip can be active for the attribute; when a flip may be active and
+ * no record exists, composition refuses explicitly (see
+ * attributePlacementsForDef / importedPlacementsToAuthoredFrame)
+ * rather than report success with wrong geometry.
+ */
+interface AttributeTransform {
+  readonly linear: LinearMap;
+  readonly anchor: Point;
+  readonly image: Point;
+  readonly heightRatio: number;
+  readonly rotationDelta: number;
+}
+
+/** A recorded evaluation transform in this module's transform shape. */
+function recordedAttributeTransform(tx: AttributeActionTransform): AttributeTransform {
+  return {
+    linear: { a: tx.a, b: tx.b, c: tx.c, d: tx.d },
+    anchor: { x: tx.ax, y: tx.ay },
+    image: { x: tx.ix, y: tx.iy },
+    heightRatio: tx.heightRatio,
+    rotationDelta: tx.rotationDelta,
+  };
+}
+
+/** The exact inverse of a transform, or null when its linear part is
+ *  singular or its inverse is not representable in doubles (composed
+ *  evaluation transforms are products of translations, rotations,
+ *  positive scales and reflections, so a singular record means the
+ *  transform did not come from an evaluation this build performed).
+ *  The determinant is computed on the magnitude-NORMALIZED linear
+ *  part and the adjugate divided by it before the scale is divided
+ *  out (round 5, R4-01): the raw determinant of a representable
+ *  transform such as a 1e160 scale composed with a flip is −(1e160)²,
+ *  which overflows a double even though every entry of the inverse is
+ *  representable, and treating that overflow as singularity made the
+ *  reader refuse JCad's own written output. The inverse is anchored
+ *  at the forward transform's image (whose own image is the forward
+ *  anchor), so no absolute offset is formed on this side either. */
+function invertAttributeTransform(t: AttributeTransform): AttributeTransform | null {
+  const { a, b, c, d } = t.linear;
+  const s = Math.max(Math.abs(a), Math.abs(b), Math.abs(c), Math.abs(d));
+  if (s === 0 || !Number.isFinite(s)) return null;
+  const na = a / s;
+  const nb = b / s;
+  const nc = c / s;
+  const nd = d / s;
+  const detN = na * nd - nb * nc;
+  if (detN === 0 || !Number.isFinite(detN)) return null;
+  // L⁻¹ = adj(L)/det(L) = adj(normalized L) / (det(normalized L) · s).
+  const ia = nd / detN / s;
+  const ib = -nb / detN / s;
+  const ic = -nc / detN / s;
+  const id = na / detN / s;
+  const heightRatio = 1 / t.heightRatio;
+  if (![ia, ib, ic, id, heightRatio].every(Number.isFinite)) return null;
+  return {
+    linear: { a: ia, b: ib, c: ic, d: id },
+    anchor: { x: t.image.x, y: t.image.y },
+    image: { x: t.anchor.x, y: t.anchor.y },
+    heightRatio,
+    rotationDelta: -t.rotationDelta,
+  };
+}
+
+/**
+ * Can a flip action of the authored definition be contributing its
+ * reflection to the transform of `tag` at the instance's current state?
+ * The action applies its reflection iff its parameter's effective value
+ * differs from the parameter default (the pipeline's own rule); a
+ * missing value means the default state, and an unreadable (opaque)
+ * value — or a selection whose driving parameter cannot be resolved —
+ * is treated as "may be active", because it cannot be ruled out.
+ */
+function flipTransformPossible(authored: BlockDef, ins: InsertEntity, tag: string): boolean {
+  const definition = authored.dynamic;
+  if (!definition) return false;
+  for (const action of definition.actions) {
+    if (action.kind !== 'flip') continue;
+    if (!action.selection.some((s) => s.entityId === tag)) continue;
+    const param = definition.parameters.find((p) => p.id === action.parameterId);
+    if (!param || param.kind !== 'flip') return true;
+    const value = ins.dynamic?.values[action.parameterId];
+    if (value === undefined) continue; // default state: the reflection is not applied
+    if (value.kind !== 'flip') return true; // unreadable value: cannot rule the flip out
+    if (value.value !== param.defaultValue) return true;
+  }
+  return false;
+}
+
+interface AnchorCorr { readonly ux: number; readonly uy: number; readonly vx: number; readonly vy: number }
+
+const wrapAngleDelta = (a: number): number => {
+  let r = a % (2 * Math.PI);
+  if (r > Math.PI) r -= 2 * Math.PI;
+  if (r < -Math.PI) r += 2 * Math.PI;
+  return r;
+};
+
+/** The reflection (scaled) taking u to v: reflection across the angle
+ *  bisector of the two vectors; when v = -u the axis is perpendicular. */
+function reflectionMap(c: AnchorCorr): LinearMap {
+  const su = Math.hypot(c.ux, c.uy);
+  const sv = Math.hypot(c.vx, c.vy);
+  const ux = c.ux / su;
+  const uy = c.uy / su;
+  const vx = c.vx / sv;
+  const vy = c.vy / sv;
+  let tx = ux + vx;
+  let ty = uy + vy;
+  const tl = Math.hypot(tx, ty);
+  if (tl < 1e-9) {
+    tx = -uy;
+    ty = ux;
+  } else {
+    tx /= tl;
+    ty /= tl;
+  }
+  const s = sv / su;
+  return { a: s * (2 * tx * tx - 1), b: s * (2 * tx * ty), c: s * (2 * tx * ty), d: s * (2 * ty * ty - 1) };
+}
+
+/** The linear map taking both correspondences' u to their v, or null
+ *  when the two u vectors are (near-)dependent. */
+function solveLinearMap(c1: AnchorCorr, c2: AnchorCorr): LinearMap | null {
+  const det = c1.ux * c2.uy - c2.ux * c1.uy;
+  if (Math.abs(det) <= 1e-12 * Math.hypot(c1.ux, c1.uy) * Math.hypot(c2.ux, c2.uy)) return null;
+  return {
+    a: (c1.vx * c2.uy - c2.vx * c1.uy) / det,
+    b: (-c1.vx * c2.ux + c2.vx * c1.ux) / det,
+    c: (c1.vy * c2.uy - c2.vy * c1.uy) / det,
+    d: (-c1.vy * c2.ux + c2.vy * c1.ux) / det,
+  };
+}
+
+/** The transform from attribute definition `a0` to `a1` INFERRED from
+ *  the two snapshots, or null when the snapshots are field-identical.
+ *  Swapping the arguments yields the inverse transform (the ladder is
+ *  symmetric: ratios invert, deltas negate, a reflection is its own
+ *  inverse). FALLBACK ONLY (round 4, R3-01): callers consult this when
+ *  the definition carries no recorded evaluation transform, and never
+ *  when a flip may be active for the attribute — identical snapshots
+ *  cannot distinguish a flip whose axis fixes every anchor from the
+ *  identity, so in that case this function's null is not evidence that
+ *  nothing moved. For orientation-preserving motions (the stretch /
+ *  move / rotate / scale pipelines) the inference is exact: the scalar
+ *  parts are read off the definition directly (height ratio, rotation
+ *  delta), and the definition's own anchor correspondences confirm the
+ *  matching similarity. */
+function attributeTransformBetween(a0: AttributeDef, a1: AttributeDef): AttributeTransform | null {
+  if (a0 === a1) return null;
+  const samePoint = (u?: Point, v?: Point) =>
+    (u === undefined && v === undefined) || (u !== undefined && v !== undefined && u.x === v.x && u.y === v.y);
+  if (
+    samePoint(a0.position, a1.position) &&
+    samePoint(a0.alignmentPoint, a1.alignmentPoint) &&
+    samePoint(a0.firstAlignmentPoint, a1.firstAlignmentPoint) &&
+    a0.height === a1.height &&
+    (a0.rotation ?? 0) === (a1.rotation ?? 0)
+  ) return null;
+
+  const heightRatio = a0.height > 0 && a1.height > 0 ? a1.height / a0.height : 1;
+  const rotationDelta = (a1.rotation ?? 0) - (a0.rotation ?? 0);
+
+  const corrs: AnchorCorr[] = [];
+  for (const key of ['alignmentPoint', 'firstAlignmentPoint'] as const) {
+    const p0 = a0[key];
+    const p1 = a1[key];
+    if (!p0 || !p1) continue;
+    const ux = p0.x - a0.position.x;
+    const uy = p0.y - a0.position.y;
+    if (ux === 0 && uy === 0) continue;
+    corrs.push({ ux, uy, vx: p1.x - a1.position.x, vy: p1.y - a1.position.y });
+  }
+  const corrScale = (c: AnchorCorr) => Math.hypot(c.vx, c.vy) / Math.hypot(c.ux, c.uy);
+  const corrAngle = (c: AnchorCorr) => Math.atan2(c.ux * c.vy - c.uy * c.vx, c.ux * c.vx + c.uy * c.vy);
+  const consistentWithFields = (c: AnchorCorr) =>
+    Math.abs(corrScale(c) - heightRatio) <= 1e-6 * Math.max(1, heightRatio) &&
+    Math.abs(wrapAngleDelta(corrAngle(c) - rotationDelta)) <= 1e-6;
+
+  const cos = Math.cos(rotationDelta);
+  const sin = Math.sin(rotationDelta);
+  const fromFields: LinearMap = {
+    a: heightRatio * cos,
+    b: -heightRatio * sin,
+    c: heightRatio * sin,
+    d: heightRatio * cos,
+  };
+
+  let linear = fromFields;
+  if (heightRatio === 1 && rotationDelta === 0) {
+    // Scalar-neutral motion: a translation (identity linear part) or a
+    // flip. Only an anchor correspondence that actually moved can be a
+    // flip; translation noise between the correspondences is float dust.
+    const moved = corrs.find((c) => Math.hypot(c.vx - c.ux, c.vy - c.uy) > 1e-9 * Math.max(1, Math.hypot(c.ux, c.uy)));
+    linear = moved ? reflectionMap(moved) : IDENTITY_MAP;
+  } else if (corrs.length >= 2 && !corrs.every(consistentWithFields)) {
+    linear = solveLinearMap(corrs[0]!, corrs[1]!) ?? fromFields;
+  }
+  // The anchored form: the map must send a0's position anchor to a1's,
+  // so the anchor is a0's position and its image is a1's — the absolute
+  // offset (a1.position − L·a0.position) is never formed; it overflows
+  // for huge-centre motions whose endpoints stay finite (round 5, R4-01).
+  return {
+    linear,
+    anchor: { x: a0.position.x, y: a0.position.y },
+    image: { x: a1.position.x, y: a1.position.y },
+    heightRatio,
+    rotationDelta,
+  };
+}
+
+/**
+ * Exact binary exponent decomposition: returns [m, e] with value =
+ * m · 2^e and m in [0.5, 1) (m = value and e = 0 for zero and for
+ * non-finite inputs, which callers treat as an unrepresentable term).
+ * JavaScript has no Math.frexp; the exponent bits are read through a
+ * DataView. Scaling by a power of two is exact, so decomposition never
+ * rounds. Subnormals are first scaled up by 2^64 (exact) into the
+ * normal range. (The same helper exists in parametric/evaluate.ts for
+ * the evaluator's own anchored application; the two modules cannot
+ * share it without an import cycle.)
+ */
+const frexpView = new DataView(new ArrayBuffer(8));
+function frexpPair(value: number): readonly [number, number] {
+  if (value === 0 || !Number.isFinite(value)) return [value, 0];
+  frexpView.setFloat64(0, value);
+  const hi = frexpView.getUint32(0);
+  const expBits = (hi >>> 20) & 0x7ff;
+  if (expBits === 0) {
+    const [m, e] = frexpPair(value * 2 ** 64);
+    return [m, e - 64];
+  }
+  frexpView.setUint32(0, (hi & 0x800fffff) | (1022 << 20));
+  return [frexpView.getFloat64(0), expBits - 1022];
+}
+
+/**
+ * One component of an anchored affine application, image + a·(qx − ax)
+ * + b·(qy − ay), computed in power-of-two scaled space (round 7,
+ * R6-01). The plain expression can overflow BEFORE its terms cancel —
+ * the product a·qx when the point sits far from the anchor, the
+ * subtraction qx − ax when the two are large with opposite signs, or
+ * the partial sum image + a·dx before + b·dy can cancel it — even when
+ * every field of the transform is finite and the true result is
+ * finite. This form splits the subtractions into separate product
+ * terms (a·qx, −a·ax, b·qy, −b·ay) beside the image, decomposes every
+ * factor exactly, and sums the mantissas at a common exponent, so no
+ * intermediate ever leaves the finite range unless the TRUE result
+ * does. Its only rounding is the mantissa products and the aligned sum
+ * themselves (measured within ~2 ulp of the evaluator's stepwise
+ * result on the admitted large-finite class). Returns a non-finite
+ * value only when the true component is out of range (or an input was
+ * already non-finite); the caller turns that into an explicit refusal.
+ */
+function scaledTransformComponent(
+  image: number, a: number, qx: number, ax: number, b: number, qy: number, ay: number,
+): number {
+  const terms: Array<readonly [number, number]> = [];
+  const pushValue = (v: number): void => {
+    const [m, e] = frexpPair(v);
+    if (m !== 0) terms.push([m, e]);
+  };
+  const pushProduct = (u: number, v: number, sign: 1 | -1): void => {
+    const [mu, eu] = frexpPair(u);
+    const [mv, ev] = frexpPair(v);
+    const m = sign * mu * mv;
+    if (m !== 0) terms.push([m, eu + ev]);
+  };
+  pushValue(image);
+  pushProduct(a, qx, 1);
+  pushProduct(a, ax, -1);
+  pushProduct(b, qy, 1);
+  pushProduct(b, ay, -1);
+  if (terms.length === 0) return 0;
+  if (terms.some(([m]) => !Number.isFinite(m))) return NaN;
+  let eMax = terms[0]![1];
+  for (const [, e] of terms) if (e > eMax) eMax = e;
+  let sum = 0;
+  for (const [m, e] of terms) sum += m * Math.pow(2, e - eMax);
+  if (sum === 0) return 0;
+  // Renormalize before scaling back so the back-scaling overflows only
+  // when the true result does (a sum near 1 at exponent 1024 must not
+  // be multiplied by an already-overflowing power of two).
+  const [sm, se] = frexpPair(sum);
+  const e = eMax + se;
+  const e1 = Math.trunc(e / 2);
+  return sm * Math.pow(2, e1) * Math.pow(2, e - e1);
+}
+
+/**
+ * One component of the anchored application, GATED (round 7, R6-01):
+ * the plain expression is returned untouched whenever it is finite —
+ * bit-identical for every ordinary value and every previously passing
+ * case — and only a non-finite plain result is recomputed in scaled
+ * space. A component whose scaled result is still non-finite is
+ * genuinely out of range; it is returned as-is and transformPlacement
+ * refuses explicitly rather than let Infinity/NaN escape as geometry.
+ */
+function transformComponent(
+  image: number, a: number, qx: number, ax: number, b: number, qy: number, ay: number,
+): number {
+  const naive = image + a * (qx - ax) + b * (qy - ay);
+  if (Number.isFinite(naive)) return naive;
+  return scaledTransformComponent(image, a, qx, ax, b, qy, ay);
+}
+
+/** The explicit refusal raised when a placement's true image under a
+ *  recorded (or inferred) transform lies outside the finite range:
+ *  raised before any non-finite placement is produced, stored or
+ *  written, in the same spirit as the flip/no-record refusals of the
+ *  two callers below. */
+function nonFinitePlacementError(tag: string, what: string): Error {
+  return new Error(
+    `Refusing to apply the recorded transform for attribute '${tag}': the ${what} it produces is non-finite — the true placement lies outside the finite range a double can represent.`,
+  );
+}
+
+/**
+ * Re-express placement `p`, written against attribute definition `a0`,
+ * against `a1` under transform `t`: anchors ride the transform's
+ * anchored affine map (its linear part applied to the vector from the
+ * transform's anchor, landed on the anchor's image — the anchor is
+ * exactly the point that sends a0's frame to a1's), height composes
+ * by the transform's height ratio, and rotation by its delta — so a
+ * placement that restates `a0` lands exactly on `a1`, a genuine offset
+ * from the authored placement rides the FULL transform (scale,
+ * rotation and reflection included, review rounds 3 and 4), and
+ * fields evaluation never transforms (appearance, width factor,
+ * oblique, justification, style) carry through untouched.
+ */
+function transformPlacement(p: AttributePlacement, a0: AttributeDef, a1: AttributeDef, t: AttributeTransform): AttributePlacement {
+  // The ONE point-application expression for recorded and inferred
+  // transforms (round 7, R6-01): each component goes through the gated
+  // transformComponent — plain arithmetic when it stays finite (the
+  // historical behaviour, bit for bit), exponent-scaled recomputation
+  // when the plain form overflows before cancellation — and a
+  // component that is still non-finite in scaled space means the true
+  // point is out of range, which refuses explicitly here, before any
+  // placement carrying Infinity/NaN can be returned, stored or written.
+  const map = (q: Point): Point => {
+    const x = transformComponent(t.image.x, t.linear.a, q.x, t.anchor.x, t.linear.b, q.y, t.anchor.y);
+    const y = transformComponent(t.image.y, t.linear.c, q.x, t.anchor.x, t.linear.d, q.y, t.anchor.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) throw nonFinitePlacementError(a0.tag, 'anchor point');
+    return { x, y };
+  };
+  const height = a0.height > 0 ? p.height * t.heightRatio : p.height + (a1.height - a0.height);
+  // The scalar side has no cancellation to rescue: an overflowing
+  // height product is a genuinely out-of-range height. It is checked
+  // explicitly (round 7, R6-01) instead of escaping as Infinity.
+  if (!Number.isFinite(height)) throw nonFinitePlacementError(a0.tag, 'height');
+  const rotation = p.rotation === undefined && a0.rotation === undefined && a1.rotation === undefined
+    ? undefined
+    : (a1.rotation ?? 0) + ((p.rotation ?? 0) - (a0.rotation ?? 0));
+  return {
+    ...p,
+    position: map(p.position),
+    ...(p.alignmentPoint ? { alignmentPoint: map(p.alignmentPoint) } : {}),
+    ...(p.firstAlignmentPoint ? { firstAlignmentPoint: map(p.firstAlignmentPoint) } : {}),
+    height,
+    ...(rotation === undefined ? {} : { rotation }),
+  };
+}
+
+/**
+ * The insert as attributeText must see it when placements are consumed
+ * against `effective` (a definition derived from `authored` by evaluation):
+ * each stored placement — authored-frame by definition (see the field
+ * comment) — is composed with the evaluation's full transform of its
+ * attribute, so a genuine per-instance override rides the evaluated
+ * transform instead of pinning the attribute against it. Returns `ins`
+ * itself when nothing moves (the static path is untouched, by identity).
+ *
+ * The transform comes from the evaluation's own record for `effective`
+ * (see evaluatedAttributeTransforms): authoritative, and the only sound
+ * source when a flip is involved. A definition WITHOUT a record (one
+ * not produced by expansionBlock) falls back to snapshot inference —
+ * sound for the orientation-preserving action pipelines — UNLESS a
+ * flip may be active for the attribute at the instance's state: then
+ * the snapshots cannot prove what the transform was, and this function
+ * throws rather than compose a placement it cannot verify. That throw
+ * is the explicit, atomic refusal for the composition: no placement is
+ * produced at all, instead of a successful-looking wrong one. Every
+ * in-repo caller passes expansionBlock's own output, so the refusal is
+ * reachable only for foreign definitions a caller derived elsewhere
+ * while a flip state was live.
+ */
+export function attributePlacementsForDef(ins: InsertEntity, authored: BlockDef, effective: BlockDef): InsertEntity {
+  if (effective === authored || !ins.attributePlacements) return ins;
+  const recorded = evaluatedAttributeTransforms.get(effective);
+  let changed = false;
+  const out: Record<string, AttributePlacement> = {};
+  for (const [tag, p] of Object.entries(ins.attributePlacements)) {
+    const a0 = authored.attributes.find((a) => a.tag === tag);
+    const a1 = effective.attributes.find((a) => a.tag === tag);
+    let t: AttributeTransform | null = null;
+    if (recorded) {
+      // Authoritative and complete for this definition: no entry means
+      // the evaluation did not move this attribute.
+      t = recorded.get(tag) ?? null;
+    } else if (a0 && a1) {
+      if (flipTransformPossible(authored, ins, tag)) {
+        throw new Error(
+          `Refusing to compose the placement override for attribute '${tag}': a flip action of block '${authored.name}' may be active at this instance's state, but the definition was not produced by an evaluation whose actual transform is recorded, and a flip cannot be recovered from before/after attribute snapshots.`,
+        );
+      }
+      t = attributeTransformBetween(a0, a1);
+    }
+    if (t && a0 && a1) {
+      out[tag] = transformPlacement(p, a0, a1, t);
+      changed = true;
+    } else {
+      out[tag] = p;
+    }
+  }
+  return changed ? { ...ins, attributePlacements: out } : ins;
+}
+
+/** Placement comparison tolerance for the reader's restatement check:
+ *  far above the DXF writer's 10-decimal formatting noise, far below any
+ *  deliberate user offset. */
+const PLACEMENT_EPS = 1e-7;
+
+function placementRestatesEvaluated(p: AttributePlacement, ins: InsertEntity, a: AttributeDef): boolean {
+  const near = (x: number, y: number) => Math.abs(x - y) <= PLACEMENT_EPS;
+  const pointNear = (u?: Point, v?: Point) =>
+    (u === undefined && v === undefined) || (u !== undefined && v !== undefined && near(u.x, v.x) && near(u.y, v.y));
+  if (!pointNear(p.position, a.position) || !pointNear(p.alignmentPoint, a.alignmentPoint) || !pointNear(p.firstAlignmentPoint, a.firstAlignmentPoint)) return false;
+  if (!near(p.height, a.height) || !near(p.rotation ?? 0, a.rotation ?? 0)) return false;
+  if (!near(p.widthFactor ?? 1, a.widthFactor ?? 1) || !near(p.oblique ?? 0, a.oblique ?? 0)) return false;
+  if (p.align !== a.align) return false;
+  if ((p.justification?.horizontal ?? -1) !== (a.justification?.horizontal ?? -1)) return false;
+  if ((p.justification?.vertical ?? -1) !== (a.justification?.vertical ?? -1)) return false;
+  // Appearance: a restatement matches the definition, or carries exactly the
+  // value attributeText would derive from the definition (e.g. an ATTRIB on
+  // the conventional attribute layer, or ByLayer colour) — anything else is
+  // a deliberate per-instance difference and keeps the override.
+  if (p.layer !== a.layer && p.layer !== undefined && !(a.layer === undefined && p.layer === attributeLayer(a.tag, ins.layer))) return false;
+  if (p.color !== a.color && !(a.color === undefined && (p.color === undefined || p.color === 'ByLayer'))) return false;
+  if (p.trueColor !== a.trueColor || p.colorName !== a.colorName || p.transparency !== a.transparency) return false;
+  if (p.style !== a.style) return false;
+  return true;
+}
+
+/**
+ * Rebase placements read from a file (where an ATTRIB's fields record the
+ * attribute's placement at the SAVED parameter state — the evaluated
+ * placement, plus any genuine user difference) into the stored authored
+ * frame: a placement that merely restates the evaluated definition is
+ * DROPPED (evaluation reproduces it now and after any later edit), and a
+ * placement carrying a genuine difference is mapped back by the INVERSE
+ * of the saved-state transform (anchors, height and rotation — not just
+ * position: a height recorded at a scaled state is the evaluated height,
+ * and storing it unrebased would freeze that scale into the authored
+ * frame), so attributePlacementsForDef can ride it on future
+ * evaluations. The inverse is the exact inverse of the transform the
+ * saved-state evaluation RECORDED (round 4, R3-01) — the only sound
+ * source when a flip is involved, since a flip whose axis fixes every
+ * anchor leaves the evaluated definition field-identical to the
+ * authored one and no snapshot comparison can detect it. Snapshot
+ * inference remains as the fallback for a definition without a usable
+ * record, and only when no flip may be active at the saved state;
+ * otherwise the rebase throws rather than store a placement in the
+ * wrong frame. Without a modeled definition + instance state there is
+ * nothing to rebase against and the placements pass through unchanged
+ * (the static behaviour).
+ * Attributes the saved state hid have no evaluated counterpart; their
+ * placements are kept as read (documented boundary: rebasing them would
+ * require the pre-visibility evaluation).
+ */
+export function importedPlacementsToAuthoredFrame(
+  ins: InsertEntity,
+  block: BlockDef,
+  placements: Readonly<Record<string, AttributePlacement>>,
+): Readonly<Record<string, AttributePlacement>> {
+  if (!ins.dynamic || ins.dynamicRetained !== undefined) return placements;
+  if (!block.dynamic || block.dynamicRetained !== undefined) return placements;
+  const evaluated = expansionBlock(block, ins);
+  if (evaluated === block) return placements;
+  const recorded = evaluatedAttributeTransforms.get(evaluated);
+  let out: Record<string, AttributePlacement> | null = null;
+  for (const [tag, p] of Object.entries(placements)) {
+    const a1 = evaluated.attributes.find((a) => a.tag === tag);
+    const a0 = block.attributes.find((a) => a.tag === tag);
+    if (!a1 || !a0) continue;
+    if (placementRestatesEvaluated(p, ins, a1)) {
+      out ??= { ...placements };
+      delete out[tag];
+      continue;
+    }
+    const forward = recorded?.get(tag);
+    if (recorded && !forward) {
+      // The saved-state evaluation did not move this attribute, so the
+      // placement as read is already in the authored frame.
+      continue;
+    }
+    let inverse = forward ? invertAttributeTransform(forward) : null;
+    if (!inverse) {
+      // No usable record: snapshot inference, unless a flip may be
+      // active at the saved state — then refuse explicitly rather than
+      // store a placement in the wrong frame (round 4, R3-01).
+      if (flipTransformPossible(block, ins, tag)) {
+        throw new Error(
+          `Refusing to rebase the imported placement for attribute '${tag}': a flip action of block '${block.name}' may be active at the saved state, but no recorded evaluation transform is available to invert, and a flip cannot be recovered from before/after attribute snapshots.`,
+        );
+      }
+      inverse = attributeTransformBetween(a1, a0);
+    }
+    if (inverse) {
+      out ??= { ...placements };
+      out[tag] = transformPlacement(p, a1, a0, inverse);
+    }
+  }
+  return out ?? placements;
+}
+
 function cachedInsert(ins: InsertEntity, lookup: BlockLookup): InsertCache | null {
   const block = lookup(ins.block);
   if (!block) return null;
@@ -1380,6 +2036,105 @@ export function insertExpansionLimited(ins: InsertEntity, lookup: BlockLookup): 
   return cachedInsert(ins, lookup)?.limited ?? false;
 }
 
+/** Why a dynamic insert's current state cannot be established (EXPLODE probe, 30.4). */
+export interface InsertEvaluationRefusal {
+  readonly code: string;
+  readonly message: string;
+  /** The reference whose state cannot be established: the probed insert itself
+   *  for a top-level refusal, the nested reference for a nested one (R10). */
+  readonly insertId?: string;
+  /** The block that reference points at. */
+  readonly block?: string;
+}
+
+/** The refusal of ONE reference against its own block (no nesting), or null. */
+function ownEvaluationRefusal(ins: InsertEntity, block: BlockDef): InsertEvaluationRefusal | null {
+  const definition = block.dynamic;
+  const instance = ins.dynamic;
+  const who = { insertId: ins.id, block: ins.block };
+  if (!definition && !instance && block.dynamicRetained === undefined && ins.dynamicRetained === undefined) return null;
+  if (block.dynamicRetained !== undefined) {
+    return { code: 'definition-retained', ...who, message: `Block "${block.name}" has a dynamic definition this build cannot model; it is retained as data and has no evaluated state.` };
+  }
+  if (ins.dynamicRetained !== undefined) {
+    return { code: 'instance-retained', ...who, message: `Block reference "${ins.id}" carries dynamic values this build cannot model; they are retained as data and have no evaluated state.` };
+  }
+  if (!definition) {
+    return { code: 'no-dynamic-definition', ...who, message: `Block reference "${ins.id}" carries dynamic values but block "${block.name}" has no dynamic definition to evaluate them against.` };
+  }
+  if (!instance) return null;
+  if (instance.block !== block.name) {
+    return { code: 'block-mismatch', ...who, message: `Block reference "${ins.id}" carries dynamic values for block "${instance.block}", not "${block.name}".` };
+  }
+  const result = evaluateDynamicBlock(definition, block.entities, block.attributes, instance);
+  return result.ok ? null : { code: result.refusal.code, ...who, message: result.refusal.message };
+}
+
+/**
+ * Priority 30.4 (design §1.4(d)) — the evaluation-status probe beside
+ * insertExpansionLimited. Expansion itself falls back to authored geometry
+ * SILENTLY when evaluation refuses (see expansionBlock); a destructive
+ * consumer such as EXPLODE must not consume that fallback and discard the
+ * parameter state with it, so it asks here first. Returns the refusal when
+ * the insert carries dynamic state whose evaluation refuses (or whose data
+ * is retained unmodeled), and null when EXPLODE may proceed: no dynamic
+ * data on either side, or evaluation succeeds, or a dynamic definition
+ * with NO stored instance values (nothing to lose — expansion presents
+ * the authored geometry, which is what the explode produces). The gating
+ * mirrors expansionBlock exactly.
+ *
+ * Review R10: the probe walks every nested reference the expansion of
+ * `ins` actually consumes — the (possibly evaluated) entities of each
+ * block, recursively — and returns the FIRST nested refusal in
+ * consumption order, identified by insertId/block. The walk mirrors
+ * explodeSingleInto's guards: references deeper than MAX_INSERT_DEPTH
+ * are never consumed (not probed), a block already on the chain is
+ * skipped (cyclic), a missing block consumes nothing, and the visit
+ * budget matches the expansion budget (a walk that would exceed it is
+ * already refused by insertExpansionLimited, which EXPLODE checks first).
+ */
+export function insertEvaluationRefusal(ins: InsertEntity, lookup: BlockLookup): InsertEvaluationRefusal | null {
+  return probeEvaluationRefusal(ins, lookup, 0, [], { visits: MAX_INSERT_EXPANSION });
+}
+
+function probeEvaluationRefusal(
+  ins: InsertEntity,
+  lookup: BlockLookup,
+  depth: number,
+  chain: string[],
+  budget: { visits: number },
+): InsertEvaluationRefusal | null {
+  // Beyond the depth limit expansion never descends: nothing is consumed,
+  // so nothing can be lost — not even this reference's own state.
+  if (depth > MAX_INSERT_DEPTH) return null;
+  if (budget.visits <= 0) return null;
+  budget.visits -= 1;
+  const block = lookup(ins.block);
+  if (!block) return null;
+  if (chain.includes(ins.block)) return null;
+  const own = ownEvaluationRefusal(ins, block);
+  if (own) {
+    return depth === 0
+      ? own
+      : { ...own, message: `Nested block reference "${ins.id}" of block "${ins.block}" cannot be exploded: ${own.message}` };
+  }
+  // The references expansion consumes are the ones in the EVALUATED
+  // definition (actions and the visibility post-pass already applied),
+  // not the authored list.
+  const expanded = expansionBlock(block, ins);
+  chain.push(ins.block);
+  try {
+    for (const e of expanded.entities) {
+      if (e.type !== 'insert') continue;
+      const nested = probeEvaluationRefusal(e, lookup, depth + 1, chain, budget);
+      if (nested) return nested;
+    }
+    return null;
+  } finally {
+    chain.pop();
+  }
+}
+
 /** Append the expansion of `ins` to `out` (no spread: nested results may be large). */
 function explodeInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup, depth: number, budget: ExpansionBudget): void {
   // Refuse multiplicative work before iterating, including empty or missing definitions.
@@ -1420,7 +2175,11 @@ function explodeSingleInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup
   }
   budget.chain.push(ins.block);
   const similar = isSimilarInsert(ins);
-  for (const e of block.entities) {
+  // Priority 30.1: evaluate dynamic values in definition space before the
+  // insert transform composes them (see expansionBlock). For static inserts
+  // this is `block` itself, by identity.
+  const expanded = expansionBlock(block, ins);
+  for (const e of expanded.entities) {
     if (budget.left <= 0) {
       budget.truncated = true;
       break;
@@ -1428,8 +2187,12 @@ function explodeSingleInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup
     spendExpansion(budget, entityGeometryWork(e));
     transformInto(out, e, tf, ins, similar, lookup, depth + 1, budget);
   }
-  // Attribute text
-  for (const a of block.attributes) {
+  // Attribute text (placements come from the possibly evaluated definition;
+  // values always come from the insert, unchanged). Stored per-instance
+  // placements are authored-frame: rebase them by the evaluation motion so
+  // an imported override cannot pin the attribute against it (R07).
+  const textIns = attributePlacementsForDef(ins, block, expanded);
+  for (const a of expanded.attributes) {
     spendExpansion(budget, 1 + a.default.length);
     if (a.invisible || ins.hiddenAttributes?.includes(a.tag)) continue;
     const value = ins.attributes[a.tag] ?? a.default;
@@ -1439,7 +2202,7 @@ function explodeSingleInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup
       break;
     }
     budget.left -= 1;
-    const text = attributeText(ins, block, a, value);
+    const text = attributeText(textIns, expanded, a, value);
     const inheritedWeight = text.lineWeight === -2 ? budget.resolveLineweight?.(ins) : undefined;
     if (inheritedWeight !== undefined && (!Number.isFinite(inheritedWeight) || inheritedWeight < 0)) throw new Error('Plot lineweight resolver must return finite nonnegative millimetres.');
     out.push(inheritedWeight === undefined ? text : { ...text, lineWeight: inheritedWeight });
@@ -1511,6 +2274,40 @@ export function expansionReport(blocks: Readonly<Record<string, BlockDef>>, topL
   for (const e of topLevel) if (e.type === 'insert') total = Math.min(CAP * 1000, total + sizeOf(e.block, 0).objects * insertArrayCount(e));
   const oversized = [...size[0]!].filter(([, c]) => c.objects >= CAP || c.visits > MAX_INSERT_EXPANSION).map(([name]) => name);
   return { cyclic: [...cyclic].sort(), oversized: oversized.sort(), total };
+}
+
+/** One dynamic-block reference whose displayed geometry is NOT its evaluated
+ *  geometry (see dynamicEvaluationNotices). */
+export interface DynamicEvaluationNotice {
+  readonly insertId: string;
+  readonly block: string;
+  /** The refusal code (insertEvaluationRefusal / the evaluator's codes). */
+  readonly code: string;
+  readonly message: string;
+}
+
+/**
+ * The dynamic-block sibling of expansionReport (priority 30 review §3):
+ * every reference in `topLevel` whose expansion fell back to authored
+ * geometry — evaluation refused, or the dynamic data is retained unmodeled —
+ * with its refusal code and message. This is the queryable per-drawing
+ * diagnostic behind the editor's open-time log lines
+ * (app/editor/documents.ts) and the LIST evaluation status: expansion itself
+ * stays silent by design (it has no diagnostic channel), so this report is
+ * what keeps a refused evaluation from being invisible to the user.
+ * Read-only: it runs the same evaluation the expansion runs
+ * (insertEvaluationRefusal probes each reference, nested refusals included)
+ * and changes nothing.
+ */
+export function dynamicEvaluationNotices(blocks: Readonly<Record<string, BlockDef>>, topLevel: readonly Entity[]): DynamicEvaluationNotice[] {
+  const lookup: BlockLookup = (name) => blocks[name];
+  const out: DynamicEvaluationNotice[] = [];
+  for (const e of topLevel) {
+    if (e.type !== 'insert') continue;
+    const r = insertEvaluationRefusal(e, lookup);
+    if (r) out.push({ insertId: e.id, block: e.block, code: r.code, message: r.message });
+  }
+  return out;
 }
 
 /** Attribute text lives on the conventional AutoCAD Electrical layers. */
@@ -1954,8 +2751,15 @@ export function mirrorEntityAcross(e: Entity, a: Point, b: Point): Entity {
   }
 }
 
-/** Grip points (AutoCAD-style) for an entity. */
-export function gripPoints(e: Entity, context?: TextGeometryContext): Point[] {
+/**
+ * Grip points (AutoCAD-style) for an entity. For an insert, index 0 is the
+ * position grip; when a block `lookup` is supplied and the insert's block
+ * has a dynamic definition, the dynamic parameter grips (core/parametric/
+ * grips.ts) are APPENDED after it — indices are positional, so existing
+ * grips never shift. Without a lookup an insert reports only its position
+ * grip, exactly as before dynamic blocks.
+ */
+export function gripPoints(e: Entity, context?: TextGeometryContext, lookup?: BlockLookup): Point[] {
   switch (e.type) {
     case 'line':
       return [e.a, g.mid(e.a, e.b), e.b];
@@ -1975,8 +2779,14 @@ export function gripPoints(e: Entity, context?: TextGeometryContext): Point[] {
       return [...e.points];
     case 'text':
       return e.justification && (e.justification.horizontal === 3 || e.justification.horizontal === 5) && e.alignmentPoint ? [e.position, e.alignmentPoint] : [textAnchor(e)];
-    case 'insert':
-      return [e.position];
+    case 'insert': {
+      const block = lookup?.(e.block);
+      if (!block) return [e.position];
+      const dynamic = dynamicGrips(e, block);
+      if (dynamic.length === 0) return [e.position];
+      const tf = insertTransform(e, block);
+      return [e.position, ...dynamic.map((grip) => tf(grip.localPoint))];
+    }
     case 'ellipse':
       return [e.center, g.add(e.center, e.majorAxis), g.sub(e.center, e.majorAxis), ellipsePoint(e, Math.PI / 2), ellipsePoint(e, -Math.PI / 2)];
     case 'point':
@@ -2047,6 +2857,14 @@ export function moveGrip(e: Entity, index: number, p: Point): Entity | null {
       return translateEntity(e, g.sub(p, textAnchor(e)));
     }
     case 'insert':
+      // Only the position grip (index 0) reaches this function for an
+      // insert: dynamic parameter grips (indices >= 1, produced only when
+      // gripPoints is given a block lookup) are parameter edits, not entity
+      // moves — the pointer routes them through
+      // core/parametric/grips.ts dynamicGripEdit -> setDynamicParameter,
+      // never through here. This function has no block lookup and cannot
+      // resolve a parameter, so it must not be handed a dynamic index.
+      return { ...e, position: p };
     case 'point':
     case 'mtext':
       return { ...e, position: p };

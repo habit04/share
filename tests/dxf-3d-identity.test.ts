@@ -7,6 +7,13 @@
  *   predate the completed 2D/native preservation work and remain unchanged as provenance.
  *   Only checkout line endings are normalized; the writer's own CRLF is checked separately.
  *   There is intentionally no fixture/golden update switch.
+ * - Q11 F2 rework exception (lead decision, APPROVED with conditions): the [1] output hashes
+ *   below were updated once, because the pre-F2 writer fabricated a $CANNOSCALE '1:1' HEADER
+ *   pair into every output and the rework removes that fabrication (the setting now lives in
+ *   the variable dictionary, and these fixtures set none). Verified pair-by-pair against the
+ *   b6abbace outputs: for each of the four, the delta is EXACTLY the deletion of the two pairs
+ *   (9, $CANNOSCALE), (2, 1:1) at pair index 142 and nothing else. [0] input hashes and the
+ *   [2] legacy goldens are byte-unchanged.
  * - Every fixture's output is also compared with the output for the same state carrying an empty
  *   model, and checked for any trace of the 3D records.
  */
@@ -20,10 +27,10 @@ const sha = (text: string) => createHash('sha256').update(lf(text)).digest('hex'
 // Independently executed immutable fccba52b9c8ce25d90a2fcb96261ddc4502eae32 source.
 // Tuple: fixture input, pre-integration output, unchanged incoming legacy golden.
 const BASELINES: Readonly<Record<string, readonly [string, string, string]>> = {
-  'block-colors': ['d44dd28a3a2d19a88de28c2b6ef18ce4622109b709c8add8ddf27826f37de98f', '6ea83f9d5b4ca1bcc220953a4e308b15e33829183fc9bf4ec0ec01379848a3c1', '712755e567e4b52f3dd87f501eccfe6269ef930d1a754f93019a917c41af4a6e'],
-  hatch: ['99872d47f2af1a55fd8462083b25926fabd788fead26427f9d7202839b7aaa82', 'eb83d0613f5bc107a2762c8b89c5328c69e345e8f18817ce3b9f65a79dee0cf4', '2f683468b3d721d2170c8dd2bc1c5c3eebaa20fffcb5891e9092e6a673e4e34b'],
-  'polyline-widths': ['41ff2357bdb4653396400d44113273203ea0fdc10e8efec283b56ec5108818fb', 'f26d5d03e3340e5d9cc7f689f69e1569011dc4dd4d05fc2c2a21a7a31f2a736b', '67fbdf3d4849505709756959a95e0ed0a001619554d80209a7f5f58ee22c4dc5'],
-  'acad-table': ['0e3a7e374c9372782fc73c1875fe3ba80f43836e4a6217cb681b36734ccbfd29', '1281c26362e7e8fb61fab1cae24f160ab0ae9c29dac5d489523d5a2a4ad050e4', '495a35c874461dfafc244d185ad1c3a070ebf93df346581a33b9ab0913a7c4b5'],
+  'block-colors': ['d44dd28a3a2d19a88de28c2b6ef18ce4622109b709c8add8ddf27826f37de98f', '826c47754d9e093493c812bc4ad8ef9767fabeec611b0eb40aa971340afe8c81', '712755e567e4b52f3dd87f501eccfe6269ef930d1a754f93019a917c41af4a6e'],
+  hatch: ['99872d47f2af1a55fd8462083b25926fabd788fead26427f9d7202839b7aaa82', '0690ef325b7b5fa09e789a0db9d276f2427a0006851c56f64e2af8756bd55b67', '2f683468b3d721d2170c8dd2bc1c5c3eebaa20fffcb5891e9092e6a673e4e34b'],
+  'polyline-widths': ['41ff2357bdb4653396400d44113273203ea0fdc10e8efec283b56ec5108818fb', '51f8507514c66efa3714ddb3cea5c9bf8271636d49f1e1628a69f4a182e76ba3', '67fbdf3d4849505709756959a95e0ed0a001619554d80209a7f5f58ee22c4dc5'],
+  'acad-table': ['0e3a7e374c9372782fc73c1875fe3ba80f43836e4a6217cb681b36734ccbfd29', 'fe9f6b8e006af9d2539745678caa49e9a3bb9631a20c1e99a7107f71e12a26f7', '495a35c874461dfafc244d185ad1c3a070ebf93df346581a33b9ab0913a7c4b5'],
 };
 import { Drawing, type DrawingState } from '../src/core/document';
 import { readDxf, writeDxf } from '../src/io/dxf';

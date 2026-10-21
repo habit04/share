@@ -1,0 +1,47 @@
+{
+ "name": "table-tombstone",
+ "description": "Key tt-victim written (session 1), store reopened, then deleted alongside ~2.8 MB of new data, then 1 further reopen(s) until the deletion tombstone itself is inside an .ldb table.",
+ "generatedBy": "lead Windows gate (Claude), real Electron undefined via scripts/ls_session.cjs",
+ "electron": "44.7.0",
+ "snapshotTakenBeforeChromiumReadback": true,
+ "lockExcluded": true,
+ "structureVerified": true,
+ "structure": {
+  "manifest": "MANIFEST-000001",
+  "liveTables": [
+   {
+    "file": "000003.ldb",
+    "level": 0
+   },
+   {
+    "file": "000006.ldb",
+    "level": 0
+   }
+  ],
+  "tables": {
+   "000003.ldb": [
+    {
+     "key": "tt-victim",
+     "kind": "value",
+     "seq": "702"
+    }
+   ],
+   "000006.ldb": [
+    {
+     "key": "tt-victim",
+     "kind": "tombstone",
+     "seq": "1408"
+    }
+   ]
+  },
+  "logs": {
+   "000007.log": {
+    "bytes": 108,
+    "physicalRecords": {
+     "FULL": 1
+    },
+    "watchHits": []
+   }
+  }
+ }
+}

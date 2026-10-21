@@ -5,8 +5,8 @@ import { dirname, join, resolve } from 'node:path';
 // Observe only this freshly created test profile and its owned Electron child.
 // No logging environment, application timeout, retry or preference assertion changes.
 /** @param {import('playwright').ElectronApplication} app
- * @param {{profile: string, output?: string, launch: number}} options */
-export function originFailureDiagnostics(app, { profile, output, launch }) {
+ * @param {{profile: string, output?: string, launch: number, seedExitedAt?: string, appSpawnedAt?: string}} options */
+export function originFailureDiagnostics(app, { profile, output, launch, seedExitedAt, appSpawnedAt }) {
   if (!Number.isInteger(launch) || launch < 0 || launch > 2) throw new Error('Invalid origin diagnostic launch index');
   let child;
   try { child = app.process(); } catch { /* Main-process unavailability is itself captured below. */ }
@@ -19,6 +19,15 @@ export function originFailureDiagnostics(app, { profile, output, launch }) {
     events.push({ at: new Date().toISOString(), kind, ...detail });
     if (events.length > 64) events.shift();
   };
+  // Round 6 (F3): pin the harness timeline into the event log — when the seed
+  // process exited (it closed the Local Storage leveldb moments earlier) and
+  // when this app was spawned (it reopens that DB). The provided stamp rides
+  // in the detail, where it overrides add()'s own `at`, so the events carry
+  // the true instants rather than the construction time. Without a provided
+  // app-spawn stamp, the construction time stands; without a seed stamp, no
+  // seed-exit event is recorded at all.
+  if (typeof seedExitedAt === 'string' && seedExitedAt) add('seed-exit', { at: seedExitedAt });
+  add('app-spawn', typeof appSpawnedAt === 'string' && appSpawnedAt ? { at: appSpawnedAt } : {});
   const tail = (value) => Buffer.isBuffer(value) ? value.subarray(-16_384).toString('utf8') : String(value).slice(-16_384);
   const onStdout = (value) => { stdout = (stdout + tail(value)).slice(-16_384); };
   const onStderr = (value) => { stderr = (stderr + tail(value)).slice(-16_384); };
@@ -27,6 +36,45 @@ export function originFailureDiagnostics(app, { profile, output, launch }) {
   child?.on('exit', onExit);
   /** @type {Set<import('playwright').Page>} */
   const tracked = new Set();
+  /** Live CDP target snapshots, taken while windows exist (rounds 2-3, see
+   * probeTargets): a bounded array (max 16), one entry per probed window, each
+   * with its `at` time and the probing page's url — round 2 kept only the
+   * latest snapshot, so the main window's probe overwrote the migration
+   * window's. @type {{ at: string, pageUrl: string, targets: Record<string, unknown>[] }[]} */
+  const targetSnapshots = [];
+  /** Live CDP target probe (PR23 ASAR diagnosis item C, redesigned in round 2).
+   * Round 1 probed at capture time, which is dead on the real runtime:
+   * newCDPSession() with no page argument throws ('page: expected Page or
+   * Frame'), and by capture time the migration window is already gone. This
+   * probe instead runs when a window appears — while that window, and any
+   * hidden migration window alongside it, still exists — opens a session on
+   * the live page, and asks for ALL targets, so the snapshot shows every
+   * window's type/url/attach state at that moment. The Debugger.paused signal
+   * is dropped: enabling the debugger perturbs the very pause state under
+   * observation, and attachment is already in the target list. Best-effort,
+   * bounded at the same 2000ms discipline as mainState; never throws. */
+  async function probeTargets(page) {
+    const probe = (async () => {
+      const session = await (/** @type {any} */ (app)).context().newCDPSession(page);
+      try {
+        const { targetInfos } = await session.send('Target.getTargets');
+        return (targetInfos ?? []).slice(0, 16).map((info) => ({
+          type: String(info?.type ?? ''), url: String(info?.url ?? '').slice(0, 512),
+          attached: Boolean(info?.attached), targetId: String(info?.targetId ?? '').slice(0, 64),
+        }));
+      } finally { await session.detach().catch(() => {}); }
+    })();
+    let timer;
+    try {
+      const targets = await Promise.race([probe, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Target probe exceeded its 2000ms bound')), 2_000); })]);
+      let pageUrl = '<unavailable>';
+      try { pageUrl = page.url().slice(0, 512); } catch { /* keep unavailable */ }
+      targetSnapshots.push({ at: new Date().toISOString(), pageUrl, targets });
+      if (targetSnapshots.length > 16) targetSnapshots.shift();
+    } catch (error) {
+      add('target-probe-unavailable', { error: String(error).slice(0, 512) });
+    } finally { clearTimeout(timer); }
+  }
   /** @param {import('playwright').Page} page */
   const track = (page) => {
     if (tracked.has(page) || tracked.size >= 16) return;
@@ -38,6 +86,7 @@ export function originFailureDiagnostics(app, { profile, output, launch }) {
     const onClose = () => add('page-close', { url: url() });
     page.on('framenavigated', onNavigate); page.on('crash', onCrash); page.on('close', onClose);
     detach.push(() => { page.off('framenavigated', onNavigate); page.off('crash', onCrash); page.off('close', onClose); });
+    void probeTargets(page);
   };
   const observe = (page) => { try { track(page); } catch (error) { add('window-observer-unavailable', { error: String(error).slice(0, 512) }); } };
   try { app.on('window', observe); for (const page of app.windows().slice(0, 16)) observe(page); }
@@ -100,7 +149,55 @@ export function originFailureDiagnostics(app, { profile, output, launch }) {
       } catch (error) { selected[name] = { unavailable: String(error).slice(0, 1_024) }; }
       finally { if (descriptor !== undefined) { try { closeSync(descriptor); } catch { /* Best-effort diagnostic only. */ } } }
     }
-    return { inventory, inventoryLimit: 64, selected };
+    // Round 6 (F3): the Local Storage leveldb is the root-cause evidence —
+    // the migration page's first synchronous localStorage touch opens this
+    // DB in the browser process, and the seed process closed it moments
+    // before. Capture its file set (names/sizes/mtimes only — data-file
+    // contents are never read) and the leveldb logs under the same
+    // capped-tail discipline as error.log. Every part degrades to an
+    // unavailable record on its own; nothing here throws.
+    // Round 11: the same capture now also runs on the migration
+    // PARTITION's leveldb — since round 6 the read is served from the
+    // pre-ready copy there, and the round-10 CI failure stalled against
+    // the partition-resident store, so the partition's state at failure
+    // is first-class evidence too.
+    const captureLeveldb = (/** @type {string} */ leveldbDir) => {
+      /** @type {Record<string, unknown>[] | { unavailable: string }} */
+      let files;
+      let listing;
+      try {
+        listing = opendirSync(leveldbDir);
+        const found = [];
+        for (let count = 0; count < 64; count++) {
+          const entry = listing.readSync(); if (!entry) break;
+          try {
+            const stat = lstatSync(join(leveldbDir, entry.name));
+            if (!stat.isFile() || stat.isSymbolicLink()) continue;
+            found.push({ name: entry.name.slice(0, 255), bytes: stat.size, modifiedUtc: stat.mtime.toISOString() });
+          } catch { /* A file vanishing mid-scan is skipped, not fatal. */ }
+        }
+        files = found;
+      } catch (error) { files = { unavailable: String(error).slice(0, 1_024) }; }
+      finally { if (listing) { try { listing.closeSync(); } catch { /* Best-effort diagnostic only. */ } } }
+      const log = (/** @type {string} */ name) => {
+        const file = join(leveldbDir, name);
+        let descriptor;
+        try {
+          const stat = lstatSync(file);
+          if (!stat.isFile() || stat.isSymbolicLink()) return { unavailable: 'Not a regular file' };
+          const limit = 16_384;
+          descriptor = openSync(file, 'r');
+          const bytes = Buffer.alloc(Math.min(stat.size, limit));
+          const read = readSync(descriptor, bytes, 0, bytes.length, Math.max(0, stat.size - bytes.length));
+          return { bytes: stat.size, modifiedUtc: stat.mtime.toISOString(), truncated: stat.size > limit, text: bytes.subarray(0, read).toString('utf8') };
+        } catch (error) { return { unavailable: String(error).slice(0, 1_024) }; }
+        finally { if (descriptor !== undefined) { try { closeSync(descriptor); } catch { /* Best-effort diagnostic only. */ } } }
+      };
+      return { files, log: log('LOG'), logOld: log('LOG.old') };
+    };
+    const leveldb = captureLeveldb(join(profile, 'Local Storage', 'leveldb'));
+    const partitionLeveldb = captureLeveldb(join(profile, 'Partitions', 'legacy-migration', 'Local Storage', 'leveldb'));
+    return { inventory, inventoryLimit: 64, selected, leveldb, partitionLeveldb };
   }
   return {
     async capture(error) {
@@ -108,6 +205,7 @@ export function originFailureDiagnostics(app, { profile, output, launch }) {
         const out = output;
         if (!out) { console.error('Origin failure diagnostics require JCAD_E2E_OUT; original failure retained.'); return; }
         const state = await mainState();
+        const cdpTargets = targetSnapshots.length > 0 ? targetSnapshots : { unavailable: 'No live target snapshot was recorded' };
         const diagnostic = { kind: 'Failure-only origin E2E observation; no cause inferred', launch: launch + 1,
           at: new Date().toISOString(), failure: String(error?.stack ?? error).slice(0, 4_096),
           process: child ? { pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode, killed: child.killed } : { unavailable: true },
@@ -115,7 +213,7 @@ export function originFailureDiagnostics(app, { profile, output, launch }) {
             try { return { url: page.url().slice(0, 512), closed: page.isClosed() }; }
             catch (error) { return { unavailable: String(error).slice(0, 1024) }; }
           }),
-          events, main: state, profile: profileState(), stdoutTail: stdout, stderrTail: stderr };
+          events, main: state, cdpTargets, profile: profileState(), stdoutTail: stdout, stderrTail: stderr };
         mkdirSync(out, { recursive: true });
         const artifactFile = join(resolve(out), `origin-failure-launch-${launch + 1}.json`);
         if (dirname(artifactFile) !== resolve(out)) throw new Error('Origin diagnostic output escaped its artifact directory');

@@ -5,7 +5,7 @@
 import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity, LineEntity, PolylineEntity, ArcEntity, CircleEntity } from '../core/entities';
-import { newId, explodeInsert, insertExpansionLimited, MAX_INSERT_EXPANSION, bakeInheritedColor, entitySegments, arcPoints, mirrorEntityAcross, scaleEntityBy } from '../core/entities';
+import { newId, explodeInsert, insertEvaluationRefusal, insertExpansionLimited, MAX_INSERT_EXPANSION, bakeInheritedColor, entitySegments, arcPoints, mirrorEntityAcross, scaleEntityBy } from '../core/entities';
 import { cadMirror, cadScale, cadCloneBatch, cadTransformIntent } from './cad-edits';
 import { pickEntity } from '../core/selection';
 import type { Tool, ToolContext } from './types';
@@ -604,12 +604,23 @@ export class ExplodeTool extends SelectionTool {
     const out: Entity[] = [];
     const exploded = new Set<string>();
     let refused = 0;
+    let dynamicRefused = 0;
     for (const e of targets) {
       if (e.type === 'insert') {
         // A reference whose expansion was cut short (more than MAX_INSERT_EXPANSION objects, or a
         // block that inserts itself) would lose content: it stays a reference.
         if (insertExpansionLimited(e, ctx.doc.lookupBlock)) {
           refused += 1;
+          continue;
+        }
+        // Design §1.4(d) (30.4): a dynamic reference whose evaluation REFUSES has no
+        // evaluated state to explode into. Exploding the silently-substituted authored
+        // geometry would discard the parameter state and misrepresent the result, so
+        // the explode itself refuses, naming the evaluation refusal.
+        const evaluationRefusal = insertEvaluationRefusal(e, ctx.doc.lookupBlock);
+        if (evaluationRefusal) {
+          dynamicRefused += 1;
+          ctx.log(`Block reference "${e.block}" not exploded: dynamic evaluation refused (${evaluationRefusal.code}): ${evaluationRefusal.message}`);
           continue;
         }
         // ByBlock content of a ByLayer reference keeps the colour it showed (bakeInheritedColor).
@@ -622,6 +633,7 @@ export class ExplodeTool extends SelectionTool {
     }
     const n = exploded.size;
     if (refused) ctx.log(`${refused} block reference(s) not exploded: the block inserts itself or expands to more than ${MAX_INSERT_EXPANSION.toLocaleString('en-US')} objects.`);
+    if (dynamicRefused) ctx.log(`${dynamicRefused} dynamic block reference(s) not exploded: evaluation refused (see above); the parameter state is unchanged.`);
     if (n === 0) {
       ctx.log('Nothing to explode.');
       ctx.finish();

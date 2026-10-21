@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { _electron as electron } from 'playwright';
-import { applicationWindow } from './electron-window.mjs';
+import { applicationWindow, closeApplication } from './electron-window.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const out = resolve(root, 'e2e-output/gpu-diagnostics');
@@ -81,5 +81,5 @@ try {
   console.log(`GPU diagnostics: real Windows collector (${snapshot.state}), About, clipboard and bug-report checks passed (Electron ${snapshot.versions.electron}).`);
 } finally {
   await app.evaluate(({ app }) => app.exit(0)).catch(() => {});
-  await app.close().catch(() => {});
+  await closeApplication(app, 30_000); // success-path bound covers the close checkpoint (PR23 ASAR round 2); tree-kills a wedged app by pid
 }
