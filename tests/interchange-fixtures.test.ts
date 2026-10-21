@@ -779,9 +779,13 @@ describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency
     it('layers: true colour with the nearest ACI, lineweights, linetypes, off / frozen / locked / no-plot', () => {
       expect(importReportOf(s)?.items.some((i) => i.type === 'STYLE')).toBe(true);
       expect(layerOf(s, '0')).toMatchObject({ color: 7, lineWeight: 0.25 });
-      expect(layerOf(s, 'PANEL-TC')).toMatchObject({ color: 5, trueColor: 0x3399ff, lineWeight: 0.5 });
-      expect(layerOf(s, 'WIRE-RED')).toMatchObject({ color: 1, trueColor: 0xc80000, lineWeight: 0.35, linetype: 'GAS_LINE' });
-      expect(layerOf(s, 'BOOK')).toMatchObject({ color: 3, trueColor: 0x00a651, lineWeight: 0.25 });
+      // AutoCAD writes its own nearest ACI beside each true colour in a genuine save
+      // (checklist r2018-truecolor-linetypes #8/#10/#12/#13): PANEL-TC 150 (not 5),
+      // WIRE-RED 12 (not 1), BOOK 104 (not 3), and the book colour is AutoCAD 2027's
+      // PANTONE 355 C value 0x009639 (not the synthetic's 0x00a651).
+      expect(layerOf(s, 'PANEL-TC')).toMatchObject({ color: 150, trueColor: 0x3399ff, lineWeight: 0.5 });
+      expect(layerOf(s, 'WIRE-RED')).toMatchObject({ color: 12, trueColor: 0xc80000, lineWeight: 0.35, linetype: 'GAS_LINE' });
+      expect(layerOf(s, 'BOOK')).toMatchObject({ color: 104, trueColor: 0x009639, lineWeight: 0.25 });
       expect(layerOf(s, 'FENCE')).toMatchObject({ color: 40, visible: false, lineWeight: 0.13, linetype: 'FENCELINE1' });
       expect(layerOf(s, 'NOPLOT')).toMatchObject({ color: 8, plot: false });
       expect(layerOf(s, 'ARCHIVE')).toMatchObject({ frozen: true, locked: true, visible: false });
@@ -790,9 +794,18 @@ describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency
 
     it('complex linetypes keep their native descriptors while displaying the dash fallback', () => {
       expect(s.header?.linetypes).toMatchObject([
-        { name: 'GAS_LINE', description: 'Gas line ----GAS----GAS----GAS----GAS----GAS----GAS--', pattern: [12.7, -5.08, -6.35] },
-        { name: 'FENCELINE1', description: 'Fenceline circle ----0-----0----0-----0----0-----0--', pattern: [6.35, -2.54, -2.54, 25.4] },
+        // AutoCAD truncated both descriptions to 47 chars (checklist #17, GAS_LINE);
+        // the synthetic carried the full texts.
+        { name: 'GAS_LINE', description: 'Gas line ----GAS----GAS----GAS----GAS----GAS---' },
+        { name: 'FENCELINE1', description: 'Fenceline circle ----0-----0----0-----0----0---' },
       ]);
+      // AutoCAD spelled both 6.35 dashes with the long double (GAS_LINE -6.349999999999999,
+      // checklist #19; FENCELINE1 6.349999999999999), one ULP below the canonical double, and
+      // JCad's writer canonicalises them on save - so the two legs' pattern doubles differ by
+      // that single ULP and the patterns are asserted element-wise at 12 digits.
+      const [gasPattern, fencePattern] = s.header!.linetypes.map((l) => l.pattern!);
+      [12.7, -5.08, -6.35].forEach((v, i) => close(gasPattern[i], v, 12));
+      [6.35, -2.54, -2.54, 25.4].forEach((v, i) => close(fencePattern[i], v, 12));
       expect(s.header!.linetypes[0]!.complex!.elements[1]).toMatchObject({ flags: 2, shapeNumber: 0,
         scale: 2.54, rotation: 0, offsetX: -2.54, offsetY: -1.27, text: 'GAS', style: { kind: 'text', name: 'Standard' } });
       expect(s.header!.linetypes[1]!.complex!.elements[1]).toMatchObject({ flags: 4, shapeNumber: 133,
@@ -818,7 +831,7 @@ describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency
       expect(ofType<ArcEntity>(s.entities, 'arc')[0]).toMatchObject({ color: 5, trueColor: 0x0000ff });
       // A colour-book colour shows its RGB (420), more than the matrix promises.
       const book = ofType<TextEntity>(s.entities, 'text')[0]!;
-      expect(book).toMatchObject({ color: 3, trueColor: 0x00a651, text: 'PANTONE 355 C' });
+      expect(book).toMatchObject({ color: 104, trueColor: 0x009639, text: 'PANTONE 355 C' });
       expect(ofType<HatchEntity>(s.entities, 'hatch')[0]).toMatchObject({ solid: true, color: 8, trueColor: 0x808080 });
     });
   });
