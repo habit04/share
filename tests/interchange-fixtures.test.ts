@@ -535,7 +535,10 @@ describe('r2018-mtext.dxf: MTEXT formatting codes, stacked fractions, columns, l
       const m3 = m[2]!;
       expect(m3.text).toBe('COLUMN ONE FIRST LINE\nCOLUMN ONE SECOND LINE\nCOLUMN TWO FIRST LINE\nCOLUMN TWO SECOND LINE');
       expect(m3.raw).toContain('\\N');
-      expect(m3.width).toBe(60);
+      // The genuine entity's reference width (group 41) is the TOTAL width 125 = 2x60 + 5;
+      // the 60 column width lives in the embedded object (checklist r2018-mtext #11).
+      // The synthetic carried 60 in both places.
+      expect(m3.width).toBe(125);
     });
 
     it('rotated by its direction vector, middle centre, line spacing 1.5, SHX style, UTF-8 characters', () => {
@@ -564,7 +567,9 @@ describe('r2018-mtext.dxf: MTEXT formatting codes, stacked fractions, columns, l
   it('MTEXT static columns (R2018 embedded object: 2 columns 60 wide, gutter 5) are kept, and each column is laid out at its offset', () => {
     for (const [, s] of both(f)) {
       const m = ofType<MTextEntity>(s.entities, 'mtext')[2]!;
-      expect(m.columns).toMatchObject({ type: 1, count: 2, width: 60, gutter: 5, heights: [20, 20] });
+      // No per-column heights in the genuine file (group 46 carries only the defined height 20,
+      // which the heights follow; checklist r2018-mtext #13). The synthetic pinned [20, 20].
+      expect(m.columns).toMatchObject({ type: 1, count: 2, width: 60, gutter: 5, heights: [] });
       const parts = mtextLayout(m, (t, h) => t.length * h * 0.1);
       const origins = [...new Set(parts.filter((t) => t.text === 'COLUMN').map((t) => t.position.x))];
       expect(origins[1]! - origins[0]!).toBeCloseTo(65);
