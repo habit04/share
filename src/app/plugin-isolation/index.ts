@@ -1,7 +1,7 @@
 /**
  * P25 plugin capability isolation — public surface of the isolated modules.
- * Nothing in the application imports this yet: wiring into PluginHost waits
- * for PROPOSAL-P25 to be ADMITTED (see docs/PLUGIN-ISOLATION.md).
+ * PROPOSAL-P25 was ADMITTED (LEDGER L-011); src/app/plugins.ts imports the
+ * modules directly for the PluginHost wiring (see docs/PLUGIN-ISOLATION.md).
  */
 export { PLUGIN_CAPABILITIES, isPluginCapability, parseCapabilitySet, type PluginCapability } from './capabilities';
 export { parseIsolatedManifest, IsolatedManifestError, type IsolatedManifest } from './manifest';

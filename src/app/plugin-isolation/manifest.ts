@@ -1,11 +1,12 @@
 /**
  * P25 plugin capability isolation — isolated-manifest parsing.
  *
- * This is a PROTOTYPE of the PluginManifest extension filed as PROPOSAL-P25
- * in the six-pipeline ledger. Until that proposal is ADMITTED, `PluginManifest`
- * in ../plugins.ts is unchanged and nothing in the application reads this
- * parser; it exists so the isolated realm has a fail-closed declaration format
- * to enforce, and so the admission review has exact semantics to judge.
+ * This is the isolated modules' reference implementation of the PluginManifest
+ * extension filed as PROPOSAL-P25 in the six-pipeline ledger. The proposal was
+ * ADMITTED (LEDGER L-011): `PluginManifest` in ../plugins.ts now carries the
+ * fields, and parseManifest / PluginHost.load enforce these exact semantics
+ * (same messages, same order of checks). This parser remains so the isolated
+ * realm has a fail-closed declaration format independent of the host.
  *
  * Rules (fail-closed — every violation is an IsolatedManifestError):
  * - no `isolation` field (or `"page"`): a legacy API v1 manifest, capabilities [];

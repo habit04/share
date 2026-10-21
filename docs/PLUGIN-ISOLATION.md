@@ -1,10 +1,16 @@
 # Plugin capability isolation (priority 25) — threat model, design, migration
 
-Status: FIRST SLICE, isolated modules only (`src/app/plugin-isolation/`). API v1
-(`src/app/api.ts`, `src/app/plugins.ts`) is **frozen and untouched**: the isolated realm
-sits *beside* v1. Wiring isolated manifests into `PluginHost` needs the ledger proposal
-PROPOSAL-P25 to be ADMITTED first; until then nothing in the application loads plugins
-through this code, and **no safely-untrusted plugin rollout is claimed**.
+Status: SLICE 2 — PROPOSAL-P25 was ADMITTED (LEDGER L-011) and the wiring has
+landed: `PluginHost` in `src/app/plugins.ts` honours the manifest opt-in fields and
+loads worker plugins through the isolated realm in `src/app/plugin-isolation/`.
+API v1 (`src/app/api.ts`) is **frozen and untouched**; `plugins.ts` changed only as
+the admitted proposal specifies (manifest fields, `parseManifest` validation, the
+`PluginHost.load` branch, trust-prompt capability display). Two slice-1 acceptance
+findings are fixed in this slice: F-1 (the realm now locks the CommonJS identifiers
+`module`/`exports`/`__filename`/`__dirname`) and F-2 (non-stageable calls are
+refused inside `document.transact`, so §3/T9 atomicity holds as written). The
+packaged-Electron worker path remains an open, lead-owned gate (§6), and **no
+safely-untrusted plugin rollout in packaged builds is claimed**.
 
 ## 1. Audit summary — API v1 attack surface (base 038cb7b4)
 
@@ -115,8 +121,9 @@ return — which the acceptance tests exercise.
   API v1 trusted page code, exactly as today — same trust prompt, same synchronous API,
   same behaviour. Nothing is silently sandboxed and nothing silently gains power.
 - **Opt-in isolated plugins**: add `"apiVersion": 2, "isolation": "worker",
-  "capabilities": [...]` to `plugin.json` (fields prototyped in
-  `plugin-isolation/manifest.ts`; admission into `PluginManifest` is PROPOSAL-P25).
+  "capabilities": [...]` to `plugin.json` (semantics prototyped in
+  `plugin-isolation/manifest.ts`; admitted into `PluginManifest` as PROPOSAL-P25 /
+  LEDGER L-011 and enforced by `parseManifest` and `PluginHost.load`).
   An isolated plugin that cannot start a realm **fails closed** — it is never run in the
   page as a fallback.
 - **API differences a migrating plugin must accept** (v2 = v1 shapes, async delivery):
@@ -138,7 +145,10 @@ return — which the acceptance tests exercise.
 
 ## 6. Limitations / open gates
 
-- Not wired into `PluginHost` / application start-up (PROPOSAL-P25 pending admission).
+- Wired into `PluginHost` behind the manifest opt-in (slice 2, L-011 conditions
+  C1–C7). In an environment with no realm transport — including a packaged
+  renderer whose CSP refuses the bootstrap — a worker plugin fails closed at
+  load; it never runs in the page as a fallback.
 - Linux/Node `worker_threads` evidence proves the realm, protocol and host logic; it does
   **not** prove the Electron packaged worker path. Concrete blocker, verified at base:
   `electron/renderer-origin.cjs` serves worker scripts (`assets/worker/*`) with
