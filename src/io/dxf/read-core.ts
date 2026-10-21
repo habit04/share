@@ -9,6 +9,7 @@ import { str, has, num } from './groups';
 import { newId } from '../../core/entities';
 import type { FieldContext } from '../../core/fields';
 import type { TableStyleData } from './read-annotations';
+import type { MLeaderStyleRetained } from '../../core/multileader';
 import { ImportReportBuilder } from '../import-report';
 import { transparencyFromDxf, validColorName } from '../../core/appearance';
 import type { EntityBase } from '../../core/entities';
@@ -63,6 +64,10 @@ export interface ReadContext {
   tableStyles?: Map<string, TableStyleData>;
   /** P18: MLEADERSTYLE names by upper-case handle (OBJECTS comes last; a MULTILEADER's trailing group 340 names one). */
   mleaderStyles?: ReadonlyMap<string, string>;
+  /** P18 (AMENDMENT-P18-S2-A, must-fix V-1): MLEADERSTYLE retained values by upper-case handle —
+   *  the source values of the style groups no entity field supplies; a style whose values all
+   *  match the specimen constants has NO entry, so authored round trips are untouched. */
+  mleaderStyleValues?: ReadonlyMap<string, MLeaderStyleRetained>;
   /** Anonymous blocks replaced by native tables. */
   consumedBlocks?: Set<string>;
   /** Remarks about content that was simplified. */

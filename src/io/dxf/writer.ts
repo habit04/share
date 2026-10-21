@@ -945,11 +945,15 @@ export function writeDxf(state: DrawingState): string {
     // landing gap, 43 dogleg length, 44 arrowhead size, 45 text height, 142
     // scale factor, 342 the text-style handle. Group 3 is the style
     // description (the specimen's reads 'Standard'); JCad writes it empty.
-    // Remaining groups (91/92/93/94 colour words, 46 align space, 47/49/140
-    // block-content scale, 271/272/273 attachment directions, 143 break gap,
-    // 298) are carried over unchanged from the specimen and are not claimed
-    // as modeled. The specimen's group 340 (leader linetype, a TABLES handle
-    // JCad does not pre-allocate) is omitted; the default is ByLayer.
+    // Groups 46 (align space), 47/49/140 (block-content scale), 141 (block
+    // rotation), 271/272/273 (attachment directions) and 298 come from the
+    // style data: retained source values win (V-1, AMENDMENT-P18-S2-A), the
+    // specimen constants otherwise — byte-identical output whenever nothing
+    // was retained. The remaining groups (91/92/93/94 colour words, 143
+    // break gap) are carried over unchanged from the specimen and are not
+    // claimed as modeled. The specimen's group 340 (leader linetype, a
+    // TABLES handle JCad does not pre-allocate) is omitted; the default is
+    // ByLayer.
     w.pair(0, 'DICTIONARY');
     w.pair(5, mleaderDict);
     w.pair(330, 'C');
@@ -996,23 +1000,23 @@ export function writeDxf(state: DrawingState): string {
       w.pair(45, data.textHeight);
       w.pair(292, 0);
       w.pair(297, 0);
-      w.pair(46, 0.18);
+      w.pair(46, data.alignSpace);
       w.pair(94, -1056964608);
-      w.pair(47, 1);
-      w.pair(49, 1);
-      w.pair(140, 1);
+      w.pair(47, data.blockScale.x);
+      w.pair(49, data.blockScale.y);
+      w.pair(140, data.blockScale.z);
       w.pair(293, 1);
-      w.pair(141, 0);
+      w.pair(141, data.blockRotation);
       w.pair(294, 1);
       w.pair(177, 0);
       w.pair(142, data.scaleFactor);
       w.pair(295, 0);
       w.pair(296, 0);
       w.pair(143, 0.125);
-      w.pair(271, 0);
-      w.pair(272, 9);
-      w.pair(273, 9);
-      w.pair(298, 0);
+      w.pair(271, data.textAttachmentDirection);
+      w.pair(272, data.bottomTextAttachmentDirection);
+      w.pair(273, data.topTextAttachmentDirection);
+      w.pair(298, data.flag298);
     }
   }
   w.pair(0, 'ENDSEC');
