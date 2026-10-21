@@ -19,6 +19,14 @@
  * no such claim is made anywhere in this module. An absent or empty payload
  * is 'unsigned', never a fabricated stamp.
  *
+ * Two boundaries of the tamper claim, stated plainly (checkpoint-1
+ * acceptance d4/f2): verification compares the drawing-content digest ONLY
+ * — the preserved payload's own bytes are not integrity-attested, so a
+ * corrupted or substituted payload is undetectable by this module; and the
+ * serialized record is UNAUTHENTICATED — anyone who can edit the stored
+ * JSON can rewrite its status, so invalidation stickiness is an API
+ * discipline of this module, not a property of the stored data.
+ *
  * Drawing signatures are unrelated to installer signing, which this module
  * never touches.
  */
@@ -103,17 +111,23 @@ function bytesToBase64(bytes: Uint8Array): string {
 }
 
 function base64ToBytes(text: string): Uint8Array {
-  const clean = text.replace(/[^A-Za-z0-9+/=]/g, '');
+  // Strict (checkpoint-1 acceptance e2): the load path REFUSES malformed
+  // encodings instead of silently stripping non-alphabet characters — the
+  // module's parse path never canonicalizes a stored record into acceptance.
+  // (The empty string is well-formed and decodes to an empty payload.)
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(text)) {
+    throw new Error('signature record payloadBase64 is not well-formed base64');
+  }
   const bytes: number[] = [];
-  for (let i = 0; i < clean.length; i += 4) {
+  for (let i = 0; i < text.length; i += 4) {
     const v = (idx: number): number => {
-      const ch = clean[idx];
+      const ch = text[idx];
       return ch === '=' || ch === undefined ? 0 : B64.indexOf(ch);
     };
     const n = (v(i) << 18) | (v(i + 1) << 12) | (v(i + 2) << 6) | v(i + 3);
     bytes.push((n >> 16) & 0xff);
-    if (clean[i + 2] !== '=') bytes.push((n >> 8) & 0xff);
-    if (clean[i + 3] !== '=') bytes.push(n & 0xff);
+    if (text[i + 2] !== '=') bytes.push((n >> 8) & 0xff);
+    if (text[i + 3] !== '=') bytes.push(n & 0xff);
   }
   return new Uint8Array(bytes);
 }
