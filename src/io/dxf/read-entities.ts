@@ -15,7 +15,7 @@ import { splineWorkProblem, SplineWorkLimitError, isValidNurbs, nurbsPoints, int
 import { LoopBuilder, edgeArc, fitPatternToLines, findPattern } from '../../core/hatch';
 import type { ReadContext } from './read-core';
 import { hasFields, evaluateFields } from '../../core/fields';
-import { readMTextColumns, readDimension, readDimStyleFromEntity, readLeader, readMLeader, mleaderBlockContentSignalled, readImage, readTable, readJcadTable, restoreCoveredCells } from './read-annotations';
+import { readMTextColumns, readDimension, readDimStyleFromEntity, readLeader, readMLeader, mleaderBlockContentSignalled, mleaderContextSectionCount, readImage, readTable, readJcadTable, restoreCoveredCells } from './read-annotations';
 import type { MTextAttachment, MTextBackground } from '../../core/mtext';
 import { mtextFromDxf, hasFormatting } from '../../core/mtext';
 import { readTextPlacement } from './read-text';
@@ -479,6 +479,20 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
           // A native (non-block) mleader attached despite the signal cannot
           // occur for a real block signal — readMLeader withholds native data
           // for block content it cannot model — so nothing is reported.
+        }
+        // Slice 3 (PROPOSAL-P18-S3 item (1)): multi-context (annotative)
+        // records are reported from the CONTEXT_DATA section count, the same
+        // posture as block content above — modelled contexts earn the
+        // informational note only; withheld ones (readMLeader attached no
+        // native data) earn the note + a `simplified` entry. Both the block
+        // and the context entries may fire for one record; wordings distinct.
+        if (mleaderContextSectionCount(o) > 1) {
+          if (ml.mleader?.contexts) {
+            ctx.notes?.push('MULTILEADER annotative contexts are kept as native data; the first context is drawn.');
+          } else if (!ml.mleader) {
+            ctx.notes?.push('MULTILEADER annotative contexts are not kept; the leader and its text are kept.');
+            reportObj(ctx, o, 'simplified', 'its annotative contexts are not kept; the leader and its text are');
+          }
         }
       }
       return ml;
