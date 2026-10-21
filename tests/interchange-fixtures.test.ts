@@ -1,8 +1,12 @@
 /**
- * Interchange fixtures (tests/fixtures/interchange/): nine DXF files written by hand from the
- * public DXF reference, laid out the way AutoCAD 2000 (AC1015) and AutoCAD 2018 (AC1032) save
- * them. None comes from JCad's writer. Each fixture is checked after import (the bytes decoded as
- * the app decodes them, then readDxf) and again after a writeDxf -> readDxf round trip.
+ * Interchange fixtures (tests/fixtures/interchange/): the R2000 files and r2018-table.dxf were
+ * written by hand from the public DXF reference, laid out the way AutoCAD 2000 (AC1015) and
+ * AutoCAD 2018 (AC1032) save them; r2018-dimensions.dxf, r2018-image-inches.dxf,
+ * r2018-mtext.dxf and r2018-truecolor-linetypes.dxf are genuine AutoCAD 2027 R2018 saves that
+ * replaced hand-authored originals in the 2026-10-21 fixture swap (see
+ * tests/fixtures/interchange/PROVENANCE.md). None comes from JCad's writer. Each fixture is
+ * checked after import (the bytes decoded as the app decodes them, then readDxf) and again
+ * after a writeDxf -> readDxf round trip.
  *
  * Every describe block starts with what must survive and what docs/SUPPORT-MATRIX.md says is
  * lost; losses the matrix documents are asserted as losses. Where the reader or writer drops
