@@ -10,6 +10,8 @@ import { StatusBar } from './ui/statusbar';
 import { ProjectManager } from './ui/projectmanager';
 import { pickSymbolDialog, editComponentDialog, ladderDialog, textInputDialog, layerDialog, confirmDialog, saveChangesDialog, reportsDialog, templateDialog, plcDialog, terminalStripDialog, wireTypeDialog } from './ui/dialogs';
 import { PropertiesPalette } from './ui/properties';
+import { AiAssistantPanel } from './ui/ai-panel';
+import { windowAiConnection } from './ai/host-bridge';
 import { saveSettings } from './app/settings';
 import { buildTitleBar, buildFileTabs, buildLayoutTabs, installContextMenu, buildNavBar } from './ui/chrome';
 import { seedDemoDrawing } from './app/demo';
@@ -60,6 +62,7 @@ declare global {
     jcad?: {
       openShxFont?(): Promise<import('./render/shx-fonts').ShxResource | null>;
       fontMetrics?(request: import('./core/text-metrics').FontMetricsRequest): Promise<import('./core/text-metrics').NativeFontMetrics | null>;
+      ai?: import('./ai/host-bridge').AiPreloadBridge;
       pdfFont?(request: import('./core/text-metrics').FontMetricsRequest): Promise<import('./app/pdf-fonts').PdfFontResult>;
       openDxf(): Promise<{ path: string; identityPath?: string; openedSourceProof?: string; text: string } | null>;
       releaseOpenedSourceProof?(proof: string): Promise<void>;
@@ -342,6 +345,7 @@ function boot(): void {
         <div id="command-window"></div>
       </div>
       <div id="properties"></div>
+      <div id="ai-assistant"></div>
       <div id="symbol-builder"></div>
     </div>
     <div id="statusbar"></div>`;
@@ -525,6 +529,17 @@ function boot(): void {
 
   // Experimental 3D (inert unless Options > Experimental > 3D modelling was on at startup).
   const experimental3d = installExperimental3d(editor);
+  editor.hooks.aiDraftingAvailable = () => !(experimental3d?.active ?? false);
+  let aiWasIn3d = experimental3d?.active ?? false;
+  const syncAiDraftView = () => {
+    const active = experimental3d?.active ?? false;
+    if (active !== aiWasIn3d) {
+      aiWasIn3d = active;
+      editor.noteInteractionStart();
+    }
+  };
+  editor.on('view', syncAiDraftView);
+  editor.on('log', syncAiDraftView);
   setDiagnosticRenderer(() => experimental3d?.active ? 'WebGL2 experimental 3D modelling viewport' : 'Canvas 2D');
   if (__JCAD_GPU_EXPERIMENTAL__) installGpuPrototype(editor, () => experimental3d?.active ?? false);
   else installGpu2dCandidateSelector(editor, () => experimental3d?.active ?? false);
@@ -548,6 +563,12 @@ function boot(): void {
   makePaletteResizable(props.el, { edge: 'left', initial: editor.settings.paletteWidths.properties, onWidth: (w) => updateSettings(editor, { paletteWidths: { ...editor.settings.paletteWidths, properties: Math.round(w) } }) });
   installAutoHide(props.el, { initial: editor.settings.paletteAutoHide.properties, onChange: (a) => updateSettings(editor, { paletteAutoHide: { ...editor.settings.paletteAutoHide, properties: a } }) });
   if (editor.settings.propertiesVisible) props.toggle();
+  // AI Assistant palette (docs/AI-ASSISTANT.md): read-only, toggled directly —
+  // never through runCommand, which would cancel the current drawing tool.
+  // Width is not persisted in this milestone (the settings record is closed).
+  const aiPanel = new AiAssistantPanel(editor, document.getElementById('ai-assistant')!, undefined, windowAiConnection());
+  makePaletteResizable(aiPanel.el, { edge: 'left', initial: 320, onWidth: () => {} });
+  editor.hooks.aiAssistant = () => aiPanel.toggle();
   buildFileTabs(editor, document.getElementById('file-tabs')!);
   buildLayoutTabs(editor, document.getElementById('layout-tabs')!);
   const cmdEl = document.getElementById('command-window')!;
@@ -566,6 +587,13 @@ function boot(): void {
   };
   setCommandWindow(editor.settings.commandWindowVisible);
   new StatusBar(editor, document.getElementById('statusbar')!);
+  const aiToggle = document.createElement('button');
+  aiToggle.className = 'status-btn text';
+  aiToggle.textContent = 'AI';
+  aiToggle.title = 'AI Assistant — ask about selected objects (read-only)';
+  aiToggle.addEventListener('keydown', (ev) => ev.stopPropagation());
+  aiToggle.addEventListener('click', () => editor.hooks.aiAssistant?.());
+  document.getElementById('statusbar')!.appendChild(aiToggle);
   const clipboard = new EntityClipboard(editor);
   installContextMenu(editor, canvas, { recentInput: () => cmd.recentInput(), runInput: (t) => cmd.setText(t, true), clipboard });
   buildNavBar(editor, document.getElementById('navbar')!);

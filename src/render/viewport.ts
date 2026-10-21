@@ -39,6 +39,22 @@ export interface ViewportOverlay {
   preview: readonly Entity[];
   /** Ghost entities (e.g. move/copy preview) drawn dashed. */
   ghost: readonly Entity[];
+  /**
+   * AI Draft preview channel (docs/AI-ASSISTANT-M3.md): a staged proposal's
+   * compiled geometry, owned solely by the AI panel. Kept apart from the
+   * tool preview/ghost channels, which tools clear on start/finish; renderer
+   * state only — never part of the document.
+   */
+  aiPreview?: {
+    /** Newly created and copied entities. */
+    readonly added: readonly Entity[];
+    /** Post-edit geometry of modified entities. */
+    readonly modifiedAfter: readonly Entity[];
+    /** Pre-edit geometry of modified and deleted entities. */
+    readonly originals: readonly Entity[];
+    /** Entities the proposal would delete. */
+    readonly deleted: readonly Entity[];
+  } | null;
   /** Selected entity ids. */
   selection: ReadonlySet<string>;
   /** Entity currently under cursor (rollover highlight). */
@@ -446,6 +462,15 @@ export class Viewport {
 
     for (const e of ov.ghost) drawEntity(ctx, e, tf, layers, lookup, { dashed: true, alpha: 0.7 });
     for (const e of ov.preview) drawEntity(ctx, e, tf, layers, lookup);
+
+    if (ov.aiPreview) {
+      // AI Draft staged proposal: originals dashed grey, deletions dashed
+      // red, new positions solid amber, additions solid green.
+      for (const e of ov.aiPreview.originals) drawEntity(ctx, e, tf, layers, lookup, { dashed: true, alpha: 0.45, strokeOverride: '#9aa4ad' });
+      for (const e of ov.aiPreview.deleted) drawEntity(ctx, e, tf, layers, lookup, { dashed: true, alpha: 0.85, strokeOverride: '#e5534b' });
+      for (const e of ov.aiPreview.modifiedAfter) drawEntity(ctx, e, tf, layers, lookup, { alpha: 0.95, strokeOverride: '#e8a13a' });
+      for (const e of ov.aiPreview.added) drawEntity(ctx, e, tf, layers, lookup, { alpha: 0.95, strokeOverride: '#3fb950' });
+    }
 
     if (ov.selectionBox) this.drawSelectionBox(ov.selectionBox);
     if (ov.selectionPolygon && ov.selectionPolygon.points.length > 0) this.drawSelectionPolygon(ov.selectionPolygon, ov.cursor);
