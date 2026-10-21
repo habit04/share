@@ -11,6 +11,23 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-21
+
+### Upgrade notes
+
+- Windows x64 patch update from v0.6.0 for DWG opening and AutoCAD DXF hatch import.
+  DWG hatches with undecoded boundary curves open as unfilled outlines and remain
+  identified in the import report.
+
+### Fixed
+
+- Opening a DWG with an undecoded hatch boundary edge no longer aborts the entire
+  drawing with "Cannot read properties of undefined (reading 'type')". Readable curves
+  are retained without joining missing segments or filling across incomplete holes.
+- Ordinary AutoCAD DXF hatches with empty inactive gradient fields are imported
+  instead of being rejected for a blank gradient name. Complete boundaries and holes,
+  real gradients, and meaningful inactive gradient settings are preserved.
+
 ## [0.6.0] - 2026-10-21
 
 ### Upgrade notes
