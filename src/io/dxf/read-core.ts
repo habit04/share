@@ -71,6 +71,15 @@ export interface ReadContext {
   /** P18 slice 2 (PROPOSAL-P18-S2 item (1)): BLOCK_RECORD names by upper-case handle
    *  (TABLES precedes ENTITIES; a MULTILEADER's 341 / trailing 344 name one). */
   blockRecordNames?: ReadonlyMap<string, string>;
+  /** P18 S3-D (RULING-P18-S3-D (1)(i)): the OBJECTS DICTIONARY records and the
+   *  ACDB_MLEADEROBJECTCONTEXTDATA_CLASS records, by upper-case handle — the raw
+   *  material readMLeader's extension-dictionary join resolves a MULTILEADER's
+   *  annotative context objects through. Absent on read paths that build their
+   *  own context: the object path then simply does not engage. */
+  mleaderContextData?: {
+    dictionaries: ReadonlyMap<string, Obj>;
+    contextObjects: ReadonlyMap<string, Obj>;
+  };
   /** Anonymous blocks replaced by native tables. */
   consumedBlocks?: Set<string>;
   /** Remarks about content that was simplified. */
