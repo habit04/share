@@ -37,7 +37,6 @@ const E = fixture('p18-mleader-annotative-mtext.dxf');
 const F = fixture('p18-mleader-annotative-block.dxf');
 const NEG = fixture('p18-mleader-annotative-mtext-NEGCTRL-1to2-removed.dxf');
 
-type Lines = string[];
 /** Pair lines of a DXF text (code lines trimmed, value lines verbatim). */
 const toPairs = (text: string): Array<[string, string]> => {
   const ls = text.split(/\r?\n/);

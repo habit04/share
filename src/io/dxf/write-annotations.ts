@@ -478,8 +478,6 @@ export function writeMLeader(w: Writer, e: LeaderEntity, owner: string): void {
   }
   writeEntityCommon(w, e, owner, 'MULTILEADER', 'AcDbMLeader');
   w.pair(270, 2);
-  const hasText = native.contentType === 'mtext' && !!e.text;
-  const lastMain = e.vertices[e.vertices.length - 1] ?? { x: 0, y: 0 };
   const doglegLength = e.dogleg ? g.len(e.dogleg) : 0;
   const views = mleaderContextViews(e);
   emitMLeaderContext(w, views[0]!, blockRecordHandle, true);
