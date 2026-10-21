@@ -145,7 +145,7 @@ describe('associative HATCH: DXF retention round-trip', () => {
     const text = readFileSync(join(__dirname, 'fixtures/interchange/r2000-hatch-curves.dxf'), 'utf8');
     const state = readDxf(text);
     // cadIdentity is the cad-graph node id "<session>:<source handle>".
-    const hatch = state.entities.find((e): e is HatchEntity => e.type === 'hatch' && e.cadIdentity?.endsWith(':51'))!;
+    const hatch = state.entities.find((e): e is HatchEntity => e.type === 'hatch' && e.cadIdentity?.endsWith(':51') === true)!;
     const poly = state.entities.find((e) => e.cadIdentity?.endsWith(':50'))!;
     expect(hatch.associative).toBe(true);
     expect(hatch.loops[0]!.boundaryRefs).toEqual([poly.id]);
@@ -154,8 +154,8 @@ describe('associative HATCH: DXF retention round-trip', () => {
     const writtenHatch = recs.find((r) => r.kind === 'HATCH' && group(r, 2) === 'ANSI31' && group(r, 71) === '1');
     expect(writtenHatch).toBeDefined();
     const reopened = readDxf(written);
-    const reHatch = reopened.entities.find((e): e is HatchEntity => e.type === 'hatch' && e.associative)!;
-    const rePoly = reopened.entities.find((e): e is PolylineEntity => e.type === 'polyline' && reHatch.loops[0]!.boundaryRefs?.includes(e.id));
+    const reHatch = reopened.entities.find((e): e is HatchEntity => e.type === 'hatch' && e.associative === true)!;
+    const rePoly = reopened.entities.find((e): e is PolylineEntity => e.type === 'polyline' && (reHatch.loops[0]!.boundaryRefs?.includes(e.id) ?? false));
     expect(rePoly).toBeDefined();
   });
 });
