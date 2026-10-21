@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
+  UnderlayCorrespondenceError,
   underlayBounds,
   underlayCorners,
   underlayDisplayList,
   underlayIsOn,
+  validateUnderlayDefinitions,
+  validateUnderlayPair,
   validateUnderlayPlacement,
   type UnderlayDefinition,
   type UnderlayPlacement,
@@ -125,5 +128,49 @@ describe('underlay display / plot op list (initial PDF slice)', () => {
     const ops = underlayDisplayList(base, { ...pdfDef, page: undefined, sourcePath: 'refs/sheet.dwf' });
     const label = ops.find((o) => o.op === 'label');
     expect(label && label.op === 'label' ? label.text : '').toBe('sheet.dwf');
+  });
+});
+
+describe('underlay pair correspondence (acceptance F-B)', () => {
+  const wrongDef: UnderlayDefinition = { ...pdfDef, id: 'def-2', handle: 'BBBB', sourcePath: 'WRONG-FILE.pdf' };
+
+  it('a corresponding pair validates clean; handles compare case-insensitively', () => {
+    expect(validateUnderlayPair(base, pdfDef)).toEqual([]);
+    expect(validateUnderlayPair(base, { ...pdfDef, handle: '2e' })).toEqual([]);
+  });
+
+  it('a mismatched pair is a named problem, never a silent pairing', () => {
+    const problems = validateUnderlayPair(base, wrongDef);
+    expect(problems.length).toBe(1);
+    expect(problems[0]).toMatch(/2E/);
+    expect(problems[0]).toMatch(/BBBB/);
+    // A definition carrying no handle cannot be the referenced one.
+    expect(validateUnderlayPair(base, { ...pdfDef, handle: undefined }).length).toBe(1);
+  });
+
+  it('the display list refuses a mismatched pair: no ops, with or without content (acceptance C3.2)', () => {
+    expect(underlayDisplayList(base, wrongDef)).toEqual([]);
+    expect(underlayDisplayList(base, wrongDef, { width: 10, height: 10 })).toEqual([]);
+  });
+
+  it('corners and bounds refuse a mismatched pair with a typed error', () => {
+    expect(() => underlayCorners(base, wrongDef)).toThrow(UnderlayCorrespondenceError);
+    expect(() => underlayBounds(base, wrongDef)).toThrow(/BBBB/);
+    expect(() => underlayCorners(base, { ...pdfDef, handle: undefined })).toThrow(UnderlayCorrespondenceError);
+  });
+
+  it('duplicate definition handles / ids are assembly problems to report, never an overwrite', () => {
+    const a: UnderlayDefinition = { id: 'underlaydef:AA', handle: 'AA', kind: 'pdf', sourcePath: 'one.pdf', retainedGroups: [] };
+    const b: UnderlayDefinition = { id: 'underlaydef:AA', handle: 'AA', kind: 'pdf', sourcePath: 'two.pdf', retainedGroups: [] };
+    const problems = validateUnderlayDefinitions([a, b]);
+    expect(problems.length).toBeGreaterThan(0);
+    expect(problems.join(' ')).toMatch(/AA/);
+    // Same id under different handles collides in an id-keyed assembly too.
+    const c: UnderlayDefinition = { ...a, handle: 'BB' };
+    expect(validateUnderlayDefinitions([a, c]).length).toBeGreaterThan(0);
+    // Distinct definitions are clean.
+    const d: UnderlayDefinition = { id: 'underlaydef:CC', handle: 'CC', kind: 'pdf', sourcePath: 'three.pdf', retainedGroups: [] };
+    expect(validateUnderlayDefinitions([a, d])).toEqual([]);
+    expect(validateUnderlayDefinitions([a])).toEqual([]);
   });
 });
