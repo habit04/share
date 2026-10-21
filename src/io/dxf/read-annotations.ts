@@ -16,6 +16,7 @@ import { mtextFromDxf, hasFormatting } from '../../core/mtext';
 import { isEscapedPlainContent } from './write-annotations';
 import { cellOwners } from '../../core/table';
 import type { MTextAttachment, MTextColumns } from '../../core/mtext';
+import { STANDARD_MLEADER_STYLE, type MLeaderNative } from '../../core/multileader';
 
 export function readDimStyleFromEntity(o: Obj, styles: Map<string, DimStyle>, fallback: DimStyle, textStyleHandles?: ReadonlyMap<string, string>): DimStyle {
   const name = str(o, 3);
@@ -220,6 +221,12 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
   let commonArrow: number | undefined;
   let commonDogleg: number | undefined;
   let lineType = 1;
+  // P18 native capture: context scale / landing gap / text style, trailing style + content type.
+  let scaleFactor: number | undefined;
+  let landingGap: number | undefined;
+  let textStyleHandle: string | undefined;
+  let styleHandle: string | undefined;
+  let contentTypeRaw: number | undefined;
   const endSection = () => {
     // A LEADER{} section: each of its lines runs arrow -> ... -> last leader point, then the landing.
     for (const l of sectionLines) paths.push(lastLeaderPoint ? [...l, lastLeaderPoint] : l);
@@ -273,11 +280,20 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
     }
     if (top === 'CONTEXT') {
       switch (p.code) {
+        case 40:
+          scaleFactor = flt(p.value);
+          break;
         case 41:
           textHeight = flt(p.value);
           break;
         case 140:
           arrowSize = flt(p.value);
+          break;
+        case 145:
+          landingGap = flt(p.value);
+          break;
+        case 340:
+          textStyleHandle = p.value.trim().toUpperCase();
           break;
         case 304:
           text += p.value;
@@ -309,8 +325,9 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
     if (p.code === 170) lineType = int(p.value, 1);
     else if (p.code === 42) commonArrow = flt(p.value);
     else if (p.code === 41) commonDogleg = flt(p.value);
+    else if (p.code === 172) contentTypeRaw = int(p.value);
+    else if (p.code === 340 && styleHandle === undefined) styleHandle = p.value.trim().toUpperCase();
   }
-  void hasBlock;
   const main = paths.shift();
   if (!main || main.length < 2) return null;
   const ds = ctx.dimStyle;
@@ -319,6 +336,23 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
   void commonDogleg;
   const plain = text ? mtextFromDxf(text) : '';
   const rot = textDir && (textDir.x !== 0 || textDir.y !== 0) ? Math.atan2(textDir.y, textDir.x) : textRotation;
+  // P18: MTEXT-content multileaders are modeled natively. Block content
+  // (context 296 = 1, or trailing content type 1) is NOT modeled in slice 1:
+  // no native data is attached, the caller reports the simplification, and the
+  // entity keeps the legacy path — retained and reported, never silently
+  // claimed as native MTEXT.
+  const isBlockContent = hasBlock || contentTypeRaw === 1;
+  const textStyleName = textStyleHandle ? ctx.textStyleHandles?.get(textStyleHandle) : undefined;
+  const mleader: MLeaderNative | undefined = isBlockContent
+    ? undefined
+    : {
+        contentType: plain || contentTypeRaw === 2 ? 'mtext' : 'none',
+        styleName: (styleHandle ? ctx.mleaderStyles?.get(styleHandle) : undefined) ?? 'Standard',
+        scaleFactor: scaleFactor && scaleFactor > 0 ? scaleFactor : STANDARD_MLEADER_STYLE.scaleFactor,
+        landingGap: landingGap && landingGap >= 0 ? landingGap : STANDARD_MLEADER_STYLE.landingGap,
+        leaderLineType: lineType === 0 || lineType === 2 ? lineType : 1,
+        ...(textStyleName ? { textStyleName } : {}),
+      };
   return {
     ...base,
     type: 'leader',
@@ -335,6 +369,7 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
     ...(textWidth && textWidth > 0 ? { textWidth } : {}),
     ...(Math.abs(rot) > 1e-12 ? { textRotation: rot } : {}),
     kind: 'mleader',
+    ...(mleader ? { mleader } : {}),
   };
 }
 

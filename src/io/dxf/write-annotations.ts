@@ -11,8 +11,10 @@ import { MTEXT_COLUMNS_APP, MTEXT_BACKGROUND_APP, DIM_TYPE, DIMSTYLE_APP, TABLE_
 import { backgroundMetadataChunks } from './mtext-background-data';
 import * as g from '../../core/geometry';
 import { dimensionTextPoint, dimensionMeasurement, dimensionStyleOverrides, dimStyleOverrideCode, DIM_VARIABLES, ordinateDimensionProblem } from '../../core/dimension';
-import { textWidth, leaderParts, leaderPath } from '../../core/entities';
+import { textWidth, leaderParts, leaderPath, leaderTextAttachment } from '../../core/entities';
 import { cellOwners, rowHeightFor, TABLE_DEFAULTS } from '../../core/table';
+import { mleaderNativeProblem } from '../../core/multileader';
+
 import type { TableRoundtripPlan, WriteExtras } from './write-core';
 
 export function writeMText(w: Writer, e: MTextEntity, owner: string): void {
@@ -255,6 +257,125 @@ export function writeLeader(w: Writer, e: LeaderEntity, owner: string, extras: W
       w.pair(1002, '}');
     }
   });
+}
+
+/**
+ * P18: a native MULTILEADER (AcDbMLeader) for a `kind: 'mleader'` entity that
+ * carries modeled native data (MTEXT or no content). Group order and the
+ * specimen constants mirror the AutoCAD CONTEXT_DATA fixture in
+ * tests/leader.test.ts: context 174/175/176/177, 170, 90 and 172, and the
+ * trailing 91 (leader colour, ByBlock) / 171 (arrowhead) values are written
+ * exactly as that specimen carries them; their semantics beyond the DXF
+ * reference's modeled groups (40 scale, 41 text height, 140 arrow size, 145
+ * landing gap, 304 content, 12/13/42/43 placement, 171 attachment, LEADER /
+ * LEADER_LINE geometry, trailing 170 line type, 41 dogleg length, 42 arrow
+ * size, 172 content type, 340 style) are not claimed. Native AutoCAD
+ * edit/reopen is a separate Windows gate.
+ */
+export function writeMLeader(w: Writer, e: LeaderEntity, owner: string): void {
+  const native = e.mleader!;
+  const problem = mleaderNativeProblem(native);
+  if (problem) throw new Error(`Cannot write native MULTILEADER: ${problem}.`);
+  writeEntityCommon(w, e, owner, 'MULTILEADER', 'AcDbMLeader');
+  w.pair(270, 2);
+  const hasText = native.contentType === 'mtext' && !!e.text;
+  const lastMain = e.vertices[e.vertices.length - 1] ?? { x: 0, y: 0 };
+  const doglegLength = e.dogleg ? g.len(e.dogleg) : 0;
+  // CONTEXT_DATA{ ... }
+  w.pair(300, 'CONTEXT_DATA{');
+  w.pair(40, native.scaleFactor);
+  w.pair(10, lastMain.x);
+  w.pair(20, lastMain.y);
+  w.pair(30, 0);
+  w.pair(41, e.textHeight);
+  w.pair(140, e.arrowSize);
+  w.pair(145, native.landingGap);
+  w.pair(174, 1);
+  w.pair(175, 1);
+  w.pair(176, 0);
+  w.pair(177, 0);
+  w.pair(290, 1);
+  if (hasText) {
+    const source = formattedSource({ text: e.text!, ...(e.raw ? { raw: e.raw } : {}) }) ?? mtextToDxf(e.text!);
+    w.pair(304, source);
+    w.pair(11, 0);
+    w.pair(21, 0);
+    w.pair(31, 1);
+    const styleName = native.textStyleName ?? textStyleOf(e) ?? 'Standard';
+    const styleHandle = w.textStyleHandles.get(styleName.toUpperCase()) ?? w.textStyleHandles.get('STANDARD');
+    if (styleHandle) w.pair(340, styleHandle);
+    const tp = e.textPosition ?? (e.dogleg ? g.add(lastMain, e.dogleg) : lastMain);
+    w.pair(12, tp.x);
+    w.pair(22, tp.y);
+    w.pair(32, 0);
+    const rot = e.textRotation ?? 0;
+    w.pair(13, Math.cos(rot));
+    w.pair(23, Math.sin(rot));
+    w.pair(33, 0);
+    w.pair(42, rot);
+    w.pair(43, e.textWidth ?? 0);
+    w.pair(44, 0);
+    w.pair(45, e.textLineSpacing ?? 1);
+  }
+  w.pair(170, 1);
+  w.pair(90, -1073741824);
+  if (hasText) {
+    w.pair(171, leaderTextAttachment(e));
+    w.pair(172, 5);
+  }
+  // One LEADER{ cluster per distinct landing point; its LEADER_LINE{ blocks are
+  // the leader lines that share that landing (the specimen's shape).
+  const paths: g.Point[][] = [[...e.vertices], ...(e.extraPaths ?? []).map((p) => [...p])].filter((p) => p.length >= 2);
+  const clusters = new Map<string, { landing: g.Point; lines: g.Point[][] }>();
+  for (const path of paths) {
+    const landing = path[path.length - 1]!;
+    const key = `${landing.x},${landing.y}`;
+    const cluster = clusters.get(key) ?? { landing, lines: [] };
+    cluster.lines.push(path.slice(0, -1));
+    clusters.set(key, cluster);
+  }
+  let firstCluster = true;
+  for (const cluster of clusters.values()) {
+    w.pair(302, 'LEADER{');
+    w.pair(290, 1);
+    w.pair(291, 1);
+    w.pair(10, cluster.landing.x);
+    w.pair(20, cluster.landing.y);
+    w.pair(30, 0);
+    if (firstCluster && e.dogleg && doglegLength > 1e-12) {
+      const dir = g.normalize(e.dogleg);
+      w.pair(11, dir.x);
+      w.pair(21, dir.y);
+      w.pair(31, 0);
+    }
+    w.pair(90, 0);
+    if (firstCluster && doglegLength > 1e-12) w.pair(40, doglegLength);
+    cluster.lines.forEach((line, idx) => {
+      w.pair(304, 'LEADER_LINE{');
+      for (const p of line) {
+        w.pair(10, p.x);
+        w.pair(20, p.y);
+        w.pair(30, 0);
+      }
+      w.pair(91, idx);
+      w.pair(305, '}');
+    });
+    w.pair(303, '}');
+    firstCluster = false;
+  }
+  w.pair(301, '}');
+  // Common MLeader data after the context section (specimen order).
+  const styleHandle = w.mleaderStyleHandles.get(native.styleName.toUpperCase());
+  if (styleHandle) w.pair(340, styleHandle);
+  w.pair(90, 0);
+  w.pair(170, native.leaderLineType);
+  w.pair(91, -1056964608);
+  w.pair(171, -2); // leader line weight: -2 = ByBlock, as the specimen carries it
+  w.pair(290, 1);
+  w.pair(291, 1);
+  if (doglegLength > 1e-12) w.pair(41, doglegLength);
+  w.pair(42, e.arrowSize);
+  w.pair(172, native.contentType === 'mtext' ? 2 : 0);
 }
 
 export function writeImage(w: Writer, e: ImageEntity, owner: string, extras: WriteExtras): void {

@@ -146,6 +146,34 @@ function tableStylesOf(pairs: readonly Pair[]): Map<string, TableStyleData> {
   return out;
 }
 
+/**
+ * The MLEADERSTYLE names of the OBJECTS section, by upper-case style handle (P18):
+ * a style's name is the dictionary key of the entry that points at the MLEADERSTYLE
+ * object (the ACAD_MLEADERSTYLE dictionary chain), so it is resolved from the
+ * dictionaries, not from the style object itself. OBJECTS comes last, read first.
+ */
+function mleaderStyleNamesOf(pairs: readonly Pair[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (let i = 0; i + 1 < pairs.length; i += 1) {
+    if (pairs[i]!.code !== 0 || pairs[i]!.value !== 'SECTION' || pairs[i + 1]!.value !== 'OBJECTS') continue;
+    let j = i + 2;
+    while (j < pairs.length && !(pairs[j]!.code === 0 && pairs[j]!.value === 'ENDSEC')) j += 1;
+    const objs = objects(pairs as Pair[], i + 2, j);
+    const styleHandles = new Set(objs.filter((o) => o.kind === 'MLEADERSTYLE' && has(o, 5)).map((o) => str(o, 5).toUpperCase()));
+    for (const o of objs) {
+      if (o.kind !== 'DICTIONARY') continue;
+      for (let k = 0; k + 1 < o.groups.length; k += 1) {
+        if (o.groups[k]!.code === 3 && o.groups[k + 1]!.code === 350) {
+          const target = o.groups[k + 1]!.value.toUpperCase();
+          if (styleHandles.has(target)) out.set(target, o.groups[k]!.value);
+        }
+      }
+    }
+    i = j;
+  }
+  return out;
+}
+
 /** The reader proper; DIMSTYLE records are collected into `dimStyles`. */
 function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string, DimStyle>, report: ImportReportBuilder, raw: RawDxfEntity[]): DrawingState {
   if (text.length > (opts.maxSourceLength ?? DXF_READ_LIMITS.maxSourceLength)) throw new DxfReadError('DXF exceeds the source text size limit.', 1);
@@ -171,6 +199,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     pendingImages: new Map(),
     textStyleHandles: new Map(),
     tableStyles: tableStylesOf(pairs),
+    mleaderStyles: mleaderStyleNamesOf(pairs),
     consumedBlocks: new Set(),
     notes: opts.notes ?? [],
     report,

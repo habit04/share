@@ -10,7 +10,8 @@ import { findPattern } from '../../core/hatch';
 import * as g from '../../core/geometry';
 import type { WriteExtras } from './write-core';
 import { textStyleOf } from '../encoding';
-import { writeLeader, writeImage, writeAcadTable, writeMText, writeDimension, tableDxfForm } from './write-annotations';
+import { writeLeader, writeMLeader, writeImage, writeAcadTable, writeMText, writeDimension, tableDxfForm } from './write-annotations';
+
 import type { AttributeDefExt } from '../../electrical/symbol-builder-core';
 import { attdefFlags } from '../../electrical/symbol-builder-core';
 import { insertArrayProblem } from '../../core/insert-array';
@@ -236,7 +237,10 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
       writeHatch(w, e, owner);
       break;
     case 'leader':
-      writeLeader(w, e, owner, extras ?? emptyExtras());
+      // P18: only a mleader carrying modeled native data writes natively;
+      // plain leaders and unmodeled mleaders keep the LEADER + MTEXT path.
+      if (e.kind === 'mleader' && e.mleader) writeMLeader(w, e, owner);
+      else writeLeader(w, e, owner, extras ?? emptyExtras());
       break;
     case 'image':
       writeImage(w, e, owner, extras ?? emptyExtras());

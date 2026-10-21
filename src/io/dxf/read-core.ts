@@ -61,6 +61,8 @@ export interface ReadContext {
   textStyleHandles?: Map<string, string>;
   /** TABLESTYLE objects by upper-case handle (OBJECTS comes last; ACAD_TABLE group 342 names one). */
   tableStyles?: Map<string, TableStyleData>;
+  /** P18: MLEADERSTYLE names by upper-case handle (OBJECTS comes last; a MULTILEADER's trailing group 340 names one). */
+  mleaderStyles?: ReadonlyMap<string, string>;
   /** Anonymous blocks replaced by native tables. */
   consumedBlocks?: Set<string>;
   /** Remarks about content that was simplified. */

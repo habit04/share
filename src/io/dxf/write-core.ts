@@ -30,6 +30,8 @@ export class Writer {
   private out: string[] = [];
   private handle = 0x100;
   readonly textStyleHandles = new Map<string, string>();
+  /** P18: MLEADERSTYLE handles by upper-case style name, pre-allocated like textStyleHandles. */
+  readonly mleaderStyleHandles = new Map<string, string>();
   readonly dimensionStyles = new Map<string, DimStyle>();
   readonly reservedEntityHandles = new WeakMap<Entity, string>();
   reserveEntityHandle(entity: Entity): string {

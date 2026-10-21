@@ -17,6 +17,9 @@ import { insertArrayCount, insertArrayInstances, MAX_INSERT_ARRAY_INSTANCES } fr
 import { evaluateDynamicBlock, type AttributeActionTransform } from './parametric/evaluate';
 import { dynamicGrips } from './parametric/grips';
 import { hasHatchGradient, hatchGradientDataProblem, hatchGradientFrame, hatchGradientFrameProblem, transformHatchGradientFrame, type HatchGradient, type HatchGradientFrame } from './hatch-gradient';
+import type { MLeaderNative } from './multileader';
+
+export type { MLeaderNative, MLeaderContentType, MLeaderStyleData } from './multileader';
 
 export type { DimensionEntity, DimStyle, DimKind } from './dimension';
 export type { MTextEntity, MTextAttachment } from './mtext';
@@ -302,8 +305,16 @@ export interface LeaderEntity extends EntityBase {
   readonly textLayer?: string;
   readonly textLineSpacing?: number;
   readonly textColumns?: MTextColumns;
-  /** Where it came from (LEADER + MTEXT or MULTILEADER); written back as LEADER + MTEXT either way. */
+  /** Where it came from (LEADER + MTEXT or MULTILEADER). */
   readonly kind?: 'leader' | 'mleader';
+  /**
+   * P18: native multileader data (core/multileader.ts). Present only on a
+   * `kind: 'mleader'` whose content this build models (slice 1: MTEXT / none):
+   * such an entity is written back as a native MULTILEADER + MLEADERSTYLE.
+   * Absent (every pre-P18 save; block-content imports) the write-back stays
+   * LEADER + MTEXT, exactly as before, and the import report says so.
+   */
+  readonly mleader?: MLeaderNative;
 }
 
 /** Raster image reference (IMAGE + IMAGEDEF). Drawn as a frame with the file name unless a loader supplies the bitmap. */
@@ -1248,7 +1259,7 @@ export function entityGeometryWork(entity: Entity): number {
       }
       break;
     case 'leader':
-      work += entity.vertices.length + (entity.text?.length ?? 0) + (entity.raw?.length ?? 0) + (entity.textColumns?.heights.length ?? 0);
+      work += entity.vertices.length + (entity.text?.length ?? 0) + (entity.raw?.length ?? 0) + (entity.textColumns?.heights.length ?? 0) + (entity.mleader?.styleName.length ?? 0);
       for (const path of entity.extraPaths ?? []) work += path.length;
       break;
     case 'text':

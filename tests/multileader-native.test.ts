@@ -101,7 +101,9 @@ describe('P18 native MULTILEADER — DXF round-trip', () => {
     expect(l.textHeight).toBeCloseTo(0.25);
     expect(l.arrowSize).toBeCloseTo(0.2);
     expect(l.textAttachment).toBe(1);
-    expect(l.mleader).toEqual({ contentType: 'mtext', styleName: 'Standard', scaleFactor: 1, landingGap: 0.09, leaderLineType: 1 });
+    // The writer emits the content's text style (context group 340), so the
+    // reimport materializes textStyleName: 'Standard' alongside the authored data.
+    expect(l.mleader).toEqual({ contentType: 'mtext', styleName: 'Standard', scaleFactor: 1, landingGap: 0.09, leaderLineType: 1, textStyleName: 'Standard' });
     // Re-exporting the reimported entity reproduces the same native groups.
     const out2 = writeDxf(back);
     expect(out2).toContain('\r\nMULTILEADER\r\n');

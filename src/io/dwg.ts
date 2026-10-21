@@ -53,6 +53,7 @@ import type { Point } from '../core/geometry';
 import * as g from '../core/geometry';
 import { STANDARD_DIMSTYLE, withDimVars, type DimStyle } from '../core/dimension';
 import { mtextFromDxf, hasFormatting, type MTextBackground } from '../core/mtext';
+import { defaultMLeaderNative } from '../core/multileader';
 import { LINEWEIGHTS } from '../core/linetypes';
 import { importViewportView } from './viewport-view';
 import type { LinearUnits } from '../core/units';
@@ -673,6 +674,19 @@ function convertMLeader(m: DwgMultiLeaderEntity, base: Base, dimStyle: DimStyle,
     ...(m.textWidth && m.textWidth > 0 ? { textWidth: m.textWidth } : {}),
     ...(Math.abs(rot) > 1e-12 ? { textRotation: rot } : {}),
     kind: 'mleader',
+    // P18: MTEXT-content DWG multileaders are modeled natively (Standard style,
+    // the DWG reader exposes no style name); block content stays unmodeled.
+    // This is not a DWG-acceptance claim — DWG remains a separate gate.
+    ...(m.hasBlock || m.contentType === 1
+      ? {}
+      : {
+          mleader: defaultMLeaderNative({
+            contentType: text ? 'mtext' : 'none',
+            leaderLineType: m.leaderLineType === 0 || m.leaderLineType === 2 ? m.leaderLineType : 1,
+            ...(m.landingGap !== undefined && m.landingGap >= 0 ? { landingGap: m.landingGap } : {}),
+            ...(m.contentScale !== undefined && m.contentScale > 0 ? { scaleFactor: m.contentScale } : {}),
+          }),
+        }),
   };
 }
 
