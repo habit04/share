@@ -76,7 +76,7 @@ export async function plotOrPrint(ed: Editor, mode: 'pdf' | 'print'): Promise<vo
   const choice = selected ? { action: selected.action, options: { ...selected.options } } : null;
   if (!choice) return;
   if (choice.action === 'print') await admission.close();
-  const captured = capturePlot(ed, bridge);
+  const captured = capturePlot(ed, bridge, choice.options.security === 'restricted-p2' ? 'restricted-p2' : 'none');
   // Track E: vector PDF (default output) and layout sheets; the raster Model-tab path below is unchanged.
   if (await plotLayoutsOrVector(ed, choice, { captured, admission })) return;
   const base = captured.base;

@@ -167,8 +167,8 @@ export function certifyDimensionNativeSource(
       topology('layout, string, font, role or painter order changes');
     }
     if (local.type === 'text' && native.type === 'text') {
-      const localFont = textGeometry?.resolve(local) ?? textRenderer(textStyleOf(local), styles);
-      const worldFont = textGeometry?.resolve(native) ?? textRenderer(textStyleOf(native), styles);
+      const localFont = textGeometry?.resolve(local) ?? textRenderer(textStyleOf(local), styles, local.text);
+      const worldFont = textGeometry?.resolve(native) ?? textRenderer(textStyleOf(native), styles, native.text);
       if (!hasStrokeFont || local.bold || localFont.kind !== 'stroke' || worldFont.kind !== 'stroke') {
         topology('Canvas font requires Canvas');
       }

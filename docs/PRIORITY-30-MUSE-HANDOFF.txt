@@ -1,0 +1,119 @@
+JCad assignment: priority 30 — dynamic blocks and 2D constraints
+
+Repository: https://github.com/habit04/share (package name jcad-electrical).
+Codex remains the Windows validation and integration lead. Implement this work;
+do not stop after a plan. Work in small, tested milestones and deliver each one
+for Codex review. This is a substantial feature, not a quick compatibility patch.
+
+1. Isolation and starting point
+
+Use your own isolated workspace and a dedicated branch such as
+muse/p30-dynamic-blocks-constraints. Before editing, identify the actual Git root,
+branch, full starting commit and clean state. Read applicable repository
+instructions, the current implementation, SUPPORT-MATRIX.md, CHANGELOG and the
+remaining checklist. Pin the base and report it with every delivery. Do not
+assume that a68dba5, old checklist statements or another handoff's base is current.
+Do not rebase, cherry-pick or rewrite the series without recording the new base
+and coordinating with Codex through Justin.
+
+The current checklist records static INSERT/anonymous-block geometry, without
+dynamic actions/parameters or a constraint system. Verify that in code and PR
+history before deciding what is missing. Priorities 19/29 already have metadata
+and reference-preservation work: reuse it and identify concrete dependencies.
+Do not redo that work or overwrite another owner's reader/writer repairs.
+
+2. Scope and architecture
+
+Implement planar dynamic-block behavior and geometric/dimensional constraints.
+Preserve ordinary blocks, nested transforms, attributes, electrical identifiers,
+layers, layouts, selection, plotting and retained unsupported data.
+
+Start with separate pure modules for definitions, instance parameters/actions,
+evaluation and constraint solving. Keep definitions immutable when an instance
+changes. Use thin adapters to existing document/command/import/export code and
+identify shared-file changes explicitly. Do not spread a broad refactor through
+the editor. Do not modify priority-12 font/PDF work, GPU/3D work, saving/recovery
+infrastructure, release workflows, signing or installers.
+
+Any new solver/dependency needs Codex review before adoption: exact version,
+license compatibility, source/build provenance, Windows suitability, size,
+resource limits and failure behavior. Do not add a dependency merely to bypass
+the decision, or build a second geometry system where existing code can be reused.
+
+3. Milestones, retaining priority number 30
+
+30.0: Perform a short audit and define the supported subset, data model,
+preservation boundaries, acceptance examples and dependencies. Identify native
+fixtures/DTOs missing from the available reader. Then start independent pure
+implementation; an unavailable native prerequisite must not stop unrelated work.
+
+30.1: Deliver one end-to-end vertical slice: a linear distance parameter driving
+a bounded stretch action on a simple block instance. Test two independent
+instances, nested transforms, attributes, parameter edits, undo/redo, dirty state
+and save/reopen. If the native graph cannot yet be decoded, distinguish the
+authored normalized-model implementation from native AutoCAD compatibility.
+
+30.2: Add the next supported actions in small deliveries: move, rotate, scale,
+flip, visibility and lookup; then alignment, arrays and coupled/action-chain
+behavior where the audited format permits. Explicitly reject unsupported action
+graphs and dependency cycles. Preserve block base points, action selections,
+attribute relationships and per-instance state.
+
+30.3: Add a bounded 2D constraint engine incrementally: coincidence, horizontal /
+vertical, parallel / perpendicular, distance and angle; then equal, concentric,
+tangent and radius/diameter constraints. Driving values must move geometry;
+reference measurements must not drive it. Report underconstrained, fully
+constrained, conflicting and unsolved cases honestly. Define fixed tolerances,
+iteration/work limits, cancellation and deterministic failure behavior. A failed
+or cancelled solve must leave the document unchanged.
+
+30.4: Complete document/command/grip integration and the supported native
+import-edit-save-reopen paths. Native objects must retain their parameters,
+actions, constraints, handles and relationships, including when geometry changes.
+Treat unsupported graphs as retained/protected data with clear edit/save limits.
+Do not silently flatten dynamic blocks, explode them, drop constraints or invent
+a successful native export. JCad-specific parametric data must be labeled as such;
+it is not proof of native AutoCAD dynamic-block/constraint support.
+
+4. Required tests and evidence
+
+For each slice, write concrete acceptance cases, then implement and test them.
+Include authored deterministic fixtures and meaningful regressions. Cover valid,
+malformed and conflicting input; missing references; cycles; degenerate geometry;
+small/large coordinates; nested, rotated, mirrored and scaled instances; multiple
+independent instances; attributes/electrical metadata; and unsupported records.
+
+One accepted parameter edit should be one coherent undo operation. Undo/redo,
+revision/dirty state, selection, saved metadata, backups/autosave/recovery and
+plotting must remain consistent. Failure/refusal must be atomic. Preserve source
+drawings and raw unsupported properties; use private copies for external tools.
+
+Run the repository's required checks and targeted tests after each milestone.
+Before handoff, run broader tests and record the exact candidate SHA, commands,
+exit codes, counts and skips. Retain failed logs; do not call a red suite green
+or declare failures pre-existing without a comparable base control. Do not raise
+limits or loosen tolerances just to pass tests. Do not claim Windows, AutoCAD or
+native DWG acceptance from mock-only, normalized-model or Linux tests.
+
+Codex owns actual Windows application/IPC tests, installed AutoCAD reference
+checks, combined DWG/font/GPU regression testing, final integration and release
+decisions. Provide precise native fixture needs and proposed validation scripts;
+do not claim those checks were performed in your Linux workspace.
+
+5. Delivery and ownership
+
+Keep commits small and independently reviewable. Deliver completed slices as
+handoff ZIPs: full base/head SHAs, ordered format-patch series, concise PR-body
+draft, fixture provenance, regression/validation scripts, raw test logs, limitations
+and SHA256SUMS. Verify each patch series reproduces the candidate on the exact
+clean base. Clearly separate implemented, tested, Windows-validated and merged.
+
+Use the established local-commit/patch delivery mode; do not push, open PRs,
+merge, publish releases or build/install desktop installers unless Justin later
+authorizes that explicitly. Do not contact other sessions or people independently.
+Return integration questions through Justin. Codex makes the merge decisions.
+
+Do not mark priority 30 complete until the agreed supported native workflows pass
+Codex's Windows/AutoCAD acceptance. Mark partial support and deferred actions or
+constraint types explicitly. Start with the audit and first vertical slice, then
+continue through the staged implementation with reviewable checkpoints.

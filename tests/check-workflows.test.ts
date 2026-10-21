@@ -83,6 +83,23 @@ describe('accepted native metadata fixture workflow', () => {
   });
 });
 
+describe('unpublished Windows CI test-ASAR workflow', () => {
+  it.each(['missing', 'skip', 'continue', 'SHA', 'deadline', 'order', 'reports'])('rejects weakening the %s packaged boundary', change => {
+    const result = check(withCi(workflow => {
+      const steps = workflow.jobs['e2e-electron'].steps;
+      const gate = steps.find((step: any) => step.run === 'node scripts/check-ci-test-asar.mjs');
+      if (change === 'missing') gate.run = 'echo skipped';
+      else if (change === 'skip') gate.if = false;
+      else if (change === 'continue') gate['continue-on-error'] = true;
+      else if (change === 'SHA') gate.env.JCAD_TEST_ASAR_EXPECTED_SHA = '${{ github.ref }}';
+      else if (change === 'deadline') gate['timeout-minutes'] = 60;
+      else if (change === 'order') { steps.splice(steps.indexOf(gate), 1); steps.unshift(gate); }
+      else steps.find((step: any) => step.with?.name === 'ci-test-asar-${{ matrix.os }}').with.path = 'absent/';
+    }));
+    expect(result.code).toBe(1); expect(result.out).toMatch(/test-ASAR/);
+  });
+});
+
 describe('signed native-helper build-only workflow', () => {
   it('requires an explicit manual input, read-only permissions and exact SHA metadata without entering publication', () => {
     const workflow = yaml.load(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')) as any;

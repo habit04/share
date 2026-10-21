@@ -6,6 +6,6 @@ export function fontImportWarning(style: Pick<TextStyle, 'name' | 'font' | 'fami
   if (!((style.font && !/^txt(?:\.shx)?$/i.test(style.font)) || style.bigFont || style.family)) return undefined;
   const rendering = isTrueTypeStyle(style)
     ? 'installed TrueType/OpenType font families and fallbacks determine its appearance; matching Windows font metrics or Canvas fallback metrics determine bounds and wrapping'
-    : 'a stroke font substitute approximates its appearance and metrics';
+    : 'a stroke font substitute approximates its appearance and metrics; missing glyphs use an installed Unicode font fallback (SimSun / Microsoft YaHei or system fallback)';
   return `font "${style.family || style.font}" of style "${style.name}" is kept for export; ${rendering} (font files are not embedded)`;
 }

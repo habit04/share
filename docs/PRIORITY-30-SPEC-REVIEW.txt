@@ -1,0 +1,207 @@
+Muse — priority 30.0 review and implementation conditions
+
+Disposition: the staged direction is accepted, with the corrections below.
+This is not approval of the specification unchanged, completion of priority 30,
+native compatibility, a dependency, or a release. Keep outstanding priority-12
+corrections first. Continue independent pure 30.1 implementation in your own
+workspace while correcting the contract; do not wait for the native fixture to
+write pure models/validators and authored evaluator tests. Resolve the identity
+and export contracts below before wiring their codecs or declaring 30.1 done.
+Codex retains Windows/native testing and integration. Return answers through
+Justin and deliver local commits/patch ZIPs; do not push or contact other chats.
+
+Review basis: current integration source 6ab7868d5b8df9fcc844b34f1cc8b3ce7f2d1a5b
+and your reported upstream base a68dba5b16ed4099d8decae32f936ebc023129fa.
+Application source was inspected read-only; only review/checklist documentation
+changes. No candidate #30 code, tests, native fixture, AutoCAD session or solver
+was executed in this review.
+
+1. Preserve non-default geometry in interchange output.
+
+Remove the claim that a JCAD_DYNAMIC-only export needs no guard because other
+CAD programs show the authored default. If a block is edited from width 10 to
+width 20, reopening at width 10 is a visible geometry change even if JCad can
+recover the parameter JSON. A reported simplified import does not authorize it.
+
+For a supported edited instance, a format must either carry independently
+verified evaluated static geometry together with the JCad definition/instance
+data, or explicitly refuse that export before changing the destination. A
+distinct evaluated block/instance carrier is one possible design, subject to
+attribute, nesting, base-point, ownership and shared-instance tests. Do not
+explode/flatten the saved host or modify a shared definition as a shortcut.
+This static representation is still not native dynamic-block authoring.
+
+Required acceptance: default and two distinct non-default instances retain their
+visible dimensions after reopen by an independent reader, including a reader
+that ignores JCAD_DYNAMIC; JCad also recovers independent editable parameters.
+Unavailable native confirmation stays pending. Refusal must leave document and
+destination unchanged. Keep DWG unsupported until its own path is proven.
+
+2. Define stable persisted references before DXF integration.
+
+Current src/io/dxf/read-core.ts commonProps creates newId() on every import.
+Runtime entity IDs in action selections or constraint anchors therefore cannot
+simply be serialized into group-1000 JSON and expected to bind after reopen.
+The cad-graph does not inspect arbitrary JSON strings for hidden references.
+
+Specify stable per-definition element keys and an explicit mapping to imported
+entities, attributes and nested inserts. If handles are used, integrate a typed,
+scope-aware reference/handle remapping contract (1005 is the XDATA handle code),
+rather than string search/replace. Verify copy/paste, block cloning, different
+drawings with equal local names/IDs, rename, deletion and repeated save/reopen.
+Missing, ambiguous, duplicated or out-of-scope bindings must refuse atomically.
+Unknown future/malformed payloads remain raw and protected; do not half-bind them.
+
+3. Use a consistent effective-instance result for every consumer.
+
+Expansion is an important shared path, but is not the only consumer:
+- src/electrical/wires.ts worldConnections reads block.attributes directly.
+- src/core/entities.ts attributeText gives insert.attributePlacements precedence
+  over ATTDEF defaults, so moving only the definition anchor leaves an override
+  unmoved.
+- src/render/gpu-prototype/stroke-scene.ts preflight independently traverses
+  authored block entities/attributes before comparing the expanded result.
+
+Provide a shared effective-instance contract or explicit thin adaptations so
+display, bounds, selection, snaps, electrical pins, ATTRIB overrides, EXPLODE,
+plotting and font discovery agree. Preserve tags/values/electrical identity.
+GPU may request complete Canvas fallback for dynamic content until its existing
+certificate supports the effective geometry. Do not weaken GPU assertions or
+replace the separate GPU renderer work.
+
+Add moved-pin and imported ATTRIB-placement tests, evaluated text/font discovery,
+and parameter-change rendering/selection/plot agreement. Do not claim no consumer
+changes without auditing these paths.
+
+4. Compose depth, evaluation and geometry budgets.
+
+Current src/core/entities.ts explodeSingleInto returns beyond MAX_INSERT_DEPTH
+without marking truncated. The existing return flags alone cannot establish the
+draft's deep-expansion refusal contract. Add a bounded dynamic dependency
+preflight or a clearly propagated limited result; an acyclic nine-level dynamic
+chain must not appear as a successful partial result.
+
+Current src/core/geometry-budget.ts charges stored/authored geometry. Resetting
+100,000 evaluator work units for every reference or MINSERT cell evades the
+drawing aggregate. Reserve/charge action visits, validation, dependency walking,
+generated geometry and repeated instances against a shared aggregate before
+allocation/materialization. Include model, layouts, nested inserts and MINSERT.
+Immutable memoization may share a proven result, never bypass charging a changed
+parameter/definition or pretend all instances have equal evaluation cost.
+
+Test many individually cheap references with expensive evaluation, MINSERT,
+missing definitions, cycles, depth cuts and output growth. A default delta of
+zero must not bypass definition/value/opaque-member validation or admission.
+Retain all existing caps; do not raise them for the new feature.
+
+5. Preserve the complete existing cache contract.
+
+The cache is not keyed only by insert identity. Current cachedInsert also checks
+block identity, nested dependency identities (including missing definitions) and
+text context. Retain these checks and accepted-immutable-data qualification.
+Test replacement of a definition while the INSERT object is unchanged, nested
+definition replacement, resolution of a previously missing definition, parameter
+edits, text-context changes, and undo/redo to prior immutable states.
+
+6. Bound and reconcile the persistence carrier.
+
+250-character chunks are not an overall XDATA budget. Autodesk documents a
+255-byte group-1000 string maximum and 16K total XDATA per object shared by all
+applications. Its interoperability guidance recommends small application data
+and extension-dictionary/XRECORD storage for larger payloads (sources below).
+
+Specify encoded-byte/chunk/JSON-depth/collection/work caps before joining or
+parsing strings, plus aggregate budgets. Include existing retained XDATA in
+the object total and account for 7-bit escape expansion. Larger definitions
+need a separately reviewed bounded carrier or explicit refusal, not unlimited
+chunks. Do not silently trim an oversized or future payload.
+
+Define recognized-current versus retained-opaque precedence at the cad-graph
+merge: edited current values must replace their old recognized carrier once;
+unknown/future/malformed groups must survive without competing duplicate apps.
+Test APPID omission for ordinary drawings, one app per record, INSERT placement
+before ATTRIB/SEQEND, group/byte boundaries, Unicode/escape chunk boundaries,
+unknown adjacent apps, stale-carrier replacement, exact raw retention, and
+byte-identical ordinary static exports. Global quiet-app registration must not
+hide unsupported-data diagnostics.
+
+7. Keep imported native evaluated geometry and protection boundaries.
+
+For an unsupported native graph, preserve its original evaluated anonymous
+geometry and raw relationships. Do not replace a non-default imported instance
+with the named definition's default geometry. For an unsupported JCad payload,
+keep the last trustworthy persisted representation; if none is available,
+report that limitation explicitly and refuse unsafe edits/exports.
+
+Opaque node retention is not proof that changing block geometry leaves native
+actions valid. Native parameter edits remain refused until the supported graph,
+instance/evaluated relationship and repeat AutoCAD evaluation are proven. Test
+BLOCK_RECORD extension dictionaries, deletion/rename/copy boundaries and complete
+reference closure with a real fixture. Preserve existing fail-closed behavior;
+do not redo #19/#29 or amend their metadata rules speculatively.
+
+8. Correct the nonlinear conflict rule before 30.3.
+
+A stationary point with residuals does not prove conflicting constraints.
+Concrete in-subset counterexample: fixed A=(-1,0), B=(1,0); free point P starts
+at (0,0); both distances PA and PB are sqrt(2). With A and B held fixed, the
+distance residuals give zero gradient with respect to free point P at the seed,
+but P=(0,1) and P=(0,-1) are valid solutions.
+A solver stopping at the seed must report unsolved, not conflicting.
+
+Use conflicting only for a contradiction established by the supported method;
+otherwise unsuccessful nonlinear search is unsolved, even if stationary. Add
+this feasible counterexample and deterministic varied seeds/degenerate cases.
+Describe returned unsatisfied residuals as a diagnostic set, not a proof of
+infeasibility or a minimal conflict set. The final check on original equations
+must be independent of a step-size or convergence flag.
+
+Specify variable scaling/local coordinate origin, angle normalization, Jacobian
+construction/rank threshold, local DOF qualifications and redundancy tests.
+Residual normalization alone is insufficient, especially with small geometry
+near large coordinate offsets. Charge derivative/residual/rank/factorization
+work and poll cancellation within expensive steps; the 200,000-unit cap must
+bound that work too. Keep model persistence independent of solver internals.
+The analytical/native corpus is a shipping gate even with no dependency.
+
+9. Resolve scope contradictions and prove each entity operation.
+
+Allow a narrow, coordinated DrawingState.constraints declaration and required
+validation in 30.3, or defer document persistence/tests to 30.4. The current draft
+both adds that field and forbids editing its declaration through 30.3. Keep
+transaction machinery unchanged; validate before a single commitTransition so
+failure preserves snapshot, revision, dirty flag and history. Distinguish active
+paper-space transact from document-wide transactDrawing where appropriate.
+
+Remove blanket claims that the existing transform stack is exact for every
+entity/operation. Text mirroring intentionally retains readability, general
+nonuniform insert expansion samples circles/arcs, and individual entity fields
+need semantic treatment. Moving a text anchor alone may omit alignment points;
+leaders have additional text/dogleg placement and fitted splines have derived
+geometry. Start 30.1 with the simple audited line/polyline/attribute subset and
+add types only with complete-field, transformed/nested and refusal tests. Retain
+the current public 2D behavior and refuse unsupported contacts explicitly.
+
+10. Delivery and native acceptance remain distinct.
+
+Supply upstream/synthetic base TREE hashes and byte/tree comparison, not merely
+ls-remote or matching package versions. Replay every patch on the genuine
+a68dba5 tree and verify the resulting candidate tree. Keep failed raw logs and
+comparable exact-base controls; a partial or instrumented pass is not normal
+full-suite clearance. No test limits/tolerances/deadlines are relaxed.
+
+The requested AutoCAD-authored linear/stretch fixture is an appropriate native
+gate. Codex will stage that separate work with private files; it is not claimed
+created/tested by this review and must not delay independent pure 30.1 work.
+Keep native cases visibly pending until executed. A later fixture must prove
+both already-evaluated appearance and a NEW parameter edit/re-evaluation after
+third-party save, plus attributes, transform/instance independence, reopen and
+AUDIT results. Zero AUDIT errors alone do not prove full compatibility.
+
+Implementation, authored tests, Windows validation, native compatibility, merge
+and release remain separate states. Priority 30 stays incomplete. Our priority12
+candidate is also not merge-cleared; this review does not redirect that work.
+
+Primary storage references checked during this review:
+https://help.autodesk.com/cloudhelp/2020/ENU/AutoCAD-DXF/files/GUID-A2A628B0-3699-4740-A215-C560E7242F63.htm
+https://help.autodesk.com/cloudhelp/2021/ENU/OARX-IOP/files/GUID-752D0BE7-CF03-4AC1-8AA6-2DE5BE6A054A.htm

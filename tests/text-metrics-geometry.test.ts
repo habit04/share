@@ -236,7 +236,7 @@ describe('generated annotation font contexts', () => {
     metrics.resolve = (input) => { requested.push(input); return resolve(input); };
     const d = { ...dimension(), style: { ...dimension().style, textStyle: 'Named face' } };
     const pieces = dimensionParts(d, metrics);
-    expect(requested[0]).toEqual({ style: 'Named face' });
+    expect(requested[0]).toEqual({ style: 'Named face', text: 'AB' });
     expect(pieces.find((p): p is TextEntity => p.type === 'text')!.style).toBe('Named face');
   });
 

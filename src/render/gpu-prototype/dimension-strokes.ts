@@ -194,7 +194,7 @@ export function lowerDimensionStrokes(dimension: DimensionEntity, state: Drawing
           const problem = textPlacementProblem(source);
           if (problem) throw sourceTopologyAdmissionError(problem);
           if (![source.height, source.rotation, source.widthFactor ?? 1, source.oblique ?? 0].every(Number.isFinite) || source.height <= 0) throw sourceTopologyAdmissionError('Invalid dimension TEXT geometry');
-          const font = textGeometry?.resolve(source) ?? textRenderer(textStyleOf(source), styles);
+          const font = textGeometry?.resolve(source) ?? textRenderer(textStyleOf(source), styles, source.text);
           if (source.bold || !hasStrokeFont || font.kind !== 'stroke') throw sourceTopologyAdmissionError('Unsupported dimension Canvas font or bold text');
           if (font.shxResourceId !== undefined) throw sourceTopologyAdmissionError('Loaded SHX dimension text requires Canvas rendering');
           textCharacterCount += source.text.length;

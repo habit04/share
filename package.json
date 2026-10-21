@@ -72,6 +72,8 @@
       "output": "release"
     },
     "files": [
+      "LICENSE",
+      "THIRD-PARTY-NOTICES.md",
       "dist/**",
       "electron/**",
       "scripts/dwg-reader.mjs",

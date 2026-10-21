@@ -1,0 +1,1 @@
+{"description":"The qpdf WASM glue (qpdf.js) is Emscripten CommonJS output; this marker keeps Node and Electron loaders from treating it as an ES module under the repository's root \"type\": \"module\".","private":true,"type":"commonjs"}

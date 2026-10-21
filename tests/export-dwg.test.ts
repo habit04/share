@@ -209,9 +209,9 @@ describe('portable DWG export coordination', () => {
     expect(f.logs.join('\n')).toMatch(/closed or was replaced meanwhile/);
   });
 
-  it.each(['dropped', 'unsupported'] as const)('asks before replacing the imported source containing %s content', async (action) => {
+  it('asks before replacing the imported source containing unsupported content', async () => {
     const f = setup();
-    importOriginal(f, action);
+    importOriginal(f, 'unsupported');
     expect(await exportDwgCopy(f.ed)).toBe(true);
     expect(f.confirm).toHaveBeenCalledTimes(1);
     expect(f.confirm.mock.calls[0]![0]).toBe('Replace the original DWG?');
@@ -220,22 +220,32 @@ describe('portable DWG export coordination', () => {
     expect(f.confirm).toHaveBeenCalledTimes(2); // Prior export/SAVE approval is never reused.
   });
 
-  it('declining source replacement chooses a copy and preserves the original', async () => {
+  it('refuses to replace the imported source containing dropped content (partial import)', async () => {
+    const f = setup();
+    importOriginal(f, 'dropped');
+    expect(await exportDwgCopy(f.ed)).toBe(false);
+    expect(f.confirm).not.toHaveBeenCalled();
+    expect(f.writes).toEqual([]);
+    expect(f.ed.lastFileError).toMatch(/partial import/);
+  });
+
+  it('exporting a partial import to its source is refused; a copy destination preserves the original', async () => {
     const f = setup();
     importOriginal(f);
-    f.confirm.mockResolvedValue(false);
     const copy = f.out.replace('.dwg', '-copy.dwg');
-    let choice = 0;
-    f.bridge.chooseDwgPath = async () => choice++ === 0 ? f.out : copy;
+    f.bridge.chooseDwgPath = async () => f.out;
+    expect(await exportDwgCopy(f.ed)).toBe(false);
+    expect(f.writes).toEqual([]);
+    expect(f.confirm).not.toHaveBeenCalled();
+    f.bridge.chooseDwgPath = async () => copy;
     expect(await exportDwgCopy(f.ed)).toBe(true);
     expect(f.writes.map((w) => w.path)).toEqual([copy]);
-    expect(f.confirm).toHaveBeenCalledTimes(1);
     expect(f.ed.doc.filePath).toBe(f.out);
   });
 
   it('rejects a replacement document while the import loss confirmation is pending', async () => {
     const f = setup();
-    importOriginal(f);
+    importOriginal(f, 'unsupported');
     f.ed.ui!.confirm = async () => { f.ed.doc.load(new Drawing().snapshot, null); return true; };
     expect(await exportDwgCopy(f.ed)).toBe(false);
     expect(f.writes).toEqual([]);
@@ -243,7 +253,7 @@ describe('portable DWG export coordination', () => {
 
   it('cannot overwrite a lossy source without a confirmation interface', async () => {
     const f = setup();
-    importOriginal(f);
+    importOriginal(f, 'unsupported');
     f.ed.ui = null;
     expect(await exportDwgCopy(f.ed)).toBe(false);
     expect(f.writes).toEqual([]);
@@ -282,9 +292,23 @@ describe('portable DWG export coordination', () => {
     expect(f.logs.join('\n')).toMatch(/newer drawing revision was already written/);
   });
 
-  it('rechecks an acknowledged source after waiting behind a write to that same file', async () => {
+  it('refuses the imported source without asking, even after waiting behind a write to that same file', async () => {
     const f = setup();
     importOriginal(f);
+    const gate = deferred<string>();
+    const blocker = saveQueue.run(f.out, captureRevision(), () => gate.promise);
+    const pending = exportDwgCopy(f.ed);
+    f.edit('unsafe-new-revision');
+    gate.resolve(f.out);
+    await blocker;
+    expect(await pending).toBe(false);
+    expect(f.confirm).not.toHaveBeenCalled();
+    expect(f.writes).toEqual([]);
+  });
+
+  it('rechecks an acknowledged unsupported source after waiting behind a write to that same file', async () => {
+    const f = setup();
+    importOriginal(f, 'unsupported');
     const gate = deferred<string>();
     const blocker = saveQueue.run(f.out, captureRevision(), () => gate.promise);
     const pending = exportDwgCopy(f.ed);

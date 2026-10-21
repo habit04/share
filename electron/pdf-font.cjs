@@ -1,4 +1,4 @@
-/** Confined, read-only installed TrueType programs for one captured Windows PDF export. */
+/** Confined, read-only installed TrueType and standalone CFF programs for one captured Windows PDF export. */
 const { readWindowsFontData } = require('./font-metrics.cjs');
 const { extractTtcFace } = require('./ttc-extract.cjs');
 
@@ -7,8 +7,8 @@ function fail(message) { throw new Error(`PDF font: ${message}`); }
 
 /**
  * https://learn.microsoft.com/en-us/typography/opentype/spec/os2#fstype
- * Full embedding satisfies no-subsetting. Preview/print fonts need a read-only PDF,
- * which this exporter does not provide; installed/editable fonts alone are accepted.
+ * Full embedding satisfies no-subsetting. Ordinary PDF refuses preview/print fonts;
+ * only an explicitly restricted captured export may excuse that one permission problem.
  * @param {number} fsType @param {number} os2Version @returns {string | null}
  */
 function pdfFontEmbeddingProblem(fsType, os2Version) {
@@ -55,13 +55,20 @@ function postscriptName(data) {
  * @param {{ fontsDirectory?: string }} [options]
  */
 async function readWindowsPdfFont(request, options) {
+  // A captured-PDF request may carry usedCodepoints: the metrics parse then
+  // point-validates only the plotted glyphs (plus their composite closure and
+  // capital A) and marks the rest unknown. The permission gate below still
+  // reads the whole selected face's real OS/2, and the whole program embeds.
   const { metrics, bytes } = await readWindowsFontData(request, options);
   const source = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  // A collection embeds the same face the metrics reader selected (face 0), extracted
-  // whole. Tables are copied verbatim, so the permission checks below read the real OS/2.
+  // A collection embeds the exact face the metrics reader selected for this
+  // family/style request (metrics.faceIndex), extracted whole. Tables are copied
+  // verbatim, so the permission checks below read that same face's real OS/2.
   const collection = source.readUInt32BE(0) === 0x74746366;
-  const data = collection ? extractTtcFace(source, 0) : source, signature = data.readUInt32BE(0);
-  if (signature !== 0x00010000 && signature !== 0x74727565) fail('standalone TrueType glyf outlines are required');
+  const data = collection ? extractTtcFace(source, metrics.faceIndex ?? 0) : source, signature = data.readUInt32BE(0);
+  const outline = signature === 0x4f54544f ? 'cff' : signature === 0x00010000 || signature === 0x74727565 ? 'glyf' : null;
+  if (!outline) fail('standalone TrueType glyf or CFF outlines are required');
+  if (outline === 'cff' && collection) fail('CFF outlines in collections are unsupported; a standalone CFF face is required');
   // The shared metadata parser validated all SFNT table ranges, overlaps and formats.
   const tables = new Map();
   for (let i = 0; i < data.readUInt16BE(4); i++) {
@@ -73,15 +80,19 @@ async function readWindowsPdfFont(request, options) {
     if (!found || found.length < length) fail(`missing or truncated ${tag} table`);
     return found;
   };
+  if (outline === 'cff' && !tables.has('CFF ')) fail('a CFF-outline font must contain a CFF table');
+  if (tables.has('CFF2')) fail('CFF2 outlines are unsupported');
+  if (outline === 'cff' && tables.has('fvar')) fail('variable CFF font instances are unsupported');
   const os2 = table('OS/2', 78), hhea = table('hhea', 36), post = table('post', 32);
   const os2Version = os2.readUInt16BE(0), problem = pdfFontEmbeddingProblem(os2.readUInt16BE(8), os2Version);
-  if (problem) fail(problem);
+  const previewPrint = problem === 'preview/print embedding requires a read-only PDF';
+  if (problem && !(previewPrint && request && request.restricted === true)) fail(problem);
   const ascender = hhea.readInt16BE(4), descender = hhea.readInt16BE(6), weight = os2.readUInt16BE(4), italicAngle = post.readInt32BE(4) / 65536;
   if (ascender < 0 || descender > 0) fail('unsupported font vertical metrics');
   if (weight < 1 || weight > 1000 || Math.abs(italicAngle) > 90) fail('invalid font weight or italic angle');
   if (![0x00010000, 0x00020000, 0x00025000, 0x00030000].includes(post.readUInt32BE(0))) fail('unsupported post table version');
-  return { bytes: collection ? data : bytes, metrics, postscriptName: postscriptName(table('name', 6)), ascender, descender,
-    italicAngle, weight, isFixedPitch: !!post.readUInt32BE(12), os2Version };
+  return { bytes: collection ? data : bytes, metrics, outline, postscriptName: postscriptName(table('name', 6)), ascender, descender,
+    italicAngle, weight, isFixedPitch: !!post.readUInt32BE(12), os2Version, ...(previewPrint ? { previewPrint: true } : {}) };
 }
 
 module.exports = { readWindowsPdfFont, pdfFontEmbeddingProblem };

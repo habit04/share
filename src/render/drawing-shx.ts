@@ -1,6 +1,6 @@
 import type { TextStyle } from '../io/encoding';
 import type { TextAppearance, TextGeometryContext, TextMetricResult } from '../core/text-metrics';
-import { findTextStyle } from './hershey';
+import { findTextStyle, UNICODE_STROKE_FALLBACK_NOTICE } from './hershey';
 import { createTextGeometryContext } from './font-metrics';
 import { ShxFontRegistry, type ShxResource } from './shx-fonts';
 
@@ -64,18 +64,23 @@ export class DrawingShxResources {
         return key;
       },
       resolve(input) {
-        const face = fallback.resolve(input);
+        // Bind an explicitly loaded SHX before considering the Hershey coverage substitute.
+        const face = fallback.resolve({ ...input, text: undefined });
         if (face.kind !== 'stroke') return face;
         const style = findTextStyle(input.style, styles);
         // Preserve unsupported native modes without pretending to implement their layout.
-        if (style?.bigFont || (style?.flags ?? 0) & 4 || (style?.generation ?? 0) & 6) return face;
+        if (style?.bigFont || (style?.flags ?? 0) & 4 || (style?.generation ?? 0) & 6) return fallback.resolve(input);
         const id = bindings().get(fontKey(style?.font || 'txt'));
         const font = id ? registry.font(id) : undefined;
-        return font?.isFont && !font.renderProblem ? { ...face, shxResourceId: id } : face;
+        const native = font?.isFont && !font.renderProblem ? { ...face, shxResourceId: id } : face;
+        if (input.text === undefined || native.shxResourceId && run(input.text, 1, native)?.ok) return native;
+        const substitute = fallback.resolve(input);
+        if (substitute.kind === 'canvas' && substitute.strokeFallback) issues.add(UNICODE_STROKE_FALLBACK_NOTICE);
+        return substitute.kind === 'canvas' ? substitute : native;
       },
       measure: metric,
       shxRun: run,
-      fontIssues: issues,
+      get fontIssues() { return new Set([...issues, ...(fallback.fontIssues ?? [])]); },
       fontSize: (height, face) => fallback.fontSize!(height, face),
       advances: (text, height, face) => fallback.advances!(text, height, face),
       baselineDescent(height, face) {

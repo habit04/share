@@ -188,7 +188,7 @@ describe('project and drawing autosaves across a crash (main-process store)', ()
 describe('a damaged drawing that finishes opening in a background tab', () => {
   it('is recovered and modified in its own tab, reported under its own name, autosaved under its permanent id', async () => {
     const pending = deferred<OpenResult | null>();
-    const { ed, confirms, answer } = makeEditor({ openDrawing: () => pending.promise });
+    const { ed, confirms } = makeEditor({ openDrawing: () => pending.promise });
     const shown: string[] = [];
     ed.hooks.importReport = (r, name) => shown.push(`${name}:${r.recovered ? 'recovered' : 'report'}`);
     ed.loadState(new Drawing().snapshot, '/w/first.dxf');
@@ -220,7 +220,8 @@ describe('a damaged drawing that finishes opening in a background tab', () => {
     expect([entry.title, entry.originalPath]).toEqual(['b.dxf', '/w/b.dxf']);
     expect(texts(readDxf((await store.read(entry.name))!))).toEqual(['B1', 'B2']);
 
-    // In its tab: IMPORTREPORT shows its report, and SAVE asks before replacing the damaged original.
+    // In its tab: IMPORTREPORT shows its report, and SAVE refuses to replace the damaged
+    // original: a recovered drawing is a partial import, so no confirmation is offered.
     ed.switchSession(1);
     expect(ed.doc.dirty).toBe(true);
     ed.runCommand('IMPORTREPORT');
@@ -228,19 +229,19 @@ describe('a damaged drawing that finishes opening in a background tab', () => {
     const writes: Array<string | null> = [];
     ed.fileBridge!.saveDxf = async (p) => {
       writes.push(p);
-      return null; // the Save As dialog is cancelled
+      return null;
     };
-    answer(false); // "No" keeps the original: Save As
     expect(await ed.saveFile(false)).toBe(false);
-    expect(confirms.at(-1)).toBe('Save over the original file?');
-    expect(writes).toEqual([null]);
+    expect(confirms.at(-1)).toBe('Damaged drawing file');
+    expect(writes).toEqual([]);
     expect(ed.doc.dirty).toBe(true);
+    expect(ed.lastFileError).toMatch(/recovered from a damaged file/);
   });
 });
 
 describe('Save All across the tracks', () => {
   const ENTRY_ACCESS = "Error invoking remote method 'save-dxf': Error: EACCES: permission denied, copy '/w/b.dxf.bak'";
-  function setup() {
+  function setup(partial = true) {
     const order: string[] = [];
     let bakFails = true;
     const { ed, confirms } = makeEditor({
@@ -263,7 +264,7 @@ describe('Save All across the tracks', () => {
       return 'cancel';
     };
     // a.dxf came with content JCad could not keep (import report) and was edited.
-    ed.loadState(readDxf(fixture('unsupported-content.dxf'), { filePath: '/w/a.dxf' }), '/w/a.dxf');
+    ed.loadState(partial ? readDxf(fixture('unsupported-content.dxf'), { filePath: '/w/a.dxf' }) : readDxf(dxfWith('A'), { filePath: '/w/a.dxf' }), '/w/a.dxf');
     ed.doc.addEntities([text('A EDIT')]);
     // b.dxf: its .bak copy cannot be made, so its save fails.
     ed.sessions.add(readDxf(dxfWith('B')), '/w/b.dxf', true);
@@ -284,7 +285,7 @@ describe('Save All across the tracks', () => {
   const backups = async (store: AutosaveStore) => (await store.list()).map((e) => e.title).sort();
 
   it('saves in order, stops at the failed .bak with its own question first, and keeps flags and autosaves right', async () => {
-    const s = setup();
+    const s = setup(false);
     const { ed } = s;
     await s.pa.flush();
     expect(await s.autosaver.runNow()).toBe(2); // a.dxf and b.dxf (the symbol tab is never autosaved)
@@ -309,8 +310,8 @@ describe('Save All across the tracks', () => {
     const isSymbol = (sid: number) => sid === s.symbolId;
     expect(await runCloseWorkflow(ed, deps, isSymbol)).toBe(false);
     expect(asked).toEqual(['drawing:a.dxf, drawing:b.dxf, symbol:Drawing4.dxf, project:P']);
-    // a.dxf: the import-report question came first (Yes = save over it), then the write.
-    expect(s.confirms).toEqual(['Save over the original file?']);
+    // A complete import reaches the writer and the later backup failure.
+    expect(s.confirms).toEqual([]);
     expect(s.order).toEqual(['dxf:/w/a.dxf', 'dxf:/w/b.dxf']);
     // Two dialogs, in this order: the save error (Retry / Save As / Cancel), then why the close stopped.
     expect(s.errors).toEqual([expect.stringMatching(/^b\.dxf: "b\.dxf" could not be saved: you do not have permission/)]);
@@ -338,7 +339,7 @@ describe('Save All across the tracks', () => {
   });
 
   it('a drawing changed by a later save in the same round (Symbol Builder refresh) is asked about again', async () => {
-    const s = setup();
+    const s = setup(false);
     const { ed } = s;
     s.fixBak();
     const asked: string[] = [];
@@ -366,7 +367,95 @@ describe('Save All across the tracks', () => {
     expect(ed.history.join('\n')).toMatch(/Close cancelled\./);
   });
 
-  it('an unticked item stays unsaved and is not asked about again', async () => {
+  it('the partial import stops the close with its refusal; leaving it unticked lets the rest save in order', async () => {
+    const s = setup();
+    const { ed } = s;
+    await s.pa.flush();
+    expect(await s.autosaver.runNow()).toBe(2); // a.dxf and b.dxf (the symbol tab is never autosaved)
+    expect(await backups(s.store)).toEqual(['Project P', 'a.dxf', 'b.dxf']);
+    const asked: string[] = [];
+    const shownErrors: string[] = [];
+    const symbolSaves: number[] = [];
+    let leavePartialUnticked = false;
+    const deps = {
+      ask: async (items: readonly UnsavedItem[]): Promise<CloseDecision> => {
+        asked.push(items.map((i) => `${i.kind}:${i.title}`).join(', '));
+        const keys = items.filter((i) => !leavePartialUnticked || i.title !== 'a.dxf').map((i) => i.key);
+        return { action: 'save', keys: new Set(keys) };
+      },
+      saveSymbol: async (sid: number) => {
+        symbolSaves.push(sid);
+        ed.doc.dirty = false;
+        return null;
+      },
+      showError: async (title: string, error: string) => {
+        shownErrors.push(`${title}: ${error}`);
+      },
+    };
+    const isSymbol = (sid: number) => sid === s.symbolId;
+    expect(await runCloseWorkflow(ed, deps, isSymbol)).toBe(false);
+    expect(asked).toEqual(['drawing:a.dxf, drawing:b.dxf, symbol:Drawing4.dxf, project:P']);
+    // a.dxf is a partial import: its in-place save is refused outright — no
+    // save-over question, no write — and the close stops there with the reason.
+    expect(s.confirms).toEqual([]);
+    expect(s.order).toEqual([]);
+    expect(s.errors).toEqual([]);
+    expect(shownErrors).toEqual([expect.stringMatching(/^a\.dxf: This drawing opened as a partial import/)]);
+    expect(symbolSaves).toEqual([]);
+    expect(ed.history.join('\n')).toMatch(/^Close cancelled\. a\.dxf could not be saved: This drawing opened as a partial import/m);
+    expect(closeErrorText('Drawing2.dxf', 'the save was cancelled')).toBe('Drawing2.dxf could not be saved: the save was cancelled');
+    expect([id(ed, '/w/a.dxf').dirty, id(ed, '/w/b.dxf').dirty, ed.projectDirty]).toEqual([true, true, true]);
+    expect(ed.sessions.isDirty(ed.sessions.indexOfId(s.symbolId))).toBe(true);
+    // Nothing was saved, so every backup is kept.
+    await settleBeforeClose([s.pa.flush(), s.autosaver.idle()]);
+    expect(await backups(s.store)).toEqual(['Project P', 'a.dxf', 'b.dxf']);
+
+    // Next close, once the .bak can be made and the partial import is left unticked:
+    // the rest saves in order and the workflow completes around it.
+    s.fixBak();
+    leavePartialUnticked = true;
+    asked.length = 0;
+    expect(await runCloseWorkflow(ed, deps, isSymbol)).toBe(true);
+    expect(asked).toEqual(['drawing:a.dxf, drawing:b.dxf, symbol:Drawing4.dxf, project:P']);
+    expect(symbolSaves).toEqual([s.symbolId]);
+    expect(s.order).toEqual(['dxf:/w/b.dxf', 'project:/w/p.jcadproj.json']);
+    expect(id(ed, '/w/a.dxf').dirty).toBe(true); // the partial import is still open and unsaved
+    expect(ed.sessions.anyDirty()).toBe(true);
+    expect(ed.projectDirty).toBe(false);
+    expect(await settleBeforeClose([s.pa.flush(), s.autosaver.idle()])).toBe(true);
+    expect(await backups(s.store)).toEqual(['a.dxf']);
+  });
+
+  it('a partial import at the head of the round stops the close before later saves run', async () => {
+    const s = setup();
+    const { ed } = s;
+    s.fixBak();
+    const asked: string[] = [];
+    let symbolRan = false;
+    const deps = {
+      ask: async (items: readonly UnsavedItem[]): Promise<CloseDecision> => {
+        asked.push(items.map((i) => i.title).join(', '));
+        return { action: 'save', keys: new Set(items.map((i) => i.key)) };
+      },
+      saveSymbol: async () => {
+        symbolRan = true;
+        ed.doc.dirty = false;
+        return null;
+      },
+      showError: async () => {},
+    };
+    expect(await runCloseWorkflow(ed, deps, (sid) => sid === s.symbolId)).toBe(false);
+    // One round only: a.dxf (partial import) is refused, so b.dxf and the symbol
+    // save never run and nothing is re-asked. (The re-ask-on-refresh behaviour
+    // this scenario used to exercise is covered by the closeflow suites with
+    // fixtures that can actually save.)
+    expect(asked).toEqual(['a.dxf, b.dxf, Drawing4.dxf, P']);
+    expect(symbolRan).toBe(false);
+    expect(s.order).toEqual([]);
+    expect(ed.history.join('\n')).toMatch(/Close cancelled\./);
+  });
+
+  it('an unticked partial import stays unsaved and is not asked about again', async () => {
     const s = setup();
     const { ed } = s;
     s.fixBak();
@@ -374,7 +463,7 @@ describe('Save All across the tracks', () => {
     const deps = {
       ask: async (items: readonly UnsavedItem[]): Promise<CloseDecision> => {
         asked.push(items.map((i) => i.title).join(', '));
-        return { action: 'save', keys: new Set(items.filter((i) => i.title !== 'b.dxf').map((i) => i.key)) };
+        return { action: 'save', keys: new Set(items.filter((i) => i.title !== 'a.dxf').map((i) => i.key)) };
       },
       saveSymbol: async () => {
         ed.doc.dirty = false;
@@ -384,7 +473,8 @@ describe('Save All across the tracks', () => {
     };
     expect(await runCloseWorkflow(ed, deps, (sid) => sid === s.symbolId)).toBe(true);
     expect(asked).toHaveLength(1);
-    expect(id(ed, '/w/b.dxf').dirty).toBe(true);
+    expect(id(ed, '/w/a.dxf').dirty).toBe(true);
+    expect(id(ed, '/w/b.dxf').dirty).toBe(false);
   });
 });
 

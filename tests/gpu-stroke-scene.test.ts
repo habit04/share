@@ -113,12 +113,16 @@ describe('all-or-nothing GPU stroke-scene lowering', () => {
     expect(JSON.stringify(state)).toBe(before);
   });
 
-  it('matches Canvas width, oblique, rotation, unknown glyph and decoration-control behavior in one paint operation', () => {
-    const entity = text({ text: 'A%%uB%%oC%%k %%d %%p 雪', position: { x: 3, y: -4 }, widthFactor: 1.8, oblique: 0.35, rotation: 0.72, align: 'right' });
+  it('matches Canvas width, oblique, rotation and decoration-control behavior in one paint operation', () => {
+    const entity = text({ text: 'A%%uB%%oC%%k %%d %%p ?', position: { x: 3, y: -4 }, widthFactor: 1.8, oblique: 0.35, rotation: 0.72, align: 'right' });
     const result = accepted(lowerStrokeScene(drawing([entity]), view, overlay));
     expectCanvasPaths(strokePoints(result), canvasTextPaths(entity));
     expect(result.operations).toHaveLength(1);
     expect(result.operations[0]!.paths.length).toBeGreaterThan(10);
+  });
+
+  it('requires complete Canvas fallback for a Unicode glyph absent from the stroke font', () => {
+    expect(lowerStrokeScene(drawing([text({ text: 'A雪' })]), view, overlay)).toEqual({ ok: false, reason: expect.stringContaining('Canvas font') });
   });
 
   it('keeps the independent near-origin FIT/ALIGNED proof and refuses unsafe Canvas world quantization', () => {
@@ -306,7 +310,7 @@ describe('all-or-nothing GPU stroke-scene lowering', () => {
   });
 
   it('enforces the complete-scene point budget before allocating readable glyph strokes', () => {
-    const readable = text({ text: 'WWWW %%c %%d %%p \u96ea' });
+    const readable = text({ text: 'WWWW %%c %%d %%p ?' });
     const pointCount = strokePoints(lowerStrokeScene(drawing([readable]), view, overlay)).reduce((total, path) => total + path.length, 0);
     const glyphs = vi.spyOn(hershey, 'strokeText');
     try {

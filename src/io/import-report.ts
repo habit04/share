@@ -15,6 +15,7 @@ import { textPlacementProblem, placedText } from '../core/text-placement';
 import { textWidth } from '../core/entities';
 import { mtextBackgroundProblem } from '../core/mtext-background';
 import { insertArrayProblem } from '../core/insert-array';
+import { GeometryBudgetError } from '../core/geometry-budget-error';
 
 /**
  * - dropped: not imported; it is lost when the drawing is saved.
@@ -44,12 +45,14 @@ export interface ImportReport {
   readonly sourcePath?: string | null;
   /** Counts per type and action over every item (the item list itself is capped). */
   readonly counts: Readonly<Record<string, Readonly<Partial<Record<ImportAction, number>>>>>;
-  /** The first MAX_REPORT_ITEMS items. */
+  /** Bounded detail rows; exclusions take priority over less severe remarks. */
   readonly items: readonly ImportReportItem[];
   /** Items not listed because of the cap. */
   readonly omitted: number;
   /** Free-form remarks (approximations, estimated positions). */
   readonly notes: readonly string[];
+  /** Font substitutions over every report item, including omitted details. */
+  readonly fontSubstitutions?: number;
   /** The file was damaged: what was read up to the damage was opened (explicit partial recovery). */
   readonly recovered?: { readonly line: number; readonly message: string };
 }
@@ -67,6 +70,12 @@ export interface RawDxfEntity {
 export const IMPORT_REPORT_META_KEY = 'importReport';
 export const RAW_ENTITIES_META_KEY = 'dxfRawEntities';
 export const MAX_REPORT_ITEMS = 1000;
+/** Same identity bound as the retained CAD graph; reasons are never stored in this index. */
+const MAX_REPORT_SOURCE_IDENTITIES = 250_000;
+const sourceReportKey = (item: Pick<ImportReportItem, 'type' | 'handle'>): string | undefined => {
+  const handle = item.handle?.trim();
+  return handle && /^[0-9A-Fa-f]{1,16}$/.test(handle) ? `${item.type}\0${BigInt(`0x${handle}`).toString(16)}` : undefined;
+};
 
 /** Collects report items while a reader runs. */
 export class ImportReportBuilder {
@@ -74,13 +83,63 @@ export class ImportReportBuilder {
   readonly counts: Record<string, Partial<Record<ImportAction, number>>> = {};
   readonly notes: string[] = [];
   omitted = 0;
+  fontSubstitutions = 0;
   recovered?: { line: number; message: string };
+  private readonly omittedSources = new Map<string, Partial<Record<ImportAction, number>>>();
+
+  constructor(private readonly sourceIdentityLimit = MAX_REPORT_SOURCE_IDENTITIES) {
+    if (!Number.isInteger(sourceIdentityLimit) || sourceIdentityLimit < 0 || sourceIdentityLimit > MAX_REPORT_SOURCE_IDENTITIES) throw new RangeError('Invalid import report source-identity limit.');
+  }
 
   add(item: ImportReportItem): void {
+    // An exhausted exact-accounting index is a resource refusal, not permission
+    // to guess whether an excluded record had previously been counted as kept.
+    if (this.items.length >= MAX_REPORT_ITEMS) this.assertCanTrackOmitted(item);
+    if (item.type === 'STYLE' && /substitut|fallback/i.test(item.reason)) this.fontSubstitutions += 1;
     const c = (this.counts[item.type] ??= {});
     c[item.action] = (c[item.action] ?? 0) + 1;
     if (this.items.length < MAX_REPORT_ITEMS) this.items.push(item);
-    else this.omitted += 1;
+    else { this.omitted += 1; this.trackOmitted(item); }
+  }
+
+  private assertCanTrackOmitted(item: ImportReportItem): void {
+    const key = sourceReportKey(item);
+    if (key && !this.omittedSources.has(key) && this.omittedSources.size >= this.sourceIdentityLimit) throw new GeometryBudgetError(`Import report source-identity limit (${this.sourceIdentityLimit.toLocaleString('en-US')}) exceeded; the drawing cannot be opened while keeping partial-import accounting exact.`);
+  }
+
+  private rememberOmitted(item: ImportReportItem): void {
+    const key = sourceReportKey(item);
+    if (!key) return;
+    const actions = this.omittedSources.get(key) ?? {};
+    actions[item.action] = (actions[item.action] ?? 0) + 1;
+    this.omittedSources.set(key, actions);
+  }
+
+  /** Move one already-counted omitted row into the detail sample, without adding a report item. */
+  private promoteExclusion(item: ImportReportItem): void {
+    const key = sourceReportKey(item), actions = key ? this.omittedSources.get(key) : undefined;
+    if (key && !(actions?.[item.action])) return;
+    let slot = -1;
+    for (let index = this.items.length - 1; index >= 0; index -= 1) if (this.items[index]!.action !== 'dropped') { slot = index; break; }
+    if (slot < 0) return;
+    const displaced = this.items[slot]!, displacedKey = sourceReportKey(displaced);
+    // A visible old identity can stay visible when indexing it would exceed the
+    // accounting budget. The new exclusion still has exact aggregate counts.
+    if (displacedKey && !this.omittedSources.has(displacedKey) && this.omittedSources.size >= this.sourceIdentityLimit) return;
+    this.rememberOmitted(displaced);
+    this.items[slot] = item;
+    if (key && actions) {
+      const remaining = (actions[item.action] ?? 0) - 1;
+      if (remaining) actions[item.action] = remaining;
+      else delete actions[item.action];
+      if (!Object.values(actions).some(count => count > 0)) this.omittedSources.delete(key);
+    }
+    // One detail was exchanged for one omitted row: total omitted is unchanged.
+  }
+
+  private trackOmitted(item: ImportReportItem): void {
+    this.rememberOmitted(item);
+    if (item.action === 'dropped') this.promoteExclusion(item);
   }
 
   note(text: string): void {
@@ -102,6 +161,43 @@ export class ImportReportBuilder {
     // Unlisted items remain conservative: their exact source property is unavailable.
   }
 
+  /** A later graph-aware exclusion must not keep claiming its owned records were retained. */
+  dropItems(matches: (item: ImportReportItem) => boolean, reason: (item: ImportReportItem) => string, source?: ImportReportItem): number {
+    let matched = 0;
+    for (let index = 0; index < this.items.length; index++) {
+      const item = this.items[index]!;
+      if (!matches(item)) continue;
+      matched += 1;
+      if (item.action !== 'dropped') {
+        const counts = this.counts[item.type]!;
+        const remaining = (counts[item.action] ?? 0) - 1;
+        if (remaining) counts[item.action] = remaining;
+        else delete counts[item.action];
+        counts.dropped = (counts.dropped ?? 0) + 1;
+      }
+      this.items[index] = { ...item, action: 'dropped', reason: reason(item) };
+    }
+    // Recovery supplies the exact source identity. Omitted detail reasons are
+    // intentionally unavailable, but their four action counters remain exact.
+    const key = source ? sourceReportKey(source) : undefined, actions = key ? this.omittedSources.get(key) : undefined;
+    if (source && actions) {
+      const counts = this.counts[source.type]!;
+      let omittedMatches = 0;
+      for (const [action, count] of Object.entries(actions) as Array<[ImportAction, number]>) {
+        omittedMatches += count;
+        if (action === 'dropped') continue;
+        const remaining = (counts[action] ?? 0) - count;
+        if (remaining) counts[action] = remaining;
+        else delete counts[action];
+        counts.dropped = (counts.dropped ?? 0) + count;
+      }
+      this.omittedSources.set(key!, { dropped: omittedMatches });
+      if (!matched && omittedMatches) this.promoteExclusion({ ...source, action: 'dropped' });
+      matched += omittedMatches;
+    }
+    return matched;
+  }
+
   get empty(): boolean {
     return this.items.length === 0 && this.omitted === 0 && this.notes.length === 0 && !this.recovered;
   }
@@ -114,6 +210,7 @@ export class ImportReportBuilder {
       items: this.items,
       omitted: this.omitted,
       notes: this.notes,
+      fontSubstitutions: this.fontSubstitutions,
       ...(this.recovered ? { recovered: this.recovered } : {}),
     };
   }
@@ -253,6 +350,11 @@ export function countOf(r: ImportReport, action: ImportAction): number {
   return n;
 }
 
+/** Older reports have only listed details; new readers count before the detail cap. */
+export function fontSubstitutionCount(r: ImportReport): number {
+  return r.fontSubstitutions ?? r.items.filter((item) => item.type === 'STYLE' && /substitut|fallback/i.test(item.reason)).length;
+}
+
 /** Objects that a save cannot write back as they were in the source (dropped or simplified). */
 export function lossCount(r: ImportReport): number {
   return countOf(r, 'dropped') + countOf(r, 'simplified');
@@ -298,6 +400,33 @@ export function saveOverwriteWarning(state: DrawingState, path: string | null): 
   if (n === 0 && r.format === 'DWG' && countOf(r, 'unsupported')) return `${baseName(path)} contains properties JCad cannot read (see the import report). Saving the current drawing cannot restore them and may remove them from the original file. Use Save As to keep the original. Save over it anyway?`;
   if (n === 0) return null;
   return `${baseName(path)} contained ${n} object(s) JCad cannot keep (see the import report). Saving over it removes them from the file. Use Save As to keep the original. Save over it anyway?`;
+}
+
+/**
+ * A partial import: opening lost content (dropped or simplified objects) or recovered what
+ * was readable from a damaged file. Unlike a complete import, a partial one must never be
+ * saved over its source file (see partialImportSaveBlock); the content JCad could not keep
+ * would be lost from the file for good.
+ */
+export function isPartialImport(state: DrawingState): boolean {
+  const r = importReportOf(state);
+  return !!r && (lossCount(r) > 0 || !!r.recovered);
+}
+
+/**
+ * Hard block (not a warning) on saving a partial import over its source file: returns the
+ * refusal message when `path` names the file the drawing was read from, else null. Applies
+ * to every save entry point; Save As to a different file is the way out.
+ */
+export function partialImportSaveBlock(state: DrawingState, path: string | null): string | null {
+  const r = importReportOf(state);
+  if (!r || !path || !r.sourcePath || !samePath(r.sourcePath, path) || !isPartialImport(state)) return null;
+  const name = baseName(path);
+  if (r.recovered) return `This drawing was recovered from a damaged file (${r.recovered.message}) and cannot be saved over its source ${name}. Use Save As and choose a different file.`;
+  const dropped = countOf(r, 'dropped');
+  const simplified = countOf(r, 'simplified');
+  const parts = [dropped ? `${dropped} object(s) dropped` : '', simplified ? `${simplified} object(s) simplified` : ''].filter(Boolean).join(', ');
+  return `This drawing opened as a partial import (${parts}; see the import report) and cannot be saved over its source ${name}: the content JCad could not keep would be lost from the file. Use Save As and choose a different file.`;
 }
 
 /** DXF recovery snapshots cannot retain the unreadable properties of their original DWG. */

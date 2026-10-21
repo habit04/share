@@ -33,6 +33,13 @@ function preferenceDictionary(values) {
   return result;
 }
 
+/** Tag an error as a checkpoint DECODE failure (PR23 ASAR round 4): the stored bytes
+ * cannot be read as preferences — invalid JSON, an invalid shape, over the size limit,
+ * or a symlink in place of the file. The startup gate renames only tagged failures
+ * aside; a filesystem failure (EBUSY, EPERM, EISDIR…) carries an fs code, is never
+ * tagged, and never retires a checkpoint whose bytes may be perfectly valid. */
+function tagDecodeFailure(error) { return Object.assign(error, { checkpointDecodeFailure: true }); }
+
 function decodePreferences(text) {
   if (typeof text !== 'string' || text.length > MAX_PREFERENCE_BYTES || Buffer.byteLength(text) > MAX_PREFERENCE_BYTES) throw new Error('Renderer preferences exceed 8 MiB');
   return preferenceDictionary(JSON.parse(text));
@@ -138,8 +145,10 @@ function createPreferenceStore({ stateDir, fs: files = fs, write = atomicWriteFi
     const file = path.join(stateDir(), CHECKPOINT_NAME);
     try {
       const stat = await files.lstat(file);
-      if (stat.isSymbolicLink()) throw new Error('Renderer preference checkpoint is a symbolic link');
-      latest = decodePreferences(await readLimitedFile(files, file, MAX_PREFERENCE_BYTES, 'utf8'));
+      if (stat.isSymbolicLink()) throw tagDecodeFailure(new Error('Renderer preference checkpoint is a symbolic link'));
+      if (stat.size > MAX_PREFERENCE_BYTES) throw tagDecodeFailure(new Error(`${CHECKPOINT_NAME} is larger than 8 MiB`));
+      const text = await readLimitedFile(files, file, MAX_PREFERENCE_BYTES, 'utf8');
+      try { latest = decodePreferences(text); } catch (error) { throw tagDecodeFailure(error); }
       return latest;
     } catch (error) {
       if (error && error.code === 'ENOENT') return null;

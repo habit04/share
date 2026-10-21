@@ -16,5 +16,5 @@
     "useUnknownInCatchVariables": false,
     "skipLibCheck": true
   },
-  "include": ["electron/*.cjs", "electron/main/*.cjs", "scripts/*.cjs"]
+  "include": ["electron/*.cjs", "electron/main/*.cjs", "electron/restricted-pdf/*.cjs", "scripts/*.cjs"]
 }

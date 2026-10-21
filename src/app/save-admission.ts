@@ -30,6 +30,7 @@ export class SaveAdmission {
   private closed = false;
   private bound: string | undefined;
   private sourceContext = false;
+  private existingDestination: boolean | undefined;
 
   constructor(private readonly bridge: FileBridge, readonly kind: SaveAdmissionKind) {
     this.enabled = hasSaveAdmissions(bridge);
@@ -44,6 +45,8 @@ export class SaveAdmission {
   }
 
   get ticket(): string | undefined { return this.value; }
+  /** Host evidence at bind; unknown on legacy bridges. Does not grant access. */
+  get destinationExists(): boolean | undefined { return this.existingDestination; }
   private get recordsDrawingIdentity(): boolean { return this.kind !== 'text-export' && this.kind !== 'pdf-export'; }
   async bind(path: string, source?: OpenedSourceHint): Promise<void> {
     await this.ready;
@@ -57,6 +60,7 @@ export class SaveAdmission {
     }
     else if (result && typeof result.identityPath === 'string' && typeof result.exists === 'boolean') {
       if (result.exists && this.recordsDrawingIdentity) registerWindowsPathIdentity(path, result.identityPath);
+      this.existingDestination = result.exists;
     } else throw new Error('The Windows save host returned an invalid path identity.');
     this.bound = path;
     this.sourceContext = this.kind === 'drawing' && source !== undefined;

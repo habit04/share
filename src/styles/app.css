@@ -467,6 +467,20 @@ canvas#drawing {
   background: #4a4a4a;
   color: #fff;
 }
+.file-tab-partial {
+  padding: 1px 6px;
+  border: 1px solid #a67c1a;
+  border-radius: 8px;
+  background: rgba(232, 168, 32, 0.16);
+  color: #e8b93c;
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.file-tab-partial:hover {
+  background: rgba(232, 168, 32, 0.3);
+}
 .file-tabs-spacer {
   flex: 1;
 }

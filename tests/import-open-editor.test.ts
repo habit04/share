@@ -1,7 +1,8 @@
 /**
  * OPEN / SAVE / IMPORTREPORT on a real editor with a fake file bridge: the report dialog hook
- * after open, partial recovery of a truncated file, and the warning before Save writes over a
- * source file whose content could not be kept (No = Save As).
+ * after open, partial recovery of a truncated file, and the hard refusal to Save over the
+ * source file of a partial import (dropped/simplified content or a recovered file); the old
+ * confirm-over warning remains only for imports whose report holds no losses.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -84,52 +85,52 @@ describe('import report in the editor', () => {
     expect(f.ed.suggestedName).toBe('original.dxf');
   });
 
-  it('SAVEAS choosing the original source still warns; a changed or replaced session cannot use its answer', async () => {
-    const f = await makeEditor({ '/d/saveas-source.dxf': text('unsupported-content.dxf') }, [true]);
+  it('SAVEAS choosing the original source of a partial import is refused without asking', async () => {
+    const f = await makeEditor({ '/d/saveas-source.dxf': text('unsupported-content.dxf') }, []);
     await f.ed.openFile('/d/saveas-source.dxf');
     f.ed.fileBridge!.chooseDrawingPath = async () => '/d/saveas-source.dxf';
-    f.ed.ui!.confirm = async (title, message) => {
-      f.asked.push({ title, message });
-      // An external command replaces the document while the loss warning is pending.
-      f.ed.newDrawing();
-      return true;
-    };
     expect(await f.ed.saveFile(true)).toBe(false);
-    expect(f.asked).toHaveLength(1);
+    expect(f.asked).toHaveLength(0);
     expect(f.saves).toEqual([]);
-    expect(f.ed.lastFileError).toMatch(/changed or closed/);
+    expect(f.ed.lastFileError).toMatch(/partial import/);
+    expect(f.ed.doc.filePath).toBe('/d/saveas-source.dxf');
   });
 
-  it('a newly imported report at the same source asks again', async () => {
-    const f = await makeEditor({ '/d/repeated-source.dxf': text('unsupported-content.dxf') }, [true, true]);
+  it('a re-imported partial drawing still cannot save over its source', async () => {
+    const f = await makeEditor({ '/d/repeated-source.dxf': text('unsupported-content.dxf') }, []);
     await f.ed.openFile('/d/repeated-source.dxf');
-    expect(await f.ed.saveFile(false)).toBe(true);
+    expect(await f.ed.saveFile(false)).toBe(false);
     await f.ed.openFile('/d/repeated-source.dxf');
-    expect(await f.ed.saveFile(false)).toBe(true);
-    expect(f.asked).toHaveLength(2);
+    expect(await f.ed.saveFile(false)).toBe(false);
+    expect(f.asked).toHaveLength(0);
+    expect(f.saves).toEqual([]);
   });
 
-  it('explicit SAVEAS selecting the source asks before writing', async () => {
-    const f = await makeEditor({ '/d/explicit-source.dxf': text('unsupported-content.dxf') }, [true]);
+  it('explicit SAVEAS selecting the source of a partial import is refused', async () => {
+    const f = await makeEditor({ '/d/explicit-source.dxf': text('unsupported-content.dxf') }, []);
     await f.ed.openFile('/d/explicit-source.dxf');
     f.ed.fileBridge!.chooseDrawingPath = async () => '/d/explicit-source.dxf';
-    expect(await f.ed.saveFile(true)).toBe(true);
-    expect(f.asked).toHaveLength(1);
-    expect(f.saves.map((s) => s.path)).toEqual(['/d/explicit-source.dxf']);
+    expect(await f.ed.saveFile(true)).toBe(false);
+    expect(f.asked).toHaveLength(0);
+    expect(f.saves).toEqual([]);
   });
-  it('OPEN shows the report dialog when content was lost; SAVE over the source asks, No goes to Save As', async () => {
-    const { ed, logs, asked, saves, reports } = await makeEditor({ '/d/plant.dxf': text('unsupported-content.dxf') }, [false]);
+  it('OPEN shows the report dialog when content was lost; SAVE over the source is refused, Save As to a new file works', async () => {
+    const { ed, logs, asked, saves, reports } = await makeEditor({ '/d/plant.dxf': text('unsupported-content.dxf') }, []);
     await ed.openFile('/d/plant.dxf');
     expect(reports).toHaveLength(1);
     expect(reports[0]!.report.sourcePath).toBe('/d/plant.dxf');
     expect(logs.join('\n')).toMatch(/DXF import: 6 object\(s\) dropped or simplified, 5 kept without being shown/);
     expect(reports[0]!.report.counts.POLYLINE).toEqual({ kept: 1 });
     const before = ed.doc.snapshot, history = ed.doc.history();
-    expect(await ed.saveFile(false)).toBe(true);
-    expect(asked.map((a) => a.title)).toEqual(['Save over the original file?']);
-    expect(asked[0]!.message).toMatch(/plant\.dxf contained 6 object\(s\) JCad cannot keep/);
-    // No -> Save As: the bridge is asked for a new path (null), the original is not written.
-    expect(saves.map((s) => s.path)).toEqual([null]);
+    // A partial import can never overwrite its source: no confirmation is offered.
+    expect(await ed.saveFile(false)).toBe(false);
+    expect(asked).toEqual([]);
+    expect(saves).toEqual([]);
+    expect(ed.lastFileError).toMatch(/partial import/);
+    // Save As chooses a separate destination before the write; the original is not written.
+    ed.fileBridge!.chooseDrawingPath = async () => '/out/copy.dxf';
+    expect(await ed.saveFile(true)).toBe(true);
+    expect(saves.map((s) => s.path)).toEqual(['/out/copy.dxf']);
     expect(saves[0]!.text).toContain('3DSOLID');
     expect(ed.doc.snapshot).toBe(before); expect(ed.doc.history()).toEqual(history);
     expect(ed.doc.filePath).toBe('/out/copy.dxf'); expect(ed.doc.dirty).toBe(false);
@@ -158,16 +159,18 @@ describe('import report in the editor', () => {
     expect(reports).toHaveLength(2);
   }, 30000);
 
-  it('a truncated file asks before opening what was readable and opens as recovered', async () => {
-    const { ed, asked, reports, saves } = await makeEditor({ '/d/cut.dxf': text('broken/truncated.dxf') }, [true, true]);
+  it('a truncated file asks before opening what was readable, opens as recovered, and cannot overwrite its source', async () => {
+    const { ed, asked, reports, saves } = await makeEditor({ '/d/cut.dxf': text('broken/truncated.dxf') }, [true]);
     await ed.openFile('/d/cut.dxf');
     expect(asked[0]!.message).toMatch(/ends early at line 83.*Open what was readable\?/s);
     expect(ed.doc.entities.map((e) => e.type)).toEqual(['line', 'circle']);
     expect(ed.doc.dirty).toBe(true);
     expect(reports[0]!.report.recovered?.line).toBe(83);
-    await ed.saveFile(false);
-    expect(asked[1]!.message).toMatch(/recovered from a damaged file/);
-    expect(saves.map((s) => s.path)).toEqual(['/d/cut.dxf']); // Yes: saved over it
+    // A recovered drawing is a partial import: saving over the source is refused, not confirmed.
+    expect(await ed.saveFile(false)).toBe(false);
+    expect(asked).toHaveLength(1);
+    expect(saves).toEqual([]);
+    expect(ed.lastFileError).toMatch(/recovered from a damaged file/);
   }, 30000);
 
   it('declining recovery leaves the current drawing; structural damage is reported, not opened', async () => {

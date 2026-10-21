@@ -9,7 +9,7 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const { atomicWriteFile, createCanonicalWriteQueue } = require('../atomic-write.cjs');
-const { createPreferenceStore } = require('../renderer-preferences.cjs');
+const { createPreferenceStore, CHECKPOINT_NAME } = require('../renderer-preferences.cjs');
 const { shouldLogChildProcessGone } = require('../dwg-exit-policy.cjs');
 
 const stateDir = () => app.getPath('userData');
@@ -18,6 +18,26 @@ const windowStateFile = () => path.join(stateDir(), 'window-state.json');
 const autosaveDir = () => path.join(stateDir(), 'autosave');
 const rendererPreferences = createPreferenceStore({ stateDir });
 const readRendererPreferences = rendererPreferences.read;
+/** Whether a path currently exists (any error other than absence counts as unknown → false). */
+async function pathExists(file) { try { await fs.stat(file); return true; } catch { return false; } }
+/**
+ * Move an unreadable renderer-preferences checkpoint aside (PR23 ASAR rounds 3-4): the
+ * bytes are preserved at renderer-preferences.json.unreadable-<timestamp>, never deleted,
+ * so the startup gate can let the normal writers resume on a fresh checkpoint while the
+ * unreadable evidence survives. fs.rename REPLACES an existing destination on Windows,
+ * so when the timestamped name is already taken (an earlier preserved checkpoint) a
+ * counter suffix is added until the name is free — an existing file is never replaced.
+ * Rejects when the rename fails.
+ * @returns {Promise<string>} the path the checkpoint was moved to
+ */
+async function renameUnreadableCheckpoint() {
+  const from = path.join(stateDir(), CHECKPOINT_NAME);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  let aside = `${from}.unreadable-${stamp}`;
+  for (let counter = 2; await pathExists(aside); counter += 1) aside = `${from}.unreadable-${stamp}-${counter}`;
+  await fs.rename(from, aside);
+  return aside;
+}
 const checkpointRendererPreferences = rendererPreferences.checkpoint;
 const latestRendererPreferences = rendererPreferences.latest;
 /** Writes of the same app-data file (recent list, window state) run one at a time, in call order. */
@@ -73,4 +93,4 @@ function installCrashLogging() {
   });
 }
 
-module.exports = { stateDir, recentFile, windowStateFile, autosaveDir, enqueueWrite, writeStateFile, writeUserFile, logMainError, flushRendererPreferences, readRendererPreferences, checkpointRendererPreferences, latestRendererPreferences, installCrashLogging };
+module.exports = { stateDir, recentFile, windowStateFile, autosaveDir, enqueueWrite, writeStateFile, writeUserFile, logMainError, flushRendererPreferences, readRendererPreferences, renameUnreadableCheckpoint, checkpointRendererPreferences, latestRendererPreferences, installCrashLogging };

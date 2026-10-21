@@ -1,0 +1,32 @@
+{
+ "name": "multiblock-log",
+ "description": "One launch; six ~200 KB values plus one small UTF-16 value; clean quit; no reopen. Values are log-resident and fragmented across 32 KiB blocks (FIRST/MIDDLE/LAST).",
+ "generatedBy": "lead Windows gate (Claude), real Electron undefined via scripts/ls_session.cjs",
+ "electron": "44.7.0",
+ "snapshotTakenBeforeChromiumReadback": true,
+ "lockExcluded": true,
+ "structureVerified": true,
+ "structure": {
+  "manifest": "MANIFEST-000001",
+  "liveTables": [],
+  "tables": {},
+  "logs": {
+   "000003.log": {
+    "bytes": 1200520,
+    "physicalRecords": {
+     "FULL": 1,
+     "FIRST": 1,
+     "MIDDLE": 35,
+     "LAST": 1
+    },
+    "watchHits": [
+     {
+      "key": "mb-0",
+      "kind": "value",
+      "seq": "3"
+     }
+    ]
+   }
+  }
+ }
+}

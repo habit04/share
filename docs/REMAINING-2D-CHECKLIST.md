@@ -1,6 +1,82 @@
 # Windows 2D and reliability implementation checklist
 
-Current source-only continuation: [PR #18/#19 integration checkpoint](WINDOWS-SOURCE-INTEGRATION.md)
+Current check (2026-10-16): packaging head `e72c9f8` passes **7,029/0/38** locally;
+both actual CI archives verify license/notices and desktop 257/257. Push CI
+passes; PR CI fails the first packaged-origin launch. Diagnostics show the
+hidden legacy-storage window without a main window. The repair bounds migration
+and stops visibly before failed reads can acknowledge empty settings. Focused
+tests pass 68/68 and catch 28 failures against the original source. Broader
+source and fresh packaged CI remain required; the native stall cause is
+unproven. Muse owns the two 12.4 memory-guard corrections. **Merge held; long
+roadmap paused.** The draft PR records final head/results.
+
+Historical completed checkpoint: `74369d3` passes **7,022 Windows/private-DWG
+tests, zero failures, 38 skips**, and both five-job CI runs, including actual
+packaged desktop 257/257 and origin 3/3 each. Chrome passes 31/31 native checks
+and a separate 12/12 authored-CFF/mixed gate. The next packaging follow-up
+includes and verifies exact license/notice documents; its final gates belong
+to the draft PR. Fourteen-patch 12.4 remains unadopted: old controls pass 14/14,
+new controls have 10 passes/four failures covering two memory-guard defects.
+Muse owns those corrections; Windows/native/composed acceptance and the merge
+decision remain with the lead. **Merge held; long roadmap paused.** Earlier
+checkpoints below retain their historical evidence.
+
+Current priority-12 composition (2026-10-16), application bytes from `435f57e`: corrected CFF1 and
+variable defaults compose with reviewed TTC/used-glyph/subset/DWG safeguards.
+The corrected private-DWG combined Windows gate passes **6,967 tests / zero
+failures / 38 skips**, 396 files, with unchanged inputs. Both private DWG cases
+and all 34 export cases pass. Test commit `6dab4cb` joins owned project work
+before teardown and uses neutral data for the opaque size-boundary fixture;
+original unlink, absence assertions, limits and deadlines remain fixed. No
+kernel/scanner cause or product-save fix is claimed. Four native prerequisites
+pass 145/145. Prior five-job CI is green on `435f57e`; current `800d761` Windows
+source/origin checks pass, but its packaged PR job fails while the push sibling
+passes. Receipts are under review; merge remains held.
+
+The private full-DWG test ASAR passes 63 packaged F4 assertions and nine Han
+raster checks, including real font workers/IPC/Plot/edit/DXF reopen. Source/fonts
+remain unchanged. Configured private Poppler reinspection passes 2883/2883; the original 2882/2883 fallback-Symbol failure report is retained.
+Code Integrity confirms the intentionally unsigned broad-test launch was blocked;
+the new CI test-ASAR route is checking broad acceptance. Smart App Control stays enabled;
+no installer, signing credential or release workflow is changed. Authored CFF
+checks pass 1903/1903 with the private checked-CMap decoder after 221/221 controls;
+stock pypdf still fails the same 28 extraction checks (1875/1903 with configured
+Poppler). Original reports/assets remain unchanged. The corrected root is
+`poppler/share/fonts`; the installed-Symbol filename alias is not authentic URW
+or Symbol-glyph acceptance. The decoder is private validation, not stock-pypdf
+acceptance. Installed-CFF/wider-viewer limits remain open.
+
+The eleven-patch 12.4 correction tree is independently reproduced but not adopted:
+three queue/MEMFS defects remain (eight passing/six failing probe assertions),
+while corrected verifier controls pass 10/10. Justin forwarded the evidence to
+Muse. See the [Windows checkpoint](PRIORITY-12-WINDOWS-CHECKPOINT.md) and
+[review status](PRIORITY-12-REVIEW-STATUS.md). Nothing is merged or released.
+
+Priority 30 may be implemented separately by Muse under the
+[dynamic-block and constraint handoff](PRIORITY-30-MUSE-HANDOFF.txt). Codex retains
+Windows review/integration; the rest of this long roadmap remains paused.
+
+Historical priority-12 source checkpoint `167c50b` (2026-10-15) combines the
+reviewed collection/used-glyph/subsetting tree with the verified final DWG handoff.
+The two-worker suite passes 6,822 tests with zero failures and 38 skips. Static,
+fixture, workflow and renderer-build checks pass. Actual Windows Open/edit/DXF
+save/reopen/Plot passes 63 F4 assertions and 721 independent native checks;
+effective STYLE/metrics and unrelated text are checked explicitly. Readable Han
+raster output and explicit vector refusal pass; installed SimSun remains refused.
+The wider PDF check retains the independently reproduced Poppler fallback warning.
+Packaged checks, remote CI, outstanding Muse corrections and merge clearance
+remain open. See [PDF source-review evidence](PDF-FONT-EMBEDDING.md). The long
+roadmap stays paused; completed GPU/DWG work is not being reimplemented.
+
+Delivery review continues: [priority-12 status](PRIORITY-12-REVIEW-STATUS.md)
+distinguishes reviewed code from acceptance. Corrected 12.6a and 12.2 readers,
+writer and regressions now compose with the current collection/used-glyph/F4
+source; the 12.3 subsetter keeps variation-table programs whole. The final 12.6a
+archive changes documentation/evidence only; all 14 patches match the previous
+handoff. Remaining combined/native acceptance is detailed in the status note.
+The new 12.4 package is not integrated; 12.5 runtime shaping remains gated.
+
+Earlier source-only continuation: [PR #18/#19 integration checkpoint](WINDOWS-SOURCE-INTEGRATION.md)
 records the accepted heads, demonstrated seams, validation and remaining gates. It uses the same
 owned worktree on `integration/windows-pr18-pr19-source`; both accepted branches are preserved.
 The long roadmap remains paused. Older checkpoints below retain their historical attribution.
@@ -121,7 +197,7 @@ remain open where full compatibility is unverified.
 | 9 | Polygon DXF milestone implemented and tested: native closed straight-polyline boundaries, appearance, enable flag, copy/edit/undo/reopen, Canvas and vector/raster clips. Review corrections include enclosing hatch-pattern visibility and retained boundary layer/linetype resources during purge/export. Curved boundaries and DWG clip exposure remain missing. Graphical selection excludes fully hidden entities but keeps whole-entity tests for partially visible objects. | Lead; DWG boundary exposure depends on #19. | Import/edit/undo/save/reopen clip; Canvas, vector/raster plots and viewport activation agree. Unsupported curves stay reported. |
 | 10 | Angular style/override corrections and native XY ordinate import/export are implemented and tested. Ordinate datum/text frames, leaders, direct scale behavior and font cache invalidation match native cases; malformed flags refuse import. Scaled/nonuniform block display/explosion uses local primitives and retains editable source blocks on ordinary DXF save. Creation UI, arc-length types and ordinate DWG conversion remain open; the unchanged DWG fixture's three omitted ordinates are explicitly tested. | Dimension agent; native DWG exposure remains #19. | Retain styles/overrides, every space, native edit/undo/save/reopen, geometry and plots. Extend creation/arc-length/DWG only with native evidence. |
 | 11 | Windows font metrics, native TEXT placement and ink-based MTEXT attachment/wrapping implemented and tested. Per-drawing geometry drives Canvas, bounds/selection, masks, annotation fitting and captured raster/eligible vector plots. Missing/unsupported faces, bitmap glyphs and unverified origins use Canvas measurement; contextual scripts retain shaping. Tall-glyph MTEXT leading, inline font/tracking and Unicode edge cases remain open. See `WINDOWS-FONT-METRICS.md`. | Text agent and lead; reader-omitted annotation font fields depend on #19. | Retain native/actual Windows IPC/Canvas/raster/STYLE edit/undo/DXF reopen checks; extend tall leading and formatted Unicode fixtures. |
-| 12 | Partial: standalone TrueType embedding plus bounded whole extraction of TTC face 0, matching the metrics reader. Permissions, glyph programs, ToUnicode and captured plot state are retained. Authored TTC integration tests, private Nirmala/pypdf/Poppler artifacts and a subsequent real Nirmala read through the default production Node worker add coverage; the prior 1,496 native checks cover standalone fonts only. Other collection-face selection, fonts refused by existing metrics, CFF/variable/color fonts, contextual shaping, subsetting and preview/print-only read-only PDFs remain open. See `PDF-FONT-EMBEDDING.md`. | Lead; installed fonts read only, real font programs private. TTC Electron IPC/Plot-dialog/native reference acceptance remains pending. | Retain resource, permission, capture, production-worker and standalone native checks. Validate real TTC Electron IPC through Plot/save, font identity/placement, independent Unicode extraction and Poppler output before extending compatibility. |
+| 12 | Partial: selected TTC faces, used-glyph validation, static glyf subsetting, CFF1 and eligible whole-variable defaults compose with DWG/F4. At `74369d3`, full Windows/private-DWG is 7022/0/38 and both five-job CI runs pass, including actual packaged desktop 257/257 and origin 3/3 each. Native PDF is 2883/2883; authored checked-CMap PDF is 1903/1903 after 221 controls, with stock-pypdf limits retained. Chrome passes 31/31 native and 12/12 authored-CFF/mixed checks; original failed reports remain. A packaging follow-up adds verified license/notice inclusion. Fourteen-patch 12.4 passes old controls 14/14 but fails four new assertions covering two memory defects; code remains unadopted. 12.5 remains design/spike only. See [checkpoint](PRIORITY-12-WINDOWS-CHECKPOINT.md). | Lead reviews/integrates on `review/p12-dwg-f4`; Muse supplies 12.4 corrections and additive 12.5 interface. Font/DWG safeguards and private fixtures remain protected. | Verify the packaging follow-up and corrected 12.4 memory guards, native utilityProcess/Plot/save and composed suite without changing limits or security policy. Preserve PDF validator conditions and installed-CFF/untested-viewer limits. Preview/print admission, shaping and deferred CFF/variable/color subsets remain incomplete. |
 | 13 | Verified plotting subset implemented: bounded reader, ephemeral Plot dialog file selection, native color/screening/grayscale/weight semantics and shared vector/raster appearance. TrueColor CTB bypass, explicit whole-plot STB selection, captured state and nested ByBlock widths tested. Native/actual UI proof passes 1,823 checks. Device and unsupported policy effects are reported. Exact layout filenames and imported native named assignments remain open. See `PLOT-STYLE-TABLES.md`. | Independent parser/plotting; exact layout filename/PSTYLEMODE/style-reference integration depends on completed external #19/#29. | Retain native colors/weights/screens and dialog/vector/raster tests; add imported named assignments and save/reopen metadata after verified integration. |
 | 14 | DXF retention milestone implemented: ordered text/shape descriptors, literal padded text, radians/absolute flags, offsets/scales and resolved STYLE resources survive geometry edits, undo/redo and repeated DXF reopen. Unused anonymous shape STYLEs survive purge/export. Canvas sign/phase bug corrected for consecutive gaps/dashes and odd patterns. Missing/malformed resources refuse saving; unverified DWG conversion is guarded. Embedded glyph display remains missing. See `COMPLEX-LINETYPES.md`. | Independent DXF model; #21 for SHX shape display; DWG/extension metadata still #19/#29. | Retain native AUDIT/actual app save-backup-recovery proof; add native text/shape placement and vector/raster fidelity before claiming full rendering. |
 | 15 | Partial: `mtext.ts` honors explicit column breaks/count/width/gutter/reversal; declared-height static/dynamic-manual flow now implemented (26 new tests), with overflow retained. Auto-height balancing remains missing. Native export replaced by `JCAD_MTEXT_COLUMNS` XDATA. | Independent; DWG embedded-object exposure #19. | Auto-flow/static heights, masks, edits, native column fixtures and external CAD reopen. |
@@ -129,7 +205,7 @@ remain open where full compatibility is unverified.
 | 17 | Missing associations: HATCH export writes flag 71=0; links reported lost. | Object-reference integration #29. | Boundary edits/undo/erase update hatch; native ownership/reference roundtrip. |
 | 18 | Partial: MULTILEADER becomes LEADER+MTEXT; block content not drawn. | Independent 2D model, native preservation with #19/#29. | Text/block content, leader context/style, editing, native export/reopen, no silent substitution. |
 | 19 | **Completed externally and released in Windows v0.4.9. Integration only on this branch.** PR #9 merged at head 14cb3f9 (merge 8dfe1ca); the release was published on 2026-10-13. Its reader/writer metadata, named views, FIELD/object links and installed save/reopen verification without AutoCAD are completed work, not new implementation assignments here. The completed graph/codecs/native source are integrated at 29abcec and cleared at fccba52 with genuine native metadata fixed points, 32 app flows and exact-head CI. Subsequent 3D integration receives fresh combined validation. | Completed by "Check GitHub access to JCad", [PR #9](https://github.com/habit04/share/pull/9), `codex/windows-dwg-metadata-reference-graph`; verified [v0.4.9](https://github.com/habit04/share/releases/tag/v0.4.9). Lead owns compatibility integration only. | Reuse verified completed slices, resolve shared codecs deliberately and test the combined branch. Do not duplicate reader/writer repairs or release work. |
-| 20 | Missing: xref block path/overlay flags retained, `xrefPlaceholder` shows frame; no external drawing loading/refresh. | Independent; Windows path grants and recursion/geometry limits required. | Relative paths, nesting/cycles, refresh/undo, missing files, no rewriting original references. |
+| 20 | Corrected headless core remains unadopted: separate owner replays `ea6ae8a` to the claimed tree; targeted reports 103 passed/11 failed. Earlier edge/UNC controls pass; version/location/host identity, budgets, last-good publication and error classification need corrections. [Review status](PRIORITY-20-REVIEW-STATUS.txt). | Muse owns fixes; separate #20.1 chat owns targeted review. Lead retains Windows grants, rendering/DWG/session/capture/save integration. #12 first; no duplicate test runs. | Clean targeted/full gates, canonical identity/snapshot consistency, enforced budgets, immutable/last-good publication; then actual Windows relative/nested refresh and no-source-write workflows. |
 | 21 | Horizontal SHX milestone implemented: bounded native shape/unifont decoder, explicit Windows SHXFONT/SHXLOAD picker, per-session resources, native TEXT ink/space/fitting/descent rules and shared Canvas/raster/eligible vector paths. Native/actual app proof passes 1,477 checks plus the final rebuilt save/default/backup/reopen gate. Unsupported glyphs/modes retain substitutes. BigFont, vertical/mirrored text, fractional arcs and complex-linetype glyph painting remain open. See `SHX-FONTS.md`. | Independent; no proprietary font bytes committed. DWG exposure/reference dependencies remain #19. | Retain native fixture, metrics/plot/real IPC/undo/save/reopen proof; extend each encoding/mode and linetype placement with native fixtures. |
 | 22 | Partial: table cells edited in JCad, export is INSERT + `JCAD_TABLE` XDATA. | Native table model/export; #19 for omitted DWG cells. | Native editable ACAD_TABLE reopened externally and in JCad, styles/cell values retained. |
 | 23 | Partial: electrical attributes, WD_M settings and project metadata exist; remaining proprietary extensions require fixture-based audit. | Electrical audit; application dictionaries #29. | Real AutoCAD Electrical cases preserve exposed tags/catalog/connectivity/settings; report unmodeled metadata. |

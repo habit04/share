@@ -117,7 +117,7 @@ describe('electron-builder configuration', () => {
     }
   });
 
-  it('includes the shared support configuration and every native DWG adapter under the real builder filters', () => {
+  it('includes project notices, shared support configuration and every native DWG adapter under the real builder filters', () => {
     const { getMainFileMatchers, getFileMatchers } = require('app-builder-lib/out/fileMatcher.js');
     const from = fileURLToPath(root);
     const output = join(from, 'release');
@@ -134,6 +134,9 @@ describe('electron-builder configuration', () => {
         return !isAbsolute(rel) && rel !== '..' && !rel.startsWith('../') && !rel.startsWith('..\\') && matcher.createFilter()(path, stat);
       });
     };
+    for (const name of ['LICENSE', 'THIRD-PARTY-NOTICES.md']) {
+      expect(accepted(mainMatchers, new URL(name, root)), `${name} must accompany the packaged application`).toBe(true);
+    }
     const support = new URL('electron/support.json', root), supportInfo = lstatSync(support);
     expect(supportInfo.isFile()).toBe(true);
     expect(accepted(mainMatchers, support), 'Main-process mailto authorization requires the packaged shared JSON').toBe(true);

@@ -10,6 +10,7 @@ import type { Entity, InsertEntity } from '../core/entities';
 import { Drawing, prepareDrawingTransition, type DrawingState, type DrawingHistory } from '../core/document';
 import type { DocumentSession } from './sessions';
 import { confirmSaveOver } from './import-open';
+import { partialImportSaveBlock } from '../io/import-report';
 import { ComponentTool, componentDialogInit, componentAttributes, lookupSymbol } from '../tools/electrical';
 import {
   TrimWireTool,
@@ -883,6 +884,8 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
         continue;
       }
       const unverified = await unverifiedImportSource(bridge, sh.doc.snapshot);
+      const partialBlock = partialImportSaveBlock(sh.doc.snapshot, path);
+      if (partialBlock) { failed.push(`${sh.name} (${partialBlock})`); continue; }
       const allowed = unverified ? (await projectUi.confirmLoss('Review imported drawing before saving', UNVERIFIED_SOURCE_WARNING) ? 'save' : 'save-as') : await confirmSaveOver(sh.doc.snapshot, path, projectUi.confirmLoss, sh, () => !projectChanged(sh) && editor.sessions.indexOfPath(path) < 0);
       if (allowed !== 'save') {
         notSaved.push(sh.name);
@@ -906,6 +909,8 @@ export async function commitSheets(editor: Editor, sheets: readonly LoadedSheet[
       let late: string | null = null;
       const r = await saveQueue.run(path, sh.revision ?? captureRevision(), async () => {
         late = await changedSince();
+        if (late) return null;
+        late = partialImportSaveBlock(sh.doc.snapshot, path);
         if (late) return null;
         const saved = await bridge.saveDxf(path, text, sh.name, { backup: false, ...(reservation.ticket ? { admission: reservation.ticket } : {}) });
         await reservation.confirmSaved(saved); return saved;
@@ -995,6 +1000,8 @@ async function commitProjectBatch(editor: Editor, sheets: readonly LoadedSheet[]
       const early = await changedFile(sheet);
       if (early) { result.conflicts.push(`${sheet.name} (${early})`); return result; }
       const unverified = await unverifiedImportSource(bridge, sheet.doc.snapshot);
+      const partialBlock = partialImportSaveBlock(sheet.doc.snapshot, sheet.path!);
+      if (partialBlock) { result.failed.push(`${sheet.name} (${partialBlock})`); await sheet.reservation.close(); continue; }
       const allowed = unverified ? (await projectUi.confirmLoss('Review imported drawing before saving', UNVERIFIED_SOURCE_WARNING) ? 'save' : 'save-as') : await confirmSaveOver(sheet.doc.snapshot, sheet.path!, projectUi.confirmLoss, sheet, () => !projectChanged(sheet) && editor.sessions.indexOfPath(sheet.path!) < 0);
       if (allowed !== 'save') { result.notSaved.push(sheet.name); await sheet.reservation.close(); continue; }
       const text = writeDxf(withoutUnusedLibraryBlocks(prepared.get(index)!));
@@ -1070,6 +1077,7 @@ async function commitProjectBatch(editor: Editor, sheets: readonly LoadedSheet[]
       let late: string | null = null;
       const saved = await saveQueue.run(path, sheet.revision!, async () => {
         late = await changedFile(sheet); if (late) return null;
+        late = partialImportSaveBlock(sheet.doc.snapshot, path); if (late) return null;
         const written = await bridge.saveDxf(path, target.text, sheet.name, { backup: false, admission: target.child.ticket });
         await target.child.confirmSaved(written); return written;
       });

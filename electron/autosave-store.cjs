@@ -18,6 +18,7 @@ const crypto = require('node:crypto');
 const fsp = require('node:fs/promises');
 const { createAtomicWriter, createWriteQueue, isTempName } = require('./atomic-write.cjs');
 const { readLimitedFile, validateTextSize, MAX_DRAWING_BYTES } = require('./resource-limits.cjs');
+const { cleanPartialImportProvenance, cleanImportSourcePath } = require('./import-provenance.cjs');
 const MAX_METADATA_BYTES = 8 * 1024 * 1024;
 
 const ID_NAME_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.sv\.dxf$/i;
@@ -53,12 +54,16 @@ function safeAutosaveName(name) {
 function cleanMeta(m, fallbackTitle) {
   const o = m && typeof m === 'object' ? m : {};
   const savedAt = Number(o.savedAt);
+  const partialImport = cleanPartialImportProvenance(o.partialImport);
+  const partialImportSourcePath = partialImport ? cleanImportSourcePath(o.partialImportSourcePath) : undefined;
   return {
     originalPath: typeof o.originalPath === 'string' && o.originalPath.length <= 4096 ? o.originalPath : null,
     title: String(o.title || fallbackTitle).slice(0, 260),
     savedAt: Number.isFinite(savedAt) && savedAt > 0 ? Math.round(savedAt) : Date.now(),
     // Experimental 3D solids the DXF copy could not hold; absent (older entries) = none.
     ...(Number.isSafeInteger(o.omitted3d) && o.omitted3d > 0 ? { omitted3d: o.omitted3d } : {}),
+    ...(partialImport ? { partialImport } : {}),
+    ...(partialImportSourcePath ? { partialImportSourcePath } : {}),
   };
 }
 
@@ -96,7 +101,10 @@ function createAutosaveStore(dir, deps = {}) {
     }
     try {
       const parsed = JSON.parse(text);
-      return parsed && parsed.entries && typeof parsed.entries === 'object' ? { ...parsed.entries } : {};
+      if (!parsed || !parsed.entries || typeof parsed.entries !== 'object') return {};
+      const cleaned = {};
+      for (const [name, meta] of Object.entries(parsed.entries)) if (NAME_RE.test(name)) cleaned[name] = cleanMeta(meta, fallbackTitle(name));
+      return cleaned;
     } catch {
       return {}; // unreadable JSON: rebuilt from the files below (titles fall back to the file names)
     }
