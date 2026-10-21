@@ -7,6 +7,8 @@ import * as g from '../core/geometry';
 import type { Entity, BlockDef, InsertEntity } from '../core/entities';
 import { newId } from '../core/entities';
 import type { DrawingState } from '../core/document';
+import { seedDynamicInstanceState } from '../core/parametric/apply';
+import { placementAlignmentRotation } from '../core/parametric/alignment';
 import type { Tool } from './types';
 import { scriptTool, point, pointOrKeyword, text, number, keyword, select, dflt } from './script';
 import { cadCloneBatch } from './cad-edits';
@@ -138,6 +140,9 @@ export function insertTool(arg?: string): Tool {
     const block = ctx.doc.blocks[name]!;
     let scale = 1;
     let rotation = 0;
+    // Priority 30.1: a fresh reference of a dynamic block starts from the
+    // definition's defaults (sparse instance state; static blocks get none).
+    const dynamicSeed = seedDynamicInstanceState(block);
     const make = (pos: Point, attrs: Record<string, string> = {}): InsertEntity => ({
       id: newId(),
       layer: ctx.doc.currentLayer,
@@ -148,6 +153,7 @@ export function insertTool(arg?: string): Tool {
       rotation,
       scale,
       attributes: attrs,
+      ...(dynamicSeed ? { dynamic: dynamicSeed } : {}),
     });
     let position: Point | null = null;
     while (!position) {
@@ -169,7 +175,16 @@ export function insertTool(arg?: string): Tool {
     const sy = yield* number(ctx, 'Enter Y scale factor <use X scale factor>:', scale, { from: null });
     if (sy && 'value' in sy && Math.abs(sy.value - scale) > 1e-9) ctx.log('Non-uniform scaling is not supported; using the X scale factor.');
     const rot = yield { prompt: `Specify rotation angle <${g.deg(rotation).toFixed(0)}>:`, distance: false, trackFrom: pos, ghost: (c: Point) => [make(c === pos ? pos : pos)] };
-    if (rot.type === 'point') rotation = g.angleOf(pos, rot.p);
+    if (rot.type === 'point') {
+      const fallback = g.angleOf(pos, rot.p);
+      // Priority 30.4 (design §4.3): when the block's definition carries an
+      // alignment spec, this pick offers alignment rotation — the placed
+      // rotation makes the spec's axis satisfy its mode against the target
+      // entity under the pick, stored as the insert's ordinary rotation.
+      // No spec or no target under the pick: the ordinary pick rotation,
+      // exactly as before.
+      rotation = placementAlignmentRotation(block, ctx.doc.entities, rot.p, ctx.aperture(), fallback) ?? fallback;
+    }
     else if (rot.type === 'text') {
       const v = parseFloat(rot.text);
       if (Number.isFinite(v)) rotation = g.rad(v);

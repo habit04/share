@@ -6,6 +6,7 @@ import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity, LineEntity, ArcEntity, PolylineEntity } from '../core/entities';
 import { newId, translateEntity, rotateEntity, scaleEntityBy, arcEndpoints, bulgeFromSweep, polylineLength, entityBounds, polylineSegments, splineThroughPoints, explodeCompound, explodeInsert } from '../core/entities';
+import { moveWidthFrameGrip } from '../core/polyline-widths';
 import { selectByBox } from '../core/selection';
 import type { Tool, ToolContext } from './types';
 import { scriptTool, point, pointOrKeyword, number, keyword, select, dflt, type Step } from './script';
@@ -102,6 +103,12 @@ export function chamferLines(l1: LineEntity, pick1: Point, l2: LineEntity, pick2
 export function filletPolyline(pl: PolylineEntity, r: number): PolylineEntity | null {
   const n = pl.points.length;
   if (n < 3 || pl.bulges?.some((b) => Math.abs(b) > 1e-12)) return null;
+  // Review R05 boundary: filleting changes the vertex set, so it cannot carry a
+  // widthFrame (whose source vertices it would desync) or per-vertex widths
+  // (which it cannot reslice). Refuse explicitly — the caller logs and no state
+  // changes — instead of producing an entity whose widths no longer match its
+  // vertices. A constant `width` is unaffected: it is not per-vertex data.
+  if (pl.widthFrame || pl.widths) return null;
   const pts: Point[] = [];
   const bulges: number[] = [];
   const cornerCount = pl.closed ? n : n - 2;
@@ -404,8 +411,24 @@ export function stretchEntity(e: Entity, box: Bounds, d: Point): Entity {
   switch (e.type) {
     case 'line':
       return { ...e, a: mv(e.a), b: mv(e.b) };
-    case 'polyline':
-      return { ...e, points: e.points.map(mv) };
+    case 'polyline': {
+      if (!e.widthFrame) return { ...e, points: e.points.map(mv) };
+      // Review R05: a widthFrame polyline's authoritative geometry is its frame
+      // (rendering, bounds and DXF export all derive from it; `points` are the
+      // frame's image of the source vertices). Moving `points` alone would
+      // silently desync them — the stretch would show in some consumers and be
+      // lost on save. Apply each moved vertex to the frame's source through the
+      // frame inverse, the same mechanism as a grip move (moveGrip), so points
+      // and frame stay in lockstep.
+      let frame = e.widthFrame;
+      const points = e.points.map((p, i) => {
+        if (!inside(p)) return p;
+        const moved = g.add(p, d);
+        frame = moveWidthFrameGrip(frame, i, moved);
+        return moved;
+      });
+      return { ...e, points, widthFrame: frame };
+    }
     case 'circle':
     case 'arc':
       return inside(e.center) ? translateEntity(e, d) : e;
@@ -527,6 +550,15 @@ export function breakEntity(e: Entity, p1: Point, p2: Point): Entity[] | null {
     }
     case 'polyline': {
       if (e.bulges?.some((b) => Math.abs(b) > 1e-12)) return null;
+      // Review R05 boundary: breaking changes the vertex set. A widthFrame's
+      // source vertices (and any per-vertex `widths`) cannot be resliced onto
+      // the fragments here, so refuse explicitly (null — the tool reports and
+      // no state changes) instead of carrying the frame/widths onto a subset
+      // of vertices, which produced invalid, unsavable entities. The bulge
+      // guard above cannot see bulges held inside a frame, so this check is
+      // what covers framed arc segments. A constant `width` reslices trivially
+      // and stays supported.
+      if (e.widthFrame || e.widths) return null;
       // Parameterise by segment index + fraction.
       const segs = polylineSegments(e);
       const locate = (p: Point) => {

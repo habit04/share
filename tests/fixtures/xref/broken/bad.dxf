@@ -1,0 +1,4 @@
+999
+Authored fixture for milestone 20: bad.dxf - not a DXF file at all; the parser must refuse it.
+This is plainly not DXF content, it only pretends to be a referenced drawing.
+There are no group code / value pairs here.

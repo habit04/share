@@ -1,11 +1,9 @@
 /** Serve only bundled renderer assets from a secure origin, with a one-time preference migration. */
 const path = require('node:path');
 const fs = require('node:fs/promises');
-const { fileURLToPath, pathToFileURL } = require('node:url');
+const { pathToFileURL } = require('node:url');
 const { preferenceDictionary } = require('./renderer-preferences.cjs');
 const APP_URL = 'jcad://app/index.html';
-const LEGACY_LOAD_TIMEOUT_MS = 15_000;
-const LEGACY_READ_TIMEOUT_MS = 5_000;
 
 /**
  * Content-Security-Policy sent with worker scripts (docs/SECURITY-REVIEW.md E-19). The renderer
@@ -102,112 +100,144 @@ function installAssetHandler({ protocol, net, root }) {
   });
 }
 
-/** Read the old file-origin storage without executing the old application or any plugins. */
-async function legacyStorage({ BrowserWindow, protocol, indexFile }) {
-  // With file privileges fused off, Chromium denies access to the legacy file-origin store.
-  // Relax origin checks only for this hidden, sandboxed migration window. Its exact file URL
-  // serves constant HTML with default-src 'none'; no application, plugin or remote code runs.
-  const window = new BrowserWindow({ show: false, webPreferences: { sandbox: true, nodeIntegration: false, contextIsolation: true, devTools: false, webSecurity: false, allowRunningInsecureContent: false } });
-  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  window.webContents.on('will-navigate', (event) => event.preventDefault());
-  window.webContents.on('will-frame-navigate', (event) => event.preventDefault());
-  let handling = false;
-  const contents = window.webContents, cleanup = [];
-  let phase = 'load', stopError, result, cleanupError;
-  let rejectStopped;
-  const stopped = new Promise((_, reject) => { rejectStopped = reject; });
-  // Handler installation can fail before the first phase starts waiting.
-  void stopped.catch(() => {});
-  const fail = (error) => {
-    if (stopError) return;
-    stopError = error;
-    rejectStopped(error);
-  };
-  const listen = (name, callback) => {
-    contents.on(name, callback);
-    cleanup.push(() => contents.removeListener(name, callback));
-  };
-  const gone = () => fail(new Error(`Legacy preference migration ${phase}: renderer stopped`));
-  listen('destroyed', gone);
-  listen('render-process-gone', gone);
-  const failedLoad = (_event, _code, _description, _url, isMainFrame) => {
-    if (isMainFrame) fail(new Error(`Legacy preference migration ${phase}: page failed to load`));
-  };
-  listen('did-fail-load', failedLoad);
-  listen('did-fail-provisional-load', failedLoad);
-  const within = async (operation, deadline, stage) => {
-    phase = stage;
-    let timer;
-    try {
-      return await Promise.race([
-        Promise.resolve().then(() => { if (stopError) throw stopError; return operation(); }),
-        stopped,
-        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Legacy preference migration ${stage} timed out`)), Math.max(0, deadline - Date.now())); }),
-      ]);
-    } finally { clearTimeout(timer); }
-  };
-  const ready = () => {
-    if (contents.isDestroyed() || contents.isCrashed()) throw new Error('Legacy preference migration readiness: renderer stopped');
-    if (path.resolve(fileURLToPath(contents.getURL())) !== path.resolve(indexFile)) throw new Error('Legacy preference migration readiness: unexpected page');
-    return !contents.isLoadingMainFrame();
-  };
-  let removeReady = () => {};
-  try {
-    protocol.handle('file', (request) => {
-      try {
-        if (path.resolve(fileURLToPath(request.url)).toLowerCase() !== path.resolve(indexFile).toLowerCase()) return new Response('', { status: 403 });
-        return new Response('<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'">', { headers: { 'content-type': 'text/html' } });
-      } catch { return new Response('', { status: 403 }); }
-    });
-    handling = true;
-    // Keep navigation and execution independently bounded; an unresolved native
-    // Promise must not leave the only application window hidden indefinitely.
-    const loadDeadline = Date.now() + LEGACY_LOAD_TIMEOUT_MS;
-    await within(() => window.loadFile(indexFile), loadDeadline, 'load');
-    await within(() => {
-      if (ready()) return;
-      return new Promise((resolve, reject) => {
-        const onReady = () => {
-          try { if (ready()) { removeReady(); resolve(undefined); } }
-          catch (error) { removeReady(); reject(error); }
-        };
-        removeReady = () => {
-          contents.removeListener('did-finish-load', onReady);
-          contents.removeListener('did-stop-loading', onReady);
-        };
-        contents.on('did-finish-load', onReady);
-        contents.on('did-stop-loading', onReady);
-        // Match Electron's execution predicate and close the registration race.
-        onReady();
-      });
-    }, loadDeadline, 'readiness');
-    const values = await within(() => {
-      if (!ready()) throw new Error('Legacy preference migration execute: page resumed loading');
-      return contents.executeJavaScript(`(() => {
-      const result = Object.create(null); const encoder = new TextEncoder(); let size = 2;
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i), value = key === null ? null : localStorage.getItem(key);
-        if (key === null || value === null) continue;
-        // Include UTF-8 encoding and JSON escaping/overhead, rather than counting characters.
-        size += encoder.encode(JSON.stringify([key, value])).byteLength;
-        if (size > 8 * 1024 * 1024) return null;
-        result[key] = value;
-      }
-      return result;
-    })()`);
-    }, Date.now() + LEGACY_READ_TIMEOUT_MS, 'execute');
-    if (values === null) throw new Error('Legacy preferences exceed 8 MiB');
-    result = preferenceDictionary(values);
-  } finally {
-    removeReady();
-    for (const remove of cleanup) remove();
-    try { if (!window.isDestroyed()) window.destroy(); } catch (error) { cleanupError = error; }
-    try { if (handling) protocol.unhandle('file'); } catch (error) { cleanupError ??= error; }
+
+const fsSync = require('node:fs');
+const { readLegacyLocalStorage, LEGACY_STORE_TOO_LARGE } = require('./legacy-leveldb.cjs');
+/** Read the old file-origin storage without executing the old application or any plugins.
+ *
+ * Round 12: the read is a pure-JS parse of the legacy leveldb in this
+ * process (electron/legacy-leveldb.cjs) — plain fs reads with full
+ * sharing. Nothing opens the store with Chromium: no LOCK, no
+ * append-open of MANIFEST/.log, no CURRENT rewrite, and the whole
+ * copy/partition/hidden-window path of rounds 6-11 is gone, taking
+ * the stall class it could not escape (Chromium's leveldb open of a
+ * fresh copy colliding with the OS's on-close scans) with it. Any
+ * parse failure throws, and the caller takes the failed-leg path
+ * (no marker, retry next launch) — there is no window fallback.
+ * The 8 MiB accounting is the dump's own, unchanged: the UTF-8 JSON
+ * size of the dictionary, brackets included.
+ *
+ * Round 12b (R12-4): the read itself runs BEFORE whenReady
+ * (readLegacyStoreBeforeReady, called from main.cjs right after the
+ * pre-ready snapshot), so it never overlaps the default session's
+ * own open of the store at whenReady. This leg only consumes that
+ * result: a caught read error is rethrown here (the gate's failed
+ * leg: no marker, retry next launch), a dictionary goes through the
+ * unchanged accounting and validation. No result at all (the store
+ * was not read before ready) is also a failed leg, never an empty
+ * success.
+ * @param {{ read: { values: Record<string, string> } | { error: unknown } | null }} options */
+async function legacyStorage({ read }) {
+  if (!read) throw new Error('The legacy store was not read before ready');
+  if ('error' in read) throw read.error;
+  const values = read.values;
+  let size = 2;
+  const encoder = new TextEncoder();
+  for (const [key, value] of Object.entries(values)) {
+    size += encoder.encode(JSON.stringify([key, value])).byteLength;
+    if (size > 8 * 1024 * 1024) throw new Error('Legacy preferences exceed 8 MiB');
   }
-  // A primary error propagates through finally. Only a successful read reaches
-  // this point, where incomplete cleanup must still prevent acknowledgement.
-  if (cleanupError) throw cleanupError;
-  return result;
+  return preferenceDictionary(values);
 }
 
-module.exports = { APP_URL, WORKER_CSP, assetPath, assetResponseHeaders, installAssetHandler, legacyStorage, rendererStartUrl, servedPath, withAssetHeaders };
+/**
+ * Round 12b (R12-7, data preservation): a read error that says the
+ * store's BYTES are bad — any parse/decode failure of the reader —
+ * as opposed to a filesystem error (ENOENT-type absence, an AV
+ * lock's EBUSY/EPERM: Node system errors carry a `syscall`), which
+ * says nothing about the bytes, and as opposed to the reader's
+ * size bound (a large store is not a corrupt one).
+ * A file the store's metadata names but that is missing (the MANIFEST
+ * CURRENT names, a live table, a listed log) is corruption to leveldb: the reader rethrows
+ * that ENOENT as LEGACY_STORE_MISSING_FILE, with no syscall, so it is
+ * a decode failure here too (R12-7 widening). Absence of the
+ * directory or of CURRENT stays an fs error.
+ * @param {unknown} error
+ */
+function legacyStoreDecodeFailure(error) {
+  if (!error || typeof error !== 'object') return true;
+  const { syscall, code } = /** @type {{ syscall?: unknown, code?: unknown }} */ (error);
+  if (typeof syscall === 'string') return false;
+  return code !== LEGACY_STORE_TOO_LARGE;
+}
+
+/**
+ * Round 12b (R12-7, data preservation): COPY the legacy store (never
+ * move, never delete; LOCK excluded) to
+ * <Local Storage>/leveldb.preserved-<timestamp> before whenReady. A
+ * store the reader cannot decode is one the default session's own
+ * leveldb recovery may recreate at whenReady, wiping its bytes; the
+ * copy keeps them for a later fix, while Chromium's behaviour is
+ * unchanged. Bounded: once per distinct failure — skipped when an
+ * existing leveldb.preserved-* directory already holds the same
+ * MANIFEST file name(s) and size(s) (CURRENT's when the store has no
+ * MANIFEST). MANIFEST files are copied LAST, so a copy torn by a
+ * failure never satisfies that check. The path is logged once. Never
+ * throws: any failure is logged and the caller continues.
+ * @param {string} leveldbDir
+ * @param {{ logError: (kind: string, error: unknown) => void, now?: () => Date }} options
+ * @returns {string | null} the preserved copy, or null (skipped or failed)
+ */
+function preserveLegacyStore(leveldbDir, { logError, now = () => new Date() }) {
+  try {
+    const parent = path.dirname(leveldbDir);
+    const prefix = `${path.basename(leveldbDir)}.preserved-`;
+    const files = fsSync.readdirSync(leveldbDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name !== 'LOCK').map((entry) => entry.name);
+    const manifests = files.filter((name) => name.startsWith('MANIFEST-'));
+    const identity = (manifests.length ? manifests : ['CURRENT'])
+      .map((name) => ({ name, size: fsSync.statSync(path.join(leveldbDir, name)).size }));
+    for (const name of fsSync.readdirSync(parent)) {
+      if (!name.startsWith(prefix)) continue;
+      const earlier = path.join(parent, name);
+      const same = identity.every((file) => {
+        try { return fsSync.statSync(path.join(earlier, file.name)).size === file.size; } catch { return false; }
+      });
+      if (same) return null;
+    }
+    // Fable follow-up N2 (non-blocking at the 12b gate): bound the
+    // preserved copies themselves. A store that keeps failing to
+    // decode in new states would otherwise leave one copy per
+    // launch forever; at 3 existing copies the bytes are already
+    // kept, so skip and say so — once, through the same log.
+    const existing = fsSync.readdirSync(parent).filter((name) => name.startsWith(prefix)).length;
+    if (existing >= 3) {
+      logError('renderer preference migration', new Error(`Legacy store preservation skipped: ${existing} preserved copies already exist beside ${leveldbDir}`));
+      return null;
+    }
+    const stamp = now().toISOString().replace(/[:.]/g, '-');
+    let target = path.join(parent, `${prefix}${stamp}`);
+    for (let counter = 2; fsSync.existsSync(target); counter += 1) target = path.join(parent, `${prefix}${stamp}-${counter}`);
+    fsSync.mkdirSync(target);
+    const ordered = [...files.filter((name) => !name.startsWith('MANIFEST-')), ...manifests];
+    for (const name of ordered) fsSync.copyFileSync(path.join(leveldbDir, name), path.join(target, name), fsSync.constants.COPYFILE_EXCL);
+    logError('renderer preference migration', new Error(`Unreadable legacy store preserved at ${target}`));
+    return target;
+  } catch (error) {
+    logError('renderer preference migration', error);
+    return null;
+  }
+}
+
+/**
+ * Round 12b (R12-4): the synchronous pre-ready read of the legacy
+ * store. main.cjs calls it after the single-instance lock and the
+ * legacy-store snapshot, before app.whenReady() and before anything
+ * touches the default session. It never throws: it returns the
+ * dictionary, or the caught error for the leg to fail with.
+ * R12-7: on a decode failure it first preserves a copy of the store
+ * (preserveLegacyStore, which never throws), still before whenReady.
+ * @param {string} leveldbDir
+ * @param {{ logError: (kind: string, error: unknown) => void, now?: () => Date }} options
+ * @returns {{ values: Record<string, string> } | { error: unknown }}
+ */
+function readLegacyStoreBeforeReady(leveldbDir, { logError, now }) {
+  try {
+    return { values: readLegacyLocalStorage(leveldbDir) };
+  } catch (error) {
+    if (legacyStoreDecodeFailure(error)) preserveLegacyStore(leveldbDir, { logError, now });
+    return { error };
+  }
+}
+
+module.exports = { APP_URL, WORKER_CSP, assetPath, assetResponseHeaders, installAssetHandler, legacyStorage, legacyStoreDecodeFailure, preserveLegacyStore, readLegacyStoreBeforeReady, rendererStartUrl, servedPath, withAssetHeaders };

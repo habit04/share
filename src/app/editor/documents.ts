@@ -6,6 +6,7 @@
  */
 import { Drawing } from '../../core/document';
 import type { DrawingState } from '../../core/document';
+import { dynamicEvaluationNotices } from '../../core/entities';
 import { WIRE_DOT } from '../../electrical/symbols';
 import { LIBRARY_SYMBOLS, withByBlockLibrarySymbols } from '../../electrical/library';
 import { TITLE_BLOCK } from '../../electrical/templates';
@@ -153,7 +154,29 @@ export async function openFile(ed: Editor, file?: string): Promise<boolean> {
   } finally { await releaseOpenedSourceProof(bridge, unusedProof); }
 }
 
+/**
+ * Priority 30 review §3 — visible evaluation-refusal diagnostics at open.
+ * Expansion falls back to authored geometry SILENTLY when a dynamic block
+ * reference's evaluation refuses (core/entities.ts expansionBlock has no
+ * diagnostic channel), so the notices are logged here, on the same
+ * after-open surface as the import report, from the queryable
+ * dynamicEvaluationNotices report: every refusing reference, with its code.
+ * This is a command-log notice, not a modal: IMPORTREPORT re-shows it (it
+ * routes through showImportReport), and LIST on a reference shows its full
+ * evaluation status. Nothing is logged for drawings whose dynamic
+ * references all evaluate.
+ */
+export function logDynamicEvaluationNotices(ed: Editor, state: DrawingState): void {
+  const notices = dynamicEvaluationNotices(state.blocks, [...state.entities, ...(state.layouts ?? []).flatMap((l) => l.entities)]);
+  if (notices.length === 0) return;
+  const MAX_LINES = 8;
+  ed.log(`Dynamic blocks: ${notices.length} block reference(s) could not be evaluated; they show their authored geometry:`);
+  for (const n of notices.slice(0, MAX_LINES)) ed.log(`  "${n.block}" (handle ${n.insertId}): REFUSED (${n.code}): ${n.message}`);
+  if (notices.length > MAX_LINES) ed.log(`  ... and ${notices.length - MAX_LINES} more; LIST a reference for its evaluation status.`);
+}
+
 export function showImportReport(ed: Editor, force: boolean, state: DrawingState, name: string): void {
+  logDynamicEvaluationNotices(ed, state);
   const r = importReportOf(state);
   if (!r) {
     if (force) ed.log('This drawing has no import report: nothing was dropped or simplified when it was opened.');

@@ -75,6 +75,18 @@
     "tests/fixtures/polyline-widths.dxf",
     "tests/fixtures/3d/enclosure.dxf",
     "tests/fixtures/3d/cable-tray.dxf",
-    "tests/fixtures/3d/schematic-with-solids.dxf"
+    "tests/fixtures/3d/schematic-with-solids.dxf",
+    "tests/fixtures/xref/host.dxf",
+    "tests/fixtures/xref/child.dxf",
+    "tests/fixtures/xref/grand.dxf",
+    "tests/fixtures/xref/leaf.dxf",
+    "tests/fixtures/xref/overlay-root.dxf",
+    "tests/fixtures/xref/kid.dxf",
+    "tests/fixtures/xref/overlay-parent.dxf",
+    "tests/fixtures/xref/inner.dxf",
+    "tests/fixtures/xref/cycle-a.dxf",
+    "tests/fixtures/xref/cycle-b.dxf",
+    "tests/fixtures/xref/self-cycle.dxf",
+    "tests/fixtures/xref/broken/bad.dxf"
   ]
 }

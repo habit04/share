@@ -71,6 +71,26 @@ jobs:
           name: renderer-dist-node-${{ matrix.node }}
           path: dist
 
+  # The AI assistant suites only (tests/ai-*.test.ts): the same files the full-suite
+  # `test` job already runs, isolated so an AI regression is a named, fast failure
+  # instead of one line inside the 20-minute full-suite job. The suites use fake
+  # transports only — this job needs no provider secrets and sets no provider env.
+  ai-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - name: AI assistant suites (fake transports only, no provider secrets)
+        run: npx vitest run --maxWorkers=2 tests/ai-*.test.ts
+
   # The built renderer in headless Chromium: every command, every clickable control, and the
   # visual-review screenshots, failing on page errors, console errors and "Unknown command", and on
   # any screenshot that no longer matches its approved baseline (screenshots/baseline/).

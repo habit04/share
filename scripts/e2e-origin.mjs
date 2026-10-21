@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { _electron as electron } from 'playwright';
-import { applicationWindow } from './electron-window.mjs';
+import { applicationWindow, closeApplication } from './electron-window.mjs';
 import { originFailureDiagnostics } from './origin-failure-diagnostics.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
@@ -32,12 +32,17 @@ app.whenReady().then(async()=>{
   w.destroy(); app.quit();
 }).catch(e=>{console.error(e);app.exit(1)});`);
 
+// Round 6 (F3): the seed exit and app spawn instants bracket the Local
+// Storage leveldb contention window; the failure diagnostics record them.
+/** @type {string | undefined} */
+let seedExitedAt;
 try {
   await new Promise((resolveSeed, reject) => {
     const child = spawn(createRequire(import.meta.url)('electron'), [seedFile, `--user-data-dir=${profile}`, ...linuxTestArgs], { cwd: repo, env, windowsHide: true, stdio: 'ignore' });
     const timer = setTimeout(() => { child.kill(); reject(new Error('Legacy preference seeding timed out.')); }, 30_000);
     child.once('error', (error) => { clearTimeout(timer); reject(error); });
     child.once('exit', (code) => {
+      seedExitedAt = new Date().toISOString();
       clearTimeout(timer);
       if (code === 0) resolveSeed(undefined);
       else reject(new Error(`Legacy seed exited ${code}`));
@@ -45,9 +50,11 @@ try {
   });
 
   for (let launch = 0; launch < 3; launch++) {
+    const appSpawnedAt = new Date().toISOString();
     const app = await electron.launch({ ...(executable ? { executablePath: executable } : {}), args: [...(executable ? [] : ['.']), `--user-data-dir=${profile}`, ...linuxTestArgs], cwd: repo, env, timeout: 60_000 });
-    const diagnostic = originFailureDiagnostics(app, { profile, output: process.env.JCAD_E2E_OUT, launch });
+    const diagnostic = originFailureDiagnostics(app, { profile, output: process.env.JCAD_E2E_OUT, launch, seedExitedAt, appSpawnedAt });
     let failed = false;
+    let uncleanClose = null;
     try {
       const page = await applicationWindow(app);
       const errors = [];
@@ -99,9 +106,28 @@ try {
       throw error;
     } finally {
       diagnostic.stop();
-      // Keep the actual assertion/launch failure if owned cleanup also reports an error.
-      if (failed) { try { await app.close(); } catch (error) { console.error(`Origin cleanup after failure: ${String(error).slice(0, 2048)}`); } }
-      else await app.close();
+      // Bound the cleanup close (PR23 ASAR diagnosis): a wedged main process
+      // leaves app.close() pending, which once burned the whole shared CI
+      // budget in cleanup after the failure was already named. On expiry the
+      // helper tree-kills by pid. Keep the actual assertion/launch failure if
+      // owned cleanup also reports an error.
+      const close = await closeApplication(app, failed ? 15_000 : 30_000);
+      if (close.outcome !== 'closed') {
+        if (failed) {
+          console.error(close.outcome === 'rejected'
+            ? `Origin cleanup after failure: application close was rejected (${String(close.error)}).`
+            : 'Origin cleanup after failure: application close exceeded its bound and was tree-killed.');
+        }
+        // A throw in finally could mask the primary failure; the unclean
+        // success-path close is thrown after this block instead, with the
+        // outcome distinguished: 'close rejected' vs 'bound exceeded'.
+        else uncleanClose = close;
+      }
+    }
+    if (uncleanClose) {
+      throw uncleanClose.outcome === 'rejected'
+        ? new Error(`The application close was rejected: ${uncleanClose.error instanceof Error ? uncleanClose.error.message : String(uncleanClose.error)}`)
+        : new Error('The application did not close within its bound and was tree-killed.');
     }
     if (launch === 1) {
       // Emulate lost Chromium DOM storage after a completed quit. Keep the durable private

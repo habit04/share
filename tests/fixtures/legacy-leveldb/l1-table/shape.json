@@ -1,0 +1,47 @@
+{
+ "name": "l1-table",
+ "description": "Overwrite-heavy: the same 400 keys (~1.6 MB) rewritten across 5 sessions until an L0->L1 compaction put a level-1 table in the MANIFEST; one final small session. Live data stays far under 8 MiB.",
+ "generatedBy": "lead Windows gate (Claude), real Electron undefined via scripts/ls_session.cjs",
+ "electron": "44.7.0",
+ "snapshotTakenBeforeChromiumReadback": true,
+ "lockExcluded": true,
+ "structureVerified": true,
+ "structure": {
+  "manifest": "MANIFEST-000001",
+  "liveTables": [
+   {
+    "file": "000014.ldb",
+    "level": 1
+   },
+   {
+    "file": "000016.ldb",
+    "level": 0
+   }
+  ],
+  "tables": {
+   "000014.ldb": [
+    {
+     "key": "l1-0",
+     "kind": "value",
+     "seq": "1208"
+    }
+   ],
+   "000016.ldb": [
+    {
+     "key": "l1-0",
+     "kind": "value",
+     "seq": "1610"
+    }
+   ]
+  },
+  "logs": {
+   "000017.log": {
+    "bytes": 131,
+    "physicalRecords": {
+     "FULL": 1
+    },
+    "watchHits": []
+   }
+  }
+ }
+}

@@ -90,6 +90,8 @@ export class SessionManager {
   private observedDocumentLoadCount = 0;
   /** Fired after the active document changed (tab switch, add, close). */
   onChange: (() => void) | null = null;
+  /** Fired exactly once per successful close() with the closing session's permanent docId (host-tab-close signal; the manager itself stays free of bridge/IPC knowledge). */
+  onDocClosed: ((docId: string) => void) | null = null;
 
   constructor(private host: SessionHost) {
     this.list = [this.make(host.doc.snapshot, host.doc.filePath)];
@@ -255,6 +257,7 @@ export class SessionManager {
   /** Close tab `i` (the caller has already confirmed discarding changes). */
   close(i: number, next?: number): void {
     if (i < 0 || i >= this.list.length) return;
+    const closingDocId = this.list[i]!.docId;
     if (i !== this.activeIndex) this.sync();
     const remaining = this.list.filter((_session, index) => index !== i);
     let target = next ?? (i < this.activeIndex ? this.activeIndex - 1 : i === this.activeIndex ? i : this.activeIndex);
@@ -271,6 +274,7 @@ export class SessionManager {
       this.list.push(this.make(new Drawing().snapshot, null));
       this.activeIndex = 0;
       this.restore(this.list[0]!);
+      this.onDocClosed?.(closingDocId);
       return;
     }
     if (restores) {
@@ -280,6 +284,7 @@ export class SessionManager {
       this.activeIndex = target;
       this.onChange?.();
     }
+    this.onDocClosed?.(closingDocId);
   }
 
   isDirty(i: number): boolean {

@@ -9,10 +9,11 @@ import type { Obj } from './groups';
 import type { RawDxfEntity } from '../import-report';
 import { isPointerCode, isRealCode, isRealText, isIntCode, PRECISION_CODES, isQuietXdataApp, ANNO_APP } from './codes';
 import { str, num, isIntegerText, shortText, invalidPrecision, precisionRequirement, has, HatchReadError, xdata } from './groups';
-import type { Entity, TextEntity, AttributeAppearance } from '../../core/entities';
+import type { BlockDef, Entity, InsertEntity, TextEntity, AttributeAppearance } from '../../core/entities';
 import type { ReadContext } from './read-core';
 import * as g from '../../core/geometry';
-import { reportObj, commonProps, commonAppearanceObject } from './read-core';
+import { reportObj, commonProps, commonAppearanceObject, reportDynamicDefinition } from './read-core';
+import { DYNAMIC_INSTANCE_REPORT, DYNAMIC_INSTANCE_RETAINED_REPORT } from './dynamic-data';
 import { transparencyFromDxf, validColorName } from '../../core/appearance';
 import { geometryProblem } from '../import-report';
 import { dstylePairs, hasUnconsumedAcadXdata } from './read-annotations';
@@ -22,7 +23,7 @@ import { readEntityObj } from './read-entities';
 import { SplineWorkLimitError } from '../../core/spline';
 import { withTextStyle } from '../encoding';
 import { readTextPlacement } from './read-text';
-import { localAttributePlacement } from '../../core/entities';
+import { importedPlacementsToAuthoredFrame, localAttributePlacement } from '../../core/entities';
 import type { TextPlacement } from '../../core/text-placement';
 import { hatchGradientRenderProblem, hatchGradientExportProblem } from '../../core/hatch-gradient';
 import { POLYFACE_UNSUPPORTED_REASON, payloadText, native3dObject } from './mesh3d-read';
@@ -32,6 +33,111 @@ const READ_KINDS = new Set(['LINE', 'CIRCLE', 'ARC', 'LWPOLYLINE', 'POLYLINE', '
 
 /** Records folded into the preceding entity (or block / layout structure). */
 const FOLLOWER_KINDS = new Set(['ATTRIB', 'VERTEX', 'SEQEND', 'ENDBLK', 'BLOCK', 'VIEWPORT']);
+
+/** Reports a placement problem found while folding ATTRIB records. */
+export type AttribFoldReport = (o: Obj, message: string) => void;
+
+/**
+ * Fold one INSERT's ATTRIB follower records into the insert: attribute
+ * values, per-instance hidden flags, and placement/appearance overrides
+ * (converted to insert-local coordinates and — for a dynamic insert —
+ * rebased from the saved evaluated state into the authored frame, review
+ * R07). This is the complete fold: it runs inline when the owning block
+ * definition is already known, and it is what the deferred replay
+ * (below) re-runs when it is not.
+ */
+export function foldAttribRecords(
+  ins: InsertEntity,
+  def: BlockDef,
+  attribObjs: readonly Obj[],
+  report: AttribFoldReport,
+): InsertEntity {
+  const attrs: Record<string, string> = {};
+  const hidden: string[] = [];
+  const placements: Record<string, TextPlacement & AttributeAppearance & { style?: string }> = {};
+  for (const o of attribObjs) {
+    const tag = str(o, 2);
+    attrs[tag] = str(o, 1);
+    const { id: _id, layer, ...appearance } = commonProps(o);
+    const source = { ...appearance, ...(has(o, 8) ? { layer } : {}), ...readTextPlacement(o, 74) };
+    const bad = geometryProblem({ ...commonProps(o), ...source, type: 'text', text: attrs[tag]!, id: 'attribute' });
+    if (bad) report(o, `attribute placement is invalid (${bad}); its value is kept at the definition's placement`);
+    else {
+      const local = localAttributePlacement(ins, def.basePoint, source);
+      const inverseProblem = geometryProblem({ ...commonProps(o), ...local, rotation: local.rotation ?? 0, type: 'text', text: attrs[tag]!, id: 'attribute' });
+      if (inverseProblem) report(o, `attribute placement cannot be represented in the insert's local coordinates (${inverseProblem}); its value is kept at the definition's placement`);
+      else placements[tag] = local;
+    }
+    if ((Math.trunc(num(o, 70)) & 1) === 1) hidden.push(tag);
+  }
+  // An ATTRIB flagged invisible whose ATTDEF is visible hides that attribute on this insert only.
+  const hiddenHere = hidden.filter((t) => def.attributes.some((a) => a.tag === t && !a.invisible));
+  // Review R07: for a dynamic insert the ATTRIB anchors record the
+  // attribute's position at the SAVED parameter state; rebase them into
+  // the stored authored frame so they cannot undo or freeze the
+  // evaluated motion after a later parameter edit.
+  const authoredPlacements = importedPlacementsToAuthoredFrame(ins, def, placements);
+  return {
+    ...ins,
+    attributes: attrs,
+    ...(hiddenHere.length ? { hiddenAttributes: hiddenHere } : {}),
+    ...(Object.keys(authoredPlacements).length ? { attributePlacements: authoredPlacements } : {}),
+  };
+}
+
+/**
+ * Review round 2 (C04): ATTRIB folds deferred because the insert's
+ * owning block definition did not exist yet when the insert was read —
+ * a forward reference inside the BLOCKS section (the referenced block's
+ * record appears later in the file, including JCad's own output
+ * whenever a parent block precedes its nested child). The attribute
+ * VALUES are folded immediately (they need no definition); the
+ * placement/appearance fold needs the definition (base point for the
+ * local conversion, ATTDEF list for the hidden rule, the evaluated state
+ * for the R07 rebase), so the raw follower records are retained here,
+ * keyed by the exact entity object the pass produced, and replayed by
+ * the reader once every definition is known (completeDeferredAttribFold,
+ * beside the R09 dynamic-instance pass). Retained-but-unmodelable
+ * dynamic payloads are unaffected: the replay folds attributes against
+ * the modeled definition exactly as an in-order read would, and an
+ * insert whose block never becomes known keeps today's behaviour
+ * (values only). Entries are consumed on replay and never reach
+ * document state; a read path that never replays simply loses them
+ * with the entity objects (WeakMap), degrading to the pre-C04 result.
+ */
+const deferredAttribFolds = new WeakMap<InsertEntity, readonly Obj[]>();
+
+/** Whether `e` carries a deferred ATTRIB fold (peek; does not consume). */
+export function hasDeferredAttribFold(e: Entity): boolean {
+  return e.type === 'insert' && deferredAttribFolds.has(e);
+}
+
+/** Take (and consume) the ATTRIB records deferred for `e`, if any. */
+export function takeDeferredAttribFold(e: Entity): readonly Obj[] | undefined {
+  if (e.type !== 'insert') return undefined;
+  const objs = deferredAttribFolds.get(e);
+  if (objs) deferredAttribFolds.delete(e);
+  return objs;
+}
+
+/**
+ * Replay a deferred ATTRIB fold for `ins` (the entity AFTER any other
+ * deferred resolution, e.g. the R09 dynamic-instance decode, whose
+ * result the R07 rebase reads) against the complete definition map.
+ * Returns `ins` unchanged when the block is still unknown.
+ */
+export function completeDeferredAttribFold(
+  ins: InsertEntity,
+  source: Entity,
+  blocks: Readonly<Record<string, BlockDef>>,
+  report: AttribFoldReport,
+): InsertEntity {
+  const attribObjs = takeDeferredAttribFold(source);
+  if (!attribObjs) return ins;
+  const def = blocks[ins.block];
+  if (!def) return ins;
+  return foldAttribRecords(ins, def, attribObjs, report);
+}
 
 /**
  * Unknown entity types kept as raw records in model space: self-contained types that need no
@@ -156,6 +262,14 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
       else if (gradientProblem) reportObj(ctx, o, 'kept', `gradient hatch definition is retained for DXF saving; solid/pattern fallback is drawn: ${gradientProblem}`);
     }
     if (e.type === 'mtext' && e.columns) reportObj(ctx, o, 'simplified', `column definitions are kept in JCAD_MTEXT_COLUMNS on AutoCAD 2000 export; other CAD programs show one column${e.columns.type === 2 || !formattedSource(e)?.includes('\\N') ? '; automatic column flow is approximated in JCad' : ''}`);
+    if (e.type === 'insert' && (e.dynamic || e.dynamicRetained)) {
+      // Priority 30 carriers: instance values here; the owning block's definition
+      // entry is emitted once per block (shared dedup with read-sections).
+      reportObj(ctx, o, 'simplified', e.dynamic ? DYNAMIC_INSTANCE_REPORT : DYNAMIC_INSTANCE_RETAINED_REPORT);
+      const blockDef = ctx.blocks?.[e.block];
+      if (blockDef?.dynamic) reportDynamicDefinition(ctx, e.block, false);
+      else if (blockDef?.dynamicRetained) reportDynamicDefinition(ctx, e.block, true);
+    }
     if (has(o, 39) && num(o, 39) !== 0) reportObj(ctx, o, 'simplified', 'nonzero thickness is not kept in the 2D drawing');
     const appearance = commonAppearanceObject(o);
     if (has(appearance, 440) && transparencyFromDxf(Number(str(appearance, 440))) === undefined) reportObj(ctx, o, 'simplified', 'invalid transparency method/alpha is not kept; ByLayer transparency is used');
@@ -291,33 +405,28 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
       continue;
     }
     if (e && e.type === 'insert') {
-      const attrs: Record<string, string> = {};
-      const hidden: string[] = [];
-      const placements: Record<string, TextPlacement & AttributeAppearance & { style?: string }> = {};
-      const def = ctx.blocks?.[e.block];
+      const attribObjs: Obj[] = [];
       let j = i + 1;
       while (j < objs.length && objs[j]!.kind === 'ATTRIB') {
-        const tag = str(objs[j]!, 2);
-        attrs[tag] = str(objs[j]!, 1);
-        if (def) {
-          const { id: _id, layer, ...appearance } = commonProps(objs[j]!);
-          const source = { ...appearance, ...(has(objs[j]!, 8) ? { layer } : {}), ...readTextPlacement(objs[j]!, 74) };
-          const bad = geometryProblem({ ...commonProps(objs[j]!), ...source, type: 'text', text: attrs[tag]!, id: 'attribute' });
-          if (bad) reportObj(ctx, objs[j]!, 'simplified', `attribute placement is invalid (${bad}); its value is kept at the definition's placement`);
-          else {
-            const local = localAttributePlacement(e, def.basePoint, source);
-            const inverseProblem = geometryProblem({ ...commonProps(objs[j]!), ...local, rotation: local.rotation ?? 0, type: 'text', text: attrs[tag]!, id: 'attribute' });
-            if (inverseProblem) reportObj(ctx, objs[j]!, 'simplified', `attribute placement cannot be represented in the insert's local coordinates (${inverseProblem}); its value is kept at the definition's placement`);
-            else placements[tag] = local;
-          }
-        }
-        if ((Math.trunc(num(objs[j]!, 70)) & 1) === 1) hidden.push(tag);
+        attribObjs.push(objs[j]!);
         j += 1;
       }
       if (j < objs.length && objs[j]!.kind === 'SEQEND') j += 1;
-      // An ATTRIB flagged invisible whose ATTDEF is visible hides that attribute on this insert only.
-      const hiddenHere = def ? hidden.filter((t) => def.attributes.some((a) => a.tag === t && !a.invisible)) : [];
-      out.push({ ...e, attributes: attrs, ...(hiddenHere.length ? { hiddenAttributes: hiddenHere } : {}), ...(Object.keys(placements).length ? { attributePlacements: placements } : {}) });
+      const def = ctx.blocks?.[e.block];
+      if (def) {
+        out.push(foldAttribRecords(e, def, attribObjs, (o, message) => reportObj(ctx, o, 'simplified', message)));
+      } else if (attribObjs.length) {
+        // Forward reference (C04): the owning block's definition is not
+        // known yet. Values fold now (definition-free); the raw records
+        // are retained for the deferred placement/appearance replay.
+        const attrs: Record<string, string> = {};
+        for (const o of attribObjs) attrs[str(o, 2)] = str(o, 1);
+        const withValues: InsertEntity = { ...e, attributes: attrs };
+        deferredAttribFolds.set(withValues, attribObjs);
+        out.push(withValues);
+      } else {
+        out.push({ ...e, attributes: {} });
+      }
       i = j;
       continue;
     }
