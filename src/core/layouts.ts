@@ -16,6 +16,8 @@
 import type { Entity, PolylineEntity, Layer, InsertEntity, TextEntity, MTextEntity, LeaderEntity, DimensionEntity } from './entities';
 import type { Point, Bounds } from './geometry';
 import * as g from './geometry';
+import type { MLeaderContext } from './multileader';
+import type { MTextAttachment } from './mtext';
 
 export type PaperUnits = 'in' | 'mm';
 
@@ -551,8 +553,105 @@ export function annotativeScaleFor(e: Entity, space: AnnotationSpace, viewportSc
   return k > 0 && Number.isFinite(k) ? 1 / k : 1;
 }
 
+// ---------------------------------------------------------------- multileader contexts (P18 slice 3)
+
+/**
+ * The primary context of a native multileader as an MLeaderContext record:
+ * the entity fields ARE the primary context's representation, materialized so
+ * context selection and swapping treat every context uniformly.
+ */
+export function mleaderPrimaryContext(e: LeaderEntity): MLeaderContext {
+  const n = e.mleader!;
+  return {
+    scaleFactor: n.scaleFactor,
+    landingGap: n.landingGap,
+    textHeight: e.textHeight,
+    arrowSize: e.arrowSize,
+    paths: [[...e.vertices], ...(e.extraPaths ?? [])],
+    ...(e.dogleg ? { dogleg: e.dogleg } : {}),
+    ...(e.text ? { text: e.text } : {}),
+    ...(e.raw ? { raw: e.raw } : {}),
+    ...(n.textStyleName ? { textStyleName: n.textStyleName } : {}),
+    ...(e.textPosition ? { textPosition: e.textPosition } : {}),
+    ...(e.textRotation ? { textRotation: e.textRotation } : {}),
+    ...(e.textWidth ? { textWidth: e.textWidth } : {}),
+    ...(e.textAttachment ? { textAttachment: e.textAttachment } : {}),
+    ...(n.block ? { block: { position: n.block.position, scale: n.block.scale, rotation: n.block.rotation } } : {}),
+  };
+}
+
+/**
+ * The context of a native multileader whose scale factor IS the annotation
+ * scale `scaleValue` (paper units per model unit — the quantity
+ * cannoscaleValue returns for a scale name), or undefined when no context
+ * carries that scale. Matching is by canonical scale NAME (formatScale
+ * equality at this module's formatting precision), so all scale arithmetic
+ * stays in this module (RULING-P18 C4: no private scale mechanism); the
+ * primary is searched first, then the additional contexts in file order.
+ * For a primary match the returned record is mleaderPrimaryContext(e).
+ */
+export function mleaderContextForScale(e: LeaderEntity, scaleValue: number): MLeaderContext | undefined {
+  const n = e.mleader;
+  if (!n || !(scaleValue > 0)) return undefined;
+  const target = formatScale(scaleValue);
+  if (formatScale(n.scaleFactor) === target) return mleaderPrimaryContext(e);
+  return n.contexts?.find((c) => formatScale(c.scaleFactor) === target);
+}
+
+/**
+ * The multileader as represented by context `ctx`: a pure projection — the
+ * entity's geometry, placement and sizes become the context's (a field the
+ * context does not carry does NOT leak in from the primary), its native
+ * scale becomes the context's, and the remaining contexts (the old primary
+ * first, then the others in their relative order) stay on the result, so
+ * projecting again at another scale is stable. `ctx` is either the primary
+ * view (mleaderPrimaryContext(e) — returns `e` itself) or an element of
+ * e.mleader.contexts, as mleaderContextForScale returns. Document state is
+ * never written from a projection.
+ */
+export function leaderWithMLeaderContext(e: LeaderEntity, ctx: MLeaderContext): LeaderEntity {
+  const n = e.mleader!;
+  const rest = n.contexts ?? [];
+  if (!rest.includes(ctx)) return e;
+  const remaining = [mleaderPrimaryContext(e), ...rest.filter((c) => c !== ctx)];
+  const { vertices: _v, extraPaths: _xp, dogleg: _dg, text: _t, raw: _r, textPosition: _tp, textRotation: _tr, textWidth: _tw, textAttachment: _ta, mleader: _ml, ...base } = e;
+  return {
+    ...base,
+    vertices: ctx.paths[0] ? [...ctx.paths[0]] : [],
+    ...(ctx.paths.length > 1 ? { extraPaths: ctx.paths.slice(1).map((p) => [...p]) } : {}),
+    ...(ctx.dogleg ? { dogleg: ctx.dogleg } : {}),
+    textHeight: ctx.textHeight,
+    arrowSize: ctx.arrowSize,
+    ...(ctx.text !== undefined ? { text: ctx.text } : {}),
+    ...(ctx.raw !== undefined ? { raw: ctx.raw } : {}),
+    ...(ctx.textPosition !== undefined ? { textPosition: ctx.textPosition } : {}),
+    ...(ctx.textRotation !== undefined ? { textRotation: ctx.textRotation } : {}),
+    ...(ctx.textWidth !== undefined ? { textWidth: ctx.textWidth } : {}),
+    ...(ctx.textAttachment !== undefined ? { textAttachment: ctx.textAttachment as MTextAttachment } : {}),
+    mleader: {
+      ...n,
+      scaleFactor: ctx.scaleFactor,
+      landingGap: ctx.landingGap,
+      ...(ctx.textStyleName !== undefined ? { textStyleName: ctx.textStyleName } : {}),
+      ...(n.block && ctx.block ? { block: { ...n.block, position: ctx.block.position, scale: ctx.block.scale, rotation: ctx.block.rotation } } : {}),
+      contexts: remaining,
+    },
+  };
+}
+
 /** The entity as displayed at annotation factor `f` (sizes scaled about its insertion point). */
 export function annotativeEntity(e: Entity, f: number): Entity {
+  // P18 slice 3: a multi-context multileader's representation at a scale is
+  // its context FOR that scale, not a uniform scaling of the primary — the
+  // match is by context identity, so it applies even at f = 1 (1:1 / paper
+  // space). No matching context: the uniform scaling below, unchanged.
+  if (e.type === 'leader' && f > 0) {
+    const le = e as LeaderEntity;
+    if (le.mleader?.contexts?.length) {
+      const match = mleaderContextForScale(le, 1 / f);
+      if (match) return leaderWithMLeaderContext(le, match);
+    }
+  }
   if (f === 1 || !(f > 0)) return e;
   switch (e.type) {
     case 'text':
