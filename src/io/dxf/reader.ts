@@ -20,8 +20,12 @@ import type { ReadContext } from './read-core';
 import { LayoutReader } from '../dxf-layouts';
 import { readTableStyle, type TableStyleData } from './read-annotations';
 import { readHeaderSection, readObjectsSection, readTablesSection, readBlocksSection, readEntitiesSection, drawingHeader } from './read-sections';
+import { decodeConstraints, CONSTRAINTS_REPORT, CONSTRAINTS_RETAINED_REPORT } from './constraints-data';
+import { decodeDynamicInstance } from './dynamic-data';
+import type { ConstraintSet } from '../../core/constraints/model';
 import { DEFAULT_LAYERS } from '../../core/document';
-import { readEntities } from './read-pass';
+import { completeDeferredAttribFold, hasDeferredAttribFold, readEntities } from './read-pass';
+import { reportObj } from './read-core';
 import { attachDxfCadGraph } from '../cad-graph-dxf';
 import { CadGraphError, canonicalCadHandle } from '../../core/cad-graph';
 import { Model3DReader, native3dObject } from './mesh3d-read';
@@ -204,6 +208,46 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     } else i += 1;
   }
 
+  // Priority 30 review R09: an INSERT's JCAD_DYNAMIC payload is decoded while
+  // the insert is read, against the definitions known at that point. An
+  // insert nested in a block definition whose referenced block's record
+  // appears LATER in the file (a forward reference — including JCad's own
+  // output whenever the outer block precedes the inner one) therefore lands
+  // in dynamicRetained even though the payload is valid. Now that every
+  // section has been read and the definition map is complete, re-attempt
+  // those decodes, independently of block-definition order: a payload that
+  // validates against the now-known definition is modeled; anything else
+  // (no modeled definition, genuinely invalid values) stays retained,
+  // exactly as an in-order read would have left it. Layout entities are
+  // built after this point with the complete map and need no pass.
+  const resolveForwardInstance = (e: Entity): Entity => {
+    if (e.type !== 'insert' || e.dynamic !== undefined || e.dynamicRetained === undefined) return e;
+    const definition = blocks[e.block]?.dynamic;
+    if (!definition) return e;
+    const decoded = decodeDynamicInstance(e.dynamicRetained, definition, e.block);
+    if (!decoded.ok) return e;
+    const { dynamicRetained: _retained, ...rest } = e;
+    return { ...rest, dynamic: decoded.state };
+  };
+  // Review round 2 (C04): the same forward-reference problem dropped
+  // ATTRIB placements/appearance — the fold needs the owning definition,
+  // which did not exist when a parent block's entities were read. The
+  // read pass retained the raw follower records for exactly those
+  // inserts; replay the complete fold (values, hidden flags, local
+  // placements, R07 authored-frame rebase) now, against the decoded
+  // instance state, so block order cannot change the result.
+  const resolveForward = (e: Entity): Entity => {
+    const resolved = resolveForwardInstance(e);
+    if (resolved.type !== 'insert') return resolved;
+    return completeDeferredAttribFold(resolved, e, blocks, (o, message) => reportObj(ctx, o, 'simplified', message));
+  };
+  entities = entities.map(resolveForward);
+  for (const [name, block] of Object.entries(blocks)) {
+    if (block.entities.some((e) => e.type === 'insert' && ((e.dynamic === undefined && e.dynamicRetained !== undefined) || hasDeferredAttribFold(e)))) {
+      blocks[name] = { ...block, entities: block.entities.map(resolveForward) };
+    }
+  }
+
   // Anonymous blocks that drew a table now read as a native table are no longer needed.
   if (ctx.consumedBlocks?.size) {
     const used = new Set<string>();
@@ -257,6 +301,22 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     for (const e of l.entities) ensureEntityLayers(e);
     for (const v of l.viewports) ensure(v.layer);
   }
+  // Priority 30.4: the JCAD_CONSTRAINTS payload captured from the *Model_Space
+  // BLOCK record decodes now that the model-space entities (its `#<index>`
+  // ordinal space) are final. A payload that fails to decode or validate is
+  // retained raw on the state — never half-modeled, never thrown.
+  let constraints: ConstraintSet | undefined;
+  let constraintsRetained: string | undefined;
+  if (ctx.constraintsRaw !== undefined) {
+    const decoded = decodeConstraints(ctx.constraintsRaw, entities);
+    if (decoded.ok) {
+      constraints = decoded.set;
+      report.add({ type: 'BLOCK', action: 'simplified', reason: CONSTRAINTS_REPORT, where: 'model space' });
+    } else {
+      constraintsRetained = decoded.retained;
+      report.add({ type: 'BLOCK', action: 'simplified', reason: CONSTRAINTS_RETAINED_REPORT, where: 'model space' });
+    }
+  }
   const takenIds = new Set([...entities, ...Object.values(blocks).flatMap(block => block.entities), ...(layouts ?? []).flatMap(layout => [...layout.entities, ...layout.viewports.flatMap(viewport => viewport.clipBoundary ? [viewport.clipBoundary] : [])])].map(entity => entity.id));
   for (const layout of layouts ?? []) for (const viewport of layout.viewports) takenIds.add(viewport.id);
   const solids = ctx.solids!.build(takenIds);
@@ -272,7 +332,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
   }
   const textMeta = textStylesMeta(textStyles), shapeMeta = shapeStylesMeta(shapeStyles);
   const styleMeta = textMeta || shapeMeta ? { ...textMeta, ...shapeMeta } : undefined;
-  const base = withDimStylesMeta({ entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}), ...(layouts ? { layouts } : {}), ...(solids.length || dims3d.length ? { model3d: { ...EMPTY_MODEL3D, solids, ...(dims3d.length ? { dimensions: dims3d } : {}) } } : {}) }, dimStyles);
+  const base = withDimStylesMeta({ entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}), ...(layouts ? { layouts } : {}), ...(constraints ? { constraints } : {}), ...(constraintsRetained !== undefined ? { constraintsRetained } : {}), ...(solids.length || dims3d.length ? { model3d: { ...EMPTY_MODEL3D, solids, ...(dims3d.length ? { dimensions: dims3d } : {}) } } : {}) }, dimStyles);
   return attachDxfCadGraph(base, retainedPairs, { fields: ctx.fields, viewportHandles: layoutReader.viewportHandles,
     model3dHandles: ctx.solids!.carrierAnchors,
     model3dLines: ctx.solids!.carrierLines,

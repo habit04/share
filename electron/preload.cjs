@@ -69,6 +69,15 @@ contextBridge.exposeInMainWorld('jcad', {
     fontMetrics: (request) => ipcRenderer.invoke('font-metrics', request),
     pdfFont: (request) => ipcRenderer.invoke('pdf-font', request),
     shapeFont: (request) => ipcRenderer.invoke('shape-font', request),
+    // Read-only DXF xref broker (priority 20.2): begin a main-owned context, identify and read
+    // already-granted references through it, cancel/close. No path is granted by these calls;
+    // the main process checks its existing file policy before any filesystem contact.
+    beginXrefContext: (info) => ipcRenderer.invoke('xref-begin-context', info && typeof info === 'object' ? { docId: String(info.docId ?? ''), contentGeneration: typeof info.contentGeneration === 'number' || typeof info.contentGeneration === 'string' ? info.contentGeneration : -1, hostAnchor: String(info.hostAnchor ?? '') } : undefined),
+    identifyXref: (token, path) => ipcRenderer.invoke('xref-identify', String(token ?? ''), String(path ?? '')),
+    readXref: (token, ticket, maxBytes) => ipcRenderer.invoke('xref-read', String(token ?? ''), String(ticket ?? ''), typeof maxBytes === 'number' ? maxBytes : -1),
+    cancelXref: (token) => ipcRenderer.invoke('xref-cancel', String(token ?? '')),
+    closeXrefContext: (token) => ipcRenderer.invoke('xref-close-context', String(token ?? '')),
+    retireXrefDocContexts: (docId) => ipcRenderer.invoke('xref-retire-doc-contexts', String(docId ?? '')),
     openShxFont: () => ipcRenderer.invoke('open-shx-font'),
     dwgExportStatus: () => ipcRenderer.invoke('dwg-export-status'),
     saveDwg: (path, text, admission) => ipcRenderer.invoke('save-dwg', path, text, admission),
@@ -80,6 +89,25 @@ contextBridge.exposeInMainWorld('jcad', {
     ipcRenderer.on('open-progress', (_ev, p) => cb(p));
   },
   cancelOpen: (id) => ipcRenderer.invoke('cancel-open', Number(id)),
+  // AI Assistant (milestone 2): guarded host bridge. Arguments are rebuilt
+  // field-by-field here; the API key crosses once, as a bounded string, and
+  // no host response ever contains key material.
+  ai: {
+    getState: () => ipcRenderer.invoke('ai-get-state'),
+    setProvider: (provider) => ipcRenderer.invoke('ai-set-provider', String(provider ?? '')),
+    setModel: (model) => ipcRenderer.invoke('ai-set-model', String(model ?? '')),
+    setKey: (key, persistence) => ipcRenderer.invoke('ai-set-key', String(key ?? ''), persistence === 'encrypted' ? 'encrypted' : 'session'),
+    forgetKey: () => ipcRenderer.invoke('ai-forget-key'),
+    setEnabled: (enabled) => ipcRenderer.invoke('ai-set-enabled', enabled === true),
+    testConnection: () => ipcRenderer.invoke('ai-test-connection'),
+    runLiveChecks: () => ipcRenderer.invoke('ai-live-checks-run'),
+    cancelLiveChecks: () => ipcRenderer.invoke('ai-live-checks-cancel'),
+    ask: (request) => ipcRenderer.invoke('ai-ask', request),
+    draft: (request) => ipcRenderer.invoke('ai-draft', request),
+    draftRefine: (request) => ipcRenderer.invoke('ai-draft-refine', request),
+    cancel: (requestId) => ipcRenderer.invoke('ai-cancel', String(requestId ?? '')),
+    usage: () => ipcRenderer.invoke('ai-usage'),
+  },
   // Autosave / Drawing Recovery (files live in the app data folder)
   autosaveWrite: (name, text, meta) => ipcRenderer.invoke('autosave-write', name, text, meta),
   autosaveList: () => ipcRenderer.invoke('autosave-list'),

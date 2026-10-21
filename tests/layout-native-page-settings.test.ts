@@ -74,7 +74,15 @@ function dto(text: string): DwgImportPayload {
 
 describe('native layout physical page setup', () => {
   it('keeps new-drawing annotation visibility defaults', () => {
-    expect(headerVariable(readDxf(writeDxf(new Drawing().snapshot)), '$ANNOALLVISIBLE')).toEqual([[70, '1']]);
+    // Q11 F2 rework: $ANNOALLVISIBLE / $CANNOSCALE are never HEADER variables in
+    // JCad's output at any version — when set, they live in the variable dictionary;
+    // a new drawing sets neither, and the annotation visibility default (on) is
+    // expressed by their absence, so the read-back header carries neither variable
+    // and annoAllVisible stays undefined.
+    const back = readDxf(writeDxf(new Drawing().snapshot));
+    expect(headerVariable(back, '$ANNOALLVISIBLE')).toEqual([]);
+    expect(headerVariable(back, '$CANNOSCALE')).toEqual([]);
+    expect(back.header!.annoAllVisible).toBeUndefined();
   });
 
   it('does not materialize an absent annotation default through an authored retained-header import/rewrite', () => {
@@ -118,7 +126,12 @@ describe('native layout physical page setup', () => {
     expect(source.header!.annoAllVisible).toBe(visible);
     expect(headerVariable(source, '$ANNOALLVISIBLE')).toEqual([]);
     const once = writeDxf(source), back = readDxf(once);
-    expect(headerVariable(back, '$ANNOALLVISIBLE')).toEqual([[70, visible ? '1' : '0']]);
+    // Q11 F2 rework: the exposed value is carried by the dictionary variable alone —
+    // the written HEADER never re-emits it at any version (the F2-era assertion of a
+    // HEADER pair on the read-back is replaced by state recovery + the dictionary
+    // assertions below).
+    expect(headerVariable(back, '$ANNOALLVISIBLE')).toEqual([]);
+    expect(back.header!.annoAllVisible).toBe(visible);
     const dictionary = back.cadGraph!.nodes.find(node => node.sourceHandle === '179')!;
     expect(dictionary.groups.filter(([code]) => code === 3)).toHaveLength(10);
     expect(dictionary.groups.filter(([code, value]) => code === 3 && value === 'ANNOALLVISIBLE')).toHaveLength(1);
@@ -127,13 +140,31 @@ describe('native layout physical page setup', () => {
   });
 
   it.each([true, false])('keeps retained annotation values and explicit%s edits, with undo/redo', visible => {
-    const present = readDxf(reference().replace(/\$ANNOALLVISIBLE\r\n70\r\n1\r\n/, `$ANNOALLVISIBLE\r\n70\r\n${visible ? 1 : 0}\r\n`));
-    expect(headerVariable(readDxf(writeDxf(present)), '$ANNOALLVISIBLE')).toEqual([[70, visible ? '1' : '0']]);
-    const doc = new Drawing(readDxf(withoutAnnotationDefault(reference()))), before = doc.snapshot;
+    // Q11 F2 rework (supersedes the F2 version gate): the annotation variables are
+    // never HEADER variables in JCad's output at any version — they live in the
+    // variable dictionary, and only the non-default ANNOALLVISIBLE value (false) is
+    // stored at all. These round trips run on an AC1021 authored reference that
+    // declares the variable in its HEADER (the legacy JCad form): the value must
+    // migrate into the dictionary on write, not ride the header (the shared
+    // reference() writes at the AC1015 floor, whose header carries neither name).
+    const authored = (value: string) => {
+      const pairs = tokenize(reference());
+      const ver = pairs.findIndex(pair => pair.code === 9 && pair.value === '$ACADVER');
+      pairs[ver + 1] = { code: 1, value: 'AC1021' };
+      pairs.splice(ver + 2, 0, { code: 9, value: '$ANNOALLVISIBLE' }, { code: 70, value });
+      return pairs.flatMap(pair => [String(pair.code), pair.value]).join('\r\n') + '\r\n';
+    };
+    const present = readDxf(authored(visible ? '1' : '0'));
+    const presentBack = readDxf(writeDxf(present));
+    expect(headerVariable(presentBack, '$ANNOALLVISIBLE')).toEqual([]);
+    expect(presentBack.header!.annoAllVisible === false).toBe(!visible);
+    expect(presentBack.cadGraph!.nodes.some(node => node.type === 'DICTIONARYVAR')).toBe(!visible);
+    const doc = new Drawing(readDxf(withoutAnnotationDefault(authored('1')))), before = doc.snapshot;
     doc.transact(state => ({ ...state, header: { ...state.header!, annoAllVisible: visible } }));
     const edited = doc.snapshot, text = writeDxf(edited), back = readDxf(text);
-    expect(headerVariable(back, '$ANNOALLVISIBLE')).toEqual([[70, visible ? '1' : '0']]);
+    expect(headerVariable(back, '$ANNOALLVISIBLE')).toEqual([]);
     expect(back.header!.annoAllVisible === false).toBe(!visible);
+    expect(back.cadGraph!.nodes.some(node => node.type === 'DICTIONARYVAR')).toBe(!visible);
     expect(writeDxf(back)).toBe(text);
     expect(doc.undo()).toBe(true); expect(doc.snapshot).toBe(before);
     expect(headerVariable(readDxf(writeDxf(doc.snapshot)), '$ANNOALLVISIBLE')).toEqual([]);

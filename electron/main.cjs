@@ -12,6 +12,7 @@
  *   ipc-plot.cjs      plot to PDF, vector PDF, print
  *   ipc-stores.cjs    autosave, user library, plugins, catalog packs
  *   ipc-shx.cjs       explicit Windows SHX font / shape selection, read-only
+ *   startup-migration.cjs  the startup legacy-storage migration gate (P-MIG)
  *   updates.cjs       app info, external links, update checks and status
  *   handover.cjs      files handed over by the OS and by a second launch
  */
@@ -45,7 +46,9 @@ const { dwgHost, readDwg, registerDwgIpc } = require('./main/dwg.cjs');
 const { registerDrawingIpc } = require('./main/ipc-drawings.cjs');
 const { registerPlotIpc } = require('./main/ipc-plot.cjs');
 const { registerStoreIpc } = require('./main/ipc-stores.cjs');
+const { registerXrefIpc } = require('./main/ipc-xrefs.cjs');
 const { registerShxIpc } = require('./main/ipc-shx.cjs');
+const { runStartupMigration } = require('./main/startup-migration.cjs');
 const { registerUpdatesIpc } = require('./main/updates.cjs');
 const { createHandover } = require('./main/handover.cjs');
 const { createFontMetricsHost } = require('./font-metrics-host.cjs');
@@ -142,8 +145,12 @@ registerDrawingIpc(ctx, { takeHandedOverProject });
 registerPlotIpc(ctx);
 registerStoreIpc(ctx);
 registerShxIpc(ctx);
+const xrefIpc = registerXrefIpc(ctx);
+app.on('will-quit', () => xrefIpc.dispose());
 registerMenuIpc(ctx);
 registerUpdatesIpc(ctx);
+const { registerAiIpc } = require('./main/ipc-ai.cjs');
+registerAiIpc(ctx);
 if (fontMetricsHost) ipcMain.handle('font-metrics', (_event, request) => fontMetricsHost.read(request).catch(() => null));
 if (fontMetricsHost) ipcMain.handle('pdf-font', async (_event, request) => {
   try { return { font: await fontMetricsHost.readPdf(request) }; }

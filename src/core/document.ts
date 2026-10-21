@@ -17,6 +17,8 @@ import { textGeometryForStyles, EMPTY_TEXT_STYLES } from '../render/font-metrics
 import type { TextGeometryContext } from './text-metrics';
 import type { NativeViewCamera } from './named-view';
 import { reconcileCadGraph, validateCadState, type CadGraph, type CadGraphEditIntent } from './cad-graph';
+import type { ConstraintSet } from './constraints/model';
+import { enforceConstraintPolicy } from './constraints/policy';
 
 import type { Model3D } from '../model3d/types';
 import { model3dOf, withModel3D } from '../model3d/model';
@@ -132,6 +134,23 @@ export interface DrawingState {
    * model3d/save-guard.ts); absent for ordinary drawings and removed again when the last solid goes.
    */
   readonly model3d?: Model3D;
+  /**
+   * Priority 30.3/30.4: the drawing's 2D constraint set (src/core/constraints),
+   * kept apart from `entities` like `model3d` so no unsolved code path sees it.
+   * Travels with undo history; persisted as the labeled JCad-specific
+   * JCAD_CONSTRAINTS payload (src/io/dxf/constraints-data.ts) — NOT native
+   * AutoCAD constraint data. Absent = no constraints; ordinary drawings are
+   * untouched. Solving is never implicit: only the pure adapter in
+   * src/core/constraints/apply.ts runs the solver, outside any transaction.
+   */
+  readonly constraints?: ConstraintSet;
+  /**
+   * A JCAD_CONSTRAINTS payload this build could not model (malformed or a
+   * newer version), retained verbatim for re-export — the constraint sibling
+   * of BlockDef.dynamicRetained. While present, the modeled `constraints`
+   * field is absent and constraint edits/solves are refused, never guessed.
+   */
+  readonly constraintsRetained?: string;
 }
 
 export type DocListener = (doc: Drawing) => void;
@@ -313,7 +332,13 @@ export class Drawing {
 
   /** Shared preparation, bounded undo history and dirty notification for both transaction scopes. */
   private commitTransition(state: DrawingState, intent?: CadGraphEditIntent): void {
-    const next = prepareDrawingTransition(this.state, state, intent);
+    // Priority 30 review §3: the geometry-edit constraint policy runs at
+    // this choke point (see src/core/constraints/policy.ts for the policy
+    // and its stated coverage boundary). It throws ConstraintPolicyError
+    // on refusal — before anything is assigned — so a refused edit leaves
+    // no history entry, no dirty flag and no revision change.
+    const enforced = enforceConstraintPolicy(this.state, state);
+    const next = prepareDrawingTransition(this.state, enforced, intent);
     if (next === this.state) return;
     this.undoStack.push(this.state);
     if (this.undoStack.length > this.maxUndo) this.undoStack.shift();

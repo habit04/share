@@ -5,7 +5,7 @@
  */
 import { Writer, writeEntityCommon, writeTextLike, writeTextStyle, emptyExtras, writeAnnotativeXdata, writePaperSpaceFlag } from './write-core';
 import type { PolylineEntity, HatchEntity, SplineEntity, Entity, BlockDef } from '../../core/entities';
-import { splineCurve, hatchPatternLines, tableParts, attributeText } from '../../core/entities';
+import { splineCurve, hatchPatternLines, tableParts, attributeText, attributePlacementsForDef, expansionBlock } from '../../core/entities';
 import { findPattern } from '../../core/hatch';
 import * as g from '../../core/geometry';
 import type { WriteExtras } from './write-core';
@@ -14,6 +14,8 @@ import { writeLeader, writeImage, writeTableInsert, writeMText, writeDimension }
 import type { AttributeDefExt } from '../../electrical/symbol-builder-core';
 import { attdefFlags } from '../../electrical/symbol-builder-core';
 import { insertArrayProblem } from '../../core/insert-array';
+import { DYNAMIC_APP } from './codes';
+import { chunkDynamicPayload, encodeDynamicInstance } from './dynamic-data';
 import { hatchGradientDataProblem, hatchGradientExportProblem } from '../../core/hatch-gradient';
 
 function writePolyline(w: Writer, e: PolylineEntity, owner: string): void {
@@ -46,6 +48,12 @@ function writePolyline(w: Writer, e: PolylineEntity, owner: string): void {
   e.points.forEach((p, i) => {
     w.pair(10, p.x);
     w.pair(20, p.y);
+    // Persistent vertex identifier (group 91, Q11 F4): emitted only when the
+    // source vertex carried one — never synthesized. AutoCAD places it
+    // immediately after the vertex point and writes the value right-justified
+    // in a 9-char field; the pre-padded string passes Writer.pair verbatim.
+    const vid = e.vertexIds?.[i];
+    if (vid !== undefined) w.pair(91, String(vid).padStart(9));
     if (e.widths) {
       w.pair(40, e.widths[i]?.start ?? 0);
       w.pair(41, e.widths[i]?.end ?? 0);
@@ -307,11 +315,32 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
         w.pair(45, e.rowSpacing ?? 0);
       }
       if (e.annotative) writeAnnotativeXdata(w);
+      // Priority 30 instance carrier: at the annotative-XDATA position, strictly BEFORE
+      // the ATTRIB loop — anything emitted after ATTRIB/SEQEND would attach to those
+      // records instead of the INSERT. A modeled state is re-encoded canonically;
+      // a retained payload is re-emitted verbatim (chunked only).
+      if (e.dynamic || e.dynamicRetained) {
+        w.pair(1001, DYNAMIC_APP);
+        const payload = e.dynamic ? encodeDynamicInstance(e.dynamic) : e.dynamicRetained!;
+        for (const chunk of chunkDynamicPayload(payload)) w.pair(1000, chunk);
+      }
       if (hasAttribs && block) {
+        // Review R07: an ATTRIB's position is the attribute's CURRENT
+        // evaluated placement (what the editor displays), not the authored
+        // ATTDEF position — otherwise the file itself records the attribute
+        // as unmoved, and the reader's placement capture would undo the
+        // evaluation on reopen. Static inserts get `block` itself back from
+        // expansionBlock, so their output is unchanged. An attribute the
+        // current visibility state hides has no evaluated counterpart; it
+        // is still written (its value lives only in this record) at the
+        // authored placement, as before.
+        const expanded = expansionBlock(block, e);
+        const textIns = attributePlacementsForDef(e, block, expanded);
         for (const a of attribDefs) {
           const value = e.attributes[a.tag] ?? a.default;
           // Attribute position in world space
-          const label = attributeText(e, block, a, value, false);
+          const aEff = expanded === block ? a : expanded.attributes.find((x) => x.tag === a.tag);
+          const label = aEff ? attributeText(textIns, expanded, aEff, value, false) : attributeText(e, block, a, value, false);
           // The INSERT owns its followers; their paper-space flag belongs to its enclosing block.
           writeEntityCommon(w, label, insertHandle, 'ATTRIB', 'AcDbText', owner);
           w.anchor(w.lastHandle().toString(16).toUpperCase(), { kind: 'entity', id: e.id, part: `attribute:${a.tag}` });

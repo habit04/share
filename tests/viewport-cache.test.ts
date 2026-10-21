@@ -120,7 +120,10 @@ describe('viewport static scene caching', () => {
     const vp = new Viewport(canvas(), doc), grips = vi.spyOn(entities, 'gripPoints');
     try {
       const ov = { ...overlay(), selection: new Set(['label']) }; vp.render(ov);
-      expect(grips).toHaveBeenCalledWith(doc.entities[0], context);
+      // 30.4 slice B: the viewport also passes the block lookup so dynamic
+      // parameter grips are drawn where the pointer can pick them; the
+      // text context argument this test pins is unchanged.
+      expect(grips).toHaveBeenCalledWith(doc.entities[0], context, doc.lookupBlock);
     } finally { grips.mockRestore(); vp.dispose(); }
   });
 

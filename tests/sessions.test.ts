@@ -204,3 +204,45 @@ describe('document sessions', () => {
     expect(host.doc.filePath).toBe('/a.dxf');
   });
 });
+
+describe('session close — onDocClosed hook (Stage-1 fix A)', () => {
+  it('fires exactly once per close with the closing session docId, including the last-tab blank replacement', () => {
+    const host = makeHost();
+    const sm = new SessionManager(host);
+    const seen: string[] = [];
+    sm.onDocClosed = (docId) => seen.push(docId);
+    const firstDocId = sm.all[0]!.docId;
+    sm.addInBackground(host.doc.snapshot, null);
+    const secondDocId = sm.all[1]!.docId;
+    expect(secondDocId).not.toBe(firstDocId);
+    sm.close(1); // background tab
+    expect(seen).toEqual([secondDocId]);
+    sm.close(0); // the only remaining tab -> splice-to-empty path pushes a fresh blank session
+    expect(seen).toEqual([secondDocId, firstDocId]);
+    expect(sm.count).toBe(1);
+    expect(sm.all[0]!.docId).not.toBe(firstDocId);
+  });
+
+  it('does not fire for an out-of-range index', () => {
+    const host = makeHost();
+    const sm = new SessionManager(host);
+    const seen: string[] = [];
+    sm.onDocClosed = (docId) => seen.push(docId);
+    sm.close(5);
+    sm.close(-1);
+    expect(seen).toEqual([]);
+    expect(sm.count).toBe(1);
+  });
+
+  it('close behaves exactly as before when no hook is set', () => {
+    const host = makeHost();
+    const sm = new SessionManager(host);
+    expect(sm.onDocClosed).toBeNull();
+    sm.addInBackground(host.doc.snapshot, null);
+    sm.close(1);
+    expect(sm.count).toBe(1);
+    sm.close(0);
+    expect(sm.count).toBe(1);
+    expect(sm.titleOf(0)).toBe('Drawing1.dxf');
+  });
+});
