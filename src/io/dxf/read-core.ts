@@ -73,6 +73,34 @@ export interface ReadContext {
   solids?: Model3DReader;
   /** Where the objects being read are (report text). */
   where?: string;
+  /** Block names whose JCAD_DYNAMIC definition report entry was already emitted
+   *  (the definition entry is reported once per block, not once per insert). */
+  dynamicDefinitionReports?: Set<string>;
+  /** Raw JCAD_CONSTRAINTS payload text captured from the *Model_Space BLOCK
+   *  record. Decoding is deferred to reader.ts: entity refs are `#<index>`
+   *  ordinals into the model-space entity list, which only exists after the
+   *  ENTITIES section has been read. */
+  constraintsRaw?: string;
+}
+
+/**
+ * Emit the import-report entry for one block's JCAD_DYNAMIC definition carrier, once
+ * per block per read. Called from read-sections (where the definition is decoded) and
+ * again from read-pass for inserts of that block; the shared set keeps it to one entry.
+ */
+export function reportDynamicDefinition(ctx: ReadContext, blockName: string, retained: boolean): void {
+  if (!ctx.report) return;
+  ctx.dynamicDefinitionReports ??= new Set<string>();
+  if (ctx.dynamicDefinitionReports.has(blockName)) return;
+  ctx.dynamicDefinitionReports.add(blockName);
+  ctx.report.add({
+    type: 'BLOCK',
+    action: 'simplified',
+    reason: retained
+      ? 'dynamic-block definition data in JCAD_DYNAMIC could not be read (malformed or a newer version); the raw payload is retained for JCad re-export, and the block is imported as a static block'
+      : 'dynamic-block definition is kept in JCAD_DYNAMIC for JCad reimport; native dynamic-block parameters and actions are not modeled, and other CAD programs show the static block',
+    ...(ctx.where ? { where: ctx.where } : {}),
+  });
 }
 
 export function reportObj(ctx: ReadContext, o: Obj, action: 'dropped' | 'simplified' | 'kept', reason: string): void {

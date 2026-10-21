@@ -30,6 +30,7 @@ import { WIRE_DOT } from '../../electrical/symbols';
 import { LIBRARY_SYMBOLS } from '../../electrical/library';
 import { TITLE_BLOCK } from '../../electrical/templates';
 import { CadGraphError } from '../../core/cad-graph';
+import { ConstraintPolicyError } from '../../core/constraints/policy';
 import { SOURCE_ARROW, DEST_ARROW } from '../../tools/plc';
 import { defaultProject, type Project } from '../project';
 import { saveQueue } from '../savequeue';
@@ -215,7 +216,7 @@ export class Editor {
   private geometryAction<T>(action: () => T, refused: T): T {
     const fromApi = this.apiCommandDepth > 0;
     const report = (error: unknown, failedTool: Tool | null, asynchronous: boolean): void => {
-      if (fromApi || !(error instanceof GeometryBudgetError || error instanceof CadGraphError)) throw error;
+      if (fromApi || !(error instanceof GeometryBudgetError || error instanceof CadGraphError || error instanceof ConstraintPolicyError)) throw error;
       this.log(`Edit canceled: ${error.message}${error instanceof GeometryBudgetError ? ' Reduce the geometry or selection and try again.' : ''}`);
       // A dialog from an old command must not cancel a tool started while it was pending.
       if (!asynchronous || this.tool === failedTool) {
@@ -243,7 +244,7 @@ export class Editor {
   /** Tool startup is internal: its command/input boundary decides how to report a refusal. */
   startTool(tool: Tool): void | Promise<void> {
     const reject = (error: unknown): never => {
-      if ((error instanceof GeometryBudgetError || error instanceof CadGraphError) && this.tool === tool) {
+      if ((error instanceof GeometryBudgetError || error instanceof CadGraphError || error instanceof ConstraintPolicyError) && this.tool === tool) {
         this.internals.gripDrag = null;
         this.internals.panning = false;
         prompter.finishTool(this, this.internals);

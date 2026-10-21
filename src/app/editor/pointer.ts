@@ -5,8 +5,10 @@
  */
 import type { Point } from '../../core/geometry';
 import * as g from '../../core/geometry';
+import type { DrawingState } from '../../core/document';
 import type { Entity } from '../../core/entities';
 import { gripPoints, moveGrip } from '../../core/entities';
+import { resolveDynamicGripDrag, type DynamicGripEditResult } from '../../core/parametric/grips';
 import { findObjectSnap, constrainDirection, snapToGrid, trackFromPoints, type SnapResult } from '../../core/snap';
 import { activeSelectionClip, pickEntity, selectByBox, selectByPolygon } from '../../core/selection';
 import { PanTool } from '../../tools/edit';
@@ -74,7 +76,15 @@ export function onMouseMove(ed: Editor, st: EditorInternals, ev: MouseEvent): un
   let result: unknown;
 
   if (st.gripDrag) {
-    const moved = applyGrip(st.gripDrag.entity, st.gripDrag.index, world);
+    const drag = st.gripDrag;
+    const dyn = dynamicDrag(ed, drag.entity, drag.index, world);
+    // A refused dynamic drag previews as the unmoved entity: the value
+    // never partially applies, so there is nothing else honest to show.
+    const moved = dyn
+      ? dyn.problem
+        ? drag.entity
+        : (dyn.state.entities.find((x) => x.id === drag.entity.id) ?? drag.entity)
+      : applyGrip(drag.entity, drag.index, world);
     st.overlay.ghost = moved ? [moved] : [];
     st.overlay.dynText = [`${g.dist(st.gripDrag.start, world).toFixed(4)}`];
     ed.render();
@@ -125,7 +135,7 @@ export function onMouseDown(ed: Editor, st: EditorInternals, ev: MouseEvent): un
     const gripTol = 6 * ed.viewport.worldPerPixel();
     for (const e of graphicalSelectionEntities(ed)) {
       if (!ed.selection.has(e.id)) continue;
-      const grips = gripPoints(e, ed.doc.lookupBlock.textGeometry);
+      const grips = gripPoints(e, ed.doc.lookupBlock.textGeometry, ed.doc.lookupBlock);
       const idx = grips.findIndex((gp) => (!clip || clip.contains(gp)) && g.dist(gp, raw) <= gripTol);
       if (idx >= 0) {
         st.gripDrag = { entity: e, index: idx, start: raw };
@@ -158,15 +168,27 @@ export function onMouseUp(ed: Editor, st: EditorInternals, ev: MouseEvent): void
   if (st.gripDrag) {
     const s = ed.screenFromEvent(ev);
     const { world } = resolveCursor(ed, st, s);
-    const original = gripPoints(st.gripDrag.entity, ed.doc.lookupBlock.textGeometry)[st.gripDrag.index];
-    const moved = original && g.dist(original, world) > 1e-9 ? applyGrip(st.gripDrag.entity, st.gripDrag.index, world) : null;
+    const drag = st.gripDrag;
+    const original = gripPoints(drag.entity, ed.doc.lookupBlock.textGeometry, ed.doc.lookupBlock)[drag.index];
     st.gripDrag = null;
     st.overlay.ghost = [];
     st.overlay.trackFrom = null;
     st.overlay.dynText = [];
     updateCursorMode(ed, st);
     ed.setPrompt('Type a command');
-    if (moved) ed.doc.replaceEntities([moved]);
+    if (original && g.dist(original, world) > 1e-9) {
+      const dyn = dynamicDrag(ed, drag.entity, drag.index, world);
+      if (dyn) {
+        // A dynamic grip commit is a parameter edit: exactly one transact
+        // of the apply.ts result, or — on refusal — no change at all, with
+        // the problem code on the command line (the DYNSET idiom).
+        if (dyn.problem) ed.log(`Grip edit refused (${dyn.problem}): ${dyn.message ?? 'the edit was not applied.'}`);
+        else ed.doc.transact(() => dyn.state);
+      } else {
+        const moved = applyGrip(drag.entity, drag.index, world);
+        if (moved) ed.doc.replaceEntities([moved]);
+      }
+    }
     ed.render();
     return;
   }
@@ -264,4 +286,41 @@ export function onContextMenu(ev: MouseEvent): void {
 /** Move grip `index` of an entity to `p` (AutoCAD grip stretch semantics). */
 export function applyGrip(e: Entity, index: number, p: Point): Entity | null {
   return moveGrip(e, index, p);
+}
+
+/**
+ * The document state as the ACTIVE SPACE sees it (review R08).
+ * Drawing.snapshot's `entities` are the stored model-space list; in a
+ * paper-space layout the edited entities are the layout's, which
+ * Drawing.entities returns (and which Drawing.transact projects in for
+ * its callback). Pure edit functions search `state.entities`, so they
+ * must be given this view: against the raw snapshot a paper-space insert
+ * is "not found" — DYNSET and Properties refused it, and a dynamic grip
+ * drag resolved to nothing.
+ */
+function activeSpaceState(ed: Editor): DrawingState {
+  const s = ed.doc.snapshot;
+  const entities = ed.doc.entities;
+  return entities === s.entities ? s : { ...s, entities };
+}
+
+/**
+ * The parameter edit a grip drag amounts to, when the grip is a DYNAMIC
+ * parameter grip (an insert grip with index >= 1 that resolves against the
+ * current document): routed through core/parametric/grips.ts into
+ * setDynamicParameter — the same path as a Properties or DYNSET edit.
+ * Undefined for ordinary grips (including an insert's position grip).
+ * Divergence, deliberate: moveGrip cannot make this edit (it is a pure
+ * entity function with no block lookup and no document state), so dynamic
+ * indices are resolved HERE, at the two pointer sites that would
+ * otherwise hand them to moveGrip, and never reach it. Review R08 made
+ * that guarantee total: the resolution runs against the ACTIVE SPACE's
+ * state (a paper-space insert resolves at all), and
+ * resolveDynamicGripDrag returns a refusal — never undefined — for an
+ * unresolvable index on a dynamic insert, so no dynamic drag can fall
+ * through to moving the whole INSERT.
+ */
+function dynamicDrag(ed: Editor, e: Entity, index: number, world: Point): DynamicGripEditResult | undefined {
+  if (e.type !== 'insert' || index < 1) return undefined;
+  return resolveDynamicGripDrag(activeSpaceState(ed), e.id, index, world);
 }

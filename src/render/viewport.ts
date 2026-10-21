@@ -454,7 +454,9 @@ export class Viewport {
     if (ov.selection.size > 0 && ov.selection.size <= 400) {
       for (const e of this.doc.entities) {
         if (!ov.selection.has(e.id)) continue;
-        for (const gp of gripPoints(e, this.doc.lookupBlock.textGeometry)) this.drawGrip(this.toScreen(gp), cursorScreen);
+        // Same grip list the pointer picks from (dynamic parameter grips
+        // included): what is drawn is exactly what can be grabbed.
+        for (const gp of gripPoints(e, this.doc.lookupBlock.textGeometry, this.doc.lookupBlock)) this.drawGrip(this.toScreen(gp), cursorScreen);
       }
     }
 
