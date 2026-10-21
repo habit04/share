@@ -1,5 +1,6 @@
 /**
- * Native MULTILEADER data (P18 slice 1: MTEXT content; slice 2: block content).
+ * Native MULTILEADER data (P18 slice 1: MTEXT content; slice 2: block content;
+ * slice 3: multi-context / annotative scale, PROPOSAL-P18-S3).
  *
  * A LeaderEntity with `kind: 'mleader'` and this data present is a native
  * multileader: it is written to DXF as a MULTILEADER entity (AcDbMLeader with a
@@ -60,6 +61,62 @@ export interface MLeaderBlockContent {
   readonly attributes: readonly MLeaderBlockAttribute[];
 }
 
+/** Block placement of ONE additional context (slice 3): the context's own
+ *  15/16/46 values. The block name and the attribute values are entity-level
+ *  (one content block per entity, as the file carries them); only the
+ *  placement varies per annotation scale. */
+export interface MLeaderContextBlock {
+  /** Block position for this context (context 15; fallbacks mirror the primary's chain). */
+  readonly position: Point;
+  /** Block scale X/Y for this context (context 16). Z is 1 (2D model). */
+  readonly scale: Point;
+  /** Block rotation for this context (context 46). */
+  readonly rotation: number;
+}
+
+/**
+ * ONE additional CONTEXT_DATA section of an annotative multileader (slice 3,
+ * PROPOSAL-P18-S3): the representation at one more annotation scale. The
+ * FIRST context in file order is the primary — it lives on the LeaderEntity
+ * fields and the scalar fields of MLeaderNative exactly as slices 1/2 left
+ * them; `MLeaderNative.contexts` carries contexts 2..n in file order. Each
+ * record mirrors the primary's modelled group set for its own section.
+ */
+export interface MLeaderContext {
+  /** CONTEXT_DATA group 40: this context's scale factor (its identity — no fallback). */
+  readonly scaleFactor: number;
+  /** CONTEXT_DATA group 145 for this context (fallback: the primary's resolved gap). */
+  readonly landingGap: number;
+  /** CONTEXT_DATA group 41 for this context (fallback: the primary's resolved text height). */
+  readonly textHeight: number;
+  /** CONTEXT_DATA group 140 for this context (fallback: the primary's resolved arrow size). */
+  readonly arrowSize: number;
+  /** This context's leader geometry: every LEADER_LINE path (arrow -> ... -> landing)
+   *  of the context's LEADER{ sections, flattened in file order exactly as the
+   *  primary flattens them into vertices + extraPaths. Empty for a content-only
+   *  context (no LEADER{ section). */
+  readonly paths: readonly (readonly Point[])[];
+  /** Landing (dogleg) vector of this context's first LEADER{ section, when it carries one. */
+  readonly dogleg?: Point;
+  /** This context's MTEXT content (its own group 304), plain text; absent when the
+   *  context carries no MTEXT. Not required to equal the primary's text. */
+  readonly text?: string;
+  /** The context's formatted MTEXT source, when its 304 carries formatting. */
+  readonly raw?: string;
+  /** Text STYLE name for this context (its group 340, resolved like the primary's). */
+  readonly textStyleName?: string;
+  /** MTEXT position for this context (group 12), when it carries MTEXT. */
+  readonly textPosition?: Point;
+  /** MTEXT rotation for this context in radians (groups 13/42), when nonzero. */
+  readonly textRotation?: number;
+  /** MTEXT width for this context (group 43), when positive. */
+  readonly textWidth?: number;
+  /** MTEXT attachment for this context (group 171, 1..9). */
+  readonly textAttachment?: number;
+  /** Block placement for this context, present iff the content is a block. */
+  readonly block?: MLeaderContextBlock;
+}
+
 export interface MLeaderNative {
   readonly contentType: MLeaderContentType;
   /** MLEADERSTYLE name (dictionary key). 'Standard' when the source names none. */
@@ -74,6 +131,13 @@ export interface MLeaderNative {
   readonly textStyleName?: string;
   /** Block content payload (slice 2); present iff `contentType` is 'block'. */
   readonly block?: MLeaderBlockContent;
+  /**
+   * Additional annotative contexts (slice 3, PROPOSAL-P18-S3): CONTEXT_DATA
+   * sections 2..n in file order. Absent for single-context multileaders (the
+   * overwhelming majority, and every authored entity today); when present it
+   * holds at least one record.
+   */
+  readonly contexts?: readonly MLeaderContext[];
   /**
    * MLEADERSTYLE values captured from the source style object that no
    * entity-level field supplies (slice-1 acceptance must-fix V-1): present
@@ -225,6 +289,32 @@ export function mleaderNativeProblem(native: MLeaderNative): string | undefined 
       if (!a.tag) return 'multileader block attribute tag is missing';
       if (typeof a.value !== 'string') return 'multileader block attribute value must be text';
       if (a.width !== undefined && (!Number.isFinite(a.width) || a.width <= 0)) return 'multileader block attribute width must be a positive finite number';
+    }
+  }
+  // Slice 3: additional annotative contexts validate to the primary's standard.
+  if (native.contexts !== undefined) {
+    if (native.contexts.length === 0) return 'multileader contexts list must not be empty when present';
+    for (const c of native.contexts) {
+      if (!Number.isFinite(c.scaleFactor) || c.scaleFactor <= 0) return 'multileader context scale factor must be a positive finite number';
+      if (!Number.isFinite(c.landingGap) || c.landingGap < 0) return 'multileader context landing gap must be a non-negative finite number';
+      if (!Number.isFinite(c.textHeight) || c.textHeight <= 0) return 'multileader context text height must be a positive finite number';
+      if (!Number.isFinite(c.arrowSize) || c.arrowSize < 0) return 'multileader context arrow size must be a non-negative finite number';
+      for (const path of c.paths) {
+        for (const p of path) {
+          if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return 'multileader context leader points must be finite';
+        }
+      }
+      if (c.dogleg !== undefined && (!Number.isFinite(c.dogleg.x) || !Number.isFinite(c.dogleg.y))) return 'multileader context dogleg must be finite';
+      if (c.textPosition !== undefined && (!Number.isFinite(c.textPosition.x) || !Number.isFinite(c.textPosition.y))) return 'multileader context text position must be finite';
+      if (c.textRotation !== undefined && !Number.isFinite(c.textRotation)) return 'multileader context text rotation must be finite';
+      if (c.textWidth !== undefined && (!Number.isFinite(c.textWidth) || c.textWidth < 0)) return 'multileader context text width must be a non-negative finite number';
+      if (c.textAttachment !== undefined && (!Number.isInteger(c.textAttachment) || c.textAttachment < 1 || c.textAttachment > 9)) return 'multileader context text attachment must be an integer from 1 to 9';
+      if (c.block !== undefined) {
+        if (native.contentType !== 'block') return 'multileader context block placement requires block content';
+        if (!Number.isFinite(c.block.position.x) || !Number.isFinite(c.block.position.y)) return 'multileader context block position must be finite';
+        if (!Number.isFinite(c.block.scale.x) || !Number.isFinite(c.block.scale.y) || c.block.scale.x === 0 || c.block.scale.y === 0) return 'multileader context block scale must be finite and non-zero';
+        if (!Number.isFinite(c.block.rotation)) return 'multileader context block rotation must be finite';
+      }
     }
   }
   return undefined;
