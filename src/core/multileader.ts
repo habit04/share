@@ -1,11 +1,11 @@
 /**
- * Native MULTILEADER data (P18 slice 1: MTEXT content).
+ * Native MULTILEADER data (P18 slice 1: MTEXT content; slice 2: block content).
  *
  * A LeaderEntity with `kind: 'mleader'` and this data present is a native
  * multileader: it is written to DXF as a MULTILEADER entity (AcDbMLeader with a
  * CONTEXT_DATA section) plus an MLEADERSTYLE object, and read back from one.
  * A mleader WITHOUT this data (every pre-P18 save, and block-content imports
- * whose content slice 1 does not model) keeps the legacy LEADER + MTEXT
+ * whose block reference does not resolve) keeps the legacy LEADER + MTEXT
  * write-back exactly as before; the import report says so, it is not silent.
  *
  * Everything else about a multileader — path vertices, landing (dogleg),
@@ -23,11 +23,42 @@
  * marked "specimen" below; they mirror those files byte-for-byte in shape.
  */
 
-/** What a native multileader carries. Slice 1 models 'mtext' and 'none';
- *  'block' is slice 2 (PROPOSAL-P18-S2) — the union already names it because
- *  the committed V-2 caller reports modelled block content as such; the block
- *  payload type and codec land with the slice-2 implementation commits. */
+/** What a native multileader carries: MTEXT (slice 1), no content, or a block
+ *  reference with attribute values (slice 2, PROPOSAL-P18-S2). */
+import type { Point } from './geometry';
+
 export type MLeaderContentType = 'mtext' | 'none' | 'block';
+
+/** One attribute value of a block-content multileader (slice 2). */
+export interface MLeaderBlockAttribute {
+  /** Index into the content block's `BlockDef.attributes` (trailing group 177). */
+  readonly index: number;
+  /** The definition tag at that index, resolved on import (the value's identity in-session). */
+  readonly tag: string;
+  /** The attribute's text value (trailing group 302). */
+  readonly value: string;
+  /** Trailing group 44: attribute width factor, when the source carries it. */
+  readonly width?: number;
+}
+
+/**
+ * Block content of a native multileader (slice 2): a reference to a block
+ * definition in the same drawing plus this instance's placement and attribute
+ * values. The block's geometry/ATTDEFs live in the BlockDef itself; only the
+ * reference and the per-instance data are carried here.
+ */
+export interface MLeaderBlockContent {
+  /** Block name (CONTEXT_DATA 341 / trailing 344 name the record by handle; resolved on import). */
+  readonly name: string;
+  /** Block position (context 15; fallback: the context 10 content base point). */
+  readonly position: Point;
+  /** Block scale X/Y (context 16; fallback: the trailing 10 scale point). Z is 1 (2D model). */
+  readonly scale: Point;
+  /** Block rotation in radians (context 46; fallback: trailing 43). */
+  readonly rotation: number;
+  /** Attribute values in source order; empty when the block content carries none. */
+  readonly attributes: readonly MLeaderBlockAttribute[];
+}
 
 export interface MLeaderNative {
   readonly contentType: MLeaderContentType;
@@ -41,6 +72,8 @@ export interface MLeaderNative {
   readonly leaderLineType: 0 | 1 | 2;
   /** Name of the text STYLE the MTEXT content uses (CONTEXT_DATA group 340 names it by handle). */
   readonly textStyleName?: string;
+  /** Block content payload (slice 2); present iff `contentType` is 'block'. */
+  readonly block?: MLeaderBlockContent;
   /**
    * MLEADERSTYLE values captured from the source style object that no
    * entity-level field supplies (slice-1 acceptance must-fix V-1): present
@@ -89,8 +122,11 @@ export interface MLeaderStyleData {
   readonly landingGap: number;
   /** Style group 142: overall scale factor. */
   readonly scaleFactor: number;
-  /** Style group 170: content type (2 = MTEXT, 0 = none). */
-  readonly contentType: 0 | 2;
+  /** Style group 170: content type (2 = MTEXT, 1 = block, 0 = none). */
+  readonly contentType: 0 | 1 | 2;
+  /** Content block name for block styles (slice 2): the writer resolves style group
+   *  343 (content block record handle) from it; absent for MTEXT/none styles. */
+  readonly blockName?: string;
   /** Style group 172/171-era line type is carried per entity; the style's is straight. */
   readonly leaderLineType: 0 | 1 | 2;
   /** Text STYLE name the content uses (style groups 3 / 342 name it by name and handle). */
@@ -143,9 +179,12 @@ export function defaultMLeaderNative(over: Partial<MLeaderNative> = {}): MLeader
 }
 
 /** The synthesized style for one style name: Standard values with the entity's effective overrides.
- *  Retained source style values (V-1) win over the specimen constants for their groups. */
+ *  Retained source style values (V-1) win over the specimen constants for their groups; for a
+ *  block style, the entity's own block placement supplies the style-level block scale/rotation
+ *  when nothing was retained (retained-over-derived-over-constant). */
 export function mleaderStyleData(native: MLeaderNative, effective: { arrowSize: number; textHeight: number; doglegLength: number; textStyleName?: string }): MLeaderStyleData {
   const retained = native.styleRetained;
+  const block = native.contentType === 'block' ? native.block : undefined;
   return {
     name: native.styleName,
     arrowSize: effective.arrowSize,
@@ -153,12 +192,13 @@ export function mleaderStyleData(native: MLeaderNative, effective: { arrowSize: 
     doglegLength: effective.doglegLength,
     landingGap: native.landingGap,
     scaleFactor: native.scaleFactor,
-    contentType: native.contentType === 'mtext' ? 2 : 0,
+    contentType: native.contentType === 'mtext' ? 2 : native.contentType === 'block' ? 1 : 0,
+    ...(block ? { blockName: block.name } : {}),
     leaderLineType: native.leaderLineType,
     textStyleName: effective.textStyleName ?? native.textStyleName ?? 'Standard',
     alignSpace: retained?.alignSpace ?? STANDARD_MLEADER_STYLE.alignSpace,
-    blockScale: retained?.blockScale ?? STANDARD_MLEADER_STYLE.blockScale,
-    blockRotation: retained?.blockRotation ?? STANDARD_MLEADER_STYLE.blockRotation,
+    blockScale: retained?.blockScale ?? (block ? { x: block.scale.x, y: block.scale.y, z: 1 } : STANDARD_MLEADER_STYLE.blockScale),
+    blockRotation: retained?.blockRotation ?? block?.rotation ?? STANDARD_MLEADER_STYLE.blockRotation,
     textAttachmentDirection: retained?.textAttachmentDirection ?? STANDARD_MLEADER_STYLE.textAttachmentDirection,
     bottomTextAttachmentDirection: retained?.bottomTextAttachmentDirection ?? STANDARD_MLEADER_STYLE.bottomTextAttachmentDirection,
     topTextAttachmentDirection: retained?.topTextAttachmentDirection ?? STANDARD_MLEADER_STYLE.topTextAttachmentDirection,
@@ -172,7 +212,20 @@ export function mleaderNativeProblem(native: MLeaderNative): string | undefined 
   if (!Number.isFinite(native.scaleFactor) || native.scaleFactor <= 0) return 'multileader scale factor must be a positive finite number';
   if (!Number.isFinite(native.landingGap) || native.landingGap < 0) return 'multileader landing gap must be a non-negative finite number';
   if (native.leaderLineType !== 0 && native.leaderLineType !== 1 && native.leaderLineType !== 2) return 'multileader leader line type must be 0, 1 or 2';
-  if (native.contentType === 'block') return 'multileader block content is not modeled by this slice yet';
-  if (native.contentType !== 'mtext' && native.contentType !== 'none') return 'multileader content type is not modeled by this slice';
+  if (native.contentType !== 'mtext' && native.contentType !== 'none' && native.contentType !== 'block') return 'multileader content type is not modeled by this slice';
+  if (native.contentType === 'block') {
+    const b = native.block;
+    if (!b) return 'multileader block content is missing its block payload';
+    if (!b.name || /[\r\n]/.test(b.name)) return 'multileader block name is missing or invalid';
+    if (!Number.isFinite(b.position.x) || !Number.isFinite(b.position.y)) return 'multileader block position must be finite';
+    if (!Number.isFinite(b.scale.x) || !Number.isFinite(b.scale.y) || b.scale.x === 0 || b.scale.y === 0) return 'multileader block scale must be finite and non-zero';
+    if (!Number.isFinite(b.rotation)) return 'multileader block rotation must be finite';
+    for (const a of b.attributes) {
+      if (!Number.isInteger(a.index) || a.index < 0) return 'multileader block attribute index must be a non-negative integer';
+      if (!a.tag) return 'multileader block attribute tag is missing';
+      if (typeof a.value !== 'string') return 'multileader block attribute value must be text';
+      if (a.width !== undefined && (!Number.isFinite(a.width) || a.width <= 0)) return 'multileader block attribute width must be a positive finite number';
+    }
+  }
   return undefined;
 }

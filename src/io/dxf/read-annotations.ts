@@ -16,7 +16,7 @@ import { mtextFromDxf, hasFormatting } from '../../core/mtext';
 import { isEscapedPlainContent } from './write-annotations';
 import { cellOwners } from '../../core/table';
 import type { MTextAttachment, MTextColumns } from '../../core/mtext';
-import { STANDARD_MLEADER_STYLE, type MLeaderNative } from '../../core/multileader';
+import { STANDARD_MLEADER_STYLE, type MLeaderBlockAttribute, type MLeaderBlockContent, type MLeaderNative, type MLeaderStyleRetained } from '../../core/multileader';
 
 export function readDimStyleFromEntity(o: Obj, styles: Map<string, DimStyle>, fallback: DimStyle, textStyleHandles?: ReadonlyMap<string, string>): DimStyle {
   const name = str(o, 3);
@@ -227,6 +227,21 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
   let textStyleHandle: string | undefined;
   let styleHandle: string | undefined;
   let contentTypeRaw: number | undefined;
+  // P18 slice 2 block-content capture (PROPOSAL-P18-S2): context 341/15/16/46 with
+  // fallbacks (context 10 base point; trailing 344/10/43), and the trailing
+  // attribute entries (330 ATTDEF handle / 177 definition index / 44 width /
+  // 302 text). Trailing groups are only collected after CONTEXT_DATA closes —
+  // before it, a 330 is the entity's owner, not an attribute.
+  let blockHandleCtx: string | undefined;
+  let blockPos: g.Point | undefined;
+  let ctxBasePos: g.Point | undefined;
+  let blockScaleCtx: g.Point | undefined;
+  let blockRotationCtx: number | undefined;
+  let contextClosed = false;
+  let blockHandleTrail: string | undefined;
+  let blockScaleTrail: g.Point | undefined;
+  let blockRotationTrail: number | undefined;
+  const pendingAttrs: Array<{ index?: number; width?: number; text?: string }> = [];
   const endSection = () => {
     // A LEADER{} section: each of its lines runs arrow -> ... -> last leader point, then the landing.
     for (const l of sectionLines) paths.push(lastLeaderPoint ? [...l, lastLeaderPoint] : l);
@@ -245,6 +260,7 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
     }
     if (p.code === 301) {
       depth = depth.filter((d) => d !== 'CONTEXT');
+      contextClosed = true;
       continue;
     }
     if (p.code === 302 && p.value.startsWith('LEADER{')) {
@@ -295,6 +311,21 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
         case 340:
           textStyleHandle = p.value.trim().toUpperCase();
           break;
+        case 341:
+          blockHandleCtx = p.value.trim().toUpperCase();
+          break;
+        case 15:
+          blockPos = { x: flt(p.value), y: nextY() };
+          break;
+        case 16:
+          blockScaleCtx = { x: flt(p.value), y: nextY() };
+          break;
+        case 46:
+          blockRotationCtx = flt(p.value);
+          break;
+        case 10:
+          ctxBasePos = { x: flt(p.value), y: nextY() };
+          break;
         case 304:
           text += p.value;
           break;
@@ -327,6 +358,17 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
     else if (p.code === 41) commonDogleg = flt(p.value);
     else if (p.code === 172) contentTypeRaw = int(p.value);
     else if (p.code === 340 && styleHandle === undefined) styleHandle = p.value.trim().toUpperCase();
+    // Slice 2 trailing block data — only after CONTEXT_DATA has closed (before
+    // it, depth is also empty at the entity header, where 330 is the owner).
+    if (contextClosed) {
+      if (p.code === 344) blockHandleTrail = p.value.trim().toUpperCase();
+      else if (p.code === 10) blockScaleTrail = { x: flt(p.value), y: nextY() };
+      else if (p.code === 43) blockRotationTrail = flt(p.value);
+      else if (p.code === 330) pendingAttrs.push({});
+      else if (p.code === 177 && pendingAttrs.length) pendingAttrs[pendingAttrs.length - 1]!.index = int(p.value);
+      else if (p.code === 44 && pendingAttrs.length) pendingAttrs[pendingAttrs.length - 1]!.width = flt(p.value);
+      else if (p.code === 302 && pendingAttrs.length) pendingAttrs[pendingAttrs.length - 1]!.text = p.value;
+    }
   }
   const main = paths.shift();
   if (!main || main.length < 2) return null;
@@ -337,27 +379,73 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
   const plain = text ? mtextFromDxf(text) : '';
   const rot = textDir && (textDir.x !== 0 || textDir.y !== 0) ? Math.atan2(textDir.y, textDir.x) : textRotation;
   // P18: MTEXT-content multileaders are modeled natively. Block content
-  // (context 296 = 1, or trailing content type 1) is NOT modeled in slice 1:
-  // no native data is attached, the caller reports the simplification, and the
-  // entity keeps the legacy path — retained and reported, never silently
-  // claimed as native MTEXT.
+  // (context 296 = 1, or trailing content type 1) is modeled in slice 2 ONLY
+  // when it resolves whole: the block record handle names a block, that block
+  // has a definition in this file, every attribute index resolves to a
+  // definition tag, and no MTEXT content rides along (hybrid). Anything else
+  // — unresolvable reference, absent definition, dangling attribute, hybrid —
+  // gets NO native data: the caller reports the simplification and the entity
+  // keeps the legacy path, retained and reported, never silently flattened.
   const isBlockContent = hasBlock || contentTypeRaw === 1;
   const textStyleName = textStyleHandle ? ctx.textStyleHandles?.get(textStyleHandle) : undefined;
   // V-1 (AMENDMENT-P18-S2-A): the source style's retained values for the groups no
   // entity field supplies, keyed by the same style handle the name came from; an
   // absent map (read paths that build their own context) keeps the slice-1 fallback.
   const styleRetained = styleHandle ? ctx.mleaderStyleValues?.get(styleHandle) : undefined;
-  const mleader: MLeaderNative | undefined = isBlockContent
-    ? undefined
-    : {
-        contentType: plain || contentTypeRaw === 2 ? 'mtext' : 'none',
-        styleName: (styleHandle ? ctx.mleaderStyles?.get(styleHandle) : undefined) ?? 'Standard',
-        scaleFactor: scaleFactor && scaleFactor > 0 ? scaleFactor : STANDARD_MLEADER_STYLE.scaleFactor,
-        landingGap: landingGap && landingGap >= 0 ? landingGap : STANDARD_MLEADER_STYLE.landingGap,
-        leaderLineType: lineType === 0 || lineType === 2 ? lineType : 1,
-        ...(textStyleName ? { textStyleName } : {}),
-        ...(styleRetained ? { styleRetained } : {}),
-      };
+  let block: MLeaderBlockContent | undefined;
+  if (isBlockContent && !plain) {
+    const handle = blockHandleCtx ?? blockHandleTrail;
+    const name = handle ? ctx.blockRecordNames?.get(handle) : undefined;
+    const def = name !== undefined ? ctx.blocks?.[name] : undefined;
+    if (name !== undefined && def) {
+      let ok = true;
+      const attributes: MLeaderBlockAttribute[] = [];
+      for (const pa of pendingAttrs) {
+        const defAttr = pa.index !== undefined && pa.index >= 0 ? def.attributes[pa.index] : undefined;
+        if (!defAttr) {
+          ok = false;
+          break;
+        }
+        attributes.push({ index: pa.index!, tag: defAttr.tag, value: pa.text ?? '', ...(pa.width !== undefined ? { width: pa.width } : {}) });
+      }
+      if (ok) {
+        block = {
+          name,
+          position: blockPos ?? ctxBasePos ?? main[main.length - 1]!,
+          scale: blockScaleCtx ?? blockScaleTrail ?? { x: 1, y: 1 },
+          rotation: blockRotationCtx ?? blockRotationTrail ?? 0,
+          attributes,
+        };
+      }
+    }
+  }
+  // For block content, the style's block scale/rotation groups (47/49/140/141)
+  // are LIVE style data that mleaderStyleData also derives from the instance
+  // payload: when the retained style values equal the instance's own, the
+  // derived path reproduces them exactly and retention would only duplicate
+  // them onto the entity (breaking the authored fixed point). They are kept
+  // only when they diverge from the instance — the case where dropping them
+  // would lose the style object's own values.
+  let effectiveRetained = styleRetained;
+  if (block && effectiveRetained) {
+    const r: { -readonly [K in keyof MLeaderStyleRetained]: MLeaderStyleRetained[K] } = { ...effectiveRetained };
+    if (r.blockScale && r.blockScale.x === block.scale.x && r.blockScale.y === block.scale.y && r.blockScale.z === 1) delete r.blockScale;
+    if (r.blockRotation !== undefined && r.blockRotation === block.rotation) delete r.blockRotation;
+    effectiveRetained = Object.keys(r).length ? r : undefined;
+  }
+  const nativeCommon = {
+    styleName: (styleHandle ? ctx.mleaderStyles?.get(styleHandle) : undefined) ?? 'Standard',
+    scaleFactor: scaleFactor && scaleFactor > 0 ? scaleFactor : STANDARD_MLEADER_STYLE.scaleFactor,
+    landingGap: landingGap && landingGap >= 0 ? landingGap : STANDARD_MLEADER_STYLE.landingGap,
+    leaderLineType: (lineType === 0 || lineType === 2 ? lineType : 1) as 0 | 1 | 2,
+    ...(textStyleName ? { textStyleName } : {}),
+    ...(effectiveRetained ? { styleRetained: effectiveRetained } : {}),
+  };
+  const mleader: MLeaderNative | undefined = block
+    ? { contentType: 'block', ...nativeCommon, block }
+    : isBlockContent
+      ? undefined
+      : { contentType: plain || contentTypeRaw === 2 ? 'mtext' : 'none', ...nativeCommon };
   return {
     ...base,
     type: 'leader',
