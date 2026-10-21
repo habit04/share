@@ -355,3 +355,70 @@ describe('P18 slice 3: single-context control (slice-1/2 behaviour unchanged)', 
     expect(codes.join(',')).toBe('300,40,10,20,30,41,140,145,174,175,176,177,290,304,11,21,31,340,12,22,32,13,23,33,42,43,44,45,170,90,171,172,302');
   });
 });
+
+// ------------------------------------------------- F-T: unterminated additional section
+// Acceptance finding F-T (reviews/P18-SLICE3-ACCEPTANCE.md, probe 5), fix
+// filed as AMENDMENT-P18-S3-B (FILED-UNADMITTED): an additional CONTEXT_DATA
+// section that is UNTERMINATED at record end was silently modelled as a
+// complete context at the prototype head — sizes completed from the primary's
+// fallbacks, no textPosition, the "kept as native data" note, an EMPTY import
+// report — and write-back fabricated the section's completion. The amendment
+// adds the missing withholding leg: an unterminated additional section
+// withholds native data whole-entity, like every other unmodellable context.
+describe('P18 slice 3 (AMENDMENT-P18-S3-B): unterminated additional CONTEXT_DATA section withholds', () => {
+  const truncatedTail: Lines = ['300', 'CONTEXT_DATA{', '40', '0.25', '10', '5', '20', '2.5', '30', '0', '41', '0.25', '304', 'TRUNCATED-TEXT'];
+
+  it('a truncated, unterminated final section is withheld + reported, never modelled or completed on write', () => {
+    const notes: string[] = [];
+    // No trailing section at all: the record's groups end inside the section.
+    const s = readDxf(dxfOf([...mlHead, ...ctx1, ...truncatedTail]), { notes });
+    const l = s.entities[0] as LeaderEntity;
+    expect(l.mleader).toBeUndefined();
+    // The legacy fallback is the primary context alone — its text ONCE, and
+    // the truncated fragment's text appears nowhere.
+    expect(l.text).toBe('PUMP P-101');
+    expect(l.vertices).toEqual([{ x: 7, y: 3 }, { x: 10, y: 5 }]);
+    expect(l.textPosition).toEqual({ x: 10.5, y: 5.2 });
+    expect(notes.join(' ')).toMatch(/annotative contexts are not kept/);
+    expect(reportOf(s).some((i) => i.type === 'MULTILEADER' && i.action === 'simplified' && /annotative contexts/.test(i.reason))).toBe(true);
+    const out = writeDxf(s);
+    expect(out).toContain('\r\nLEADER\r\n');
+    expect(out).not.toContain('MULTILEADER');
+    expect(out).not.toContain('TRUNCATED-TEXT');
+  });
+
+  it('an additional section superseded by a later opener before its own 301 is likewise unterminated and withholds', () => {
+    const superseded: Lines = ['300', 'CONTEXT_DATA{', '40', '0.5', '10', '5', '20', '2.5', '30', '0', '41', '0.25', '304', 'SECOND-TEXT'];
+    const third = mtextCtx({ scale: '0.25', line: ['2', '0.75'], landing: ['2.5', '1.25'], textPos: ['2.6', '1.3'] });
+    const notes: string[] = [];
+    const s = readDxf(dxfOf([...mlHead, ...ctx1, ...superseded, ...third, ...trailingMText]), { notes });
+    const l = s.entities[0] as LeaderEntity;
+    expect(l.mleader).toBeUndefined();
+    expect(l.text).toBe('PUMP P-101');
+    expect(notes.join(' ')).toMatch(/annotative contexts are not kept/);
+    expect(reportOf(s).some((i) => i.type === 'MULTILEADER' && i.action === 'simplified' && /annotative contexts/.test(i.reason))).toBe(true);
+  });
+
+  it('a properly terminated final section ending exactly at the record end still models (no over-withholding)', () => {
+    // Both sections closed by their 301; no trailing section follows.
+    const notes: string[] = [];
+    const s = readDxf(dxfOf([...mlHead, ...ctx1, ...ctx2]), { notes });
+    const l = s.entities[0] as LeaderEntity;
+    expect(l.mleader?.contexts).toHaveLength(1);
+    expect(l.mleader?.contexts![0]!.scaleFactor).toBe(0.5);
+    expect(notes.join(' ')).toMatch(/annotative contexts are kept as native data/);
+    expect(reportOf(s).some((i) => i.action === 'simplified')).toBe(false);
+  });
+
+  it('an unterminated PRIMARY section keeps the pre-existing slices-1/2 posture (out of this amendment\'s scope)', () => {
+    // The primary section's LEADER cluster closes but its 301 never arrives
+    // and no trailing section follows. Slice 3 did not change the primary
+    // path; this pins that the F-T leg fires for ADDITIONAL sections only.
+    const untermPrimary = mtextCtx({ scale: '1', line: ['7', '3'], landing: ['10', '5'], textPos: ['10.5', '5.2'] }).slice(0, -2);
+    const s = readDxf(dxfOf([...mlHead, ...untermPrimary]));
+    const l = s.entities[0] as LeaderEntity;
+    expect(l.mleader).toBeDefined();
+    expect(l.mleader?.contexts).toBeUndefined();
+    expect(l.text).toBe('PUMP P-101');
+  });
+});
