@@ -10,6 +10,9 @@ release/
 release-test/
 release-test-no-dwg/
 *.log
+# The legacy-leveldb fixtures are real Chromium stores: their numbered
+# .log files are payload, not build output.
+!tests/fixtures/legacy-leveldb/**/*.log
 .DS_Store
 screenshots/*.png
 _*.mjs

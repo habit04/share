@@ -244,7 +244,8 @@ describe.runIf(process.platform === 'win32')('bounded project saves through prod
       mark('cancel-start'); await f.invoke('cancel-project-save-batch', batch); mark('cancel-complete');
       mark('readdir-start'); expect((await fs.readdir(scope.directory)).filter(name => name.includes('.tmp-'))).toEqual([]); mark('readdir-complete');
     })());
-  }, 30000);
+  // 60s: owner-accepted product latency — see SAVE33-TIMING-EVIDENCE.md (D1, 2026-10-18).
+  }, 60000);
 
   it.each([65, 512])('binds %i native files and changes only the two selected coherent inputs', async count => {
     const f = setup(), paths = await f.files(count), { batch, manifest } = await f.bind(paths);

@@ -8,9 +8,12 @@
  *   handles, typed carrier/follower links and opaque records are checked before identity is ignored
  *   when comparing independently built documents.
  * - Reading them back gives the expected solids: counts, ids, closed meshes, analytic volumes.
- * - Pure 3D rewrites remain byte-identical; the mixed fixture permits only the qualified native
- *   text defaults and INSERT-owner corrections, retaining every original handle and other pair.
- *   All three reach an exact second-save byte fixed point. Fixture CRLF stays pinned by -text.
+ * - Rewrites retain every original handle and other pair, permitting only the qualified native
+ *   text defaults, the INSERT-owner corrections and (Q11 F2 rework) the root-dictionary
+ *   additions that migrate the committed files' fabricated HEADER annotation scale into the
+ *   variable dictionary on first re-save — joined in F2 round 2 (Item 1) by the ACAD_SCALELIST
+ *   entry for that same scale. All three reach an exact second-save byte fixed point.
+ *   Fixture CRLF stays pinned by -text.
  * - The 2D entities of the mixed fixture come back exactly as they do without the solids.
  */
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -38,10 +41,15 @@ const WRITE = process.env.JCAD_WRITE_3D_FIXTURES === '1';
 const MAX_FIXTURE_BYTES = 2 * 1024 * 1024;
 // Original incoming fixtures are unchanged. Builder hashes were qualified against exact
 // decoded model/2D data and the pre-integration fccba52 source, not regenerated fixture files.
+// Builder hashes [1] updated for the Q11 F2 rework (the lead's NOT-GREEN gate on the F2 round,
+// 11 regressions): the pair-level delta against the previous pins is exactly the bogus
+// $CANNOSCALE / $ANNOALLVISIBLE HEADER pairs the pre-F2 writer fabricated into every output —
+// the recipe states set no annotation scale, so the reworked writer emits nothing for them;
+// [0] and the fixture files themselves are untouched.
 const FIXTURE_HASHES: Readonly<Record<Model3DFixtureName, readonly [string, string]>> = {
-  enclosure: ['29f9ed9142659bf7cb83c570574f0d57877afa6c8de8dc9a2be0ad0c3079bf8f', '52d285982ac82da3793d24613d322815d2f4f6ea3342347c3cb423bf34296787'],
-  'cable-tray': ['974b7f75ae0a91774e1ec02505b6c3ca50ef0b50b459f9453c89c7c76353facc', 'f27baf1817acca08ae74fe5d8958b08c5b453ca323df05f0ad241a8edae8164c'],
-  'schematic-with-solids': ['563f0b8a2ebd16106b253343f9e30802107c5f3a7bd0af3c48e93e75f91fff41', '4fe636f51a4212cfcb5a75cb0430e44de41cc24be9af99d8ff2fd324709f7024'],
+  enclosure: ['29f9ed9142659bf7cb83c570574f0d57877afa6c8de8dc9a2be0ad0c3079bf8f', 'd9220d6f6b2fc51f8d9739a3751a825114fff113fc863b7165f2ce8a873e4237'],
+  'cable-tray': ['974b7f75ae0a91774e1ec02505b6c3ca50ef0b50b459f9453c89c7c76353facc', '23109f7abb4412706041f76b68d68b40dc30c74e6f0d1a83e00bae1b045de2f1'],
+  'schematic-with-solids': ['563f0b8a2ebd16106b253343f9e30802107c5f3a7bd0af3c48e93e75f91fff41', 'bf57a6ae42bdd439b31dfaabea6d00d2d73d19b4035da090167f402930739116'],
 };
 const sha = (value: string) => createHash('sha256').update(value).digest('hex');
 const kernel = new ManifoldDirectKernel();
@@ -179,6 +187,18 @@ function sameLogicalData(actual: DrawingState, expected: DrawingState): void {
   expect(actual.layers).toEqual(expected.layers); expect(textStylesOf(actual)).toEqual(textStylesOf(expected)); expect(namedDimStyles(actual)).toEqual(namedDimStyles(expected));
 }
 
+/**
+ * Q11 F2 rework: the committed fixture files carry a $CANNOSCALE '1:1' the pre-F2 writer
+ * fabricated into every output as an unconditional default; the recipe states (a fresh
+ * Drawing snapshot, the demo seed) never set an annotation scale, and the reworked writer
+ * no longer fabricates one. Comparisons between a fixture state and a recipe-built state
+ * therefore pin that single field's exact value on both sides and exclude only it; the
+ * fixture's declared value is not lost — the round-trip test proves it migrates into the
+ * variable dictionary on re-save.
+ */
+const withoutCannoscale = (state: DrawingState): DrawingState =>
+  state.header ? { ...state, header: { ...state.header, cannoscale: undefined } } : state;
+
 function commonOwner(groups: readonly (readonly [number, string])[]): number {
   let depth = 0, index = -1;
   for (let i = 0; i < groups.length; i++) {
@@ -211,6 +231,47 @@ function retainedPairs(text: string, rewritten: string, state: DrawingState): vo
         groups = groups.map((pair, position) => position === index ? record.groups[sourceIndex]! : pair);
       }
     }
+    if (record.type === 'DICTIONARY' && record.groups.some(pair => pair[0] === 330 && pair[1] === '0')
+      && !record.groups.some(pair => pair[0] === 3 && pair[1] === 'AcDbVariableDictionary')
+      && !record.groups.some(pair => pair[0] === 3 && pair[1] === 'ACAD_SCALELIST')
+      && (groups.length === record.groups.length + 2 || groups.length === record.groups.length + 4)) {
+      // Q11 F2 rework qualified exception (same standing as the TEXT-defaults and
+      // ATTRIB-owner exceptions above): re-saving a file whose annotation scale lives
+      // only in its HEADER adds exactly one root-dictionary entry — AcDbVariableDictionary
+      // pointing at a dictionary whose CANNOSCALE DICTIONARYVAR carries the source's
+      // declared header value. F2 round 2 (Item 1) qualifies the second entry the same
+      // re-save now adds beside it: ACAD_SCALELIST pointing at a dictionary whose SCALE
+      // record carries the same declared scale (300 the name, 140/141 its ratio in
+      // AutoCAD's dotted form, 290 the unit flag) — without it AutoCAD resolves the
+      // migrated CANNOSCALE to 1:1. The added pairs and their target chains are
+      // asserted, not waved; every other pair must still match the source exactly below.
+      const added = groups.slice(record.groups.length);
+      const entries: [string, string][] = [];
+      for (let i = 0; i + 1 < added.length; i += 2) if (added[i]![0] === 3 && added[i + 1]![0] === 350) entries.push([added[i]![1], added[i + 1]![1]]);
+      const scaleName = state.header?.cannoscale ?? '';
+      const ratio = /^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/.exec(scaleName);
+      const dotted = (part: string) => part.includes('.') ? String(Number(part)) : `${part}.0`;
+      const chainOk = ([name, handle]: [string, string]): boolean => {
+        const dictionary = target.get(canonicalCadHandle(handle));
+        if (dictionary?.type !== 'DICTIONARY') return false;
+        if (name === 'AcDbVariableDictionary') {
+          const entryAt = dictionary.groups.findIndex(pair => pair[0] === 3 && pair[1] === 'CANNOSCALE');
+          const variableHandle = entryAt >= 0 && dictionary.groups[entryAt + 1]?.[0] === 350 ? dictionary.groups[entryAt + 1]![1] : undefined;
+          const variable = variableHandle ? target.get(canonicalCadHandle(variableHandle)) : undefined;
+          return variable?.type === 'DICTIONARYVAR' && variable.groups.some(pair => pair[0] === 1 && pair[1] === scaleName);
+        }
+        if (name === 'ACAD_SCALELIST' && ratio) {
+          const scales = dictionary.groups.flatMap((pair, i) => pair[0] === 3 && dictionary.groups[i + 1]?.[0] === 350 ? [target.get(canonicalCadHandle(dictionary.groups[i + 1]![1]))] : []);
+          return scales.some(scale => scale?.type === 'SCALE'
+            && scale.groups.some(pair => pair[0] === 300 && pair[1] === scaleName)
+            && scale.groups.some(pair => pair[0] === 140 && pair[1] === dotted(ratio[1]!))
+            && scale.groups.some(pair => pair[0] === 141 && pair[1] === dotted(ratio[2]!))
+            && scale.groups.some(pair => pair[0] === 290 && pair[1] === (ratio[1] === ratio[2] ? '1' : '0')));
+        }
+        return false;
+      };
+      if (entries.length * 2 === added.length && entries.every(chainOk)) groups = groups.slice(0, record.groups.length);
+    }
     expect(groups, `${record.type} ${handle}: unmodeled or native source pairs changed`).toEqual(record.groups);
   }
 }
@@ -221,7 +282,13 @@ describe('committed 3D fixtures', () => {
       expect(existsSync(fixturePath(name))).toBe(true);
       const source = readFileSync(fixturePath(name), 'utf8'), generated = built.get(name)!;
       expect(sha(source)).toBe(FIXTURE_HASHES[name][0]); expect(sha(generated)).toBe(FIXTURE_HASHES[name][1]);
-      sameLogicalData(verifiedState(source), verifiedState(generated));
+      const fixtureStateVerified = verifiedState(source), generatedStateVerified = verifiedState(generated);
+      // Q11 F2 rework: the one known logical difference is the fabricated annotation
+      // scale (see withoutCannoscale) — pinned exactly on both sides, then excluded;
+      // every other model/style datum still compares at full strength.
+      expect(fixtureStateVerified.header?.cannoscale).toBe('1:1');
+      expect(generatedStateVerified.header?.cannoscale).toBeUndefined();
+      sameLogicalData(withoutCannoscale(fixtureStateVerified), withoutCannoscale(generatedStateVerified));
       expect(statSync(fixturePath(name)).size).toBeLessThan(MAX_FIXTURE_BYTES);
       const manifest = JSON.parse(readFileSync('tests/fixtures/manifest.json', 'utf8')) as { files: string[] };
       expect(manifest.files).toContain(fixturePath(name));
@@ -237,8 +304,17 @@ describe('committed 3D fixtures', () => {
       expect(Object.isFrozen(state.model3d!.solids[0]!.mesh.positions)).toBe(true);
       verifiedState(text);
       const rewritten = writeDxf(state); retainedPairs(text, rewritten, state);
-      if (name !== 'schematic-with-solids') expect(rewritten).toBe(text);
-      expect(writeDxf(verifiedState(rewritten))).toBe(rewritten);
+      // Q11 F2 rework: byte-identity with the committed text is no longer the invariant —
+      // the committed files encode the pre-F2 representation (the annotation scale as a
+      // HEADER variable). The first re-save migrates the declared value into the variable
+      // dictionary: the written HEADER carries neither annotation variable, the value
+      // survives in the dictionary (read back below), and the second-save fixed point is
+      // the byte-stability guard from the first correct write onward.
+      const rewrittenHeader = rewritten.slice(0, rewritten.indexOf('ENDSEC'));
+      expect(rewrittenHeader).not.toContain('$CANNOSCALE'); expect(rewrittenHeader).not.toContain('$ANNOALLVISIBLE');
+      const rewrittenState = verifiedState(rewritten);
+      expect(rewrittenState.header?.cannoscale).toBe('1:1');
+      expect(writeDxf(rewrittenState)).toBe(rewritten);
       for (const s of solidsOf(state)) {
         expect(meshIsClosed(s.mesh), s.id).toBe(true);
         expect(meshVolume(s.mesh), s.id).toBeGreaterThan(0);
@@ -313,13 +389,20 @@ describe('2D schematic with solids beside it', () => {
     verifiedState(text);
     expect(alone.model3d).toBeUndefined();
     expect(state.entities.length).toBeGreaterThan(50);
-    expect(logical2d(state)).toEqual(logical2d(alone)); expect(state.layers).toEqual(alone.layers);
+    // Q11 F2 rework: the one expected header difference is the annotation scale (see
+    // withoutCannoscale) — the committed fixture declares the pre-F2 writer's fabricated
+    // '1:1', while the solids-free comparison is built from today's schematic state, which
+    // carries none and no longer acquires a fabricated one on save. The field is pinned
+    // on both sides, then excluded; entities, blocks, layers and every other header
+    // datum compare at full strength.
+    expect(state.header?.cannoscale).toBe('1:1'); expect(alone.header?.cannoscale).toBeUndefined();
+    expect(logical2d(withoutCannoscale(state))).toEqual(logical2d(withoutCannoscale(alone))); expect(state.layers).toEqual(alone.layers);
     expect(textStylesOf(state)).toEqual(textStylesOf(alone)); expect(namedDimStyles(state)).toEqual(namedDimStyles(alone));
     // Intentional omission reconciles only the removed carriers. The independently built 2D
     // document has different native handles; it cannot be a byte baseline for this imported graph.
     const reduced = prepareDrawingTransition(state, withModel3D(state, EMPTY_MODEL3D));
     expect(reduced.cadGraph!.nodes.some(node => node.anchor?.kind === 'solid3d' || node.anchor?.kind === 'dimension3d')).toBe(false);
-    expect(logical2d(reduced)).toEqual(logical2d(alone));
+    expect(logical2d(withoutCannoscale(reduced))).toEqual(logical2d(withoutCannoscale(alone)));
     const output = writeDxf(reduced); expect(writeDxf(verifiedState(output))).toBe(output);
   });
 });

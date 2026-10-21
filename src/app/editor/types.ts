@@ -14,7 +14,7 @@ import type { PlotOptions } from '../plot';
 import type { Editor } from './editor';
 import type { GpuDiagnostics } from '../gpu-diagnostics';
 
-export type EditorEvent = 'change' | 'selection' | 'tool' | 'view' | 'snap' | 'file' | 'log' | 'space' | 'project';
+export type EditorEvent = 'change' | 'selection' | 'tool' | 'view' | 'snap' | 'file' | 'log' | 'space' | 'project' | 'interaction';
 
 export interface CommandDef {
   name: string;
@@ -81,6 +81,18 @@ export interface FileBridge {
   beginProjectSaveBatchCommit?(batch: string, remainingChildTickets?: string[]): Promise<void>;
   /** Cancellation joins the batch's active read/copy/write cleanup. */
   cancelProjectSaveBatch?(batch: string): Promise<void>;
+  /** Windows only (priority 20.2): begin a main-owned read-only xref context for one document session. Labels bind the context; they grant nothing. */
+  beginXrefContext?(info: { docId: string; contentGeneration: number | string; hostAnchor: string }): Promise<{ token: string; docId: string; contentGeneration: number | string; hostAnchor: string }>;
+  /** Identify one already-granted DXF reference inside a broker context; returns its native identity and a main-owned read ticket. */
+  identifyXref?(token: string, path: string): Promise<{ ticket: string; identity: { id: string; owningLocation: string; version: string } }>;
+  /** Read the exact identified snapshot a ticket names, bounded by the caller's byte allowance. */
+  readXref?(token: string, ticket: string, maxBytes: number): Promise<{ text: string; byteLength: number; version: string; rawBytes: number; rawSha256: string; encoding?: string }>;
+  /** Abort the context's in-flight broker operations (a renderer AbortSignal cannot cross IPC, so cancellation is explicit). */
+  cancelXref?(token: string): Promise<boolean>;
+  /** Cancel and retire a broker context and all its tickets (tab close, Save As / anchor change, disposal). */
+  closeXrefContext?(token: string): Promise<boolean>;
+  /** Retire every broker context this window owns for one document (its host tab closed); returns how many were retired. */
+  retireXrefDocContexts?(docId: string): Promise<{ retired: number }>;
   /** Native picker: no renderer-supplied file path or search root. */
   openShxFont?(): Promise<import('../../render/shx-fonts').ShxResource | null>;
   /** Windows only: licensed installed programs for this PDF plot, never drawing data. */
@@ -160,6 +172,10 @@ export interface EditorHooks {
   terminalStrip?: (init: TerminalStripSettings) => Promise<TerminalStripSettings | null>;
   wireType?: (current: string) => Promise<string | null>;
   properties?: () => void;
+  /** AI Assistant palette toggle (src/ui/ai-panel.ts). Called directly, never via runCommand, so it cannot cancel the current tool. */
+  aiAssistant?: () => void;
+  /** Read-only view capability: AI Draft currently requires the visible World-XY 2D viewport. */
+  aiDraftingAvailable?: () => boolean;
   projectChanged?: () => void;
   /** AutoCAD Electrical-style dialogs (see src/electrical/ui.ts); defaults come from src/ui/electrical-dialogs.ts. */
   electrical?: ElectricalUi;

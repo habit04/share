@@ -157,6 +157,23 @@ describe('dimension DXF round trip', () => {
     expect(got[3]!.linePoint.x).toBeCloseTo(dims[3]!.linePoint.x, 3);
   });
 
+  it('shares one *D picture block between dimensions with identical generated pictures (Q11 F1)', () => {
+    const shared = { kind: 'linear', p1: { x: 0, y: 0 }, p2: { x: 4, y: 0 }, linePoint: { x: 2, y: 3 }, rotation: 0 } as const;
+    const dupA: DimensionEntity = { ...base, ...shared, id: 'dup-a' };
+    const dupB: DimensionEntity = { ...base, ...shared, id: 'dup-b' }; // same picture, different entity id
+    const solo: DimensionEntity = { ...base, ...shared, id: 'solo', p2: { x: 5, y: 0 } };
+    const d = new Drawing();
+    d.addEntities([dupA, dupB, solo]);
+    const text = writeDxf(d.snapshot);
+    const records = text.split('\r\n0\r\nDIMENSION\r\n').slice(1).map((r) => r.split('\r\n0\r\n')[0]!);
+    const refs = records.map((r) => r.match(/\r\n2\r\n(\*D\d+)\r\n/)![1]!);
+    expect(refs).toHaveLength(3);
+    expect(refs[0]).toBe(refs[1]); // identical pictures share the first-assigned block
+    expect(refs[2]).not.toBe(refs[0]); // a different picture gets its own block
+    const bodies = [...text.matchAll(/\r\n100\r\nAcDbBlockBegin\r\n2\r\n(\*D\d+)\r\n/g)].map((m) => m[1]!);
+    expect(new Set(bodies)).toEqual(new Set([refs[0], refs[2]])); // one body per distinct picture
+  });
+
   it('keeps dimension style variables in the header', () => {
     const d = new Drawing();
     d.setHeader({ dimStyle: { ...ISO25_DIMSTYLE } });

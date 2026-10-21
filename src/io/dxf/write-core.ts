@@ -14,8 +14,16 @@ import type { CadAnchor } from '../../core/cad-graph';
 
 function fmt(n: number): string {
   if (!Number.isFinite(n)) return '0';
-  const s = n.toFixed(10).replace(/\.?0+$/, '');
-  return s === '-0' || s === '' ? '0' : s;
+  const s = n.toFixed(10);
+  // For |n| >= 1e21, toFixed returns the shortest exponential form
+  // ("2e+160"): the trailing-zero trim must not run there, because it
+  // eats the exponent's own trailing zero and silently writes 2e+16
+  // (round 5, R4-01 — a finite flip-and-scale placement was written
+  // corrupted and read back at the wrong magnitude). The exponential
+  // form is already shortest-round-trip, so it is emitted unchanged;
+  // output for every |n| < 1e21 is byte-identical to before.
+  const trimmed = s.includes('e') ? s : s.replace(/\.?0+$/, '');
+  return trimmed === '-0' || trimmed === '' ? '0' : trimmed;
 }
 
 export class Writer {

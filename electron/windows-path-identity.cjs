@@ -73,11 +73,18 @@ async function coherentFileDigest(value, { fs = fsp, maxBytes = MAX_CONTENT_BYTE
     const version = versionOf(before), key = statVersionKey(version), size = before.size;
     if (size < 0n || size > BigInt(maxBytes)) throw fail('ERR_WINDOWS_CONTENT_LIMIT', 'The file exceeds the content-check limit.');
     if (expectedVersion && statVersionKey(expectedVersion) !== key) throw changed();
+    const lookup = async (operation) => {
+      try { return await operation(); }
+      catch (error) {
+        if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR' || error?.code === 'EPERM') throw changed();
+        throw error;
+      }
+    };
     const pathCheck = async () => {
       abortCheck(signal);
-      const logical = await fs.stat(file, { bigint: true });
-      if (!logical.isFile() || statVersionKey(versionOf(logical)) !== key || await fs.realpath(file) !== canonicalPath) throw changed();
-      const physical = await fs.stat(canonicalPath, { bigint: true });
+      const logical = await lookup(() => fs.stat(file, { bigint: true }));
+      if (!logical.isFile() || statVersionKey(versionOf(logical)) !== key || await lookup(() => fs.realpath(file)) !== canonicalPath) throw changed();
+      const physical = await lookup(() => fs.stat(canonicalPath, { bigint: true }));
       if (!physical.isFile() || statVersionKey(versionOf(physical)) !== key) throw changed();
       abortCheck(signal);
     };

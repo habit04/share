@@ -1,0 +1,4055 @@
+{
+  "note": "HANDBUILT dynamic objects (constraint network authored by AutoCAD through its .NET associative API in a throwaway profile; Width1 block constraint parameter hand-written by injection with donor layout; NOT Block-Editor-authored); AutoCAD 2027 headless (accoreconsole) evaluation and read-back. Measured values only.",
+  "fixture": "p30-constraint-width-HANDBUILT.dwg / p30-constraint-width-HANDBUILT.dxf",
+  "recipe": "Q12-RECIPE-PROPOSAL.md sha256 b2c89421fa04ff656e95cec8718ae060afa5bd459d6a1ef917c7eb64c6c7f704 (frozen)",
+  "measuredFrom": "p30-constraint-width-HANDBUILT.dwg after close/reopen (P30Q12READ, read-dwg.json); reopened-DXF readings in read-dxf.json; build-session readings in build-post-command.json (after the BUILD command ended) and build-in-command.json (inside the command, before AutoCAD evaluated the last-set instance)",
+  "acadver": "26.0",
+  "drawingVersion": "AC1032",
+  "dxfVersion": "DXFOUT version 2018 (AC1032), ASCII, 16 decimal places",
+  "insunits": "Inches",
+  "template": "accoreconsole default new drawing (no /i); INSUNITS=1, MEASUREMENT=0 measured (final/base-log.txt)",
+  "definitionIsDynamic": true,
+  "definitionIsDynamicInBuildSession": true,
+  "definitionHasXDictionary": true,
+  "definitionXDictionary": [
+    "ACAD_ASSOCNETWORK -> DICTIONARY 273",
+    "ACAD_ENHANCEDBLOCK -> ACAD_EVALUATION_GRAPH 322",
+    "AcDbDynamicBlockRoundTripPurgePreventer -> ACDB_DYNAMICBLOCKPURGEPREVENTER_VERSION 328"
+  ],
+  "definitionEntities": [
+    {
+      "type": "LWPOLYLINE",
+      "handle": "267",
+      "layer": "0",
+      "color": "BYLAYER",
+      "visible": true,
+      "closed": true,
+      "vertices": [
+        [
+          0,
+          0
+        ],
+        [
+          100,
+          0
+        ],
+        [
+          100,
+          60
+        ],
+        [
+          0,
+          60
+        ]
+      ],
+      "constantWidth": 0
+    },
+    {
+      "type": "CIRCLE",
+      "handle": "268",
+      "layer": "0",
+      "color": "BYLAYER",
+      "visible": true,
+      "center": [
+        30,
+        30,
+        0
+      ],
+      "radius": 10
+    },
+    {
+      "type": "LINE",
+      "handle": "269",
+      "layer": "0",
+      "color": "BYLAYER",
+      "visible": true,
+      "start": [
+        70,
+        20,
+        0
+      ],
+      "end": [
+        90,
+        40,
+        0
+      ]
+    },
+    {
+      "type": "ATTDEF",
+      "handle": "26A",
+      "layer": "0",
+      "color": "BYLAYER",
+      "visible": true,
+      "tag": "TAG1",
+      "prompt": "Plate ID",
+      "default": "P-100",
+      "position": [
+        10,
+        45,
+        0
+      ],
+      "height": 5,
+      "rotationDeg": 0,
+      "justify": "BaseLeft",
+      "style": "Standard",
+      "invisible": false,
+      "constant": false,
+      "verify": false,
+      "preset": false,
+      "lockPositionInBlock": true
+    },
+    {
+      "type": "DIMENSION",
+      "handle": "294",
+      "layer": "0",
+      "color": "BYLAYER",
+      "visible": false,
+      "measurement": 60.000000000000014,
+      "dimensionText": "60.0000",
+      "xLine1": [
+        0,
+        0,
+        0
+      ],
+      "xLine2": [
+        0,
+        60,
+        0
+      ],
+      "rotationDeg": 90
+    },
+    {
+      "type": "DIMENSION",
+      "handle": "2A6",
+      "layer": "0",
+      "color": "BYLAYER",
+      "visible": false,
+      "measurement": 30,
+      "dimensionText": "30.0000",
+      "xLine1": [
+        0,
+        0,
+        0
+      ],
+      "xLine2": [
+        30,
+        30,
+        0
+      ],
+      "rotationDeg": 0
+    },
+    {
+      "type": "DIMENSION",
+      "handle": "2B8",
+      "layer": "0",
+      "color": "BYLAYER",
+      "visible": false,
+      "measurement": 30,
+      "dimensionText": "30.0000",
+      "xLine1": [
+        0,
+        0,
+        0
+      ],
+      "xLine2": [
+        30,
+        30,
+        0
+      ],
+      "rotationDeg": 90
+    },
+    {
+      "type": "DIMENSION",
+      "handle": "2CA",
+      "layer": "0",
+      "color": "BYLAYER",
+      "visible": false,
+      "measurement": 10,
+      "dimensionText": "10.0000",
+      "center": [
+        30,
+        30,
+        0
+      ],
+      "chordPoint": [
+        40,
+        30,
+        0
+      ]
+    },
+    {
+      "type": "DIMENSION",
+      "handle": "2D9",
+      "layer": "0",
+      "color": "BYLAYER",
+      "visible": false,
+      "measurement": 30,
+      "dimensionText": "30.0000",
+      "xLine1": [
+        70,
+        20,
+        0
+      ],
+      "xLine2": [
+        100,
+        0,
+        0
+      ],
+      "rotationDeg": 0
+    },
+    {
+      "type": "DIMENSION",
+      "handle": "2EB",
+      "layer": "0",
+      "color": "BYLAYER",
+      "visible": false,
+      "measurement": 19.99999999999999,
+      "dimensionText": "20.0000",
+      "xLine1": [
+        0,
+        0,
+        0
+      ],
+      "xLine2": [
+        70,
+        20,
+        0
+      ],
+      "rotationDeg": 90
+    },
+    {
+      "type": "DIMENSION",
+      "handle": "2FD",
+      "layer": "0",
+      "color": "BYLAYER",
+      "visible": false,
+      "measurement": 10,
+      "dimensionText": "10.0000",
+      "xLine1": [
+        90,
+        40,
+        0
+      ],
+      "xLine2": [
+        100,
+        0,
+        0
+      ],
+      "rotationDeg": 0
+    },
+    {
+      "type": "DIMENSION",
+      "handle": "30F",
+      "layer": "0",
+      "color": "BYLAYER",
+      "visible": false,
+      "measurement": 39.999999999999986,
+      "dimensionText": "40.0000",
+      "xLine1": [
+        0,
+        0,
+        0
+      ],
+      "xLine2": [
+        90,
+        40,
+        0
+      ],
+      "rotationDeg": 90
+    }
+  ],
+  "definitionXData": [
+    [
+      1001,
+      "AcDbBlockRepETag"
+    ],
+    [
+      1070,
+      "1"
+    ],
+    [
+      1071,
+      "12"
+    ],
+    [
+      1001,
+      "AcDbDynamicBlockTrueName2"
+    ],
+    [
+      1000,
+      "P30_CONSTRAINT_WIDTH"
+    ],
+    [
+      1001,
+      "AcDbDynamicBlockGUID"
+    ],
+    [
+      1000,
+      "{E94D7339-B8CF-434D-8CCA-1C11198DCA71}"
+    ]
+  ],
+  "definitionNetworkState": {
+    "network": "274",
+    "owningNetwork": "ACDBASSOCNETWORK 276",
+    "status": "IsUpToDateAssocStatus",
+    "groupDof": 0,
+    "groupSolutionStatus": "WellDefined",
+    "variables": {
+      "Width1": "100",
+      "Height1": "60",
+      "HoleX": "30",
+      "HoleY": "30",
+      "HoleRad": "10",
+      "LineX1": "30",
+      "LineY1": "20",
+      "LineX2": "10",
+      "LineY2": "40"
+    }
+  },
+  "definitionConstraints": [
+    {
+      "node": 33,
+      "autocadType": "FixedConstraint",
+      "status": "WellDefined",
+      "isActive": true,
+      "isInternal": false,
+      "isImplied": false,
+      "anchors": [
+        "plate segment 0 start point (0, 0)"
+      ],
+      "name": "G-fix",
+      "kind": "Fixed"
+    },
+    {
+      "node": 36,
+      "autocadType": "HorizontalConstraint",
+      "status": "WellDefined",
+      "isActive": true,
+      "isInternal": false,
+      "isImplied": false,
+      "anchors": [
+        "plate segment 0"
+      ],
+      "name": "G-h1",
+      "kind": "Horizontal"
+    },
+    {
+      "node": 37,
+      "autocadType": "VerticalConstraint",
+      "status": "WellDefined",
+      "isActive": true,
+      "isInternal": false,
+      "isImplied": false,
+      "anchors": [
+        "plate segment 3"
+      ],
+      "name": "G-v1",
+      "kind": "Vertical"
+    },
+    {
+      "node": 38,
+      "autocadType": "HorizontalConstraint",
+      "status": "WellDefined",
+      "isActive": true,
+      "isInternal": false,
+      "isImplied": false,
+      "anchors": [
+        "plate segment 2"
+      ],
+      "name": "G-h2",
+      "kind": "Horizontal"
+    },
+    {
+      "node": 39,
+      "autocadType": "VerticalConstraint",
+      "status": "WellDefined",
+      "isActive": true,
+      "isInternal": false,
+      "isImplied": false,
+      "anchors": [
+        "plate segment 1"
+      ],
+      "name": "G-v2",
+      "kind": "Vertical"
+    },
+    {
+      "node": 40,
+      "autocadType": "DistanceConstraint",
+      "status": "WellDefined",
+      "isActive": true,
+      "isInternal": false,
+      "isImplied": false,
+      "anchors": [
+        "plate segment 3 end point (0, 0)",
+        "plate segment 1 start point (100, 0)"
+      ],
+      "name": "Width1",
+      "kind": "horizontal-distance",
+      "value": 100,
+      "expression": "100",
+      "directionType": "FixedDirection",
+      "direction": [
+        1,
+        0,
+        0
+      ],
+      "carrier": "BLOCKHORIZONTALCONSTRAINTPARAMETER",
+      "carrierHandle": "323",
+      "dependencyBody": "BLOCKPARAMDEPENDENCYBODY 327",
+      "valueDependency": "27F",
+      "dimDependency": "281",
+      "valueSet": {
+        "type": "list",
+        "values": [
+          80,
+          100,
+          120,
+          140
+        ],
+        "source": "DynamicBlockReferenceProperty.GetAllowedValues() on instance A (reopened DWG); stored as BLOCKHORIZONTALCONSTRAINTPARAMETER 96=8, 175=4, 144 x4"
+      }
+    },
+    {
+      "node": 41,
+      "autocadType": "DistanceConstraint",
+      "status": "WellDefined",
+      "isActive": true,
+      "isInternal": false,
+      "isImplied": false,
+      "anchors": [
+        "plate segment 0 start point (0, 0)",
+        "plate segment 2 end point (0, 60)"
+      ],
+      "name": "Height1",
+      "kind": "vertical-distance",
+      "value": 60,
+      "expression": "60",
+      "directionType": "FixedDirection",
+      "direction": [
+        0,
+        1,
+        0
+      ],
+      "carrier": "DIMENSION",
+      "carrierHandle": "294",
+      "dependencyBody": "ASSOCDIMDEPENDENCYBODY 296",
+      "valueDependency": "293",
+      "dimDependency": "295"
+    },
+    {
+      "node": 42,
+      "autocadType": "DistanceConstraint",
+      "status": "WellDefined",
+      "isActive": true,
+      "isInternal": false,
+      "isImplied": false,
+      "anchors": [
+        "plate segment 0 start point (0, 0)",
+        "circle centre point (30, 30)"
+      ],
+      "name": "HoleX",
+      "kind": "horizontal-distance",
+      "value": 30,
+      "expression": "30",
+      "directionType": "FixedDirection",
+      "direction": [
+        1,
+        0,
+        0
+      ],
+      "carrier": "DIMENSION",
+      "carrierHandle": "2A6",
+      "dependencyBody": "ASSOCDIMDEPENDENCYBODY 2A8",
+      "valueDependency": "2A5",
+      "dimDependency": "2A7"
+    },
+    {
+      "node": 43,
+      "autocadType": "DistanceConstraint",
+      "status": "WellDefined",
+      "isActive": true,
+      "isInternal": false,
+      "isImplied": false,
+      "anchors": [
+        "plate segment 0 start point (0, 0)",
+        "circle centre point (30, 30)"
+      ],
+      "name": "HoleY",
+      "kind": "vertical-distance",
+      "value": 30,
+      "expression": "30",
+      "directionType": "FixedDirection",
+      "direction": [
+        0,
+        1,
+        0
+      ],
+      "carrier": "DIMENSION",
+      "carrierHandle": "2B8",
+      "dependencyBody": "ASSOCDIMDEPENDENCYBODY 2BA",
+      "valueDependency": "2B7",
+      "dimDependency": "2B9"
+    },
+    {
+      "node": 44,
+      "autocadType": "RadiusDiameterConstraint",
+      "status": "WellDefined",
+      "isActive": true,
+      "isInternal": false,
+      "isImplied": false,
+      "anchors": [
+        "circle"
+      ],
+      "name": "HoleRad",
+      "kind": "radius",
+      "value": 10,
+      "expression": "10",
+      "directionType": null,
+      "direction": null,
+      "carrier": "DIMENSION",
+      "carrierHandle": "2CA",
+      "dependencyBody": "ASSOCDIMDEPENDENCYBODY 2CC",
+      "valueDependency": "2C9",
+      "dimDependency": "2CB"
+    },
+    {
+      "node": 45,
+      "autocadType": "DistanceConstraint",
+      "status": "WellDefined",
+      "isActive": true,
+      "isInternal": false,
+      "isImplied": false,
+      "anchors": [
+        "inner line start point (70, 20)",
+        "plate segment 1 start point (100, 0)"
+      ],
+      "name": "LineX1",
+      "kind": "horizontal-distance",
+      "value": 30,
+      "expression": "30",
+      "directionType": "FixedDirection",
+      "direction": [
+        1,
+        0,
+        0
+      ],
+      "carrier": "DIMENSION",
+      "carrierHandle": "2D9",
+      "dependencyBody": "ASSOCDIMDEPENDENCYBODY 2DB",
+      "valueDependency": "2D8",
+      "dimDependency": "2DA"
+    },
+    {
+      "node": 46,
+      "autocadType": "DistanceConstraint",
+      "status": "WellDefined",
+      "isActive": true,
+      "isInternal": false,
+      "isImplied": false,
+      "anchors": [
+        "plate segment 0 start point (0, 0)",
+        "inner line start point (70, 20)"
+      ],
+      "name": "LineY1",
+      "kind": "vertical-distance",
+      "value": 20,
+      "expression": "20",
+      "directionType": "FixedDirection",
+      "direction": [
+        0,
+        1,
+        0
+      ],
+      "carrier": "DIMENSION",
+      "carrierHandle": "2EB",
+      "dependencyBody": "ASSOCDIMDEPENDENCYBODY 2ED",
+      "valueDependency": "2EA",
+      "dimDependency": "2EC"
+    },
+    {
+      "node": 47,
+      "autocadType": "DistanceConstraint",
+      "status": "WellDefined",
+      "isActive": true,
+      "isInternal": false,
+      "isImplied": false,
+      "anchors": [
+        "inner line end point (90, 40)",
+        "plate segment 1 start point (100, 0)"
+      ],
+      "name": "LineX2",
+      "kind": "horizontal-distance",
+      "value": 10,
+      "expression": "10",
+      "directionType": "FixedDirection",
+      "direction": [
+        1,
+        0,
+        0
+      ],
+      "carrier": "DIMENSION",
+      "carrierHandle": "2FD",
+      "dependencyBody": "ASSOCDIMDEPENDENCYBODY 2FF",
+      "valueDependency": "2FC",
+      "dimDependency": "2FE"
+    },
+    {
+      "node": 48,
+      "autocadType": "DistanceConstraint",
+      "status": "WellDefined",
+      "isActive": true,
+      "isInternal": false,
+      "isImplied": false,
+      "anchors": [
+        "plate segment 0 start point (0, 0)",
+        "inner line end point (90, 40)"
+      ],
+      "name": "LineY2",
+      "kind": "vertical-distance",
+      "value": 40,
+      "expression": "40",
+      "directionType": "FixedDirection",
+      "direction": [
+        0,
+        1,
+        0
+      ],
+      "carrier": "DIMENSION",
+      "carrierHandle": "30F",
+      "dependencyBody": "ASSOCDIMDEPENDENCYBODY 311",
+      "valueDependency": "30E",
+      "dimDependency": "310"
+    }
+  ],
+  "definitionImpliedInternalConstraints": {
+    "count": 15,
+    "byType": {
+      "CenterPointConstraint": 1,
+      "PointCoincidenceConstraint": 4,
+      "PointCurveConstraint": 10
+    },
+    "rows": [
+      {
+        "node": 3,
+        "autocadType": "PointCurveConstraint",
+        "status": "WellDefined",
+        "isActive": true,
+        "isInternal": true,
+        "isImplied": true,
+        "anchors": [
+          "plate segment 0 start point (0, 0)",
+          "plate segment 0"
+        ]
+      },
+      {
+        "node": 5,
+        "autocadType": "PointCurveConstraint",
+        "status": "WellDefined",
+        "isActive": true,
+        "isInternal": true,
+        "isImplied": true,
+        "anchors": [
+          "plate segment 0 end point (100, 0)",
+          "plate segment 0"
+        ]
+      },
+      {
+        "node": 8,
+        "autocadType": "PointCurveConstraint",
+        "status": "WellDefined",
+        "isActive": true,
+        "isInternal": true,
+        "isImplied": true,
+        "anchors": [
+          "plate segment 1 start point (100, 0)",
+          "plate segment 1"
+        ]
+      },
+      {
+        "node": 10,
+        "autocadType": "PointCurveConstraint",
+        "status": "WellDefined",
+        "isActive": true,
+        "isInternal": true,
+        "isImplied": true,
+        "anchors": [
+          "plate segment 1 end point (100, 60)",
+          "plate segment 1"
+        ]
+      },
+      {
+        "node": 11,
+        "autocadType": "PointCoincidenceConstraint",
+        "status": "WellDefined",
+        "isActive": true,
+        "isInternal": true,
+        "isImplied": true,
+        "anchors": [
+          "plate segment 0 end point (100, 0)",
+          "plate segment 1 start point (100, 0)"
+        ]
+      },
+      {
+        "node": 14,
+        "autocadType": "PointCurveConstraint",
+        "status": "WellDefined",
+        "isActive": true,
+        "isInternal": true,
+        "isImplied": true,
+        "anchors": [
+          "plate segment 2 start point (100, 60)",
+          "plate segment 2"
+        ]
+      },
+      {
+        "node": 16,
+        "autocadType": "PointCurveConstraint",
+        "status": "WellDefined",
+        "isActive": true,
+        "isInternal": true,
+        "isImplied": true,
+        "anchors": [
+          "plate segment 2 end point (0, 60)",
+          "plate segment 2"
+        ]
+      },
+      {
+        "node": 17,
+        "autocadType": "PointCoincidenceConstraint",
+        "status": "WellDefined",
+        "isActive": true,
+        "isInternal": true,
+        "isImplied": true,
+        "anchors": [
+          "plate segment 1 end point (100, 60)",
+          "plate segment 2 start point (100, 60)"
+        ]
+      },
+      {
+        "node": 20,
+        "autocadType": "PointCurveConstraint",
+        "status": "WellDefined",
+        "isActive": true,
+        "isInternal": true,
+        "isImplied": true,
+        "anchors": [
+          "plate segment 3 start point (0, 60)",
+          "plate segment 3"
+        ]
+      },
+      {
+        "node": 22,
+        "autocadType": "PointCurveConstraint",
+        "status": "WellDefined",
+        "isActive": true,
+        "isInternal": true,
+        "isImplied": true,
+        "anchors": [
+          "plate segment 3 end point (0, 0)",
+          "plate segment 3"
+        ]
+      },
+      {
+        "node": 23,
+        "autocadType": "PointCoincidenceConstraint",
+        "status": "WellDefined",
+        "isActive": true,
+        "isInternal": true,
+        "isImplied": true,
+        "anchors": [
+          "plate segment 0 start point (0, 0)",
+          "plate segment 3 end point (0, 0)"
+        ]
+      },
+      {
+        "node": 24,
+        "autocadType": "PointCoincidenceConstraint",
+        "status": "WellDefined",
+        "isActive": true,
+        "isInternal": true,
+        "isImplied": true,
+        "anchors": [
+          "plate segment 2 end point (0, 60)",
+          "plate segment 3 start point (0, 60)"
+        ]
+      },
+      {
+        "node": 27,
+        "autocadType": "CenterPointConstraint",
+        "status": "WellDefined",
+        "isActive": true,
+        "isInternal": true,
+        "isImplied": true,
+        "anchors": [
+          "circle centre point (30, 30)",
+          "circle"
+        ]
+      },
+      {
+        "node": 30,
+        "autocadType": "PointCurveConstraint",
+        "status": "WellDefined",
+        "isActive": true,
+        "isInternal": true,
+        "isImplied": true,
+        "anchors": [
+          "inner line start point (70, 20)",
+          "inner line"
+        ]
+      },
+      {
+        "node": 32,
+        "autocadType": "PointCurveConstraint",
+        "status": "WellDefined",
+        "isActive": true,
+        "isInternal": true,
+        "isImplied": true,
+        "anchors": [
+          "inner line end point (90, 40)",
+          "inner line"
+        ]
+      }
+    ]
+  },
+  "instances": [
+    {
+      "instance": "A",
+      "handle": "338",
+      "blockName": "P30_CONSTRAINT_WIDTH",
+      "isAnonymous": false,
+      "effectiveName": "P30_CONSTRAINT_WIDTH",
+      "isDynamicBlock": true,
+      "insertion": [
+        0,
+        0,
+        0
+      ],
+      "rotationDeg": 0,
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "properties": [
+        {
+          "name": "Width1",
+          "value": 100,
+          "readOnly": false,
+          "allowed": [
+            80,
+            100,
+            120,
+            140
+          ],
+          "units": "Distance",
+          "description": "",
+          "typeCode": 1,
+          "show": true,
+          "visibleInCurrentVisibilityState": true
+        },
+        {
+          "name": "Origin",
+          "value": {
+            "Z": 0,
+            "Y": 0,
+            "X": 0
+          },
+          "readOnly": true,
+          "allowed": [],
+          "units": "NoUnits",
+          "description": "",
+          "typeCode": 12,
+          "show": false,
+          "visibleInCurrentVisibilityState": true
+        }
+      ],
+      "extents": [
+        [
+          -25.443185538881327,
+          -45.18000000000001,
+          0
+        ],
+        [
+          125.44686903137794,
+          60.00000000000003,
+          0
+        ]
+      ],
+      "extentsGeometryOnly": [
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          100,
+          60,
+          0
+        ]
+      ],
+      "extentsNote": "extents = BlockReference.GeometricExtents as AutoCAD reports it (includes the invisible constraint DIMENSION entities); extentsGeometryOnly = union of AutoCAD GeometricExtents of each non-DIMENSION, non-ATTDEF record entity cloned and transformed by the INSERT BlockTransform (plate, circle, line)",
+      "blockEntities": [
+        {
+          "type": "LWPOLYLINE",
+          "handle": "267",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": true,
+          "closed": true,
+          "vertices": [
+            [
+              0,
+              0
+            ],
+            [
+              100,
+              0
+            ],
+            [
+              100,
+              60
+            ],
+            [
+              0,
+              60
+            ]
+          ],
+          "constantWidth": 0
+        },
+        {
+          "type": "CIRCLE",
+          "handle": "268",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": true,
+          "center": [
+            30,
+            30,
+            0
+          ],
+          "radius": 10
+        },
+        {
+          "type": "LINE",
+          "handle": "269",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": true,
+          "start": [
+            70,
+            20,
+            0
+          ],
+          "end": [
+            90,
+            40,
+            0
+          ]
+        },
+        {
+          "type": "ATTDEF",
+          "handle": "26A",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": true,
+          "tag": "TAG1",
+          "prompt": "Plate ID",
+          "default": "P-100",
+          "position": [
+            10,
+            45,
+            0
+          ],
+          "height": 5,
+          "rotationDeg": 0,
+          "justify": "BaseLeft",
+          "style": "Standard",
+          "invisible": false,
+          "constant": false,
+          "verify": false,
+          "preset": false,
+          "lockPositionInBlock": true
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "294",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 60.000000000000014,
+          "dimensionText": "60.0000",
+          "xLine1": [
+            0,
+            0,
+            0
+          ],
+          "xLine2": [
+            0,
+            60,
+            0
+          ],
+          "rotationDeg": 90
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "2A6",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 30,
+          "dimensionText": "30.0000",
+          "xLine1": [
+            0,
+            0,
+            0
+          ],
+          "xLine2": [
+            30,
+            30,
+            0
+          ],
+          "rotationDeg": 0
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "2B8",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 30,
+          "dimensionText": "30.0000",
+          "xLine1": [
+            0,
+            0,
+            0
+          ],
+          "xLine2": [
+            30,
+            30,
+            0
+          ],
+          "rotationDeg": 90
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "2CA",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 10,
+          "dimensionText": "10.0000",
+          "center": [
+            30,
+            30,
+            0
+          ],
+          "chordPoint": [
+            40,
+            30,
+            0
+          ]
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "2D9",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 30,
+          "dimensionText": "30.0000",
+          "xLine1": [
+            70,
+            20,
+            0
+          ],
+          "xLine2": [
+            100,
+            0,
+            0
+          ],
+          "rotationDeg": 0
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "2EB",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 19.99999999999999,
+          "dimensionText": "20.0000",
+          "xLine1": [
+            0,
+            0,
+            0
+          ],
+          "xLine2": [
+            70,
+            20,
+            0
+          ],
+          "rotationDeg": 90
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "2FD",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 10,
+          "dimensionText": "10.0000",
+          "xLine1": [
+            90,
+            40,
+            0
+          ],
+          "xLine2": [
+            100,
+            0,
+            0
+          ],
+          "rotationDeg": 0
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "30F",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 39.999999999999986,
+          "dimensionText": "40.0000",
+          "xLine1": [
+            0,
+            0,
+            0
+          ],
+          "xLine2": [
+            90,
+            40,
+            0
+          ],
+          "rotationDeg": 90
+        }
+      ],
+      "attributes": [
+        {
+          "tag": "TAG1",
+          "text": "P-100",
+          "position": [
+            10,
+            45,
+            0
+          ],
+          "lockPositionInBlock": true
+        }
+      ],
+      "insertXData": [],
+      "constraintState": {
+        "record": "P30_CONSTRAINT_WIDTH",
+        "network": "274",
+        "networkStatus": "IsUpToDateAssocStatus",
+        "groupStatus": "IsUpToDateAssocStatus",
+        "dof": 0,
+        "solutionStatus": "WellDefined",
+        "constraintStatuses": [
+          "WellDefined"
+        ],
+        "variables": {
+          "Width1": "100",
+          "Height1": "60",
+          "HoleX": "30",
+          "HoleY": "30",
+          "HoleRad": "10",
+          "LineX1": "30",
+          "LineY1": "20",
+          "LineX2": "10",
+          "LineY2": "40"
+        },
+        "measuredConstraintValues": {
+          "Width1": 100,
+          "Height1": 60,
+          "HoleX": 30,
+          "HoleY": 30,
+          "HoleRad": 10,
+          "LineX1": 30,
+          "LineY1": 20,
+          "LineX2": 10,
+          "LineY2": 40
+        }
+      },
+      "set": null
+    },
+    {
+      "instance": "B",
+      "handle": "33B",
+      "blockName": "*U10",
+      "isAnonymous": true,
+      "effectiveName": "P30_CONSTRAINT_WIDTH",
+      "isDynamicBlock": true,
+      "insertion": [
+        200,
+        0,
+        0
+      ],
+      "rotationDeg": 0,
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "properties": [
+        {
+          "name": "Width1",
+          "value": 120,
+          "readOnly": false,
+          "allowed": [
+            80,
+            100,
+            120,
+            140
+          ],
+          "units": "Distance",
+          "description": "",
+          "typeCode": 1,
+          "show": true,
+          "visibleInCurrentVisibilityState": true
+        },
+        {
+          "name": "Origin",
+          "value": {
+            "Z": 0,
+            "Y": 0,
+            "X": 0
+          },
+          "readOnly": true,
+          "allowed": [],
+          "units": "NoUnits",
+          "description": "",
+          "typeCode": 12,
+          "show": false,
+          "visibleInCurrentVisibilityState": true
+        }
+      ],
+      "extents": [
+        [
+          174.55681446111868,
+          -45.17999999999999,
+          0
+        ],
+        [
+          345.4468690313779,
+          60.00000000000003,
+          0
+        ]
+      ],
+      "extentsGeometryOnly": [
+        [
+          200,
+          0,
+          0
+        ],
+        [
+          320,
+          60.000000000000014,
+          0
+        ]
+      ],
+      "extentsNote": "extents = BlockReference.GeometricExtents as AutoCAD reports it (includes the invisible constraint DIMENSION entities); extentsGeometryOnly = union of AutoCAD GeometricExtents of each non-DIMENSION, non-ATTDEF record entity cloned and transformed by the INSERT BlockTransform (plate, circle, line)",
+      "blockEntities": [
+        {
+          "type": "LWPOLYLINE",
+          "handle": "343",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": true,
+          "closed": true,
+          "vertices": [
+            [
+              0,
+              0
+            ],
+            [
+              120,
+              0
+            ],
+            [
+              120,
+              60.000000000000014
+            ],
+            [
+              0,
+              60
+            ]
+          ],
+          "constantWidth": 0
+        },
+        {
+          "type": "CIRCLE",
+          "handle": "344",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": true,
+          "center": [
+            30,
+            30,
+            0
+          ],
+          "radius": 10
+        },
+        {
+          "type": "LINE",
+          "handle": "345",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": true,
+          "start": [
+            90,
+            20.00000000000001,
+            0
+          ],
+          "end": [
+            110,
+            40.000000000000014,
+            0
+          ]
+        },
+        {
+          "type": "ATTDEF",
+          "handle": "346",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": true,
+          "tag": "TAG1",
+          "prompt": "Plate ID",
+          "default": "P-100",
+          "position": [
+            10,
+            45,
+            0
+          ],
+          "height": 5,
+          "rotationDeg": 0,
+          "justify": "BaseLeft",
+          "style": "Standard",
+          "invisible": false,
+          "constant": false,
+          "verify": false,
+          "preset": false,
+          "lockPositionInBlock": true
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "347",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 60.00000000000001,
+          "dimensionText": "60.0000",
+          "xLine1": [
+            0,
+            0,
+            0
+          ],
+          "xLine2": [
+            0,
+            60,
+            0
+          ],
+          "rotationDeg": 90
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "348",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 30,
+          "dimensionText": "30.0000",
+          "xLine1": [
+            0,
+            0,
+            0
+          ],
+          "xLine2": [
+            30,
+            30,
+            0
+          ],
+          "rotationDeg": 0
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "349",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 30,
+          "dimensionText": "30.0000",
+          "xLine1": [
+            0,
+            0,
+            0
+          ],
+          "xLine2": [
+            30,
+            30,
+            0
+          ],
+          "rotationDeg": 90
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "34A",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 10,
+          "dimensionText": "10.0000",
+          "center": [
+            30,
+            30,
+            0
+          ],
+          "chordPoint": [
+            40,
+            30,
+            0
+          ]
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "34B",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 30,
+          "dimensionText": "30.0000",
+          "xLine1": [
+            90,
+            20.00000000000001,
+            0
+          ],
+          "xLine2": [
+            120,
+            0,
+            0
+          ],
+          "rotationDeg": 0
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "34C",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 19.999999999999993,
+          "dimensionText": "20.0000",
+          "xLine1": [
+            0,
+            0,
+            0
+          ],
+          "xLine2": [
+            90,
+            20.00000000000001,
+            0
+          ],
+          "rotationDeg": 90
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "34D",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 10,
+          "dimensionText": "10.0000",
+          "xLine1": [
+            110,
+            40.000000000000014,
+            0
+          ],
+          "xLine2": [
+            120,
+            0,
+            0
+          ],
+          "rotationDeg": 0
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "34E",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 40,
+          "dimensionText": "40.0000",
+          "xLine1": [
+            0,
+            0,
+            0
+          ],
+          "xLine2": [
+            110,
+            40.000000000000014,
+            0
+          ],
+          "rotationDeg": 90
+        }
+      ],
+      "attributes": [
+        {
+          "tag": "TAG1",
+          "text": "P-100",
+          "position": [
+            210,
+            45,
+            0
+          ],
+          "lockPositionInBlock": true
+        }
+      ],
+      "insertXData": [],
+      "constraintState": {
+        "record": "*U10",
+        "network": "37E",
+        "networkStatus": "IsUpToDateAssocStatus",
+        "groupStatus": "IsUpToDateAssocStatus",
+        "dof": 0,
+        "solutionStatus": "WellDefined",
+        "constraintStatuses": [
+          "WellDefined"
+        ],
+        "variables": {
+          "Width1": "120",
+          "Height1": "60",
+          "HoleX": "30",
+          "HoleY": "30",
+          "HoleRad": "10",
+          "LineX1": "30",
+          "LineY1": "20",
+          "LineX2": "10",
+          "LineY2": "40"
+        },
+        "measuredConstraintValues": {
+          "Width1": 120,
+          "Height1": 60,
+          "HoleX": 30,
+          "HoleY": 30,
+          "HoleRad": 10,
+          "LineX1": 30,
+          "LineY1": 20.00000000000001,
+          "LineX2": 10,
+          "LineY2": 40.000000000000014
+        }
+      },
+      "set": null
+    },
+    {
+      "instance": "C",
+      "handle": "394",
+      "blockName": "*U12",
+      "isAnonymous": true,
+      "effectiveName": "P30_CONSTRAINT_WIDTH",
+      "isDynamicBlock": true,
+      "insertion": [
+        400,
+        0,
+        0
+      ],
+      "rotationDeg": 29.999999999999996,
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "properties": [
+        {
+          "name": "Width1",
+          "value": 120,
+          "readOnly": false,
+          "allowed": [
+            80,
+            100,
+            120,
+            140
+          ],
+          "units": "Distance",
+          "description": "",
+          "typeCode": 1,
+          "show": true,
+          "visibleInCurrentVisibilityState": true
+        },
+        {
+          "name": "Origin",
+          "value": {
+            "Z": 0,
+            "Y": 0,
+            "X": 0
+          },
+          "readOnly": true,
+          "allowed": [],
+          "units": "NoUnits",
+          "description": "",
+          "typeCode": 12,
+          "show": false,
+          "visibleInCurrentVisibilityState": true
+        }
+      ],
+      "extents": [
+        [
+          347.96555497012787,
+          -51.8486205124216,
+          0
+        ],
+        [
+          548.5506834820815,
+          124.6849587427553,
+          0
+        ]
+      ],
+      "extentsGeometryOnly": [
+        [
+          370,
+          0,
+          0
+        ],
+        [
+          503.92304845413264,
+          111.96152422706632,
+          0
+        ]
+      ],
+      "extentsNote": "extents = BlockReference.GeometricExtents as AutoCAD reports it (includes the invisible constraint DIMENSION entities); extentsGeometryOnly = union of AutoCAD GeometricExtents of each non-DIMENSION, non-ATTDEF record entity cloned and transformed by the INSERT BlockTransform (plate, circle, line)",
+      "blockEntities": [
+        {
+          "type": "LWPOLYLINE",
+          "handle": "39A",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": true,
+          "closed": true,
+          "vertices": [
+            [
+              0,
+              0
+            ],
+            [
+              120,
+              0
+            ],
+            [
+              120,
+              60.000000000000014
+            ],
+            [
+              0,
+              60
+            ]
+          ],
+          "constantWidth": 0
+        },
+        {
+          "type": "CIRCLE",
+          "handle": "39B",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": true,
+          "center": [
+            30,
+            30,
+            0
+          ],
+          "radius": 10
+        },
+        {
+          "type": "LINE",
+          "handle": "39C",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": true,
+          "start": [
+            90,
+            20.00000000000001,
+            0
+          ],
+          "end": [
+            110,
+            40.000000000000014,
+            0
+          ]
+        },
+        {
+          "type": "ATTDEF",
+          "handle": "39D",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": true,
+          "tag": "TAG1",
+          "prompt": "Plate ID",
+          "default": "P-100",
+          "position": [
+            10,
+            45,
+            0
+          ],
+          "height": 5,
+          "rotationDeg": 0,
+          "justify": "BaseLeft",
+          "style": "Standard",
+          "invisible": false,
+          "constant": false,
+          "verify": false,
+          "preset": false,
+          "lockPositionInBlock": true
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "39E",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 60.00000000000001,
+          "dimensionText": "60.0000",
+          "xLine1": [
+            0,
+            0,
+            0
+          ],
+          "xLine2": [
+            0,
+            60,
+            0
+          ],
+          "rotationDeg": 90
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "39F",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 30,
+          "dimensionText": "30.0000",
+          "xLine1": [
+            0,
+            0,
+            0
+          ],
+          "xLine2": [
+            30,
+            30,
+            0
+          ],
+          "rotationDeg": 0
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "3A0",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 30,
+          "dimensionText": "30.0000",
+          "xLine1": [
+            0,
+            0,
+            0
+          ],
+          "xLine2": [
+            30,
+            30,
+            0
+          ],
+          "rotationDeg": 90
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "3A1",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 10,
+          "dimensionText": "10.0000",
+          "center": [
+            30,
+            30,
+            0
+          ],
+          "chordPoint": [
+            40,
+            30,
+            0
+          ]
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "3A2",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 30,
+          "dimensionText": "30.0000",
+          "xLine1": [
+            90,
+            20.00000000000001,
+            0
+          ],
+          "xLine2": [
+            120,
+            0,
+            0
+          ],
+          "rotationDeg": 0
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "3A3",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 19.999999999999993,
+          "dimensionText": "20.0000",
+          "xLine1": [
+            0,
+            0,
+            0
+          ],
+          "xLine2": [
+            90,
+            20.00000000000001,
+            0
+          ],
+          "rotationDeg": 90
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "3A4",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 10,
+          "dimensionText": "10.0000",
+          "xLine1": [
+            110,
+            40.000000000000014,
+            0
+          ],
+          "xLine2": [
+            120,
+            0,
+            0
+          ],
+          "rotationDeg": 0
+        },
+        {
+          "type": "DIMENSION",
+          "handle": "3A5",
+          "layer": "0",
+          "color": "BYLAYER",
+          "visible": false,
+          "measurement": 40,
+          "dimensionText": "40.0000",
+          "xLine1": [
+            0,
+            0,
+            0
+          ],
+          "xLine2": [
+            110,
+            40.000000000000014,
+            0
+          ],
+          "rotationDeg": 90
+        }
+      ],
+      "attributes": [
+        {
+          "tag": "TAG1",
+          "text": "P-100",
+          "position": [
+            386.16025403784437,
+            43.97114317029974,
+            0
+          ],
+          "lockPositionInBlock": true
+        }
+      ],
+      "insertXData": [],
+      "constraintState": {
+        "record": "*U12",
+        "network": "3D5",
+        "networkStatus": "IsUpToDateAssocStatus",
+        "groupStatus": "IsUpToDateAssocStatus",
+        "dof": 0,
+        "solutionStatus": "WellDefined",
+        "constraintStatuses": [
+          "WellDefined"
+        ],
+        "variables": {
+          "Width1": "120",
+          "Height1": "60",
+          "HoleX": "30",
+          "HoleY": "30",
+          "HoleRad": "10",
+          "LineX1": "30",
+          "LineY1": "20",
+          "LineX2": "10",
+          "LineY2": "40"
+        },
+        "measuredConstraintValues": {
+          "Width1": 120,
+          "Height1": 60,
+          "HoleX": 30,
+          "HoleY": 30,
+          "HoleRad": 10,
+          "LineX1": 30,
+          "LineY1": 20.00000000000001,
+          "LineX2": 10,
+          "LineY2": 40.000000000000014
+        }
+      },
+      "set": null
+    }
+  ],
+  "anonymousRecords": [
+    {
+      "name": "*D2",
+      "handle": "297",
+      "referencedByInstances": [],
+      "linkBack": []
+    },
+    {
+      "name": "*D3",
+      "handle": "2A9",
+      "referencedByInstances": [],
+      "linkBack": []
+    },
+    {
+      "name": "*D4",
+      "handle": "2BB",
+      "referencedByInstances": [],
+      "linkBack": []
+    },
+    {
+      "name": "*D5",
+      "handle": "2CD",
+      "referencedByInstances": [],
+      "linkBack": []
+    },
+    {
+      "name": "*D6",
+      "handle": "2DC",
+      "referencedByInstances": [],
+      "linkBack": []
+    },
+    {
+      "name": "*D7",
+      "handle": "2EE",
+      "referencedByInstances": [],
+      "linkBack": []
+    },
+    {
+      "name": "*D8",
+      "handle": "300",
+      "referencedByInstances": [],
+      "linkBack": []
+    },
+    {
+      "name": "*D9",
+      "handle": "312",
+      "referencedByInstances": [],
+      "linkBack": []
+    },
+    {
+      "name": "*U10",
+      "handle": "33E",
+      "referencedByInstances": [
+        "B"
+      ],
+      "linkBack": [
+        [
+          1001,
+          "AcDbBlockRepBTag"
+        ],
+        [
+          1070,
+          "1"
+        ],
+        [
+          1005,
+          "265"
+        ]
+      ]
+    },
+    {
+      "name": "*D11",
+      "handle": "384",
+      "referencedByInstances": [],
+      "linkBack": []
+    },
+    {
+      "name": "*U12",
+      "handle": "397",
+      "referencedByInstances": [
+        "C"
+      ],
+      "linkBack": [
+        [
+          1001,
+          "AcDbBlockRepBTag"
+        ],
+        [
+          1070,
+          "1"
+        ],
+        [
+          1005,
+          "265"
+        ]
+      ]
+    },
+    {
+      "name": "*D13",
+      "handle": "3DB",
+      "referencedByInstances": [],
+      "linkBack": []
+    },
+    {
+      "name": "*D14",
+      "handle": "3E7",
+      "referencedByInstances": [],
+      "linkBack": []
+    },
+    {
+      "name": "*D15",
+      "handle": "3F4",
+      "referencedByInstances": [],
+      "linkBack": []
+    },
+    {
+      "name": "*D16",
+      "handle": "401",
+      "referencedByInstances": [],
+      "linkBack": []
+    },
+    {
+      "name": "*D17",
+      "handle": "40E",
+      "referencedByInstances": [],
+      "linkBack": []
+    },
+    {
+      "name": "*D18",
+      "handle": "470",
+      "referencedByInstances": [],
+      "linkBack": []
+    },
+    {
+      "name": "*D19",
+      "handle": "47D",
+      "referencedByInstances": [],
+      "linkBack": []
+    },
+    {
+      "name": "*D20",
+      "handle": "48A",
+      "referencedByInstances": [],
+      "linkBack": []
+    },
+    {
+      "name": "*D21",
+      "handle": "497",
+      "referencedByInstances": [],
+      "linkBack": []
+    }
+  ],
+  "anonymousRecordsInDxfReadBack": [
+    {
+      "name": "*D2",
+      "referencedByInstances": []
+    },
+    {
+      "name": "*D3",
+      "referencedByInstances": []
+    },
+    {
+      "name": "*D4",
+      "referencedByInstances": []
+    },
+    {
+      "name": "*D5",
+      "referencedByInstances": []
+    },
+    {
+      "name": "*D6",
+      "referencedByInstances": []
+    },
+    {
+      "name": "*D7",
+      "referencedByInstances": []
+    },
+    {
+      "name": "*D8",
+      "referencedByInstances": []
+    },
+    {
+      "name": "*D9",
+      "referencedByInstances": []
+    },
+    {
+      "name": "*U10",
+      "referencedByInstances": [
+        "B"
+      ]
+    },
+    {
+      "name": "*D11",
+      "referencedByInstances": []
+    },
+    {
+      "name": "*U12",
+      "referencedByInstances": [
+        "C"
+      ]
+    },
+    {
+      "name": "*D13",
+      "referencedByInstances": []
+    },
+    {
+      "name": "*D14",
+      "referencedByInstances": []
+    },
+    {
+      "name": "*D15",
+      "referencedByInstances": []
+    },
+    {
+      "name": "*D16",
+      "referencedByInstances": []
+    },
+    {
+      "name": "*D17",
+      "referencedByInstances": []
+    },
+    {
+      "name": "*D18",
+      "referencedByInstances": []
+    },
+    {
+      "name": "*D19",
+      "referencedByInstances": []
+    },
+    {
+      "name": "*D20",
+      "referencedByInstances": []
+    },
+    {
+      "name": "*D21",
+      "referencedByInstances": []
+    }
+  ],
+  "anonymousURecordNamesInBuildSession": {
+    "A": "P30_CONSTRAINT_WIDTH",
+    "B": "*U10",
+    "C": "*U13"
+  },
+  "audit": {
+    "handbuiltInputOnOpen": 0,
+    "beforeExport": 0,
+    "afterReopenDwg": 0,
+    "afterReopenDxf": 0,
+    "apiNetworkRun": [
+      0,
+      0
+    ],
+    "note": "AUDIT report-only (Fix=No): \"Total errors found N fixed 0\""
+  },
+  "evaluationTiming": {
+    "note": "inside P30Q12BUILD (one transaction, N1/Q13 pattern) the record of the LAST instance set (C) still carried Width1=100 geometry; after the command ended AutoCAD had evaluated it (build-post-command.json). Diagnostic runs in hl/diagC show the same for whichever instance is set last, at any position/rotation.",
+    "inCommand": {
+      "A": {
+        "blockName": "P30_CONSTRAINT_WIDTH",
+        "Width1": 100,
+        "recordPlateRightX": 100
+      },
+      "B": {
+        "blockName": "*U10",
+        "Width1": 120,
+        "recordPlateRightX": 120
+      },
+      "C": {
+        "blockName": "*U13",
+        "Width1": 120,
+        "recordPlateRightX": 100
+      }
+    }
+  },
+  "apiAuthoringLog": [
+    "could not create *ADSK_CONSTRAINTS (eInvalidInput); dims on layer 0",
+    "network 274 owner network ACDBASSOCNETWORK 276",
+    "group 277",
+    "plate seg0: edge via GS marker 1 -> subent Edge/1",
+    "seg0 node 1 ConstrainedBoundedLine",
+    "plate seg1: edge via GS marker 2 -> subent Edge/2",
+    "seg1 node 6 ConstrainedBoundedLine",
+    "plate seg2: edge via GS marker 3 -> subent Edge/3",
+    "seg2 node 12 ConstrainedBoundedLine",
+    "plate seg3: edge via GS marker 4 -> subent Edge/4",
+    "seg3 node 18 ConstrainedBoundedLine",
+    "circle: direct edge subent index 1 accepted",
+    "line: direct edge subent index 1 accepted",
+    "circle node 25 ConstrainedCircle; line node 28 ConstrainedBoundedLine",
+    "DOF after geometry: 15",
+    "  implicit StartImplicit of node 1 -> node 2 at (0,0,0)",
+    "  implicit EndImplicit of node 18 -> node 21 at (0,0,0)",
+    "  implicit StartImplicit of node 6 -> node 7 at (100,0,0)",
+    "  implicit EndImplicit of node 12 -> node 15 at (0,60,0)",
+    "  implicit CenterImplicit of node 25 -> node 26 at (30,30,0)",
+    "  implicit StartImplicit of node 28 -> node 29 at (70,20,0)",
+    "  implicit EndImplicit of node 28 -> node 31 at (90,40,0)",
+    "G-fix: Fix node 33; DOF 13",
+    "G-h1: Horizontal node 36; DOF 12",
+    "G-v1: Vertical node 37; DOF 11",
+    "G-h2: Horizontal node 38; DOF 10",
+    "G-v2: Vertical node 39; DOF 9",
+    "Width1: variable value after SetExpression = [40:100] evaluator=AcDbCalc:1.0",
+    "Width1: distance node 40 = 100; DOF 8",
+    "Height1: variable value after SetExpression = [40:60] evaluator=AcDbCalc:1.0",
+    "Height1: distance node 41 = 60; DOF 7",
+    "HoleX: variable value after SetExpression = [40:30] evaluator=AcDbCalc:1.0",
+    "HoleX: distance node 42 = 30; DOF 6",
+    "HoleY: variable value after SetExpression = [40:30] evaluator=AcDbCalc:1.0",
+    "HoleY: distance node 43 = 30; DOF 5",
+    "HoleRad variant a",
+    "HoleRad: variable value after SetExpression = [40:10] evaluator=AcDbCalc:1.0",
+    "RadDiaConstrType names: CircleRadius,CircleDiameter,MinorRadius,MajorRadius",
+    "radius type CircleRadius = 0; circle readOnly=False status=UnderConstrained r=10",
+    "HoleRad: radius node 44 = 10; DOF 4",
+    "LineX1: variable value after SetExpression = [40:30] evaluator=AcDbCalc:1.0",
+    "LineX1: distance node 45 = 30; DOF 3",
+    "LineY1: variable value after SetExpression = [40:20] evaluator=AcDbCalc:1.0",
+    "LineY1: distance node 46 = 20; DOF 2",
+    "LineX2: variable value after SetExpression = [40:10] evaluator=AcDbCalc:1.0",
+    "LineX2: distance node 47 = 10; DOF 1",
+    "LineY2: variable value after SetExpression = [40:40] evaluator=AcDbCalc:1.0",
+    "LineY2: distance node 48 = 40; DOF 0",
+    "final DOF 0; solution WellDefined",
+    "EvaluateTopLevelNetwork -> True"
+  ],
+  "independenceChecks": {
+    "C1": {
+      "log": [
+        "B Width1 := 140 ok"
+      ],
+      "before": {
+        "A": {
+          "blockName": "P30_CONSTRAINT_WIDTH",
+          "Width1": 100,
+          "recordPlateRightX": 100,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              70,
+              20
+            ],
+            [
+              90,
+              40
+            ]
+          ]
+        },
+        "B": {
+          "blockName": "*U10",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "C": {
+          "blockName": "*U12",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "definition": {
+          "plateRightX": 100,
+          "circleCentre": [
+            30,
+            30
+          ],
+          "variables": {
+            "Width1": "100",
+            "Height1": "60",
+            "HoleX": "30",
+            "HoleY": "30",
+            "HoleRad": "10",
+            "LineX1": "30",
+            "LineY1": "20",
+            "LineX2": "10",
+            "LineY2": "40"
+          }
+        },
+        "anonymousURecords": [
+          {
+            "name": "*U10",
+            "referencedBy": [
+              "B"
+            ]
+          },
+          {
+            "name": "*U12",
+            "referencedBy": [
+              "C"
+            ]
+          }
+        ],
+        "blockRecordCount": 21
+      },
+      "inCommandAfter": {
+        "A": {
+          "blockName": "P30_CONSTRAINT_WIDTH",
+          "Width1": 100,
+          "recordPlateRightX": 100,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              70,
+              20
+            ],
+            [
+              90,
+              40
+            ]
+          ]
+        },
+        "B": {
+          "blockName": "*U10",
+          "Width1": 140,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "C": {
+          "blockName": "*U12",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "definition": {
+          "plateRightX": 100,
+          "circleCentre": [
+            30,
+            30
+          ],
+          "variables": {
+            "Width1": "100",
+            "Height1": "60",
+            "HoleX": "30",
+            "HoleY": "30",
+            "HoleRad": "10",
+            "LineX1": "30",
+            "LineY1": "20",
+            "LineX2": "10",
+            "LineY2": "40"
+          }
+        },
+        "anonymousURecords": [
+          {
+            "name": "*U10",
+            "referencedBy": [
+              "B"
+            ]
+          },
+          {
+            "name": "*U12",
+            "referencedBy": [
+              "C"
+            ]
+          }
+        ],
+        "blockRecordCount": 21
+      },
+      "afterCommandEnd": {
+        "A": {
+          "blockName": "P30_CONSTRAINT_WIDTH",
+          "Width1": 100,
+          "recordPlateRightX": 100,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              70,
+              20
+            ],
+            [
+              90,
+              40
+            ]
+          ]
+        },
+        "B": {
+          "blockName": "*U10",
+          "Width1": 140,
+          "recordPlateRightX": 140,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              110,
+              20.000000000000014
+            ],
+            [
+              130,
+              40.000000000000014
+            ]
+          ]
+        },
+        "C": {
+          "blockName": "*U12",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "definition": {
+          "plateRightX": 100,
+          "circleCentre": [
+            30,
+            30
+          ],
+          "variables": {
+            "Width1": "100",
+            "Height1": "60",
+            "HoleX": "30",
+            "HoleY": "30",
+            "HoleRad": "10",
+            "LineX1": "30",
+            "LineY1": "20",
+            "LineX2": "10",
+            "LineY2": "40"
+          }
+        },
+        "anonymousURecords": [
+          {
+            "name": "*U10",
+            "referencedBy": [
+              "B"
+            ]
+          },
+          {
+            "name": "*U12",
+            "referencedBy": [
+              "C"
+            ]
+          }
+        ],
+        "blockRecordCount": 21
+      },
+      "action": "B Width1 120 -> 140 via DynamicBlockReferenceProperty on a throwaway copy of the reopened DWG"
+    },
+    "C2": {
+      "log": [
+        "definition variable HoleX expression := 35 (msg '')",
+        "EvaluateTopLevelNetwork -> True",
+        "UpdateAnonymousBlocks() called"
+      ],
+      "before": {
+        "A": {
+          "blockName": "P30_CONSTRAINT_WIDTH",
+          "Width1": 100,
+          "recordPlateRightX": 100,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              70,
+              20
+            ],
+            [
+              90,
+              40
+            ]
+          ]
+        },
+        "B": {
+          "blockName": "*U10",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "C": {
+          "blockName": "*U12",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "definition": {
+          "plateRightX": 100,
+          "circleCentre": [
+            30,
+            30
+          ],
+          "variables": {
+            "Width1": "100",
+            "Height1": "60",
+            "HoleX": "30",
+            "HoleY": "30",
+            "HoleRad": "10",
+            "LineX1": "30",
+            "LineY1": "20",
+            "LineX2": "10",
+            "LineY2": "40"
+          }
+        },
+        "anonymousURecords": [
+          {
+            "name": "*U10",
+            "referencedBy": [
+              "B"
+            ]
+          },
+          {
+            "name": "*U12",
+            "referencedBy": [
+              "C"
+            ]
+          }
+        ],
+        "blockRecordCount": 21
+      },
+      "inCommandAfter": {
+        "A": {
+          "blockName": "P30_CONSTRAINT_WIDTH",
+          "Width1": 100,
+          "recordPlateRightX": 100,
+          "recordCircleCentre": [
+            35,
+            30.000000000000004
+          ],
+          "recordLine": [
+            [
+              70,
+              20
+            ],
+            [
+              90,
+              40
+            ]
+          ]
+        },
+        "B": {
+          "blockName": "*U22",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            35,
+            30.000000000000004
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "C": {
+          "blockName": "*U29",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            35,
+            30.000000000000004
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "definition": {
+          "plateRightX": 100,
+          "circleCentre": [
+            35,
+            30.000000000000004
+          ],
+          "variables": {
+            "Width1": "100",
+            "Height1": "60",
+            "HoleX": "35",
+            "HoleY": "30",
+            "HoleRad": "10",
+            "LineX1": "30",
+            "LineY1": "20",
+            "LineX2": "10",
+            "LineY2": "40"
+          }
+        },
+        "anonymousURecords": [
+          {
+            "name": "*U10",
+            "referencedBy": []
+          },
+          {
+            "name": "*U12",
+            "referencedBy": []
+          },
+          {
+            "name": "*U22",
+            "referencedBy": [
+              "B"
+            ]
+          },
+          {
+            "name": "*U29",
+            "referencedBy": [
+              "C"
+            ]
+          }
+        ],
+        "blockRecordCount": 33
+      },
+      "afterCommandEnd": {
+        "A": {
+          "blockName": "P30_CONSTRAINT_WIDTH",
+          "Width1": 100,
+          "recordPlateRightX": 100,
+          "recordCircleCentre": [
+            35,
+            30.000000000000004
+          ],
+          "recordLine": [
+            [
+              70,
+              20
+            ],
+            [
+              90,
+              40
+            ]
+          ]
+        },
+        "B": {
+          "blockName": "*U22",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            35,
+            30.000000000000004
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "C": {
+          "blockName": "*U29",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            35,
+            30.000000000000004
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "definition": {
+          "plateRightX": 100,
+          "circleCentre": [
+            35,
+            30.000000000000004
+          ],
+          "variables": {
+            "Width1": "100",
+            "Height1": "60",
+            "HoleX": "35",
+            "HoleY": "30",
+            "HoleRad": "10",
+            "LineX1": "30",
+            "LineY1": "20",
+            "LineX2": "10",
+            "LineY2": "40"
+          }
+        },
+        "anonymousURecords": [
+          {
+            "name": "*U10",
+            "referencedBy": []
+          },
+          {
+            "name": "*U12",
+            "referencedBy": []
+          },
+          {
+            "name": "*U22",
+            "referencedBy": [
+              "B"
+            ]
+          },
+          {
+            "name": "*U29",
+            "referencedBy": [
+              "C"
+            ]
+          }
+        ],
+        "blockRecordCount": 33
+      },
+      "action": "definition variable HoleX expression 30 -> 35 (AssocVariable.SetExpression), AssocManager.EvaluateTopLevelNetwork, BlockTableRecord.UpdateAnonymousBlocks, on a throwaway copy"
+    },
+    "C3": {
+      "log": [
+        "C.ResetBlock() ok"
+      ],
+      "before": {
+        "A": {
+          "blockName": "P30_CONSTRAINT_WIDTH",
+          "Width1": 100,
+          "recordPlateRightX": 100,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              70,
+              20
+            ],
+            [
+              90,
+              40
+            ]
+          ]
+        },
+        "B": {
+          "blockName": "*U10",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "C": {
+          "blockName": "*U12",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "definition": {
+          "plateRightX": 100,
+          "circleCentre": [
+            30,
+            30
+          ],
+          "variables": {
+            "Width1": "100",
+            "Height1": "60",
+            "HoleX": "30",
+            "HoleY": "30",
+            "HoleRad": "10",
+            "LineX1": "30",
+            "LineY1": "20",
+            "LineX2": "10",
+            "LineY2": "40"
+          }
+        },
+        "anonymousURecords": [
+          {
+            "name": "*U10",
+            "referencedBy": [
+              "B"
+            ]
+          },
+          {
+            "name": "*U12",
+            "referencedBy": [
+              "C"
+            ]
+          }
+        ],
+        "blockRecordCount": 21
+      },
+      "inCommandAfter": {
+        "A": {
+          "blockName": "P30_CONSTRAINT_WIDTH",
+          "Width1": 100,
+          "recordPlateRightX": 100,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              70,
+              20
+            ],
+            [
+              90,
+              40
+            ]
+          ]
+        },
+        "B": {
+          "blockName": "*U10",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "C": {
+          "blockName": "P30_CONSTRAINT_WIDTH",
+          "Width1": 100,
+          "recordPlateRightX": 100,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              70,
+              20
+            ],
+            [
+              90,
+              40
+            ]
+          ]
+        },
+        "definition": {
+          "plateRightX": 100,
+          "circleCentre": [
+            30,
+            30
+          ],
+          "variables": {
+            "Width1": "100",
+            "Height1": "60",
+            "HoleX": "30",
+            "HoleY": "30",
+            "HoleRad": "10",
+            "LineX1": "30",
+            "LineY1": "20",
+            "LineX2": "10",
+            "LineY2": "40"
+          }
+        },
+        "anonymousURecords": [
+          {
+            "name": "*U10",
+            "referencedBy": [
+              "B"
+            ]
+          },
+          {
+            "name": "*U12",
+            "referencedBy": []
+          }
+        ],
+        "blockRecordCount": 21
+      },
+      "afterCommandEnd": {
+        "A": {
+          "blockName": "P30_CONSTRAINT_WIDTH",
+          "Width1": 100,
+          "recordPlateRightX": 100,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              70,
+              20
+            ],
+            [
+              90,
+              40
+            ]
+          ]
+        },
+        "B": {
+          "blockName": "*U10",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "C": {
+          "blockName": "P30_CONSTRAINT_WIDTH",
+          "Width1": 100,
+          "recordPlateRightX": 100,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              70,
+              20
+            ],
+            [
+              90,
+              40
+            ]
+          ]
+        },
+        "definition": {
+          "plateRightX": 100,
+          "circleCentre": [
+            30,
+            30
+          ],
+          "variables": {
+            "Width1": "100",
+            "Height1": "60",
+            "HoleX": "30",
+            "HoleY": "30",
+            "HoleRad": "10",
+            "LineX1": "30",
+            "LineY1": "20",
+            "LineX2": "10",
+            "LineY2": "40"
+          }
+        },
+        "anonymousURecords": [
+          {
+            "name": "*U10",
+            "referencedBy": [
+              "B"
+            ]
+          },
+          {
+            "name": "*U12",
+            "referencedBy": []
+          }
+        ],
+        "blockRecordCount": 21
+      },
+      "action": "BlockReference.ResetBlock() on C, on a throwaway copy"
+    },
+    "C4": {
+      "log": [
+        "Database.Purge filter over all block records: purgeable = [] (nothing erased)"
+      ],
+      "before": {
+        "A": {
+          "blockName": "P30_CONSTRAINT_WIDTH",
+          "Width1": 100,
+          "recordPlateRightX": 100,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              70,
+              20
+            ],
+            [
+              90,
+              40
+            ]
+          ]
+        },
+        "B": {
+          "blockName": "*U10",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "C": {
+          "blockName": "*U12",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "definition": {
+          "plateRightX": 100,
+          "circleCentre": [
+            30,
+            30
+          ],
+          "variables": {
+            "Width1": "100",
+            "Height1": "60",
+            "HoleX": "30",
+            "HoleY": "30",
+            "HoleRad": "10",
+            "LineX1": "30",
+            "LineY1": "20",
+            "LineX2": "10",
+            "LineY2": "40"
+          }
+        },
+        "anonymousURecords": [
+          {
+            "name": "*U10",
+            "referencedBy": [
+              "B"
+            ]
+          },
+          {
+            "name": "*U12",
+            "referencedBy": [
+              "C"
+            ]
+          }
+        ],
+        "blockRecordCount": 21
+      },
+      "inCommandAfter": {
+        "A": {
+          "blockName": "P30_CONSTRAINT_WIDTH",
+          "Width1": 100,
+          "recordPlateRightX": 100,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              70,
+              20
+            ],
+            [
+              90,
+              40
+            ]
+          ]
+        },
+        "B": {
+          "blockName": "*U10",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "C": {
+          "blockName": "*U12",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "definition": {
+          "plateRightX": 100,
+          "circleCentre": [
+            30,
+            30
+          ],
+          "variables": {
+            "Width1": "100",
+            "Height1": "60",
+            "HoleX": "30",
+            "HoleY": "30",
+            "HoleRad": "10",
+            "LineX1": "30",
+            "LineY1": "20",
+            "LineX2": "10",
+            "LineY2": "40"
+          }
+        },
+        "anonymousURecords": [
+          {
+            "name": "*U10",
+            "referencedBy": [
+              "B"
+            ]
+          },
+          {
+            "name": "*U12",
+            "referencedBy": [
+              "C"
+            ]
+          }
+        ],
+        "blockRecordCount": 21
+      },
+      "afterCommandEnd": {
+        "A": {
+          "blockName": "P30_CONSTRAINT_WIDTH",
+          "Width1": 100,
+          "recordPlateRightX": 100,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              70,
+              20
+            ],
+            [
+              90,
+              40
+            ]
+          ]
+        },
+        "B": {
+          "blockName": "*U10",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "C": {
+          "blockName": "*U12",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "definition": {
+          "plateRightX": 100,
+          "circleCentre": [
+            30,
+            30
+          ],
+          "variables": {
+            "Width1": "100",
+            "Height1": "60",
+            "HoleX": "30",
+            "HoleY": "30",
+            "HoleRad": "10",
+            "LineX1": "30",
+            "LineY1": "20",
+            "LineX2": "10",
+            "LineY2": "40"
+          }
+        },
+        "anonymousURecords": [
+          {
+            "name": "*U10",
+            "referencedBy": [
+              "B"
+            ]
+          },
+          {
+            "name": "*U12",
+            "referencedBy": [
+              "C"
+            ]
+          }
+        ],
+        "blockRecordCount": 21
+      },
+      "action": "Database.Purge filter over all block records, then -PURGE All (*, no verify), then re-read; throwaway copy",
+      "purgeableBlockRecords": [],
+      "namedObjectsDictionaryKeys": [
+        "ACAD_ASSOCNETWORK -> DICTIONARY 275",
+        "ACAD_CIP_PREVIOUS_PRODUCT_INFO -> XRECORD 1A5",
+        "ACAD_COLOR -> DICTIONARY 73",
+        "ACAD_DETAILVIEWSTYLE -> DICTIONARY 1AB",
+        "ACAD_GROUP -> DICTIONARY D",
+        "ACAD_LAYOUT -> DICTIONARY 1A",
+        "ACAD_MATERIAL -> DICTIONARY 72",
+        "ACAD_MLEADERSTYLE -> DICTIONARY D7",
+        "ACAD_MLINESTYLE -> DICTIONARY 17",
+        "ACAD_PLOTSETTINGS -> DICTIONARY 19",
+        "ACAD_PLOTSTYLENAME -> ACDBDICTIONARYWDFLT E",
+        "ACAD_SCALELIST -> DICTIONARY B6",
+        "ACAD_SECTIONVIEWSTYLE -> DICTIONARY 1A8",
+        "ACAD_TABLESTYLE -> DICTIONARY 86",
+        "ACAD_VISUALSTYLE -> DICTIONARY 99",
+        "AcDbVariableDictionary -> DICTIONARY 66"
+      ],
+      "definitionXDictionary": [
+        "ACAD_ASSOCNETWORK -> DICTIONARY 273",
+        "ACAD_ENHANCEDBLOCK -> ACAD_EVALUATION_GRAPH 322",
+        "AcDbDynamicBlockRoundTripPurgePreventer -> ACDB_DYNAMICBLOCKPURGEPREVENTER_VERSION 328"
+      ],
+      "afterPurgeCommand": {
+        "A": {
+          "blockName": "P30_CONSTRAINT_WIDTH",
+          "Width1": 100,
+          "recordPlateRightX": 100,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              70,
+              20
+            ],
+            [
+              90,
+              40
+            ]
+          ]
+        },
+        "B": {
+          "blockName": "*U10",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "C": {
+          "blockName": "*U12",
+          "Width1": 120,
+          "recordPlateRightX": 120,
+          "recordCircleCentre": [
+            30,
+            30
+          ],
+          "recordLine": [
+            [
+              90,
+              20.00000000000001
+            ],
+            [
+              110,
+              40.000000000000014
+            ]
+          ]
+        },
+        "definition": {
+          "plateRightX": 100,
+          "circleCentre": [
+            30,
+            30
+          ],
+          "variables": {
+            "Width1": "100",
+            "Height1": "60",
+            "HoleX": "30",
+            "HoleY": "30",
+            "HoleRad": "10",
+            "LineX1": "30",
+            "LineY1": "20",
+            "LineX2": "10",
+            "LineY2": "40"
+          }
+        },
+        "anonymousURecords": [
+          {
+            "name": "*U10",
+            "referencedBy": [
+              "B"
+            ]
+          },
+          {
+            "name": "*U12",
+            "referencedBy": [
+              "C"
+            ]
+          }
+        ],
+        "blockRecordCount": 21
+      }
+    }
+  },
+  "expectedVsMeasured": [
+    {
+      "check": "A Width1",
+      "expected": [
+        100
+      ],
+      "measured": [
+        100
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 0
+    },
+    {
+      "check": "A plate vertices (record, definition space)",
+      "expected": [
+        [
+          0,
+          0
+        ],
+        [
+          100,
+          0
+        ],
+        [
+          100,
+          60
+        ],
+        [
+          0,
+          60
+        ]
+      ],
+      "measured": [
+        [
+          0,
+          0
+        ],
+        [
+          100,
+          0
+        ],
+        [
+          100,
+          60
+        ],
+        [
+          0,
+          60
+        ]
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 0
+    },
+    {
+      "check": "A inner LINE (record)",
+      "expected": [
+        [
+          70,
+          20
+        ],
+        [
+          90,
+          40
+        ]
+      ],
+      "measured": [
+        [
+          70,
+          20
+        ],
+        [
+          90,
+          40
+        ]
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 0
+    },
+    {
+      "check": "A circle centre/radius (record)",
+      "expected": [
+        30,
+        30,
+        10
+      ],
+      "measured": [
+        30,
+        30,
+        10
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 0
+    },
+    {
+      "check": "A ATTDEF TAG1 position (record)",
+      "expected": [
+        10,
+        45
+      ],
+      "measured": [
+        10,
+        45
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 0
+    },
+    {
+      "check": "A world extents of plate/circle/line (extentsGeometryOnly)",
+      "expected": [
+        [
+          0,
+          0
+        ],
+        [
+          100,
+          60
+        ]
+      ],
+      "measured": [
+        [
+          0,
+          0
+        ],
+        [
+          100,
+          60
+        ]
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 0
+    },
+    {
+      "check": "A TAG1 world position",
+      "expected": [
+        10,
+        45
+      ],
+      "measured": [
+        10,
+        45
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 0
+    },
+    {
+      "check": "A raw BlockReference.GeometricExtents",
+      "expected": [
+        [
+          0,
+          0
+        ],
+        [
+          100,
+          60
+        ]
+      ],
+      "measured": [
+        [
+          -25.443185538881327,
+          -45.18000000000001
+        ],
+        [
+          125.44686903137794,
+          60.00000000000003
+        ]
+      ],
+      "match": false,
+      "note": "raw AutoCAD extents include the invisible constraint DIMENSION entities of the record (deviation D-3), so they differ from the recipe plate extents; recorded as measured"
+    },
+    {
+      "check": "B Width1",
+      "expected": [
+        120
+      ],
+      "measured": [
+        120
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 0
+    },
+    {
+      "check": "B plate vertices (record, definition space)",
+      "expected": [
+        [
+          0,
+          0
+        ],
+        [
+          120,
+          0
+        ],
+        [
+          120,
+          60
+        ],
+        [
+          0,
+          60
+        ]
+      ],
+      "measured": [
+        [
+          0,
+          0
+        ],
+        [
+          120,
+          0
+        ],
+        [
+          120,
+          60.000000000000014
+        ],
+        [
+          0,
+          60
+        ]
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 1.4210854715202004e-14
+    },
+    {
+      "check": "B inner LINE (record)",
+      "expected": [
+        [
+          90,
+          20
+        ],
+        [
+          110,
+          40
+        ]
+      ],
+      "measured": [
+        [
+          90,
+          20.00000000000001
+        ],
+        [
+          110,
+          40.000000000000014
+        ]
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 1.4210854715202004e-14
+    },
+    {
+      "check": "B circle centre/radius (record)",
+      "expected": [
+        30,
+        30,
+        10
+      ],
+      "measured": [
+        30,
+        30,
+        10
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 0
+    },
+    {
+      "check": "B ATTDEF TAG1 position (record)",
+      "expected": [
+        10,
+        45
+      ],
+      "measured": [
+        10,
+        45
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 0
+    },
+    {
+      "check": "B world extents of plate/circle/line (extentsGeometryOnly)",
+      "expected": [
+        [
+          200,
+          0
+        ],
+        [
+          320,
+          60
+        ]
+      ],
+      "measured": [
+        [
+          200,
+          0
+        ],
+        [
+          320,
+          60.000000000000014
+        ]
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 1.4210854715202004e-14
+    },
+    {
+      "check": "B TAG1 world position",
+      "expected": [
+        210,
+        45
+      ],
+      "measured": [
+        210,
+        45
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 0
+    },
+    {
+      "check": "B raw BlockReference.GeometricExtents",
+      "expected": [
+        [
+          200,
+          0
+        ],
+        [
+          320,
+          60
+        ]
+      ],
+      "measured": [
+        [
+          174.55681446111868,
+          -45.17999999999999
+        ],
+        [
+          345.4468690313779,
+          60.00000000000003
+        ]
+      ],
+      "match": false,
+      "note": "raw AutoCAD extents include the invisible constraint DIMENSION entities of the record (deviation D-3), so they differ from the recipe plate extents; recorded as measured"
+    },
+    {
+      "check": "C Width1",
+      "expected": [
+        120
+      ],
+      "measured": [
+        120
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 0
+    },
+    {
+      "check": "C plate vertices (record, definition space)",
+      "expected": [
+        [
+          0,
+          0
+        ],
+        [
+          120,
+          0
+        ],
+        [
+          120,
+          60
+        ],
+        [
+          0,
+          60
+        ]
+      ],
+      "measured": [
+        [
+          0,
+          0
+        ],
+        [
+          120,
+          0
+        ],
+        [
+          120,
+          60.000000000000014
+        ],
+        [
+          0,
+          60
+        ]
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 1.4210854715202004e-14
+    },
+    {
+      "check": "C inner LINE (record)",
+      "expected": [
+        [
+          90,
+          20
+        ],
+        [
+          110,
+          40
+        ]
+      ],
+      "measured": [
+        [
+          90,
+          20.00000000000001
+        ],
+        [
+          110,
+          40.000000000000014
+        ]
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 1.4210854715202004e-14
+    },
+    {
+      "check": "C circle centre/radius (record)",
+      "expected": [
+        30,
+        30,
+        10
+      ],
+      "measured": [
+        30,
+        30,
+        10
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 0
+    },
+    {
+      "check": "C ATTDEF TAG1 position (record)",
+      "expected": [
+        10,
+        45
+      ],
+      "measured": [
+        10,
+        45
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 0
+    },
+    {
+      "check": "C world extents of plate/circle/line (extentsGeometryOnly)",
+      "expected": [
+        [
+          370,
+          0
+        ],
+        [
+          503.92304845413264,
+          111.96152422706632
+        ]
+      ],
+      "measured": [
+        [
+          370,
+          0
+        ],
+        [
+          503.92304845413264,
+          111.96152422706632
+        ]
+      ],
+      "tolerance": 1e-09,
+      "match": true,
+      "maxAbsDiff": 0
+    },
+    {
+      "check": "C TAG1 world position",
+      "expected": [
+        386.160254038,
+        43.97114317
+      ],
+      "measured": [
+        386.16025403784437,
+        43.97114317029974
+      ],
+      "tolerance": 1e-08,
+      "match": true,
+      "maxAbsDiff": 2.9974245308039826e-10
+    },
+    {
+      "check": "C raw BlockReference.GeometricExtents",
+      "expected": [
+        [
+          370,
+          0
+        ],
+        [
+          503.92304845413264,
+          111.96152422706632
+        ]
+      ],
+      "measured": [
+        [
+          347.96555497012787,
+          -51.8486205124216
+        ],
+        [
+          548.5506834820815,
+          124.6849587427553
+        ]
+      ],
+      "match": false,
+      "note": "raw AutoCAD extents include the invisible constraint DIMENSION entities of the record (deviation D-3), so they differ from the recipe plate extents; recorded as measured"
+    },
+    {
+      "check": "E2 A references the named record",
+      "measured": "P30_CONSTRAINT_WIDTH",
+      "match": true
+    },
+    {
+      "check": "E3 B and C reference anonymous *U records",
+      "measured": [
+        "*U10",
+        "*U12"
+      ],
+      "match": true
+    },
+    {
+      "check": "E4 B and C (equal Width1) share one *U record",
+      "measured": [
+        "*U10",
+        "*U12"
+      ],
+      "match": false,
+      "note": "measured NO: B and C reference distinct records (in session *U10/*U13, after reopen *U10/*U12)"
+    },
+    {
+      "check": "D9 definition IsDynamicBlock",
+      "expected": true,
+      "measured": true,
+      "match": true
+    }
+  ]
+}

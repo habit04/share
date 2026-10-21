@@ -6,9 +6,10 @@
  */
 import type { Obj } from './groups';
 import { commonProps, reportObj } from './read-core';
-import type { SplineEntity, HatchLoop, HatchEntity, HatchGradient, HatchGradientColor, WorldPatternLine, FieldLink, Entity } from '../../core/entities';
-import { afterSubclass, num, pointList, flt, Cursor, int, HatchReadError, pt, has, str, isIntegerText, shortText } from './groups';
-import { isRealText } from './codes';
+import type { SplineEntity, HatchLoop, HatchEntity, HatchGradient, HatchGradientColor, WorldPatternLine, FieldLink, Entity, InsertEntity } from '../../core/entities';
+import { afterSubclass, num, pointList, flt, Cursor, int, HatchReadError, pt, has, str, isIntegerText, shortText, xdata } from './groups';
+import { isRealText, DYNAMIC_APP } from './codes';
+import { decodeDynamicInstance, dynamicPayloadText } from './dynamic-data';
 import * as g from '../../core/geometry';
 import { splineWorkProblem, SplineWorkLimitError, isValidNurbs, nurbsPoints, interpolateFitPoints } from '../../core/spline';
 import { LoopBuilder, edgeArc, fitPatternToLines, findPattern } from '../../core/hatch';
@@ -304,14 +305,19 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       const pts: g.Point[] = [];
       const bulges: number[] = [];
       const widths: Array<{ start: number; end: number }> = [];
+      const ids: Array<number | undefined> = [];
       let variableWidth = false;
       for (const p of o.groups) {
         if (p.code === 10) {
           pts.push({ x: Number(p.value), y: NaN });
           bulges.push(0);
           widths.push({ start: 0, end: 0 });
+          ids.push(undefined);
         } else if (p.code === 20 && pts.length) pts[pts.length - 1] = { x: pts[pts.length - 1]!.x, y: Number(p.value) };
         else if (p.code === 42 && bulges.length) bulges[bulges.length - 1] = Number(p.value);
+        // Persistent vertex identifier (group 91): ASSOC geom dependencies
+        // address this vertex by it (Q11 F4) — carry it into the model.
+        else if (p.code === 91 && ids.length) ids[ids.length - 1] = Math.trunc(Number(p.value));
         else if ((p.code === 40 || p.code === 41) && widths.length) {
           variableWidth = true;
           widths[widths.length - 1]![p.code === 40 ? 'start' : 'end'] = flt(p.value);
@@ -319,14 +325,18 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       }
       const closed = (num(o, 70) & 1) === 1;
       const width = num(o, 43, 0);
+      const hasIds = ids.some((v) => v !== undefined);
       // Zero-hole donut (two bulge-1 vertices, constant width = radius): read back as a filled dot.
-      if (!variableWidth && closed && pts.length === 2 && width > 0 && Math.abs((bulges[0] ?? 0) - 1) < 1e-6 && Math.abs((bulges[1] ?? 0) - 1) < 1e-6) {
+      // A vertex-ID-carrying polyline belongs to a constraint web that addresses
+      // its vertices by ID; converting it to a circle would drop those IDs (the
+      // Q11 F4 loss), so the conversion does not apply when IDs are present.
+      if (!hasIds && !variableWidth && closed && pts.length === 2 && width > 0 && Math.abs((bulges[0] ?? 0) - 1) < 1e-6 && Math.abs((bulges[1] ?? 0) - 1) < 1e-6) {
         const c = g.mid(pts[0]!, pts[1]!);
         const r = g.dist(pts[0]!, pts[1]!) / 2 + width / 2;
         return { ...base, type: 'circle', center: c, radius: r, filled: true };
       }
       const hasBulge = bulges.some((b) => Math.abs(b) > 1e-12);
-      return { ...base, type: 'polyline', points: pts, closed, bulges: hasBulge ? bulges : undefined, ...(variableWidth ? { widths } : { width: width !== 0 ? width : undefined }) };
+      return { ...base, type: 'polyline', points: pts, closed, bulges: hasBulge ? bulges : undefined, ...(variableWidth ? { widths } : { width: width !== 0 ? width : undefined }), ...(hasIds ? { vertexIds: ids } : {}) };
     }
     case 'POLYLINE':
       // Old-style POLYLINE with VERTEX children is handled by caller.
@@ -472,15 +482,30 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       }
       const sx = num(o, 41, 1);
       const sy = num(o, 42, sx);
+      const blockName = str(o, 2);
+      // Priority 30 instance carrier: JCAD_DYNAMIC XDATA on the INSERT. Values are
+      // modeled only when the owning block has a modeled dynamic definition and the
+      // values validate against it; anything else (malformed, newer version, invalid
+      // values, or a block with no modeled definition) is retained raw on
+      // dynamicRetained and the instance displays at the authored state.
+      let dynamic: Partial<Pick<InsertEntity, 'dynamic' | 'dynamicRetained'>> = {};
+      const dynamicPairs = xdata(o, DYNAMIC_APP);
+      if (dynamicPairs) {
+        const raw = dynamicPayloadText(dynamicPairs);
+        const definition = ctx.blocks?.[blockName]?.dynamic;
+        const decoded = definition ? decodeDynamicInstance(raw, definition, blockName) : { ok: false as const, retained: raw };
+        dynamic = decoded.ok ? { dynamic: decoded.state } : { dynamicRetained: decoded.retained };
+      }
       return {
         ...base,
         type: 'insert',
-        block: str(o, 2),
+        block: blockName,
         position: { x: num(o, 10), y: num(o, 20) },
         rotation: g.rad(num(o, 50)) + insertScales(sx, sy).rotationOffset,
         attributes: {},
         ...insertScaleFields(sx, sy),
         ...insertArrayFields(has(o, 70) ? num(o, 70) : undefined, has(o, 71) ? num(o, 71) : undefined, has(o, 44) ? num(o, 44) : undefined, has(o, 45) ? num(o, 45) : undefined, insertScales(sx, sy).rotationOffset),
+        ...dynamic,
       };
     }
     default:

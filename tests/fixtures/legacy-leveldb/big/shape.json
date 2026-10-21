@@ -1,0 +1,30 @@
+{
+  "shape": "big",
+  "produced": "launch 1 wrote 40 keys x 200,000-char deterministic pseudo-random ASCII values (~8 MB total) via localStorage.setItem on a file:// page, settled, clean quit; launch 2 reopened with no writes (log-to-table conversion), clean quit; verified by a third launch read-back hashing every value (per-key bytes+sha256 in expected.json)",
+  "files": [
+    {
+      "name": "000003.ldb",
+      "bytes": 8002599
+    },
+    {
+      "name": "000004.log",
+      "bytes": 49
+    },
+    {
+      "name": "CURRENT",
+      "bytes": 16
+    },
+    {
+      "name": "LOCK",
+      "bytes": 0
+    },
+    {
+      "name": "MANIFEST-000001",
+      "bytes": 109
+    }
+  ],
+  "hasLog": true,
+  "hasLdb": true,
+  "verified": true,
+  "expectedFormat": "per-key {bytes: utf8 length, sha256} (values too large to store as full text)"
+}

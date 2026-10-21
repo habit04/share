@@ -1,0 +1,755 @@
+import { describe, it, expect } from 'vitest';
+import { createRequire } from 'node:module';
+import { DRAFT_INSTRUCTIONS, REFINE_INSTRUCTIONS, draftPlanJsonSchema } from '../src/ai/draft-schema';
+
+const require = createRequire(import.meta.url);
+
+type FakeInit = {
+  method?: string;
+  redirect?: string;
+  signal?: AbortSignal;
+  headers?: Record<string, string>;
+  body?: string;
+};
+type FakeReader = {
+  read: () => Promise<{ done: boolean; value?: Uint8Array }>;
+  cancel: (reason?: unknown) => Promise<unknown>;
+};
+type FakeResponse = {
+  status: number;
+  headers: { get: (name: string) => string | null };
+  body: { getReader: () => FakeReader } | null;
+  text: () => Promise<string>;
+};
+type ValidatedRequest = {
+  requestId: number;
+  question: string;
+  snapshot: Record<string, unknown>;
+  snapshotBytes: number;
+  binding: { sessionId: number; docId: string; contentGeneration: number; docRevision: number; selectionCount: number };
+};
+type Answer = { text: string; references: string[]; providerUsage?: { inputTokens?: number; outputTokens?: number } };
+type ValidatedDraftRequest = {
+  requestId: number | string;
+  prompt: string;
+  contextJson: string;
+  contextBytes: number;
+};
+type DraftResult = { value: unknown; contentBytes: number; usage?: { inputTokens?: number; outputTokens?: number } };
+type ValidatedRefineRequest = {
+  requestId: number | string;
+  followUp: string;
+  envelopeJson: string;
+  envelopeBytes: number;
+};
+type TransportFn = ((request: ValidatedRequest, signal?: AbortSignal) => Promise<Answer>) & {
+  probe: (signal?: AbortSignal) => Promise<{ model: string; inputTokens?: number; outputTokens?: number; outputLimited?: boolean }>;
+  draft: (request: ValidatedDraftRequest, signal?: AbortSignal) => Promise<DraftResult>;
+  refineDraft: (request: ValidatedRefineRequest, signal?: AbortSignal) => Promise<DraftResult>;
+};
+type FetchImpl = (url: string, init: FakeInit) => Promise<FakeResponse>;
+
+const { createOpenAiTransport } = require('../electron/ai-openai-transport.cjs') as {
+  createOpenAiTransport: (options: {
+    apiKey: string; model: string; fetchImpl?: FetchImpl;
+    maxOutputTokens?: number; maxResponseBytes?: number;
+  }) => TransportFn;
+};
+
+const API_KEY = 'sk-test-FAKE-KEY-0123456789';
+const MODEL = 'gpt-test-model';
+const MARKER = 'PROVIDER-MARKER-SECRET';
+
+// Every error the transport throws in this file is collected so the final
+// hygiene test can prove none of them leaks the key or provider body text.
+const observedErrors: unknown[] = [];
+
+async function expectKind(promise: Promise<unknown>, kind: string): Promise<{ kind: string; message: string; retryAfterSeconds?: number }> {
+  try {
+    await promise;
+  } catch (error) {
+    observedErrors.push(error);
+    expect(error).toMatchObject({ kind });
+    return error as { kind: string; message: string; retryAfterSeconds?: number };
+  }
+  throw new Error(`Expected a rejection with kind '${kind}'.`);
+}
+
+function validatedRequest(over: Partial<ValidatedRequest> = {}): ValidatedRequest {
+  const snapshot: Record<string, unknown> = {
+    kind: 'jcad.ai.selection-snapshot', version: 1,
+    units: { insunits: 1, insunitsName: 'Inches', lunits: 2, luprec: 4, auprec: 0 },
+    space: { kind: 'model' },
+    selection: { total: 1, included: 1, omittedCount: 0, omitted: [], omittedListTruncated: false },
+    objects: [{ id: 'e-line', type: 'line', layer: 'WIRES', geometry: { a: { x: 0, y: 0 }, b: { x: 3, y: 4 }, length: 5 } }],
+    serializedBytes: 0,
+  };
+  return {
+    requestId: 7,
+    question: 'How long is the line?',
+    snapshot,
+    snapshotBytes: Buffer.byteLength(JSON.stringify(snapshot), 'utf8'),
+    binding: { sessionId: 424242, docId: 'doc-secret-id', contentGeneration: 3, docRevision: 9, selectionCount: 1 },
+    ...over,
+  };
+}
+
+function headersOf(entries: Record<string, string> = {}): FakeResponse['headers'] {
+  const lowered = new Map(Object.entries(entries).map(([name, value]) => [name.toLowerCase(), value]));
+  return { get: (name) => lowered.get(name.toLowerCase()) ?? null };
+}
+
+function jsonResponse(status: number, payload: unknown, headers: Record<string, string> = {}): FakeResponse {
+  const text = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  const { response } = streamingResponse(status, [new TextEncoder().encode(text)]);
+  response.headers = headersOf(headers);
+  return response;
+}
+
+function streamingResponse(status: number, chunks: Uint8Array[]): { response: FakeResponse; state: { cancelled: boolean } } {
+  const state = { cancelled: false };
+  let index = 0;
+  const response: FakeResponse = {
+    status,
+    headers: headersOf(),
+    body: {
+      getReader: () => ({
+        read: async () => (index < chunks.length ? { done: false, value: chunks[index++] } : { done: true }),
+        cancel: async () => { state.cancelled = true; },
+      }),
+    },
+    text: async () => { throw new Error('text() must not be used when a reader exists'); },
+  };
+  return { response, state };
+}
+
+function completedPayload(answerText: string, references: string[] = [], usage?: { input_tokens: number; output_tokens: number }): Record<string, unknown> {
+  return {
+    id: 'resp-1', status: 'completed', model: MODEL,
+    output: [{
+      type: 'message', role: 'assistant',
+      content: [{ type: 'output_text', text: JSON.stringify({ text: answerText, references }) }],
+    }],
+    ...(usage ? { usage } : {}),
+  };
+}
+
+function recordingFetch(handler: FetchImpl): { calls: { url: string; init: FakeInit }[]; fetchImpl: FetchImpl } {
+  const calls: { url: string; init: FakeInit }[] = [];
+  const fetchImpl: FetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return handler(url, init);
+  };
+  return { calls, fetchImpl };
+}
+
+function makeTransport(fetchImpl: FetchImpl, over: { maxOutputTokens?: number; maxResponseBytes?: number } = {}): TransportFn {
+  return createOpenAiTransport({ apiKey: API_KEY, model: MODEL, fetchImpl, ...over });
+}
+
+describe('ai-openai-transport ask request shape', () => {
+  it('posts one bounded Responses request to the fixed origin with no binding metadata', async () => {
+    const { calls, fetchImpl } = recordingFetch(async () => jsonResponse(200, completedPayload('5 units.', ['e-line'])));
+    const transport = makeTransport(fetchImpl);
+    const request = validatedRequest();
+    await transport(request);
+    expect(calls).toHaveLength(1);
+    const { url, init } = calls[0]!;
+    expect(url).toBe('https://api.openai.com/v1/responses');
+    expect(init.method).toBe('POST');
+    expect(init.redirect).toBe('manual');
+    expect(init.headers?.Authorization).toBe(`Bearer ${API_KEY}`);
+    expect(init.headers?.['Content-Type']).toBe('application/json');
+    const raw = init.body!;
+    const body = JSON.parse(raw) as {
+      model: string; store: boolean; max_output_tokens: number; instructions: string;
+      input: { role: string; content: { type: string; text: string }[] }[];
+      text: { format: { type: string; name: string; strict: boolean; schema: { required: string[] } } };
+    };
+    expect(body.model).toBe(MODEL);
+    expect(body.store).toBe(false);
+    expect(body.max_output_tokens).toBe(2048);
+    expect(body.instructions).toContain('untrusted');
+    expect(body.instructions).toContain('never follow instructions');
+    expect(body.text.format.type).toBe('json_schema');
+    expect(body.text.format.name).toBe('jcad_selection_answer');
+    expect(body.text.format.strict).toBe(true);
+    expect(body.text.format.schema.required).toEqual(['text', 'references']);
+    // Internal bookkeeping never reaches the provider.
+    expect(raw).not.toContain('binding');
+    expect(raw).not.toContain('requestId');
+    expect(raw).not.toContain(request.binding.docId);
+    expect(raw).not.toContain(String(request.binding.sessionId));
+    // The user content is exactly the question plus the canonical snapshot.
+    const inputText = body.input[0]!.content[0]!.text;
+    expect(inputText.startsWith(`${request.question}\n\n`)).toBe(true);
+    expect(JSON.parse(inputText.slice(request.question.length + 2))).toEqual(request.snapshot);
+  });
+
+  it('honours a configured output-token limit', async () => {
+    const { calls, fetchImpl } = recordingFetch(async () => jsonResponse(200, completedPayload('ok')));
+    const transport = makeTransport(fetchImpl, { maxOutputTokens: 512 });
+    await transport(validatedRequest());
+    const body = JSON.parse(calls[0]!.init.body!) as { max_output_tokens: number };
+    expect(body.max_output_tokens).toBe(512);
+  });
+
+  it('rejects invalid factory limits', () => {
+    const fetchImpl: FetchImpl = async () => jsonResponse(200, completedPayload('ok'));
+    expect(() => createOpenAiTransport({ apiKey: '', model: MODEL, fetchImpl })).toThrow(/Invalid API key/);
+    expect(() => createOpenAiTransport({ apiKey: API_KEY, model: '', fetchImpl })).toThrow(/Invalid model/);
+    expect(() => createOpenAiTransport({ apiKey: API_KEY, model: MODEL, fetchImpl, maxOutputTokens: 0 })).toThrow(/output token limit/);
+    expect(() => createOpenAiTransport({ apiKey: API_KEY, model: MODEL, fetchImpl, maxResponseBytes: -1 })).toThrow(/response byte limit/);
+    expect(() => createOpenAiTransport({ apiKey: API_KEY, model: MODEL, fetchImpl, maxResponseBytes: 1.5 })).toThrow(/response byte limit/);
+  });
+});
+
+describe('ai-openai-transport ask responses', () => {
+  it('returns validated text, references and provider usage on completion', async () => {
+    const transport = makeTransport(async () => jsonResponse(200,
+      completedPayload('The line is 5 units long.', ['e-line'], { input_tokens: 321, output_tokens: 17 })));
+    const answer = await transport(validatedRequest());
+    expect(answer.text).toBe('The line is 5 units long.');
+    expect(answer.references).toEqual(['e-line']);
+    expect(answer.providerUsage).toEqual({ inputTokens: 321, outputTokens: 17 });
+  });
+
+  it('omits provider usage when the response does not report it', async () => {
+    const transport = makeTransport(async () => jsonResponse(200, completedPayload('ok', [])));
+    const answer = await transport(validatedRequest());
+    expect(answer.providerUsage).toBeUndefined();
+  });
+
+  it('reads a streamed body under the cap', async () => {
+    const bytes = new TextEncoder().encode(JSON.stringify(completedPayload('streamed', ['e-line'])));
+    const { response } = streamingResponse(200, [bytes.slice(0, 10), bytes.slice(10)]);
+    const transport = makeTransport(async () => response);
+    const answer = await transport(validatedRequest());
+    expect(answer.text).toBe('streamed');
+  });
+
+  it('cancels the reader and refuses a streamed body over the byte cap', async () => {
+    const chunk = new TextEncoder().encode('x'.repeat(40));
+    const { response, state } = streamingResponse(200, [chunk, chunk, chunk]);
+    const transport = makeTransport(async () => response, { maxResponseBytes: 64 });
+    await expectKind(transport(validatedRequest()), 'output-too-large');
+    expect(state.cancelled).toBe(true);
+  });
+
+  it('rejects a missing stream without invoking an unbounded text() fallback', async () => {
+    let textCalled = false;
+    const response = jsonResponse(200, 'x'.repeat(200));
+    response.body = null;
+    response.text = async () => { textCalled = true; return 'x'.repeat(200); };
+    const transport = makeTransport(async () => response, { maxResponseBytes: 64 });
+    await expectKind(transport(validatedRequest()), 'invalid-answer');
+    expect(textCalled).toBe(false);
+  });
+
+  it('maps a truncated JSON body to invalid-answer', async () => {
+    const transport = makeTransport(async () => jsonResponse(200, '{"status":"completed","output":[{"type":"message"'));
+    await expectKind(transport(validatedRequest()), 'invalid-answer');
+  });
+
+  it('maps incomplete/max_output_tokens to output-too-large', async () => {
+    const transport = makeTransport(async () => jsonResponse(200,
+      { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output: [] }));
+    await expectKind(transport(validatedRequest()), 'output-too-large');
+  });
+
+  it('maps incomplete/content_filter to refused', async () => {
+    const transport = makeTransport(async () => jsonResponse(200,
+      { status: 'incomplete', incomplete_details: { reason: 'content_filter' }, output: [] }));
+    await expectKind(transport(validatedRequest()), 'refused');
+  });
+
+  it('maps a refusal content part to refused', async () => {
+    const transport = makeTransport(async () => jsonResponse(200, {
+      status: 'completed',
+      output: [{ type: 'message', content: [{ type: 'refusal', refusal: 'I cannot help with that.' }] }],
+    }));
+    const error = await expectKind(transport(validatedRequest()), 'refused');
+    expect(error.message).not.toContain('I cannot help');
+  });
+
+  it('maps status failed to provider-failure', async () => {
+    const transport = makeTransport(async () => jsonResponse(200,
+      { status: 'failed', error: { code: 'server_error', message: MARKER } }));
+    const error = await expectKind(transport(validatedRequest()), 'provider-failure');
+    expect(error.message).not.toContain(MARKER);
+  });
+
+  it('requires exactly one output_text part', async () => {
+    const two = makeTransport(async () => jsonResponse(200, {
+      status: 'completed',
+      output: [{
+        type: 'message',
+        content: [
+          { type: 'output_text', text: JSON.stringify({ text: 'a', references: [] }) },
+          { type: 'output_text', text: JSON.stringify({ text: 'b', references: [] }) },
+        ],
+      }],
+    }));
+    await expectKind(two(validatedRequest()), 'invalid-answer');
+    const zero = makeTransport(async () => jsonResponse(200, { status: 'completed', output: [] }));
+    await expectKind(zero(validatedRequest()), 'invalid-answer');
+  });
+
+  it('rejects malformed answer payloads', async () => {
+    const badText = makeTransport(async () => jsonResponse(200, {
+      status: 'completed',
+      output: [{ type: 'message', content: [{ type: 'output_text', text: 'not json' }] }],
+    }));
+    await expectKind(badText(validatedRequest()), 'invalid-answer');
+    const emptyText = makeTransport(async () => jsonResponse(200, completedPayload('', [])));
+    await expectKind(emptyText(validatedRequest()), 'invalid-answer');
+    const badRefs = makeTransport(async () => jsonResponse(200, {
+      status: 'completed',
+      output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ text: 'a', references: [42] }) }] }],
+    }));
+    await expectKind(badRefs(validatedRequest()), 'invalid-answer');
+    const weirdStatus = makeTransport(async () => jsonResponse(200, { status: 'queued', output: [] }));
+    await expectKind(weirdStatus(validatedRequest()), 'invalid-answer');
+  });
+});
+
+describe('ai-openai-transport HTTP error mapping', () => {
+  function errorBody(code: string, type: string): Record<string, unknown> {
+    return { error: { code, type, message: `${MARKER}: provider detail that must never surface` } };
+  }
+
+  it('maps 401 to auth-failed without leaking the provider body', async () => {
+    const transport = makeTransport(async () => jsonResponse(401, errorBody('invalid_api_key', 'auth_error')));
+    const error = await expectKind(transport(validatedRequest()), 'auth-failed');
+    expect(error.message).not.toContain(MARKER);
+  });
+
+  it('maps 403 with a model code to model-access', async () => {
+    const transport = makeTransport(async () => jsonResponse(403, errorBody('model_not_found', 'invalid_request_error')));
+    const error = await expectKind(transport(validatedRequest()), 'model-access');
+    expect(error.message).not.toContain(MARKER);
+  });
+
+  it('maps 403 without a model mention to auth-failed', async () => {
+    const transport = makeTransport(async () => jsonResponse(403, errorBody('access_denied', 'auth_error')));
+    await expectKind(transport(validatedRequest()), 'auth-failed');
+  });
+
+  it('maps 404 to model-access', async () => {
+    const transport = makeTransport(async () => jsonResponse(404, errorBody('model_not_found', 'invalid_request_error')));
+    await expectKind(transport(validatedRequest()), 'model-access');
+  });
+
+  it('maps 429 to rate-limited with a clamped Retry-After', async () => {
+    const transport = makeTransport(async () => jsonResponse(429, errorBody('rate_limit_exceeded', 'rate_limit_error'), { 'Retry-After': '45' }));
+    const error = await expectKind(transport(validatedRequest()), 'rate-limited');
+    expect(error.retryAfterSeconds).toBe(45);
+    const clamped = makeTransport(async () => jsonResponse(429, errorBody('rate_limit_exceeded', 'rate_limit_error'), { 'Retry-After': '99999' }));
+    const clampedError = await expectKind(clamped(validatedRequest()), 'rate-limited');
+    expect(clampedError.retryAfterSeconds).toBe(600);
+    const noHeader = makeTransport(async () => jsonResponse(429, errorBody('rate_limit_exceeded', 'rate_limit_error')));
+    const noHeaderError = await expectKind(noHeader(validatedRequest()), 'rate-limited');
+    expect(noHeaderError.retryAfterSeconds).toBeUndefined();
+  });
+
+  it('maps 400 to invalid-request and 500 to provider-failure', async () => {
+    const bad = makeTransport(async () => jsonResponse(400, errorBody('invalid_value', 'invalid_request_error')));
+    await expectKind(bad(validatedRequest()), 'invalid-request');
+    const broken = makeTransport(async () => jsonResponse(500, errorBody('server_error', 'server_error')));
+    const error = await expectKind(broken(validatedRequest()), 'provider-failure');
+    expect(error.message).not.toContain(MARKER);
+  });
+
+  it('refuses redirects instead of following credentials elsewhere', async () => {
+    const { response, state } = streamingResponse(302, []);
+    response.headers = headersOf({ Location: 'https://example.invalid/steal' });
+    const transport = makeTransport(async () => response);
+    const error = await expectKind(transport(validatedRequest()), 'provider-failure');
+    expect(error.message).toContain('redirect');
+    expect(state.cancelled).toBe(true);
+  });
+});
+
+describe('ai-openai-transport network and cancellation', () => {
+  it('maps a fetch throw to network', async () => {
+    const transport = makeTransport(async () => { throw new Error(`socket hangup near ${API_KEY}`); });
+    const error = await expectKind(transport(validatedRequest()), 'network');
+    expect(error.message).not.toContain('socket hangup');
+  });
+
+  it('never calls fetch when the signal is already aborted', async () => {
+    const { calls, fetchImpl } = recordingFetch(async () => jsonResponse(200, completedPayload('ok')));
+    const transport = makeTransport(fetchImpl);
+    const controller = new AbortController();
+    controller.abort();
+    await expectKind(transport(validatedRequest(), controller.signal), 'cancelled');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('maps an abort during body read to cancelled', async () => {
+    const fetchImpl: FetchImpl = async (_url, init) => ({
+      status: 200,
+      headers: headersOf(),
+      body: {
+        getReader: () => ({
+          read: () => new Promise((_resolve, reject) => {
+            if (init.signal?.aborted) { reject(new Error('AbortError')); return; }
+            init.signal?.addEventListener('abort', () => reject(new Error('AbortError')), { once: true });
+          }),
+          cancel: async () => {},
+        }),
+      },
+      text: async () => '',
+    });
+    const transport = makeTransport(fetchImpl);
+    const controller = new AbortController();
+    const pending = transport(validatedRequest(), controller.signal);
+    const assertion = expectKind(pending, 'cancelled');
+    controller.abort();
+    await assertion;
+  });
+});
+
+describe('ai-openai-transport probe', () => {
+  it('sends a tiny canned request with no drawing content, instructions or schema', async () => {
+    const { calls, fetchImpl } = recordingFetch(async () => jsonResponse(200,
+      { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'ready' }] }], usage: { input_tokens: 9, output_tokens: 1 } }));
+    const transport = makeTransport(fetchImpl);
+    const result = await transport.probe();
+    expect(result).toEqual({ model: MODEL, inputTokens: 9, outputTokens: 1 });
+    expect(calls).toHaveLength(1);
+    const { url, init } = calls[0]!;
+    expect(url).toBe('https://api.openai.com/v1/responses');
+    const raw = init.body!;
+    const body = JSON.parse(raw) as Record<string, unknown>;
+    expect(body.model).toBe(MODEL);
+    expect(body.store).toBe(false);
+    expect(body.max_output_tokens).toBe(64);
+    expect(body).not.toHaveProperty('instructions');
+    expect(body).not.toHaveProperty('text');
+    expect(raw).not.toContain('How long is the line?');
+    expect(raw).not.toContain('e-line');
+    expect(raw).toContain('ready');
+  });
+
+  it('maps a probe 401 to auth-failed', async () => {
+    const transport = makeTransport(async () => jsonResponse(401,
+      { error: { code: 'invalid_api_key', type: 'auth_error', message: MARKER } }));
+    await expectKind(transport.probe(), 'auth-failed');
+  });
+
+  it('rejects a non-completed probe response', async () => {
+    const transport = makeTransport(async () => jsonResponse(200, { status: 'in_progress', output: [] }));
+    await expectKind(transport.probe(), 'invalid-answer');
+  });
+
+  it('verifies a model-accepted probe that reaches its output cap without exposing partial text', async () => {
+    const { calls, fetchImpl } = recordingFetch(async () => jsonResponse(200, {
+      status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' },
+      output: [], usage: { input_tokens: 9, output_tokens: 64 },
+    }));
+    const result = await makeTransport(fetchImpl).probe();
+    expect(result).toEqual({ model: MODEL, inputTokens: 9, outputTokens: 64, outputLimited: true });
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0]!.init.body!).max_output_tokens).toBe(64);
+    expect(result).not.toHaveProperty('text');
+  });
+
+  it('still rejects refused, malformed and unrecognized limited probes', async () => {
+    for (const payload of [
+      { status: 'completed', output: [] },
+      { status: 'incomplete', incomplete_details: { reason: 'other' }, output: [] },
+      { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } },
+    ]) await expectKind(makeTransport(async () => jsonResponse(200, payload)).probe(), 'invalid-answer');
+    await expectKind(makeTransport(async () => jsonResponse(200, {
+      status: 'completed', output: [{ type: 'message', content: [{ type: 'refusal', refusal: MARKER }] }],
+    })).probe(), 'refused');
+  });
+});
+
+describe('ai-openai-transport bounded lifecycle regressions', () => {
+  it('accepts intact references beyond 256 characters and enforces final answer size locally', async () => {
+    const id = 'object-'.repeat(80);
+    const answer = await makeTransport(async () => jsonResponse(200, completedPayload('ok', [id])))(validatedRequest());
+    expect(answer.references).toEqual([id]);
+    await expectKind(makeTransport(async () => jsonResponse(200, completedPayload('x'.repeat(8001))))(validatedRequest()), 'output-too-large');
+  });
+
+  it('bounds the actual HTTP request before fetching', async () => {
+    const { calls, fetchImpl } = recordingFetch(async () => jsonResponse(200, completedPayload('unexpected')));
+    const request = validatedRequest({ snapshot: { text: 'x'.repeat(300000) } });
+    await expectKind(makeTransport(fetchImpl)(request), 'invalid-request');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('cancels an outstanding read even when the reader ignores the fetch signal', async () => {
+    let startRead!: () => void;
+    const reading = new Promise<void>((resolve) => { startRead = resolve; });
+    let cancelled = false;
+    const response: FakeResponse = {
+      status: 200, headers: headersOf(),
+      body: { getReader: () => ({
+        read: () => { startRead(); return new Promise(() => {}); },
+        cancel: async () => { cancelled = true; },
+      }) },
+      text: async () => '',
+    };
+    const abort = new AbortController();
+    const pending = makeTransport(async () => response)(validatedRequest(), abort.signal);
+    const assertion = expectKind(pending, 'cancelled');
+    await reading;
+    abort.abort();
+    await assertion;
+    expect(cancelled).toBe(true);
+  });
+
+  it('does not wait for a hung reader cancellation after exceeding the cap', async () => {
+    let cancelled = false;
+    const response: FakeResponse = {
+      status: 200, headers: headersOf(),
+      body: { getReader: () => ({
+        read: async () => ({ done: false, value: new Uint8Array(65) }),
+        cancel: () => { cancelled = true; return new Promise(() => {}); },
+      }) },
+      text: async () => '',
+    };
+    await expectKind(makeTransport(async () => response, { maxResponseBytes: 64 })(validatedRequest()), 'output-too-large');
+    expect(cancelled).toBe(true);
+  });
+});
+
+const draftPlanValue = {
+  outcome: 'proposal', message: null,
+  operations: [{
+    op: 'createLine', a: { x: 0, y: 0 }, b: { x: 10, y: 0 },
+    center: null, radius: null, origin: null, width: null, height: null,
+    rotationDeg: null, layer: null, targetIds: null, dx: null, dy: null,
+    pivot: null, angleDeg: null,
+  }],
+};
+
+function draftRequest(over: Partial<ValidatedDraftRequest> = {}): ValidatedDraftRequest {
+  return {
+    requestId: 'ai-salt-draft-1',
+    prompt: 'draw a line',
+    contextJson: '{"kind":"jcad.ai.draft-context","version":1}',
+    contextBytes: 44,
+    ...over,
+  };
+}
+
+function draftPayload(text: string, usage?: { input_tokens: number; output_tokens: number }): Record<string, unknown> {
+  return {
+    id: 'resp-draft', status: 'completed', model: MODEL,
+    output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }],
+    ...(usage ? { usage } : {}),
+  };
+}
+
+describe('ai-openai-transport draft', () => {
+  it('posts one draft request with the strict plan schema and the 4096-token budget', async () => {
+    const { calls, fetchImpl } = recordingFetch(async () => jsonResponse(200, draftPayload(JSON.stringify(draftPlanValue))));
+    const transport = makeTransport(fetchImpl);
+    const request = draftRequest();
+    await transport.draft(request);
+    expect(calls).toHaveLength(1);
+    const { url, init } = calls[0]!;
+    expect(url).toBe('https://api.openai.com/v1/responses');
+    expect(init.method).toBe('POST');
+    expect(init.redirect).toBe('manual');
+    expect(init.headers?.Authorization).toBe(`Bearer ${API_KEY}`);
+    const raw = init.body!;
+    const body = JSON.parse(raw) as {
+      model: string; store: boolean; max_output_tokens: number; instructions: string;
+      input: { role: string; content: { type: string; text: string }[] }[];
+      text: {
+        format: {
+          type: string; name: string; strict: boolean;
+          schema: {
+            required: string[];
+            properties: {
+              outcome: { enum: string[] };
+              operations: {
+                maxItems: number;
+                items: {
+                  required: string[];
+                  properties: { op: { enum: string[] }; targetIds: { maxItems: number } };
+                };
+              };
+            };
+          };
+        };
+      };
+    };
+    expect(body.model).toBe(MODEL);
+    expect(body.store).toBe(false);
+    expect(body.max_output_tokens).toBe(4096);
+    expect(body.instructions).toContain('drafting engine');
+    expect(body.instructions).toContain('eligible:true');
+    expect(body.instructions).toBe(DRAFT_INSTRUCTIONS);
+    expect(body.text.format.schema).toEqual(draftPlanJsonSchema('openai'));
+    expect(body.text.format.type).toBe('json_schema');
+    expect(body.text.format.name).toBe('jcad_draft_plan');
+    expect(body.text.format.strict).toBe(true);
+    expect(body.text.format.schema.required).toEqual(['outcome', 'message', 'operations']);
+    expect(body.text.format.schema.properties.outcome.enum).toEqual(['proposal', 'clarification', 'unsupported']);
+    expect(body.text.format.schema.properties.operations.maxItems).toBe(64);
+    const operation = body.text.format.schema.properties.operations.items;
+    expect(operation.properties.op.enum).toEqual(['createLine', 'createCircle', 'createRectangle', 'move', 'copy', 'rotate', 'delete']);
+    expect(operation.properties.targetIds.maxItems).toBe(200);
+    expect(operation.required).toEqual(['op', 'a', 'b', 'center', 'radius', 'origin', 'width', 'height', 'rotationDeg', 'layer', 'targetIds', 'dx', 'dy', 'pivot', 'angleDeg']);
+    // The user content is exactly the prompt plus the exact context JSON.
+    expect(body.input[0]!.content[0]!.text).toBe(`Request: ${request.prompt}\n\nContext (exact JSON):\n${request.contextJson}`);
+    // Host bookkeeping never reaches the provider.
+    expect(raw).not.toContain('binding');
+    expect(raw).not.toContain('contextBytes');
+    expect(raw).not.toContain(String(request.requestId));
+  });
+
+  it('returns the parsed value unvalidated, with raw content bytes and usage', async () => {
+    const text = JSON.stringify(draftPlanValue);
+    const { fetchImpl } = recordingFetch(async () => jsonResponse(200, draftPayload(text, { input_tokens: 21, output_tokens: 9 })));
+    const transport = makeTransport(fetchImpl);
+    const result = await transport.draft(draftRequest());
+    expect(result.value).toEqual(draftPlanValue);
+    expect(result.contentBytes).toBe(Buffer.byteLength(text, 'utf8'));
+    expect(result.contentBytes).toBeGreaterThan(0);
+    expect(result.usage).toEqual({ inputTokens: 21, outputTokens: 9 });
+  });
+
+  it('counts UTF-8 content bytes, not characters', async () => {
+    const value = { outcome: 'clarification', message: '¿Qué tamaño?', operations: null };
+    const text = JSON.stringify(value);
+    const { fetchImpl } = recordingFetch(async () => jsonResponse(200, draftPayload(text)));
+    const transport = makeTransport(fetchImpl);
+    const result = await transport.draft(draftRequest());
+    expect(result.value).toEqual(value);
+    expect(result.contentBytes).toBe(Buffer.byteLength(text, 'utf8'));
+    expect(result.contentBytes).toBeGreaterThan(text.length);
+  });
+
+  it('maps a refusal part to refused', async () => {
+    const payload = {
+      id: 'resp-draft', status: 'completed', model: MODEL,
+      output: [{ type: 'message', role: 'assistant', content: [{ type: 'refusal', refusal: 'no' }] }],
+    };
+    const { fetchImpl } = recordingFetch(async () => jsonResponse(200, payload));
+    await expectKind(makeTransport(fetchImpl).draft(draftRequest()), 'refused');
+  });
+
+  it('maps incomplete drafts: token limit to output-too-large, filter to refused, other to invalid-answer', async () => {
+    const incomplete = (reason: string) => ({
+      id: 'resp-draft', status: 'incomplete', model: MODEL, incomplete_details: { reason }, output: [],
+    });
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, incomplete('max_output_tokens'))).fetchImpl).draft(draftRequest()), 'output-too-large');
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, incomplete('content_filter'))).fetchImpl).draft(draftRequest()), 'refused');
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, incomplete('other'))).fetchImpl).draft(draftRequest()), 'invalid-answer');
+  });
+
+  it('maps a failed status to provider-failure', async () => {
+    const { fetchImpl } = recordingFetch(async () => jsonResponse(200, { id: 'resp-draft', status: 'failed', model: MODEL, output: [] }));
+    await expectKind(makeTransport(fetchImpl).draft(draftRequest()), 'provider-failure');
+  });
+
+  it('refuses malformed JSON and split output as invalid-answer', async () => {
+    const { fetchImpl } = recordingFetch(async () => jsonResponse(200, draftPayload('{"outcome":')));
+    await expectKind(makeTransport(fetchImpl).draft(draftRequest()), 'invalid-answer');
+    const split = {
+      id: 'resp-draft', status: 'completed', model: MODEL,
+      output: [{ type: 'message', role: 'assistant', content: [
+        { type: 'output_text', text: '{"outcome":' },
+        { type: 'output_text', text: '"proposal"}' },
+      ] }],
+    };
+    const { fetchImpl: fetch2 } = recordingFetch(async () => jsonResponse(200, split));
+    await expectKind(makeTransport(fetch2).draft(draftRequest()), 'invalid-answer');
+  });
+});
+
+function refineRequest(over: Partial<ValidatedRefineRequest> = {}): ValidatedRefineRequest {
+  const envelopeJson = '{"kind":"jcad.ai.draft-refine-context","version":1}';
+  return {
+    requestId: 'ai-salt-refine-1',
+    followUp: 'Change that movement to 15 units right in total.',
+    envelopeJson,
+    envelopeBytes: Buffer.byteLength(envelopeJson, 'utf8'),
+    ...over,
+  };
+}
+
+describe('ai-openai-transport refine (milestone 4)', () => {
+  it('posts one refinement request with the refine instructions, plan schema and 4096-token budget', async () => {
+    const { calls, fetchImpl } = recordingFetch(async () => jsonResponse(200, draftPayload(JSON.stringify(draftPlanValue))));
+    const transport = makeTransport(fetchImpl);
+    const request = refineRequest();
+    await transport.refineDraft(request);
+    expect(calls).toHaveLength(1);
+    const { url, init } = calls[0]!;
+    expect(url).toBe('https://api.openai.com/v1/responses');
+    expect(init.method).toBe('POST');
+    expect(init.redirect).toBe('manual');
+    expect(init.headers?.Authorization).toBe(`Bearer ${API_KEY}`);
+    const raw = init.body!;
+    const body = JSON.parse(raw) as {
+      model: string; store: boolean; max_output_tokens: number; instructions: string;
+      input: { role: string; content: { type: string; text: string }[] }[];
+      text: { format: { type: string; name: string; strict: boolean; schema: unknown } };
+    };
+    expect(body.model).toBe(MODEL);
+    expect(body.store).toBe(false);
+    expect(body.max_output_tokens).toBe(4096);
+    expect(body.instructions).toBe(REFINE_INSTRUCTIONS);
+    expect(body.instructions).toContain('COMPLETE REPLACEMENT PLAN');
+    expect(body.instructions).not.toBe(DRAFT_INSTRUCTIONS);
+    expect(body.text.format.type).toBe('json_schema');
+    expect(body.text.format.name).toBe('jcad_draft_plan');
+    expect(body.text.format.strict).toBe(true);
+    expect(body.text.format.schema).toEqual(draftPlanJsonSchema('openai'));
+    // The user content is exactly the follow-up plus the exact envelope JSON.
+    expect(body.input[0]!.content[0]!.text).toBe(
+      `Follow-up instruction: ${request.followUp}\n\nRefinement context (exact JSON):\n${request.envelopeJson}`,
+    );
+    // Host bookkeeping never reaches the provider.
+    expect(raw).not.toContain('binding');
+    expect(raw).not.toContain('envelopeBytes');
+    expect(raw).not.toContain(String(request.requestId));
+  });
+
+  it('returns the parsed replacement value unvalidated, with raw content bytes and usage', async () => {
+    const text = JSON.stringify(draftPlanValue);
+    const { fetchImpl } = recordingFetch(async () => jsonResponse(200, draftPayload(text, { input_tokens: 55, output_tokens: 17 })));
+    const transport = makeTransport(fetchImpl);
+    const result = await transport.refineDraft(refineRequest());
+    expect(result.value).toEqual(draftPlanValue);
+    expect(result.contentBytes).toBe(Buffer.byteLength(text, 'utf8'));
+    expect(result.usage).toEqual({ inputTokens: 55, outputTokens: 17 });
+  });
+
+  it('maps refusal, incomplete and malformed refinement responses like drafts', async () => {
+    const refusal = {
+      id: 'resp-refine', status: 'completed', model: MODEL,
+      output: [{ type: 'message', role: 'assistant', content: [{ type: 'refusal', refusal: 'no' }] }],
+    };
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, refusal)).fetchImpl).refineDraft(refineRequest()), 'refused');
+    const incomplete = (reason: string) => ({
+      id: 'resp-refine', status: 'incomplete', model: MODEL, incomplete_details: { reason }, output: [],
+    });
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, incomplete('max_output_tokens'))).fetchImpl).refineDraft(refineRequest()), 'output-too-large');
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, incomplete('content_filter'))).fetchImpl).refineDraft(refineRequest()), 'refused');
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, draftPayload('{"outcome":'))).fetchImpl).refineDraft(refineRequest()), 'invalid-answer');
+    await expectKind(makeTransport(recordingFetch(async () => jsonResponse(200, { id: 'resp-refine', status: 'failed', model: MODEL, output: [] })).fetchImpl).refineDraft(refineRequest()), 'provider-failure');
+  });
+});
+
+describe('ai-openai-transport key hygiene', () => {
+  it('no observed error contains the API key or provider body text', () => {
+    expect(observedErrors.length).toBeGreaterThan(10);
+    for (const error of observedErrors) {
+      const shaped = error as { message?: string };
+      expect(shaped.message ?? '').not.toContain(API_KEY);
+      expect(shaped.message ?? '').not.toContain(MARKER);
+      expect(String(error)).not.toContain(API_KEY);
+      expect(JSON.stringify(error)).not.toContain(API_KEY);
+    }
+  });
+});

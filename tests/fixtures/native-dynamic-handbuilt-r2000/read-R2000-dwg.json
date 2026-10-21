@@ -1,0 +1,309 @@
+{
+  "acadver": "26.0",
+  "drawingVersion": "AC1015",
+  "lastSavedAsVersion": "MC0To0",
+  "file": "C:\\Users\\justi\\Chad\\.codex-local\\p30-native-n1-20261017\\q10\\p30-linear-stretch-HANDBUILT-R2000.dwg",
+  "blocks": [
+    {
+      "name": "P30_LINEAR_STRETCH",
+      "isAnonymous": false,
+      "isDynamic": true,
+      "hasXDictionary": true,
+      "entities": [
+        {
+          "type": "LWPOLYLINE",
+          "layer": "0",
+          "closed": true,
+          "vertices": [
+            [
+              0,
+              0
+            ],
+            [
+              100,
+              0
+            ],
+            [
+              100,
+              60
+            ],
+            [
+              0,
+              60
+            ]
+          ]
+        },
+        {
+          "type": "CIRCLE",
+          "layer": "0",
+          "center": [
+            30,
+            30,
+            0
+          ],
+          "radius": 10
+        },
+        {
+          "type": "LINE",
+          "layer": "0",
+          "start": [
+            70,
+            20,
+            0
+          ],
+          "end": [
+            90,
+            40,
+            0
+          ]
+        },
+        {
+          "type": "ATTDEF",
+          "layer": "0",
+          "tag": "TAG1",
+          "position": [
+            10,
+            45,
+            0
+          ],
+          "height": 5,
+          "default": "P-100"
+        }
+      ]
+    },
+    {
+      "name": "*U2",
+      "isAnonymous": true,
+      "isDynamic": false,
+      "hasXDictionary": true,
+      "entities": [
+        {
+          "type": "LWPOLYLINE",
+          "layer": "0",
+          "closed": true,
+          "vertices": [
+            [
+              0,
+              0
+            ],
+            [
+              120,
+              0
+            ],
+            [
+              120,
+              60
+            ],
+            [
+              0,
+              60
+            ]
+          ]
+        },
+        {
+          "type": "CIRCLE",
+          "layer": "0",
+          "center": [
+            30,
+            30,
+            0
+          ],
+          "radius": 10
+        },
+        {
+          "type": "LINE",
+          "layer": "0",
+          "start": [
+            90,
+            20,
+            0
+          ],
+          "end": [
+            110,
+            40,
+            0
+          ]
+        },
+        {
+          "type": "ATTDEF",
+          "layer": "0",
+          "tag": "TAG1",
+          "position": [
+            10,
+            45,
+            0
+          ],
+          "height": 5,
+          "default": "P-100"
+        }
+      ]
+    }
+  ],
+  "instances": [
+    {
+      "blockName": "P30_LINEAR_STRETCH",
+      "effectiveName": "P30_LINEAR_STRETCH",
+      "isDynamicBlock": true,
+      "insertion": [
+        0,
+        0,
+        0
+      ],
+      "rotationDeg": 0,
+      "properties": [
+        {
+          "name": "Distance1",
+          "value": 100,
+          "allowed": [
+            80,
+            100,
+            120,
+            140
+          ]
+        },
+        {
+          "name": "Origin",
+          "value": {
+            "Z": 0,
+            "Y": 30,
+            "X": 0
+          },
+          "allowed": []
+        }
+      ],
+      "extents": [
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          100,
+          60,
+          0
+        ]
+      ],
+      "attributes": [
+        {
+          "tag": "TAG1",
+          "text": "P-100",
+          "position": [
+            10,
+            45,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "blockName": "*U2",
+      "effectiveName": "P30_LINEAR_STRETCH",
+      "isDynamicBlock": true,
+      "insertion": [
+        200,
+        0,
+        0
+      ],
+      "rotationDeg": 0,
+      "properties": [
+        {
+          "name": "Distance1",
+          "value": 120,
+          "allowed": [
+            80,
+            100,
+            120,
+            140
+          ]
+        },
+        {
+          "name": "Origin",
+          "value": {
+            "Z": 0,
+            "Y": 30,
+            "X": 0
+          },
+          "allowed": []
+        }
+      ],
+      "extents": [
+        [
+          200,
+          0,
+          0
+        ],
+        [
+          320,
+          60,
+          0
+        ]
+      ],
+      "attributes": [
+        {
+          "tag": "TAG1",
+          "text": "P-100",
+          "position": [
+            210,
+            45,
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "blockName": "*U2",
+      "effectiveName": "P30_LINEAR_STRETCH",
+      "isDynamicBlock": true,
+      "insertion": [
+        400,
+        0,
+        0
+      ],
+      "rotationDeg": 29.999999999999996,
+      "properties": [
+        {
+          "name": "Distance1",
+          "value": 120,
+          "allowed": [
+            80,
+            100,
+            120,
+            140
+          ]
+        },
+        {
+          "name": "Origin",
+          "value": {
+            "Z": 0,
+            "Y": 30,
+            "X": 0
+          },
+          "allowed": []
+        }
+      ],
+      "extents": [
+        [
+          370,
+          0,
+          0
+        ],
+        [
+          503.92304845413264,
+          111.96152422706632,
+          0
+        ]
+      ],
+      "attributes": [
+        {
+          "tag": "TAG1",
+          "text": "P-100",
+          "position": [
+            386.16025403784437,
+            43.97114317029974,
+            0
+          ]
+        }
+      ]
+    }
+  ]
+}

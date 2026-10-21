@@ -1,0 +1,42 @@
+{
+ "name": "cross-source-delete",
+ "description": "cs-victim written with ~2.8 MB (session 1), 1 reopen(s) until its value is inside an .ldb table, then a final session deletes it; no reopen after the delete, so the tombstone is log-resident.",
+ "generatedBy": "lead Windows gate (Claude), real Electron undefined via scripts/ls_session.cjs",
+ "electron": "44.7.0",
+ "snapshotTakenBeforeChromiumReadback": true,
+ "lockExcluded": true,
+ "structureVerified": true,
+ "structure": {
+  "manifest": "MANIFEST-000001",
+  "liveTables": [
+   {
+    "file": "000003.ldb",
+    "level": 0
+   }
+  ],
+  "tables": {
+   "000003.ldb": [
+    {
+     "key": "cs-victim",
+     "kind": "value",
+     "seq": "702"
+    }
+   ]
+  },
+  "logs": {
+   "000004.log": {
+    "bytes": 207,
+    "physicalRecords": {
+     "FULL": 2
+    },
+    "watchHits": [
+     {
+      "key": "cs-victim",
+      "kind": "tombstone",
+      "seq": "708"
+     }
+    ]
+   }
+  }
+ }
+}
