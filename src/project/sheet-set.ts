@@ -16,8 +16,19 @@
  * (.dst) XML structure (set name, subsets, sheet number/title/layout/file).
  * Anything outside that subset is preserved verbatim in `opaqueFragments`
  * and re-emitted on write, so an import/export round trip never discards
- * unmodeled native data. AutoCAD's own acceptance of emitted files is a
- * separate Windows/native gate and is NOT claimed here.
+ * unmodeled native data. Attributes ON modeled elements are preserved the
+ * same way: on the root element (`dstAttributes`), on subset elements and
+ * their <Name> leaves (keyed by subset name), on each sheet element
+ * (the sheet's `dstAttributes`), and on a sheet's leaf elements
+ * (`dstLeafAttributes`, keyed by leaf tag). Unmodeled elements nested
+ * inside a modeled LEAF are preserved via `opaqueFragments` too. Two
+ * round-trip limits are stated plainly: preserved fragments re-emit at set
+ * level (their original position is not preserved), and the DST form
+ * preserves neither the interleaved order of sheets across subsets nor
+ * sheet ids — fresh ids are minted on DST import. The JSON form DOES
+ * preserve ids and every preserved-attribute record. AutoCAD's own
+ * acceptance of emitted files is a separate Windows/native gate and is NOT
+ * claimed here.
  */
 
 export interface SheetSetSheet {
@@ -31,6 +42,10 @@ export interface SheetSetSheet {
   readonly subset?: string;
   readonly revision?: string;
   readonly customProperties?: Readonly<Record<string, string>>;
+  /** Attributes carried on this sheet's <AcSmSheet> element in a DST import; re-emitted verbatim. */
+  readonly dstAttributes?: Readonly<Record<string, string>>;
+  /** Attributes carried on this sheet's leaf elements in a DST import, keyed by leaf tag; re-emitted verbatim. */
+  readonly dstLeafAttributes?: Readonly<Record<string, Readonly<Record<string, string>>>>;
 }
 
 export interface SheetSet {
@@ -40,6 +55,14 @@ export interface SheetSet {
   readonly sheets: readonly SheetSetSheet[];
   /** Verbatim XML fragments from a DST import that this model does not interpret. */
   readonly opaqueFragments?: readonly string[];
+  /** Attributes carried on the root <AcSmSheetSet> element in a DST import; re-emitted verbatim. */
+  readonly dstAttributes?: Readonly<Record<string, string>>;
+  /** Attributes carried on <AcSmSubset> elements in a DST import, keyed by subset name; re-emitted verbatim. */
+  readonly dstSubsetAttributes?: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  /** Attributes carried on subset <Name> leaves in a DST import, keyed by subset name; re-emitted verbatim. */
+  readonly dstSubsetNameAttributes?: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  /** Attributes carried on the set's <Name> leaf in a DST import; re-emitted verbatim. */
+  readonly dstNameAttributes?: Readonly<Record<string, string>>;
 }
 
 export interface NewSheet {
@@ -208,6 +231,14 @@ function stringProps(v: unknown, what: string): Record<string, string> {
   return out;
 }
 
+/** Validate a record of string records (the keyed preserved-attribute maps). */
+function nestedStringProps(v: unknown, what: string): Record<string, Record<string, string>> {
+  if (!isRecord(v)) throw new Error(`${what} must be an object of string records`);
+  const out: Record<string, Record<string, string>> = {};
+  for (const [k, val] of Object.entries(v)) out[k] = stringProps(val, `${what}.${k}`);
+  return out;
+}
+
 /** Parse the JSON form. Throws on any malformed input — no partial sets are fabricated. */
 export function parseSheetSetJson(text: string): SheetSet {
   const raw: unknown = JSON.parse(text);
@@ -229,6 +260,8 @@ export function parseSheetSetJson(text: string): SheetSet {
       ...(typeof s.subset === 'string' ? { subset: s.subset } : {}),
       ...(typeof s.revision === 'string' ? { revision: s.revision } : {}),
       ...(s.customProperties !== undefined ? { customProperties: stringProps(s.customProperties, `sheets[${i}].customProperties`) } : {}),
+      ...(s.dstAttributes !== undefined ? { dstAttributes: stringProps(s.dstAttributes, `sheets[${i}].dstAttributes`) } : {}),
+      ...(s.dstLeafAttributes !== undefined ? { dstLeafAttributes: nestedStringProps(s.dstLeafAttributes, `sheets[${i}].dstLeafAttributes`) } : {}),
     };
   });
   return {
@@ -239,6 +272,10 @@ export function parseSheetSetJson(text: string): SheetSet {
     ...(Array.isArray(raw.opaqueFragments) && raw.opaqueFragments.every((f) => typeof f === 'string')
       ? { opaqueFragments: raw.opaqueFragments as string[] }
       : {}),
+    ...(raw.dstAttributes !== undefined ? { dstAttributes: stringProps(raw.dstAttributes, 'dstAttributes') } : {}),
+    ...(raw.dstSubsetAttributes !== undefined ? { dstSubsetAttributes: nestedStringProps(raw.dstSubsetAttributes, 'dstSubsetAttributes') } : {}),
+    ...(raw.dstSubsetNameAttributes !== undefined ? { dstSubsetNameAttributes: nestedStringProps(raw.dstSubsetNameAttributes, 'dstSubsetNameAttributes') } : {}),
+    ...(raw.dstNameAttributes !== undefined ? { dstNameAttributes: stringProps(raw.dstNameAttributes, 'dstNameAttributes') } : {}),
   };
 }
 
@@ -251,13 +288,20 @@ const xmlUnescape = (s: string): string => s
 
 interface XmlNode {
   readonly tag: string;
+  /** Attributes in source order (name/value pairs, values unescaped). */
+  readonly attrs: readonly (readonly [string, string])[];
   readonly children: readonly XmlNode[];
   readonly text: string;
   /** Exact source slice of this element, for opaque preservation. */
   readonly raw: string;
 }
 
-/** Minimal XML parser for the DST subset: elements and text only (no attributes are modeled). */
+/**
+ * Minimal XML parser for the DST subset. The open-tag scan is quote-aware —
+ * a '>' or '/' inside a quoted attribute value neither ends the tag nor
+ * fakes a self-closing element — and malformed attribute syntax (unquoted
+ * or unterminated values) refuses the whole document, atomically.
+ */
 function parseXml(xml: string): XmlNode {
   let pos = xml.indexOf('<');
   if (pos < 0) throw new Error('DST XML: no root element');
@@ -271,16 +315,42 @@ function parseXml(xml: string): XmlNode {
     } else break;
   }
   const parseElement = (start: number): { node: XmlNode; next: number } => {
-    const openEnd = xml.indexOf('>', start);
-    if (openEnd < 0) throw new Error('DST XML: unterminated tag');
-    const openTag = xml.slice(start + 1, openEnd).trim();
-    const selfClosing = openTag.endsWith('/');
-    const tag = (selfClosing ? openTag.slice(0, -1) : openTag).split(/\s/)[0];
+    let i = start + 1;
+    let tag = '';
+    while (i < xml.length && !/[\s/>]/.test(xml.charAt(i))) { tag += xml.charAt(i); i += 1; }
     if (!tag) throw new Error('DST XML: empty tag');
-    if (selfClosing) return { node: { tag, children: [], text: '', raw: xml.slice(start, openEnd + 1) }, next: openEnd + 1 };
+    const attrs: [string, string][] = [];
+    let selfClosing = false;
+    for (;;) {
+      while (i < xml.length && /\s/.test(xml.charAt(i))) i += 1;
+      if (i >= xml.length) throw new Error('DST XML: unterminated tag');
+      const c = xml.charAt(i);
+      if (c === '>') { i += 1; break; }
+      if (c === '/') {
+        if (xml.charAt(i + 1) !== '>') throw new Error('DST XML: malformed tag');
+        selfClosing = true;
+        i += 2;
+        break;
+      }
+      let attrName = '';
+      while (i < xml.length && !/[\s=/>]/.test(xml.charAt(i))) { attrName += xml.charAt(i); i += 1; }
+      if (!attrName) throw new Error('DST XML: malformed attribute');
+      while (i < xml.length && /\s/.test(xml.charAt(i))) i += 1;
+      if (xml.charAt(i) !== '=') throw new Error(`DST XML: attribute ${attrName} has no value`);
+      i += 1;
+      while (i < xml.length && /\s/.test(xml.charAt(i))) i += 1;
+      const quote = xml.charAt(i);
+      if (quote !== '"' && quote !== "'") throw new Error(`DST XML: attribute ${attrName} value must be quoted`);
+      i += 1;
+      const endQuote = xml.indexOf(quote, i);
+      if (endQuote < 0) throw new Error('DST XML: unterminated attribute value');
+      attrs.push([attrName, xmlUnescape(xml.slice(i, endQuote))]);
+      i = endQuote + 1;
+    }
+    if (selfClosing) return { node: { tag, attrs, children: [], text: '', raw: xml.slice(start, i) }, next: i };
     const children: XmlNode[] = [];
     let text = '';
-    let cursor = openEnd + 1;
+    let cursor = i;
     for (;;) {
       const lt = xml.indexOf('<', cursor);
       if (lt < 0) throw new Error(`DST XML: unclosed <${tag}>`);
@@ -290,7 +360,7 @@ function parseXml(xml: string): XmlNode {
         if (closeEnd < 0) throw new Error('DST XML: unterminated close tag');
         const closeTag = xml.slice(lt + 2, closeEnd).trim();
         if (closeTag !== tag) throw new Error(`DST XML: expected </${tag}> but found </${closeTag}>`);
-        return { node: { tag, children, text: xmlUnescape(text.trim()), raw: xml.slice(start, closeEnd + 1) }, next: closeEnd + 1 };
+        return { node: { tag, attrs, children, text: xmlUnescape(text.trim()), raw: xml.slice(start, closeEnd + 1) }, next: closeEnd + 1 };
       }
       const child = parseElement(lt);
       children.push(child.node);
@@ -299,6 +369,20 @@ function parseXml(xml: string): XmlNode {
   };
   return parseElement(pos).node;
 }
+
+/** A node's attributes as a record, or undefined when it has none. */
+const attrsRecord = (node: XmlNode): Record<string, string> | undefined => {
+  if (node.attrs.length === 0) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of node.attrs) out[k] = v;
+  return out;
+};
+
+/** Render a preserved-attribute record back onto an emitted tag (values escaped). */
+const attrsXml = (rec: Readonly<Record<string, string>> | undefined): string => {
+  if (!rec) return '';
+  return Object.entries(rec).map(([k, v]) => ` ${k}="${xmlEscape(v)}"`).join('');
+};
 
 const childText = (node: XmlNode, tag: string): string | undefined =>
   node.children.find((c) => c.tag === tag)?.text;
@@ -311,10 +395,20 @@ export function parseDstSubsetXml(xml: string): SheetSet {
   if (root.tag !== 'AcSmSheetSet') throw new Error(`DST XML: root must be <AcSmSheetSet>, found <${root.tag}>`);
   const opaque: string[] = [];
   const sheets: SheetSetSheet[] = [];
+  const subsetAttributes: Record<string, Record<string, string>> = {};
+  const subsetNameAttributes: Record<string, Record<string, string>> = {};
   const readSheet = (node: XmlNode, subset?: string): void => {
+    const leafAttributes: Record<string, Record<string, string>> = {};
     for (const child of node.children) {
-      if (!SHEET_CHILD_TAGS.has(child.tag)) opaque.push(child.raw);
+      if (!SHEET_CHILD_TAGS.has(child.tag)) { opaque.push(child.raw); continue; }
+      const rec = attrsRecord(child);
+      if (rec) leafAttributes[child.tag] = rec;
+      // An unmodeled element nested inside a modeled leaf is preserved
+      // verbatim, never silently discarded (the leaf's own text is still
+      // the concatenation of its text nodes).
+      for (const nested of child.children) opaque.push(nested.raw);
     }
+    const sheetAttributes = attrsRecord(node);
     sheets.push({
       id: newSheetId(),
       number: childText(node, 'Number') ?? '',
@@ -322,30 +416,57 @@ export function parseDstSubsetXml(xml: string): SheetSet {
       drawingPath: childText(node, 'FilePath') ?? '',
       layoutName: childText(node, 'LayoutName') ?? '',
       ...(subset !== undefined ? { subset } : {}),
+      ...(sheetAttributes ? { dstAttributes: sheetAttributes } : {}),
+      ...(Object.keys(leafAttributes).length ? { dstLeafAttributes: leafAttributes } : {}),
     });
   };
   let name = '';
+  let nameAttributes: Record<string, string> | undefined;
   for (const child of root.children) {
-    if (child.tag === 'Name') name = child.text;
-    else if (child.tag === 'AcSmSheet') readSheet(child);
+    if (child.tag === 'Name') {
+      name = child.text;
+      nameAttributes = attrsRecord(child);
+      for (const nested of child.children) opaque.push(nested.raw);
+    } else if (child.tag === 'AcSmSheet') readSheet(child);
     else if (child.tag === 'AcSmSubset') {
       const subsetName = childText(child, 'Name') ?? '';
+      const subsetRec = attrsRecord(child);
+      if (subsetRec) subsetAttributes[subsetName] = subsetRec;
       for (const sub of child.children) {
         if (sub.tag === 'AcSmSheet') readSheet(sub, subsetName);
-        else if (sub.tag !== 'Name') opaque.push(sub.raw);
+        else if (sub.tag === 'Name') {
+          const nameRec = attrsRecord(sub);
+          if (nameRec) subsetNameAttributes[subsetName] = nameRec;
+          for (const nested of sub.children) opaque.push(nested.raw);
+        } else opaque.push(sub.raw);
       }
     } else opaque.push(child.raw);
   }
   if (!name) throw new Error('DST XML: sheet set <Name> is missing');
-  return { name, sheets, ...(opaque.length ? { opaqueFragments: opaque } : {}) };
+  const rootAttributes = attrsRecord(root);
+  return {
+    name,
+    sheets,
+    ...(opaque.length ? { opaqueFragments: opaque } : {}),
+    ...(rootAttributes ? { dstAttributes: rootAttributes } : {}),
+    ...(Object.keys(subsetAttributes).length ? { dstSubsetAttributes: subsetAttributes } : {}),
+    ...(Object.keys(subsetNameAttributes).length ? { dstSubsetNameAttributes: subsetNameAttributes } : {}),
+    ...(nameAttributes ? { dstNameAttributes: nameAttributes } : {}),
+  };
 }
 
 /** Emit the bounded DST subset. Opaque fragments are re-emitted verbatim before the root closes. */
 export function toDstSubsetXml(set: SheetSet): string {
+  const leafXml = (s: SheetSetSheet, tag: 'Number' | 'Title' | 'LayoutName' | 'FilePath', value: string): string =>
+    `<${tag}${attrsXml(s.dstLeafAttributes?.[tag])}>${xmlEscape(value)}</${tag}>`;
   const sheetXml = (s: SheetSetSheet): string =>
-    `  <AcSmSheet><Number>${xmlEscape(s.number)}</Number><Title>${xmlEscape(s.title)}</Title>` +
-    `<LayoutName>${xmlEscape(s.layoutName)}</LayoutName><FilePath>${xmlEscape(s.drawingPath)}</FilePath></AcSmSheet>`;
-  const lines: string[] = ['<?xml version="1.0" encoding="UTF-8"?>', '<AcSmSheetSet>', `  <Name>${xmlEscape(set.name)}</Name>`];
+    `  <AcSmSheet${attrsXml(s.dstAttributes)}>${leafXml(s, 'Number', s.number)}${leafXml(s, 'Title', s.title)}` +
+    `${leafXml(s, 'LayoutName', s.layoutName)}${leafXml(s, 'FilePath', s.drawingPath)}</AcSmSheet>`;
+  const lines: string[] = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    `<AcSmSheetSet${attrsXml(set.dstAttributes)}>`,
+    `  <Name${attrsXml(set.dstNameAttributes)}>${xmlEscape(set.name)}</Name>`,
+  ];
   const subsets = new Map<string, SheetSetSheet[]>();
   for (const s of set.sheets) {
     if (s.subset !== undefined) {
@@ -359,7 +480,7 @@ export function toDstSubsetXml(set: SheetSet): string {
     if (s.subset !== undefined) {
       if (emitted.has(s.subset)) continue;
       emitted.add(s.subset);
-      lines.push(`  <AcSmSubset><Name>${xmlEscape(s.subset)}</Name>`);
+      lines.push(`  <AcSmSubset${attrsXml(set.dstSubsetAttributes?.[s.subset])}><Name${attrsXml(set.dstSubsetNameAttributes?.[s.subset])}>${xmlEscape(s.subset)}</Name>`);
       for (const sub of subsets.get(s.subset)!) lines.push(`  ${sheetXml(sub)}`);
       lines.push('  </AcSmSubset>');
     } else {
