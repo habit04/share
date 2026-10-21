@@ -67,6 +67,23 @@ export class Writer {
    * writers whose file format changed between releases branch on it — today only
    * the ACAD_TABLE cell form (legacy at AC1015..AC1027, cell-value at AC1032). */
   acadVersion = 'AC1015';
+  private readonly entityRecordsEmitted = new WeakSet<Entity>();
+  /**
+   * Handle for the next record emitted for `entity`. The FIRST record uses
+   * the entity's reserved handle (allocating and reserving one if needed),
+   * so a reference written earlier or later — P17: a hatch's boundary-path
+   * 330 — names the handle the entity is actually emitted with. Every
+   * FURTHER record for the same object allocates a fresh handle: a
+   * multi-record entity (an mleader's several LEADER records, each with
+   * its own cad-graph part anchor) must never repeat a handle.
+   */
+  entityRecordHandle(entity: Entity): string {
+    if (!this.entityRecordsEmitted.has(entity)) {
+      this.entityRecordsEmitted.add(entity);
+      return this.reserveEntityHandle(entity);
+    }
+    return this.nextHandle();
+  }
   readonly cadAnchors = new Map<string, CadAnchor>();
   anchor(handle: string, anchor: CadAnchor): void { this.cadAnchors.set(handle, anchor); }
   pair(code: number, value: string | number): void {
@@ -131,10 +148,11 @@ export function writePaperSpaceFlag(w: Writer, spaceOwner: string): void {
 
 export function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: string, subclass: string, spaceOwner = owner, extensionDictionary?: string): void {
   w.pair(0, kind);
-  // Reserve (rather than merely allocate) so a later record that references
-  // this entity — P17: a hatch's boundary-path 330 — names the same handle.
-  // Allocation order, and therefore every emitted handle, is unchanged.
-  const handle = w.reserveEntityHandle(e);
+  // The first record emitted for an entity takes its reserved handle, so a
+  // record that references it — P17: a hatch's boundary-path 330 — names
+  // the same handle; further records for the same object (an mleader's
+  // several LEADER records) allocate fresh handles, as they did before P17.
+  const handle = w.entityRecordHandle(e);
   w.pair(5, handle);
   w.anchor(handle, { kind: 'entity', id: e.id });
   // An extension dictionary rides between the handle and the owner, exactly
