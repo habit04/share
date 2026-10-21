@@ -114,10 +114,11 @@ describe('P18 slice 3: two-context MTEXT multileader imports as modelled context
     expect(ctxCount(out)).toBe(2);
     const back = readDxf(out);
     const l = back.entities[0] as LeaderEntity;
-    expect(l.mleader?.contexts).toHaveLength(1);
-    expect(l.mleader?.contexts![0]!.scaleFactor).toBe(0.5);
-    expect(l.mleader?.contexts![0]!.paths).toEqual([[{ x: 4, y: 1.5 }, { x: 5, y: 2.5 }]]);
-    expect(l.mleader?.contexts![0]!.text).toBe('PUMP P-101');
+    const cs = l.mleader?.contexts;
+    expect(cs).toHaveLength(1);
+    expect(cs![0]!.scaleFactor).toBe(0.5);
+    expect(cs![0]!.paths).toEqual([[{ x: 4, y: 1.5 }, { x: 5, y: 2.5 }]]);
+    expect(cs![0]!.text).toBe('PUMP P-101');
   });
 });
 
@@ -170,8 +171,9 @@ describe('P18 slice 3: layouts-routed annotative scale resolution', () => {
     expect(at2.textPosition).toEqual({ x: 5.5, y: 2.6 });
     expect(at2.textHeight).toBeCloseTo(0.25); // the context's own height — NOT doubled
     expect(at2.mleader?.scaleFactor).toBe(0.5);
-    expect(at2.mleader?.contexts).toHaveLength(1);
-    expect(at2.mleader?.contexts![0]!.scaleFactor).toBe(1); // old primary demoted, order kept
+    const acs = at2.mleader?.contexts;
+    expect(acs).toHaveLength(1);
+    expect(acs![0]!.scaleFactor).toBe(1); // old primary demoted, order kept
     // At the primary's own scale the entity is returned unchanged (no double-apply).
     expect(annotativeEntity(l, 1)).toBe(l);
     // No matching context: today's uniform scaling, untouched.
@@ -184,27 +186,28 @@ describe('P18 slice 3: layouts-routed annotative scale resolution', () => {
 describe('P18 slice 3: transforms carry every context with the primary', () => {
   it('translate / rotate / scale / mirror move context geometry; scaleFactor and landingGap never transform', () => {
     const e = authored();
+    const ctx0 = (le: LeaderEntity): MLeaderContext => le.mleader!.contexts![0]!;
     const moved = translateEntity(e, { x: 10, y: 0 }) as LeaderEntity;
-    expect(moved.mleader?.contexts![0]!.paths).toEqual([[{ x: 14, y: 1.5 }, { x: 15, y: 2.5 }]]);
-    expect(moved.mleader?.contexts![0]!.textPosition).toEqual({ x: 15.5, y: 2.6 });
-    expect(moved.mleader?.contexts![0]!.dogleg).toEqual({ x: 0.36, y: 0 });
+    expect(ctx0(moved).paths).toEqual([[{ x: 14, y: 1.5 }, { x: 15, y: 2.5 }]]);
+    expect(ctx0(moved).textPosition).toEqual({ x: 15.5, y: 2.6 });
+    expect(ctx0(moved).dogleg).toEqual({ x: 0.36, y: 0 });
 
     const rotated = rotateEntity(e, { x: 0, y: 0 }, Math.PI / 2) as LeaderEntity;
-    const rp = rotated.mleader?.contexts![0]!.paths[0]!;
+    const rp = ctx0(rotated).paths[0]!;
     expect(rp[0]!.x).toBeCloseTo(-1.5);
     expect(rp[0]!.y).toBeCloseTo(4);
     expect(rp[1]!.x).toBeCloseTo(-2.5);
     expect(rp[1]!.y).toBeCloseTo(5);
 
     const scaled = scaleEntityBy(e, { x: 0, y: 0 }, 2) as LeaderEntity;
-    expect(scaled.mleader?.contexts![0]!.paths).toEqual([[{ x: 8, y: 3 }, { x: 10, y: 5 }]]);
-    expect(scaled.mleader?.contexts![0]!.textHeight).toBeCloseTo(0.5);
-    expect(scaled.mleader?.contexts![0]!.scaleFactor).toBe(0.5);
-    expect(scaled.mleader?.contexts![0]!.landingGap).toBeCloseTo(0.09);
+    expect(ctx0(scaled).paths).toEqual([[{ x: 8, y: 3 }, { x: 10, y: 5 }]]);
+    expect(ctx0(scaled).textHeight).toBeCloseTo(0.5);
+    expect(ctx0(scaled).scaleFactor).toBe(0.5);
+    expect(ctx0(scaled).landingGap).toBeCloseTo(0.09);
 
     const mirrored = mirrorEntityAcross(e, { x: 0, y: 0 }, { x: 0, y: 1 }) as LeaderEntity;
-    expect(mirrored.mleader?.contexts![0]!.paths).toEqual([[{ x: -4, y: 1.5 }, { x: -5, y: 2.5 }]]);
-    expect(mirrored.mleader?.contexts![0]!.textAttachment).toBe(3); // the primary's attachment flip, per context
+    expect(ctx0(mirrored).paths).toEqual([[{ x: -4, y: 1.5 }, { x: -5, y: 2.5 }]]);
+    expect(ctx0(mirrored).textAttachment).toBe(3); // the primary's attachment flip, per context
   });
 
   it('model validation refuses invalid contexts before any group is written', () => {
