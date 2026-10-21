@@ -343,6 +343,10 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
   // claimed as native MTEXT.
   const isBlockContent = hasBlock || contentTypeRaw === 1;
   const textStyleName = textStyleHandle ? ctx.textStyleHandles?.get(textStyleHandle) : undefined;
+  // V-1 (AMENDMENT-P18-S2-A): the source style's retained values for the groups no
+  // entity field supplies, keyed by the same style handle the name came from; an
+  // absent map (read paths that build their own context) keeps the slice-1 fallback.
+  const styleRetained = styleHandle ? ctx.mleaderStyleValues?.get(styleHandle) : undefined;
   const mleader: MLeaderNative | undefined = isBlockContent
     ? undefined
     : {
@@ -352,6 +356,7 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
         landingGap: landingGap && landingGap >= 0 ? landingGap : STANDARD_MLEADER_STYLE.landingGap,
         leaderLineType: lineType === 0 || lineType === 2 ? lineType : 1,
         ...(textStyleName ? { textStyleName } : {}),
+        ...(styleRetained ? { styleRetained } : {}),
       };
   return {
     ...base,

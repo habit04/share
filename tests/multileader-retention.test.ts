@@ -37,12 +37,23 @@ const mlEntityLines = (opts: { styleHandle?: string; text?: string; trailing172?
   lines.push('90', '0', '170', '1', '172', String(opts.trailing172 ?? 2));
   return lines;
 };
-const dxfOf = (entityLines: string[], objectsLines?: string[]): string => {
-  const parts = ['0', 'SECTION', '2', 'ENTITIES', ...entityLines, '0', 'ENDSEC'];
+const dxfOf = (entityLines: string[], objectsLines?: string[], tablesLines?: string[]): string => {
+  const parts: string[] = [];
+  if (tablesLines) parts.push('0', 'SECTION', '2', 'TABLES', ...tablesLines, '0', 'ENDSEC');
+  parts.push('0', 'SECTION', '2', 'ENTITIES', ...entityLines, '0', 'ENDSEC');
   if (objectsLines) parts.push('0', 'SECTION', '2', 'OBJECTS', ...objectsLines, '0', 'ENDSEC');
   parts.push('0', 'EOF');
   return parts.join('\n');
 };
+/** TABLES section whose STYLE table resolves the context text-style handle '11' to 'Standard',
+ *  as a real file carries it (without it the first read cannot resolve the handle — a
+ *  fixture-completeness fix by the third holder; no assertion was changed). */
+const styleTableLines: string[] = [
+  '0', 'TABLE', '2', 'STYLE', '5', '10', '330', '0', '100', 'AcDbSymbolTable', '70', '1',
+  '0', 'STYLE', '5', '11', '330', '10', '100', 'AcDbSymbolTableRecord', '100', 'AcDbTextStyleTableRecord',
+  '2', 'Standard', '70', '0', '40', '0', '41', '1', '50', '0', '71', '0', '42', '0.25', '3', 'txt', '4', '',
+  '0', 'ENDTAB',
+];
 const reportItems = (state: ReturnType<typeof readDxf>) =>
   (importReportOf(state)?.items ?? []).map((i) => ({ type: i.type, action: i.action, reason: i.reason }));
 const simplifiedForBlock = (state: ReturnType<typeof readDxf>) =>
@@ -155,7 +166,7 @@ describe('P18 V-1: MLEADERSTYLE specimen values survive read -> write', () => {
 
   it('the retained values are a round-trip fixed point (second read and write keep them)', () => {
     const objects = objectsForStyles([{ name: 'Standard', handle: 'AB', groups: specimenGroups }]);
-    const s1 = readDxf(dxfOf(mlEntityLines({ styleHandle: 'AB' }), objects));
+    const s1 = readDxf(dxfOf(mlEntityLines({ styleHandle: 'AB' }), objects, styleTableLines));
     const s2 = readDxf(writeDxf(s1));
     const l1 = s1.entities.find((e): e is LeaderEntity => e.type === 'leader')!;
     const l2 = s2.entities.find((e): e is LeaderEntity => e.type === 'leader')!;

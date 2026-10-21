@@ -30,6 +30,7 @@ import { attachDxfCadGraph } from '../cad-graph-dxf';
 import { CadGraphError, canonicalCadHandle } from '../../core/cad-graph';
 import { Model3DReader, native3dObject } from './mesh3d-read';
 import { EMPTY_MODEL3D } from '../../model3d/model';
+import { STANDARD_MLEADER_STYLE, type MLeaderStyleRetained } from '../../core/multileader';
 import { DXF_READ_LIMITS } from '../../model3d/file-format';
 
 export interface DxfReadOptions {
@@ -174,6 +175,62 @@ function mleaderStyleNamesOf(pairs: readonly Pair[]): Map<string, string> {
   return out;
 }
 
+/**
+ * The MLEADERSTYLE retained values of the OBJECTS section, by upper-case style handle
+ * (P18, AMENDMENT-P18-S2-A — slice-1 acceptance must-fix V-1): the source values of the
+ * style groups no entity-level field supplies (46, 47/49/140, 141, 271/272/273, 298).
+ * Only groups whose values diverge from the specimen constants JCad synthesizes are
+ * recorded, and a style that matches the constants in full records NO entry at all —
+ * so authored data and slice-1 behaviour are untouched. Absent groups count as the
+ * constant (that is the value AutoCAD applies for them).
+ */
+function mleaderStyleValuesOf(pairs: readonly Pair[]): Map<string, MLeaderStyleRetained> {
+  const out = new Map<string, MLeaderStyleRetained>();
+  const c = STANDARD_MLEADER_STYLE;
+  for (let i = 0; i + 1 < pairs.length; i += 1) {
+    if (pairs[i]!.code !== 0 || pairs[i]!.value !== 'SECTION' || pairs[i + 1]!.value !== 'OBJECTS') continue;
+    let j = i + 2;
+    while (j < pairs.length && !(pairs[j]!.code === 0 && pairs[j]!.value === 'ENDSEC')) j += 1;
+    for (const o of objects(pairs as Pair[], i + 2, j)) {
+      if (o.kind !== 'MLEADERSTYLE' || !has(o, 5)) continue;
+      const val = (code: number): number | undefined => {
+        const raw = o.groups.find((x) => x.code === code)?.value;
+        if (raw === undefined) return undefined;
+        const n = Number(raw);
+        return Number.isFinite(n) ? n : undefined;
+      };
+      const retained: {
+        alignSpace?: number;
+        blockScale?: { x: number; y: number; z: number };
+        blockRotation?: number;
+        textAttachmentDirection?: number;
+        bottomTextAttachmentDirection?: number;
+        topTextAttachmentDirection?: number;
+        flag298?: number;
+      } = {};
+      const alignSpace = val(46);
+      if (alignSpace !== undefined && alignSpace !== c.alignSpace) retained.alignSpace = alignSpace;
+      const sx = val(47), sy = val(49), sz = val(140);
+      if ((sx !== undefined && sx !== c.blockScale.x) || (sy !== undefined && sy !== c.blockScale.y) || (sz !== undefined && sz !== c.blockScale.z)) {
+        retained.blockScale = { x: sx ?? c.blockScale.x, y: sy ?? c.blockScale.y, z: sz ?? c.blockScale.z };
+      }
+      const blockRotation = val(141);
+      if (blockRotation !== undefined && blockRotation !== c.blockRotation) retained.blockRotation = blockRotation;
+      const tad = val(271);
+      if (tad !== undefined && tad !== c.textAttachmentDirection) retained.textAttachmentDirection = tad;
+      const btad = val(272);
+      if (btad !== undefined && btad !== c.bottomTextAttachmentDirection) retained.bottomTextAttachmentDirection = btad;
+      const ttad = val(273);
+      if (ttad !== undefined && ttad !== c.topTextAttachmentDirection) retained.topTextAttachmentDirection = ttad;
+      const flag298 = val(298);
+      if (flag298 !== undefined && flag298 !== c.flag298) retained.flag298 = flag298;
+      if (Object.keys(retained).length) out.set(str(o, 5).toUpperCase(), retained);
+    }
+    i = j;
+  }
+  return out;
+}
+
 /** The reader proper; DIMSTYLE records are collected into `dimStyles`. */
 function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string, DimStyle>, report: ImportReportBuilder, raw: RawDxfEntity[]): DrawingState {
   if (text.length > (opts.maxSourceLength ?? DXF_READ_LIMITS.maxSourceLength)) throw new DxfReadError('DXF exceeds the source text size limit.', 1);
@@ -200,6 +257,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     textStyleHandles: new Map(),
     tableStyles: tableStylesOf(pairs),
     mleaderStyles: mleaderStyleNamesOf(pairs),
+    mleaderStyleValues: mleaderStyleValuesOf(pairs),
     consumedBlocks: new Set(),
     notes: opts.notes ?? [],
     report,
