@@ -28,6 +28,14 @@
  * Written before the conformance implementation: at head 3a3e63b every new
  * case fails — sheetForDrawing first-matches on path alone, and nothing in
  * the session layer re-derives or clears a binding on content replacement.
+ *
+ * ADDENDUM — OBSERVATION O-1 (from the P31A wiring acceptance review):
+ * test (12) covers the host reporting, on open, the optional values the
+ * checkpoint-1 JSON parser silently drops when mistyped (sheet subset /
+ * revision, set description, the opaqueFragments list). The parser's
+ * semantics are NOT changed; the host only reports the loss. Written
+ * before the O-1 implementation: at the C2/C3 head it fails — the host
+ * records no open issues.
  */
 import { describe, expect, it } from 'vitest';
 import { Drawing } from '../src/core/document';
@@ -435,5 +443,55 @@ describe('RULING-P31-A-WIRING C2 — load rebinding', () => {
     expect(applySaveResult(mgr, fakeHost, parked.id, parked.state, 'drawings/power.dwg', parked.contentGeneration)).toBe('clean');
     expect(parked.filePath).toBe('drawings/power.dwg');
     expect(parked.sheetId).toBe(powerId);
+  });
+});
+
+describe('OBSERVATION O-1 — the host reports parser-dropped optional values on open', () => {
+  it('(12) mistyped optional values are still dropped by the parser — and now REPORTED by the host, never silent', () => {
+    const text = JSON.stringify({
+      name: 'Hand-edited',
+      description: 7,
+      opaqueFragments: ['<KeepMe/>', 42],
+      sheets: [
+        {
+          id: 's1', number: 'E-101', title: 'Power plan',
+          drawingPath: 'drawings/power.dwg', layoutName: 'Layout1',
+          subset: 123, revision: false,
+        },
+      ],
+    });
+    const host = new SheetSetHost();
+    host.openSet(text, 'sets/hand-edited.json');
+    // the module's parse semantics are unchanged: the mistyped values are
+    // dropped (the whole fragment list with them) and the open succeeds
+    const held = host.current();
+    expect(held?.description).toBeUndefined();
+    expect(held?.opaqueFragments).toBeUndefined();
+    expect(held?.sheets[0]?.subset).toBeUndefined();
+    expect(held?.sheets[0]?.revision).toBeUndefined();
+    // but the loss is on the host's open-issue surface, one entry per drop
+    expect(host.openIssues.map((i) => i.path)).toEqual(['description', 'opaqueFragments', 'sheets[0].subset', 'sheets[0].revision']);
+    expect(host.openIssues.every((i) => i.kind === 'dropped-value')).toBe(true);
+    // a well-formed set reports nothing: present-and-string values are
+    // held, absent keys are not drops
+    const clean = new SheetSetHost();
+    clean.openSet(JSON.stringify({
+      name: 'Clean',
+      description: 'A plant',
+      opaqueFragments: ['<KeepMe/>'],
+      sheets: [
+        { id: 's1', number: 'E-101', title: 'Power plan', drawingPath: 'drawings/power.dwg', layoutName: 'Layout1', subset: 'Electrical', revision: 'A' },
+        { id: 's2', number: 'E-001', title: 'Cover', drawingPath: 'drawings/cover.dwg', layoutName: 'Layout1' },
+      ],
+    }), 'sets/clean.json');
+    expect(clean.openIssues).toEqual([]);
+    expect(clean.current()?.description).toBe('A plant');
+    expect(clean.current()?.opaqueFragments).toEqual(['<KeepMe/>']);
+    expect(clean.current()?.sheets[0]?.subset).toBe('Electrical');
+    expect(clean.current()?.sheets[0]?.revision).toBe('A');
+    // the DST form carries no JSON-mistyping class: no open issues
+    const dst = new SheetSetHost();
+    dst.openSet('<AcSmSheetSet><Name>D</Name></AcSmSheetSet>', 'sets/d.dst');
+    expect(dst.openIssues).toEqual([]);
   });
 });
