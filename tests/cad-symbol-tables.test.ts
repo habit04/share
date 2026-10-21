@@ -43,7 +43,9 @@ const mutate = (input: string, type: string, name: string, code: number, value: 
 describe('retained native symbol-table properties', () => {
   it('keeps real inch insertion units and all complete native active-VPORT camera properties', () => {
     const source = fixture('r2018-image-inches'), state = readDxf(source), output = writeDxf(state);
-    for (const name of ['*Model_Space', '*Paper_Space']) expect(value(tableRecord(output, 'BLOCK_RECORD', name), 70)).toBe('1');
+    // Group 70 is retained from the source records: '0' in the genuine AutoCAD save
+    // (the hand-authored synthetic carried '1' here).
+    for (const name of ['*Model_Space', '*Paper_Space']) expect(value(tableRecord(output, 'BLOCK_RECORD', name), 70)).toBe('0');
     const viewport = tableRecord(source, 'VPORT', '*Active'), actual = tableRecord(output, 'VPORT', '*Active');
     expect(viewport.groups.filter(([code]) => ![5, 330].includes(code))).toEqual(actual.groups.filter(([code]) => ![5, 330].includes(code)));
     expect(writeDxf(readDxf(output))).toBe(output);

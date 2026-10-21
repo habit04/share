@@ -1117,14 +1117,17 @@ describe('r2018-image-inches.dxf: IMAGE + IMAGEDEF in model and paper space, $IN
       ]);
     });
 
-    it('layout ANSI B: inch paper turned to landscape, 0.25" margins, a locked 1/4" = 1\'-0" viewport', () => {
+    it('layout ANSI B: inch paper turned to landscape, plotter margins, a locked 1/4" = 1\'-0" viewport', () => {
       expect(s.layouts?.map((l) => l.name)).toEqual(['ANSI B']);
       expect(layout!.paper).toMatchObject({ id: 'tabloid', units: 'in', orientation: 'landscape' });
-      expect(layout!.margins).toEqual({ left: 0.25, bottom: 0.25, right: 0.25, top: 0.25 });
+      // The genuine save's margins are the DWG To PDF plotter's printable area (5/17/5/17 mm,
+      // checklist r2018-image-inches #13), not the synthetic's uniform 0.25 in.
+      expect(layout!.margins).toEqual({ left: 0.1968503937007874, bottom: 0.6692913385826772, right: 0.1968503937007874, top: 0.6692913385826772 });
       expect(layout!.plotStyle).toBe('monochrome');
       expect(layout!.viewports).toHaveLength(1);
       const vp = layout!.viewports[0]!;
-      closePt(vp.center, 8.5, 6);
+      // Stored centre (8.25, 5.75) shifted by the genuine left/bottom margins (see above).
+      closePt(vp.center, 8.446850393700787, 6.419291338582677);
       expect(vp).toMatchObject({ width: 15.5, height: 9.5, layer: 'VPORTS', on: true });
       closePt(vp.view.center, 66, 24);
       close(vp.view.scale, 0.25 / 12);
@@ -1134,7 +1137,8 @@ describe('r2018-image-inches.dxf: IMAGE + IMAGEDEF in model and paper space, $IN
     it('the paper-space logo image keeps its placement and size', () => {
       const logo = ofType<ImageEntity>(layout!.entities, 'image')[0]!;
       expect(logo).toMatchObject({ layer: 'TITLE', u: { x: 0.005, y: 0 }, v: { x: 0, y: 0.005 }, size: { x: 400, y: 200 }, flags: 7 });
-      closePt(logo.position, 14.25, 1);
+      // Stored position (14, 0.75) shifted by the genuine left/bottom margins (see above).
+      closePt(logo.position, 14.196850393700787, 1.4192913385826773);
       expect(logo.clipOn).toBeUndefined();
     });
   });
