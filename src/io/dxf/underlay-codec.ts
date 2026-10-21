@@ -12,6 +12,15 @@
  *   is retained verbatim, in order, and re-emitted. Nothing is silently
  *   discarded; a duplicate scalar group keeps its first value modeled and
  *   retains the rest.
+ * - Default-valued claimed groups are the one refinement: when a claimed
+ *   group's value equals the canonical default the writer would omit
+ *   (layer "0", unit scales, rotation 0, flags = on), the group ALSO rides
+ *   retainedGroups verbatim, and an absent group 70 is never invented on
+ *   write — so explicit defaults stay explicit and absence stays absent,
+ *   and the round trip preserves the group multiset exactly (acceptance
+ *   F-A). Caveat for callers: a default-valued retained copy belongs to
+ *   the field it mirrors — code that mutates that model field after parse
+ *   must drop the retained copy, or the record would carry both.
  * - Malformed modeled data (missing definition reference, missing
  *   insertion point, non-numeric modeled group, unpaired clip point)
  *   refuses the whole record atomically with a reason — never a
@@ -77,14 +86,20 @@ interface Scanner {
  * remainder. `claimed` codes are consumed (first occurrence only); every
  * other pair — and every duplicate of a claimed code — is retained in
  * original order. 100 markers are structural and vanish (regenerated).
+ * A first occurrence that satisfies `alsoRetain` is claimed AND retained
+ * (at its original position): the F-A mechanism for default-valued
+ * groups, whose canonical emission the writer omits — the retained copy
+ * is what carries them through the round trip verbatim.
  */
-function scan(groups: readonly DxfGroupPair[], claimed: ReadonlySet<number>): Scanner {
+function scan(groups: readonly DxfGroupPair[], claimed: ReadonlySet<number>, alsoRetain?: (code: number, value: string) => boolean): Scanner {
   const first = new Map<number, string>();
   const retained: DxfGroup[] = [];
   for (const [code, value] of groups) {
     if (code === 100) continue;
-    if (claimed.has(code) && !first.has(code)) first.set(code, value);
-    else retained.push([code, value]);
+    if (claimed.has(code) && !first.has(code)) {
+      first.set(code, value);
+      if (alsoRetain?.(code, value)) retained.push([code, value]);
+    } else retained.push([code, value]);
   }
   return { take: (code) => first.get(code), retained };
 }
@@ -141,7 +156,26 @@ export function parseUnderlayEntity(kind: UnderlayKind, groups: readonly DxfGrou
     rest.push(pair);
   }
 
-  const s = scan(rest, new Set([5, 8, 340, 10, 20, 41, 42, 50, 70, 280, 281]));
+  // F-A: a claimed group whose value equals the canonical default the
+  // writer omits (layer "0", unit scale, rotation 0, flags = on) is ALSO
+  // retained verbatim, so its explicit presence survives the round trip;
+  // the writer's canonical emission is what gets suppressed instead.
+  const retainDefault = (code: number, value: string): boolean => {
+    switch (code) {
+      case 8:
+        return value === '0';
+      case 41:
+      case 42:
+        return num(value) === 1;
+      case 50:
+        return num(value) === 0;
+      case 70:
+        return int(value) === UNDERLAY_FLAG_ON;
+      default:
+        return false;
+    }
+  };
+  const s = scan(rest, new Set([5, 8, 340, 10, 20, 41, 42, 50, 70, 280, 281]), retainDefault);
   const definitionHandle = s.take(340)?.trim().toUpperCase();
   if (!definitionHandle) return fail(`${ENTITY_TYPE[kind]} has no definition reference (group 340)`);
   const rawX = s.take(10);
@@ -201,7 +235,11 @@ export function writeUnderlayEntity(p: UnderlayPlacement): DxfGroupPair[] {
   if (p.scaleX !== 1) out.push([41, fmt(p.scaleX)]);
   if (p.scaleY !== 1) out.push([42, fmt(p.scaleY)]);
   if (p.rotation !== 0) out.push([50, fmt((p.rotation * 180) / Math.PI)]);
-  out.push([70, String(p.flags)]);
+  // Flags at the on-default are omitted like the other defaults: an
+  // absent group 70 parses to this same default, so always emitting it
+  // would invent a group the record never had (F-A). An explicit 70 at
+  // the default value reaches the output via retainedGroups instead.
+  if (p.flags !== UNDERLAY_FLAG_ON) out.push([70, String(p.flags)]);
   if (p.contrast !== undefined) out.push([280, String(p.contrast)]);
   if (p.fade !== undefined) out.push([281, String(p.fade)]);
   if (p.clipBoundary) {
