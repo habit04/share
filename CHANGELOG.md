@@ -26,6 +26,9 @@ messages). The date of each version is the date of the commit that set that vers
   native file identity, size, modification time and exact SHA-256 before an
   in-place Save accepts a changed metadata timestamp. Save As, project-batch and
   write-time file checks remain unchanged.
+- Preserve the bundled text-shaping engine's authenticated bytes in Windows
+  builds so it passes its unchanged integrity check. Keep byte-pinned test
+  fixtures intact during checkout as well.
 - Update development tooling to Vite 6.4.4 and follow-redirects 1.16.1 to address
   reported development-server/editor and redirect credential-header advisories.
   Production dependency versions remain unchanged.
