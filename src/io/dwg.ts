@@ -310,6 +310,7 @@ interface DwgHatchPath {
   isClosed?: number;
   vertices?: DwgHatchVertex[];
   edges?: DwgHatchEdge[];
+  numberOfEdges?: number;
 }
 interface DwgHatchLike {
   solidFill?: number | boolean;
@@ -321,6 +322,19 @@ const deg2rad = (d: number) => d * (Math.PI / 180);
 
 const MAX_HATCH_EDGE_SAMPLES = 64;
 class HatchGeometryError extends Error {}
+const readableHatchEdge = (edge: DwgHatchEdge | null | undefined): edge is DwgHatchEdge => !!edge && [1, 2, 3, 4].includes(edge.type ?? 0);
+/** LibreDWG can expose undecoded native curve_type=0 segments as undefined array entries. */
+function hatchBoundaryProblem(hatch: DwgHatchLike): string | undefined {
+  let missing = 0;
+  for (const path of hatch.boundaryPaths ?? []) {
+    if (!path) { missing += 1; continue; }
+    if (path.vertices?.length) continue;
+    const edges = path.edges ?? [];
+    for (const edge of edges) if (!readableHatchEdge(edge)) missing += 1;
+    if (Number.isInteger(path.numberOfEdges) && path.numberOfEdges! > edges.length) missing += path.numberOfEdges! - edges.length;
+  }
+  return missing ? `the DWG reader did not decode ${missing} hatch boundary edge(s)` : undefined;
+}
 const finiteHatchPoint = (pt: Point): Point => {
   if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) throw new HatchGeometryError('non-finite coordinate derived from hatch boundary data');
   return pt;
@@ -400,6 +414,7 @@ function hatchPathGeometry(path: DwgHatchPath): { points: Point[]; bulges?: numb
  */
 export function convertHatch(e: DwgEntity): Entity[] {
   const h = e as unknown as DwgHatchLike;
+  if (hatchBoundaryProblem(h)) return recoverHatchOutlines(e, h);
   const base = baseProps(e);
   const solid = Boolean(h.solidFill) || /^SOLID$/i.test(h.patternName ?? '');
   const out: Entity[] = [];
@@ -465,8 +480,12 @@ function hatchLoopFromPath(path: DwgHatchPath): HatchLoop | null {
     const bulges = path.vertices.map((v) => v.bulge ?? 0);
     return { points, ...(bulges.some((b) => Math.abs(b) > 1e-12) ? { bulges } : {}) };
   }
+  return hatchEdgeBuilder(path.edges ?? []).loop();
+}
+
+function hatchEdgeBuilder(edges: DwgHatchEdgeAny[]): LoopBuilder {
   const b = new LoopBuilder();
-  for (const raw of (path.edges ?? []) as DwgHatchEdgeAny[]) {
+  for (const raw of edges) {
     const ccwRaw = raw.isCCW ?? raw.isCounterClockwise;
     const ccw = ccwRaw === undefined ? true : Boolean(ccwRaw);
     switch (raw.type) {
@@ -509,7 +528,30 @@ function hatchLoopFromPath(path: DwgHatchPath): HatchLoop | null {
         break;
     }
   }
-  return b.loop();
+  return b;
+}
+
+/** Never close a gap or fill an incomplete boundary: a missing edge may belong to a hole. */
+function recoverHatchOutlines(e: DwgEntity, hatch: DwgHatchLike): Entity[] {
+  const base = baseProps(e);
+  const parts: Entity[] = [];
+  for (const path of hatch.boundaryPaths ?? []) {
+    if (!path) continue;
+    if (!hatchBoundaryProblem({ boundaryPaths: [path] })) {
+      const loop = hatchLoopFromPath(path);
+      if (loop) parts.push({ ...base, id: newId(), type: 'polyline', ...loop, closed: true });
+      continue;
+    }
+    // Retain each readable curve separately. Joining across an undecoded edge would invent geometry.
+    for (const edge of path.edges ?? []) {
+      if (!readableHatchEdge(edge)) continue;
+      const boundary = hatchEdgeBuilder([edge]);
+      if (boundary.pts.length < 2) continue;
+      const bulges = boundary.bulges.some((b) => Math.abs(b) > 1e-12) ? boundary.bulges : undefined;
+      parts.push({ ...base, id: newId(), type: 'polyline', points: boundary.pts, ...(bulges ? { bulges } : {}), closed: false });
+    }
+  }
+  return parts;
 }
 
 interface DwgHatchFull extends DwgHatchLike {
@@ -525,6 +567,7 @@ interface DwgHatchFull extends DwgHatchLike {
 /** A DWG HATCH as a real hatch entity (boundary loops + pattern); null when no loop is usable. */
 export function convertHatchEntity(e: DwgEntity): HatchEntity | null {
   const h = e as unknown as DwgHatchFull;
+  if (hatchBoundaryProblem(h)) return null;
   const loops = (h.boundaryPaths ?? []).map(hatchLoopFromPath).filter((l): l is HatchLoop => !!l && l.points.length >= 2);
   if (!loops.length) return null;
   const name = (h.patternName ?? '').trim().toUpperCase() || 'SOLID';
@@ -1380,10 +1423,14 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
       parts = convertHatch(e);
     } catch (err) {
       if (err instanceof HatchGeometryError) return { parts: [], reason: `invalid geometry: ${err.message}` };
+      if (err instanceof SplineWorkLimitError) return { parts: [], reason: err.message };
       throw err;
     }
-    if (parts.length) { noteSet.add('HATCH: some hatch boundaries could not be rebuilt and were imported as outlines.'); report.add({ type: 'HATCH', action: 'simplified', handle: String(e.handle ?? ''), where, reason: 'some hatch boundaries could not be rebuilt; imported as outlines' }); }
-    return { parts: parts.filter((part) => !geometryProblem(part)) };
+    parts = parts.filter((part) => !geometryProblem(part));
+    const boundaryProblem = hatchBoundaryProblem(e as unknown as DwgHatchLike);
+    const reason = boundaryProblem ? `${boundaryProblem}; available curves were imported as unfilled outlines without connecting gaps; hatch fill and missing curves are not retained` : 'some hatch boundaries could not be rebuilt; imported as outlines';
+    if (parts.length) { noteSet.add('HATCH: some hatch boundaries could not be rebuilt and were imported as outlines.'); report.add({ type: 'HATCH', action: 'simplified', handle: String(e.handle ?? ''), layer: e.layer || '0', where, reason }); }
+    return { parts, ...(boundaryProblem && !parts.length ? { reason: `${boundaryProblem}; no usable outline geometry was available` } : {}) };
   };
 
   const blocks: Record<string, BlockDef> = {};

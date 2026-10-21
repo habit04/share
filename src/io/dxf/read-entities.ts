@@ -159,6 +159,12 @@ function readHatchGradient(o: Obj): HatchGradient | undefined {
   const shift = number(461, false, 0, 1);
   const tint = number(462, false, 0, 1);
   const name = scalar(470);
+  // AutoCAD writes this empty descriptor on ordinary hatches (including patterned
+  // ones). A blank name is valid only for this inactive, colorless default tail;
+  // meaningful disabled settings and active gradients still require full validation.
+  if (kind === 0 && reserved === 0 && [0, 1].includes(colorMode) && count === 0
+    && angle === 0 && shift === 0 && tint === 0 && name === ''
+    && !data.some((p) => p.code === 463 || p.code === 63 || p.code === 421)) return undefined;
   if (!name.trim() || name.length > 256 || /[\u0000-\u001f\u007f]/.test(name)) throw new HatchReadError('gradient name must contain 1 to 256 printable characters');
   const colors: HatchGradientColor[] = [];
   for (const p of data) {
