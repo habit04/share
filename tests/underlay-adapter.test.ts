@@ -71,8 +71,8 @@ describe('PDF probe', () => {
   });
 
   it('scan cap: a page tree outside the scanned window is a scan-limit refusal, not a wrong count', () => {
-    const filler = 'x'.repeat(8192);
-    const bytes = enc(`%PDF-1.4\n${filler}\n<< /Type /Pages /Count 7 >>\n%%EOF\n`);
+    const filler = 'x'.repeat(4096);
+    const bytes = enc(`%PDF-1.4\n${filler}\n<< /Type /Pages /Count 7 >>\n${filler}\n%%EOF\n`);
     const caps: UnderlayCaps = { ...DEFAULT_UNDERLAY_CAPS, maxScanBytes: 1024 };
     expect(probeUnderlay('pdf', bytes, caps)).toMatchObject({ ok: false, code: 'scan-limit' });
   });
