@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { copyFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -145,5 +146,59 @@ describe('host shape admission', () => {
       .rejects.toThrow(/context text/);
     expect(workers).toHaveLength(0);
     await host.dispose();
+  });
+});
+
+describe('startup laziness (correction 3)', () => {
+  it('the host loads no engine-related module until the first shape request', () => {
+    // Runs in a fresh node subprocess: this test file itself requires
+    // the shaping modules, so the load graph is only observable in a
+    // clean process. The child requires ONLY the host, asserts none of
+    // the six engine-chain modules is loaded, then makes a request
+    // that passes the descriptor check and fails shape validation —
+    // which must engage the lazy require (the module appears) while
+    // still rejecting with the validator's own error, before any
+    // worker could spawn.
+    const electronDir = join(__dirname, '..', 'electron');
+    const child = `
+      const path = require('node:path');
+      const electronDir = process.argv[2];
+      const rel = (f) => path.relative(electronDir, f).split(path.sep).join('/');
+      const banned = ['shaping/shape-font.cjs', 'shaping/verify-assets.cjs', 'pdf-font.cjs', 'font-metrics.cjs', 'cff-metrics.cjs', 'ttc-extract.cjs'];
+      const loaded = () => Object.keys(require.cache).filter((f) => f.startsWith(electronDir)).map(rel);
+      const { createFontMetricsHost } = require(path.join(electronDir, 'font-metrics-host.cjs'));
+      const eager = loaded().filter((f) => banned.includes(f));
+      if (eager.length) { console.log('EAGER:' + eager.join(',')); process.exit(1); }
+      const host = createFontMetricsHost({ workerFactory: () => { throw new Error('must not spawn'); } });
+      host.readShape({ font: 'Any' }).then(
+        () => { console.log('RESOLVED'); process.exit(1); },
+        (error) => {
+          if (!String(error && error.message).includes('Invalid shape request')) { console.log('WRONG-ERROR:' + error); process.exit(1); }
+          if (!loaded().includes('shaping/shape-font.cjs')) { console.log('NOT-LAZY'); process.exit(1); }
+          console.log('OK');
+          process.exit(0);
+        },
+      );
+    `;
+    const dir = mkdtempSync(join(tmpdir(), 'jcad-lazy-host-'));
+    const script = join(dir, 'child.cjs');
+    writeFileSync(script, child);
+    // Bounded inside the suite's existing 5 s default test budget
+    // (root review, correction-3 evidence round): a hung child is
+    // killed at 4 s and reported as this test's failure by the throw
+    // below, instead of consuming the test timeout opaquely. No
+    // budget is raised; all assertions are unchanged.
+    const result = spawnSync(process.execPath, [script, electronDir], { encoding: 'utf8', timeout: 4_000 });
+    if (result.error) throw new Error(`startup-laziness child did not complete: ${result.error.message}`);
+    expect(result.stdout.trim()).toBe('OK');
+    expect(result.status).toBe(0);
+  });
+
+  it('the worker requires the shaping reader only inside its shape dispatch', () => {
+    const source = readFileSync(join(__dirname, '..', 'electron', 'font-metrics-worker.cjs'), 'utf8');
+    // No top-level (line-start) require of the shaping chain…
+    expect(source).not.toMatch(/^const .* = require\('\.\/shaping\/shape-font\.cjs'\);$/m);
+    // …and the lazy require exists inside the dispatch arm.
+    expect(source).toContain("require('./shaping/shape-font.cjs').readWindowsShapedFont(request)");
   });
 });

@@ -142,6 +142,7 @@ describe('3D solids round trip through DXF', () => {
     expect(report.notes.join(' ')).toMatch(/contains 2 experimental 3D objects\. They are kept and saved/);
   });
 
+  // T-FLAKE: measured p99 8.9 s under maxWorkers=2 family load (n=10 runs; solo p50 4.9 s); budget = p99 x 2 rounded up. Timed out at the 5 s default in full-suite runs.
   it('splits a mesh beyond the 16-bit polyface limits into several records and joins them on read', () => {
     // The densest torus has 32,768 vertices and 65,536 triangles: one more vertex than a record holds.
     const two = torusMesh(5, 1, 256, 128);
@@ -158,8 +159,9 @@ describe('3D solids round trip through DXF', () => {
     expect(r[0]!.mesh.positions.length).toBe(two.positions.length);
     expect(meshVolume(r[0]!.mesh)).toBeCloseTo(meshVolume(two), 9);
     expect(meshIsClosed(r[0]!.mesh)).toBe(true);
-  });
+  }, 18000);
 
+  // T-FLAKE: measured p99 7.8 s under maxWorkers=2 family load (n=10 runs; solo p50 4.0 s); budget = p99 x 2 rounded up. Timed out at the 5 s default in full-suite runs.
   it('keeps and reports a split solid whose records are incomplete', () => {
     const s = newSolid({ feature: { kind: 'mesh', source: 'edited' }, mesh: torusMesh(5, 1, 256, 128) });
     const text = writeDxf(stateWith([s]));
@@ -174,7 +176,7 @@ describe('3D solids round trip through DXF', () => {
     expect(noSecond.model3d!.solids).toHaveLength(1);
     expect(noSecond.model3d!.solids[0]!.id).toBe(s.id);
     expect(items(noSecond).map((i) => i.reason)).toEqual(['1 record of the 3 that make up this 3D object is missing: the mesh is incomplete']);
-  });
+  }, 16000);
 
   it('degrades a construction history too large for the file to a mesh feature', () => {
     const loop = Array.from({ length: 900 }, (_, i) => ({ x: Math.cos(i / 143.2394) * 3.000000001, y: Math.sin(i / 143.2394) * 3.000000001 }));

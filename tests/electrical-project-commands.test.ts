@@ -100,6 +100,7 @@ afterEach(() => {
 });
 
 describe('project-wide command glue', () => {
+  // T-FLAKE: measured p99 4.4 s under maxWorkers=2 family load (n=10 runs; solo p50 1.6 s) — within 12% of the 5 s default that a sibling test with a lower p99 crossed under the same load; budget = p99 x 2 rounded up.
   it('loads the active drawing, open tabs and closed files as sheets', async () => {
     const { editor } = fakeEditor();
     const { sheets, skipped } = await loadProjectSheets(editor);
@@ -109,7 +110,8 @@ describe('project-wide command glue', () => {
     const again = await loadProjectSheets(editor);
     expect(again.sheets).toHaveLength(2);
     expect(again.skipped).toEqual(['c.dxf (not open)']);
-  });
+  }, 9000);
+  // T-FLAKE: measured p99 8.6 s under maxWorkers=2 family load (n=10 runs; solo p50 4.1 s); budget = p99 x 2 rounded up. Timed out at the 5 s default in full-suite runs.
   it('AEXREF project-wide updates open tabs in memory and saves the closed drawing after confirmation', async () => {
     const { editor, saved, backups, logs } = fakeEditor();
     await runProjectXref(editor);
@@ -134,7 +136,8 @@ describe('project-wide command glue', () => {
     confirms = [];
     await runProjectXref(editor);
     expect(confirms).toHaveLength(0);
-  });
+  }, 18000);
+  // T-FLAKE: measured p99 7.7 s under maxWorkers=2 family load (n=10 runs; solo p50 3.5 s); budget = p99 x 2 rounded up. Timed out at the 5 s default in full-suite runs.
   it('a closed drawing whose .bak copy fails is left untouched and listed as not updated', async () => {
     const { editor, saved, backups, backupFails, logs } = fakeEditor();
     backupFails.add('/p/c.dxf');
@@ -147,7 +150,7 @@ describe('project-wide command glue', () => {
     await runProjectXref(editor);
     expect(saved.has('/p/c.dxf')).toBe(true);
     expect(backups).toEqual(['/p/c.dxf']);
-  });
+  }, 16000);
   it('a damaged (truncated) closed drawing is not rewritten, and reports use what was readable', async () => {
     const { editor, saved, logs } = fakeEditor();
     // The file ends without its end-of-file marker: OPEN would offer to recover it.
@@ -171,6 +174,7 @@ describe('project-wide command glue', () => {
     expect(saved.size).toBe(0);
     expect(logs.join('\n')).toMatch(/cancelled/);
   });
+  // T-FLAKE: measured p99 6.0 s under maxWorkers=2 family load (n=10 runs; solo p50 3.5 s); budget = p99 x 2 rounded up. Timed out at the 5 s default in full-suite runs.
   it('AERETAG project-wide resolves duplicates across drawings and follows with cross-references', async () => {
     const { editor, saved } = fakeEditor();
     await runProjectRetag(editor, 'duplicates');
@@ -179,7 +183,8 @@ describe('project-wide command glue', () => {
     const pb = (s: DrawingState) => s.entities.find((e): e is InsertEntity => e.type === 'insert' && e.block === 'HPB11_NO')!.attributes.TAG1;
     expect(pb(b)).toBe('PB100');
     expect(pb(c)).toBe('PB301'); // duplicate PB100 on sheet 3 gets its own rung-based tag
-  });
+  }, 12000);
+  // T-FLAKE: measured p99 6.0 s under maxWorkers=2 family load (n=10 runs; solo p50 2.8 s); budget = p99 x 2 rounded up. Timed out at the 5 s default in full-suite runs.
   it('AEWIRENO project-wide keeps numbers unique with sheet-based starts', async () => {
     const { editor, saved } = fakeEditor();
     await runProjectWireNumbers(editor, true);
@@ -187,7 +192,8 @@ describe('project-wide command glue', () => {
     const all = [...labels(editor.doc.snapshot), ...labels(editor.sessions.all[1]!.state), ...labels(readDxf(saved.get('/p/c.dxf')!))];
     expect(all.length).toBeGreaterThan(3);
     expect(new Set(all).size).toBe(all.length);
-  });
+  }, 12000);
+  // T-FLAKE: measured p99 7.5 s under maxWorkers=2 family load (n=10 runs; solo p50 2.4 s); budget = p99 x 2 rounded up. Timed out at the 5 s default in full-suite runs.
   it('updates the title blocks of all drawings through the project mapping', async () => {
     const { editor, saved } = fakeEditor();
     editor.project = { ...editor.project, titleBlockMap: 'PROJECT = LINE1\nTITLE = DWGDESC\nREV = REV\nSHEET = %SHEET%/%SHEETMAX%' };
@@ -195,7 +201,7 @@ describe('project-wide command glue', () => {
     const tb = (s: DrawingState) => s.entities.find((e): e is InsertEntity => e.type === 'insert' && e.block === TITLE_BLOCK.name)!.attributes;
     expect(tb(editor.doc.snapshot)).toMatchObject({ PROJECT: 'ACME', REV: 'B', SHEET: '1/3' });
     expect(tb(readDxf(saved.get('/p/c.dxf')!))).toMatchObject({ TITLE: 'CONTROL', SHEET: '3/3' });
-  });
+  }, 15000);
   it('commitSheets without closed files needs no confirmation unless asked', async () => {
     const { editor } = fakeEditor();
     const { sheets } = await loadProjectSheets(editor, { files: false });
