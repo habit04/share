@@ -1032,6 +1032,36 @@ function affineCompound(e: Compound, A: Affine): Entity {
         ...(e.textColumns ? { textColumns: scaledMTextColumns(e.textColumns, k) } : {}),
         textRotation: A.mirrored ? readableAngle(dirAngle(rot), rot + A.rotation) : normAngle(rot + A.rotation),
         ...(A.mirrored && att ? { textAttachment: flip(att) } : {}),
+        // P18 slice 3 (PROPOSAL-P18-S3 item (3)): a native multileader's
+        // additional annotative contexts transform WITH the primary — their
+        // points/vectors/placements take the same tf/vec, their sizes scale
+        // by k like the primary's entity-level sizes, their text rotation and
+        // attachment follow the primary's rules above. The mleader-internal
+        // scalars (each context's scaleFactor and landingGap) do not
+        // transform — the same posture as the primary's landingGap, which
+        // rides through the spread above untouched.
+        ...(e.mleader?.contexts ? {
+          mleader: {
+            ...e.mleader,
+            contexts: e.mleader.contexts.map((c) => {
+              const cr = c.textRotation ?? 0;
+              return {
+                ...c,
+                paths: c.paths.map((p) => p.map(A.tf)),
+                ...(c.dogleg ? { dogleg: A.vec(c.dogleg) } : {}),
+                ...(c.textPosition ? { textPosition: A.tf(c.textPosition) } : {}),
+                textHeight: c.textHeight * k,
+                arrowSize: c.arrowSize * k,
+                ...(c.textWidth !== undefined ? { textWidth: c.textWidth * k } : {}),
+                ...(c.textRotation !== undefined || A.rotation !== 0 || A.mirrored
+                  ? { textRotation: A.mirrored ? readableAngle(dirAngle(cr), cr + A.rotation) : normAngle(cr + A.rotation) }
+                  : {}),
+                ...(A.mirrored && c.textAttachment ? { textAttachment: flip(c.textAttachment as MTextAttachment) } : {}),
+                ...(c.block ? { block: { ...c.block, position: A.tf(c.block.position) } } : {}),
+              };
+            }),
+          },
+        } : {}),
       };
     }
     case 'table': {
