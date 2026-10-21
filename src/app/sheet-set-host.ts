@@ -52,6 +52,77 @@ export interface SheetBindingAmbiguity {
   readonly message: string;
 }
 
+/**
+ * A value the sheet-set JSON parser silently dropped on open
+ * (OBSERVATION O-1 from the P31A wiring acceptance). parseSheetSetJson
+ * (src/project/sheet-set.ts) is strict about required fields and about
+ * the record-typed optionals (those throw), but four optional-string
+ * sites normalize mistyped data away without an error: a sheet's
+ * `subset` and `revision`, the set's `description`, and the set's
+ * `opaqueFragments` list (dropped WHOLE when it is not an array of
+ * strings — preservation data, the checkpoint-1 'preserved verbatim'
+ * class). The host cannot change the module's parse semantics from this
+ * surface; it reports the loss here instead, so a hand-edited set file
+ * never loses data unreported at the host boundary.
+ */
+export interface SheetSetOpenIssue {
+  readonly kind: 'dropped-value';
+  /** JSON path of the dropped value, e.g. "description", "opaqueFragments", "sheets[0].subset". */
+  readonly path: string;
+  readonly message: string;
+}
+
+function isRecordValue(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Mirror of parseSheetSetJson's four silent-normalization sites (see
+ * SheetSetOpenIssue): a value counts as dropped exactly when it is
+ * PRESENT but not a string (for opaqueFragments: present but not an
+ * array of strings). Absent keys are not drops. This detector changes
+ * no parse semantics — the held set is precisely what the parser
+ * returned; the drops are only made visible.
+ */
+function droppedJsonValues(text: string): SheetSetOpenIssue[] {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  if (!isRecordValue(raw)) return [];
+  const issues: SheetSetOpenIssue[] = [];
+  const drop = (path: string, what: string): void => {
+    issues.push({
+      kind: 'dropped-value',
+      path,
+      message: `${what} at "${path}" was present but not a string and was dropped on open; the set was opened without it.`,
+    });
+  };
+  if (raw.description !== undefined && typeof raw.description !== 'string') drop('description', 'The set description');
+  if (
+    raw.opaqueFragments !== undefined &&
+    !(Array.isArray(raw.opaqueFragments) && raw.opaqueFragments.every((f) => typeof f === 'string'))
+  ) {
+    issues.push({
+      kind: 'dropped-value',
+      path: 'opaqueFragments',
+      message:
+        'The preserved-fragment list at "opaqueFragments" was present but was not an array of strings and was dropped whole on open; ' +
+        'preservation data in it is not carried by the opened set.',
+    });
+  }
+  if (Array.isArray(raw.sheets)) {
+    raw.sheets.forEach((s, i) => {
+      if (!isRecordValue(s)) return;
+      if (s.subset !== undefined && typeof s.subset !== 'string') drop(`sheets[${i}].subset`, 'A sheet subset');
+      if (s.revision !== undefined && typeof s.revision !== 'string') drop(`sheets[${i}].revision`, 'A sheet revision');
+    });
+  }
+  return issues;
+}
+
 export class SheetSetHost {
   private set: SheetSet | undefined;
   /** Path of the file the held set was opened from (null = none open). */
@@ -67,6 +138,13 @@ export class SheetSetHost {
    * Reported here — never resolved silently by file order.
    */
   bindingIssues: readonly SheetBindingAmbiguity[] = [];
+  /**
+   * Optional values the JSON parser dropped during the most recent
+   * successful openSet (O-1; see SheetSetOpenIssue). Empty for a clean
+   * open and for the DST form. A failed open (strict parse error) leaves
+   * the previous value untouched, like every other host field.
+   */
+  openIssues: readonly SheetSetOpenIssue[] = [];
 
   /**
    * Open a set from file text. Dispatch is by extension (.dst → the DST
@@ -82,6 +160,9 @@ export class SheetSetHost {
     this.dirty = false;
     this.lastIssues = [];
     this.bindingIssues = [];
+    // O-1: report what the JSON parser silently dropped in this open
+    // (the DST form has no silent-normalization class).
+    this.openIssues = isDst ? [] : droppedJsonValues(text);
   }
 
   /** The held set, or undefined when none is open. */
