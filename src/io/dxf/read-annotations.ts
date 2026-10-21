@@ -196,6 +196,48 @@ export function readLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: Re
 }
 
 /**
+ * THE block-content trigger predicate for a MULTILEADER record — the ONE
+ * implementation shared by readMLeader (which withholds or models native
+ * data) and by its caller in read-entities.ts (which reports the outcome),
+ * so the two can never disagree (acceptance finding F-1: the reader used
+ * `int(296) !== 0` while the caller matched the exact string '1', and the
+ * gap between them — 296 = '2' or '01', or a trailing 172 = '01', with an
+ * unresolvable block — fell back to the legacy LEADER path in silence).
+ *
+ * The predicate mirrors readMLeader's own scan exactly: group 296 counts
+ * only inside the CONTEXT_DATA section and signals when it parses to a
+ * NONZERO integer (296 is a boolean AutoCAD writes as 0/1; any nonzero
+ * spelling still means the source claims block content); the trailing
+ * content type is the LAST group 172 outside every {...} section and
+ * signals when it parses to 1. Section tracking replicates readMLeader's
+ * depth machine (300 CONTEXT_DATA{ / 301 close, 302 LEADER{ / 303 close,
+ * 304 LEADER_LINE{ / 305 close). Invariant: the set of records this
+ * predicate signals is EXACTLY the set readMLeader treats as block
+ * content — each is either modelled (caller notes it) or reported
+ * `simplified` by the caller (R-MLEADER-18); there is no third state.
+ */
+export function mleaderBlockContentSignalled(o: Obj): boolean {
+  // Section stack, replicating readMLeader's depth machine group-for-group:
+  // a group is dispatched by the stack top left by the preceding groups,
+  // exactly as in readMLeader (its opener checks run first and continue).
+  let depth: string[] = [];
+  let hasBlock = false;
+  let contentType: number | undefined;
+  for (const p of o.groups) {
+    if (p.code === 300 && p.value.startsWith('CONTEXT_DATA')) { depth.push('CONTEXT'); continue; }
+    if (p.code === 301) { depth = depth.filter((d) => d !== 'CONTEXT'); continue; }
+    if (p.code === 302 && p.value.startsWith('LEADER{')) { depth.push('LEADER'); continue; }
+    if (p.code === 303) { depth.pop(); continue; }
+    if (p.code === 304 && p.value.startsWith('LEADER_LINE{')) { depth.push('LINE'); continue; }
+    if (p.code === 305) { depth.pop(); continue; }
+    const top = depth[depth.length - 1];
+    if (top === 'CONTEXT') { if (p.code === 296) hasBlock = int(p.value) !== 0; }
+    else if (top === undefined && p.code === 172) contentType = int(p.value);
+  }
+  return hasBlock || contentType === 1;
+}
+
+/**
  * MULTILEADER: leader lines, landing and MTEXT content from the CONTEXT_DATA section.
  * Block content is not drawn (noted by the caller); missing parts degrade to what is present.
  */
@@ -210,7 +252,6 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
   let textDir: g.Point | undefined;
   let attachment: number | undefined;
   let arrowSize: number | undefined;
-  let hasBlock = false;
   let depth: string[] = [];
   let lastLeaderPoint: g.Point | undefined;
   let doglegVec: g.Point | undefined;
@@ -344,9 +385,6 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
         case 171:
           attachment = int(p.value);
           break;
-        case 296:
-          hasBlock = int(p.value) !== 0;
-          break;
         default:
           break;
       }
@@ -386,7 +424,9 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
   // — unresolvable reference, absent definition, dangling attribute, hybrid —
   // gets NO native data: the caller reports the simplification and the entity
   // keeps the legacy path, retained and reported, never silently flattened.
-  const isBlockContent = hasBlock || contentTypeRaw === 1;
+  // The trigger decision comes from the SAME predicate the caller reports
+  // by (mleaderBlockContentSignalled) — one implementation, no drift (F-1).
+  const isBlockContent = mleaderBlockContentSignalled(o);
   const textStyleName = textStyleHandle ? ctx.textStyleHandles?.get(textStyleHandle) : undefined;
   // V-1 (AMENDMENT-P18-S2-A): the source style's retained values for the groups no
   // entity field supplies, keyed by the same style handle the name came from; an
