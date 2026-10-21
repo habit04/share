@@ -230,6 +230,14 @@ export function writeDxf(state: DrawingState): string {
     mleaderDict = w.nextHandle();
     for (const key of mleaderStyles.keys()) w.mleaderStyleHandles.set(key, w.nextHandle());
   }
+  // P18 slice 2 (PROPOSAL-P18-S2 item (5)): when a native block-content mleader
+  // exists, the Writer also needs the block-record allocation — a written
+  // mleader names its content block by this file's record handle (341/344),
+  // and its style names it too (343). Copied keyed upper-case; no block-content
+  // mleader => the map stays empty and nothing changes.
+  if ([...mleaderStyles.values()].some((d) => d.contentType === 1)) {
+    for (const [name, handle] of blockRecordHandles) w.blockRecordHandles.set(name.toUpperCase(), handle);
+  }
   // Choose the highest native format required anywhere, including associated text/attributes.
   const appearances = [...allEntities, ...state.layers, ...blockList.flatMap((b) => b.attributes),
     ...allEntities.flatMap<AttributeAppearance>((e) => e.type === 'insert' ? Object.values(e.attributePlacements ?? {}) : e.type === 'leader' && e.textAppearance ? [e.textAppearance] : [])];
@@ -645,8 +653,14 @@ export function writeDxf(state: DrawingState): string {
     const xrefFlags = b.xref ? 4 | (b.xref.overlay ? 8 : 0) : 0;
     blockShell(owner, b.name, b.basePoint, (b.attributes.length > 0 ? 2 : 0) | (b.name.startsWith('*') ? 1 : 0) | xrefFlags, b.description, () => {
       for (const e of b.entities) writeEntityAnno(w, e, owner, state.blocks, dimBlocks, extras);
-      for (const a of b.attributes) {
+      for (const [attdefIndex, a] of b.attributes.entries()) {
         writeEntityCommon(w, { ...a, id: a.tag, type: 'text', text: a.default, rotation: a.rotation ?? 0, color: a.color ?? 'ByLayer', layer: a.layer ?? '0' }, owner, 'ATTDEF', 'AcDbText');
+        // P18 slice 2 (PROPOSAL-P18-S2 item (6)): record the handle just written,
+        // by tag and by definition index, so a block-content mleader's attribute
+        // entries (group 330) can name THIS file's ATTDEFs. No output change.
+        const attdefHandle = w.lastHandle().toString(16).toUpperCase();
+        w.blockAttdefHandles.set(`${b.name.toUpperCase()} ${a.tag}`, attdefHandle);
+        w.blockAttdefHandles.set(`${b.name.toUpperCase()} #${attdefIndex}`, attdefHandle);
         writeTextLike(w, a.position, a.height, a.default, a.rotation ?? 0, a.align, a);
         writeTextStyle(w, a);
         w.pair(100, 'AcDbAttributeDefinition');
@@ -1017,6 +1031,14 @@ export function writeDxf(state: DrawingState): string {
       w.pair(272, data.bottomTextAttachmentDirection);
       w.pair(273, data.topTextAttachmentDirection);
       w.pair(298, data.flag298);
+      // Slice 2: a block style names its content block record (343, last in the
+      // reference's group listing). writeMLeader has already refused any block
+      // whose record does not resolve in this file, so the handle exists.
+      if (data.contentType === 1) {
+        const blockHandle = data.blockName ? w.blockRecordHandles.get(data.blockName.toUpperCase()) : undefined;
+        if (!blockHandle) throw new Error(`Cannot write MLEADERSTYLE "${data.name}": its content block "${data.blockName ?? ''}" has no block record in this file.`);
+        w.pair(343, blockHandle);
+      }
     }
   }
   w.pair(0, 'ENDSEC');

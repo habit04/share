@@ -32,6 +32,15 @@ export class Writer {
   readonly textStyleHandles = new Map<string, string>();
   /** P18: MLEADERSTYLE handles by upper-case style name, pre-allocated like textStyleHandles. */
   readonly mleaderStyleHandles = new Map<string, string>();
+  /** P18 slice 2 (PROPOSAL-P18-S2 item (4)): BLOCK_RECORD handles by upper-case block name,
+   *  copied from writeDxf's allocation scope when a native block-content mleader exists —
+   *  a written mleader names its content block by THIS file's record handle. */
+  readonly blockRecordHandles = new Map<string, string>();
+  /** P18 slice 2 (PROPOSAL-P18-S2 item (4)): ATTDEF handles as written in this file's BLOCKS
+   *  section, keyed "NAME TAG" and "NAME #index" (upper-case name) — populated by the BLOCKS
+   *  loop as each ATTDEF is written; a block mleader's attribute entry (group 330) must name
+   *  the handle of this file, which only the writer knows. */
+  readonly blockAttdefHandles = new Map<string, string>();
   readonly dimensionStyles = new Map<string, DimStyle>();
   readonly reservedEntityHandles = new WeakMap<Entity, string>();
   reserveEntityHandle(entity: Entity): string {

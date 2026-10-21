@@ -157,11 +157,14 @@ describe('P18 slice 2: authored block-content multileader — DXF export + reimp
     expect(firstVal(rec, 344)).toBe(recordHandle);
     expect(firstVal(rec, 43)).toBe('0.35');
     // Attribute entries name THIS file's ATTDEF handles, in order, with values.
+    // (The record's first 330 is the entity owner, before CONTEXT_DATA; the
+    // attribute entries are the 330s after the context closes at 301 '}'.)
     const attdefs = attdefHandlesOf(out);
     expect(attdefs).toHaveLength(2);
-    const attr330 = rec.filter((p) => p[0] === 330).map((p) => p[1]);
+    const closeIdx = rec.findIndex((p) => p[0] === 301);
+    const attr330 = rec.slice(closeIdx).filter((p) => p[0] === 330).map((p) => p[1]);
     expect(attr330).toEqual(attdefs);
-    expect(rec.filter((p) => p[0] === 302).map((p) => p[1])).toEqual(['GEAR-9', 'C']);
+    expect(rec.slice(closeIdx).filter((p) => p[0] === 302).map((p) => p[1])).toEqual(['GEAR-9', 'C']);
     // The synthesized style is a block style naming the same record.
     const style = stylesByName(out).get('Standard')!;
     expect(style.get(170)?.[0]).toBe('1');

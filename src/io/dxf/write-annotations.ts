@@ -261,7 +261,8 @@ export function writeLeader(w: Writer, e: LeaderEntity, owner: string, extras: W
 
 /**
  * P18: a native MULTILEADER (AcDbMLeader) for a `kind: 'mleader'` entity that
- * carries modeled native data (MTEXT or no content). Group order and the
+ * carries modeled native data (MTEXT, no content, or — slice 2 — block
+ * content with attribute values). Group order and the
  * specimen constants mirror the AutoCAD CONTEXT_DATA fixture in
  * tests/leader.test.ts: context 174/175/176/177, 170, 90 and 172, and the
  * trailing 91 (leader colour, ByBlock) / 171 (arrowhead) values are written
@@ -276,16 +277,35 @@ export function writeMLeader(w: Writer, e: LeaderEntity, owner: string): void {
   const native = e.mleader!;
   const problem = mleaderNativeProblem(native);
   if (problem) throw new Error(`Cannot write native MULTILEADER: ${problem}.`);
+  // Slice 2: block content names its block record and every attribute's ATTDEF
+  // by THIS file's handles — resolved BEFORE any group is written, so an
+  // unresolvable block or ATTDEF refuses atomically (A-LEADER-18). The ATTDEF
+  // map fills as the BLOCKS pass writes definitions, so a block-content
+  // mleader inside a block definition whose target ATTDEFs are written later
+  // in the same pass refuses here instead of emitting a dangling handle.
+  const block = native.contentType === 'block' ? native.block! : undefined;
+  let blockRecordHandle: string | undefined;
+  const attdefHandles: string[] = [];
+  if (block) {
+    blockRecordHandle = w.blockRecordHandles.get(block.name.toUpperCase());
+    if (!blockRecordHandle) throw new Error(`Cannot write native MULTILEADER: its content block "${block.name}" has no block record in this file.`);
+    for (const a of block.attributes) {
+      const h = w.blockAttdefHandles.get(`${block.name.toUpperCase()} #${a.index}`) ?? w.blockAttdefHandles.get(`${block.name.toUpperCase()} ${a.tag}`);
+      if (!h) throw new Error(`Cannot write native MULTILEADER: attribute "${a.tag}" of content block "${block.name}" has no ATTDEF handle in this file.`);
+      attdefHandles.push(h);
+    }
+  }
   writeEntityCommon(w, e, owner, 'MULTILEADER', 'AcDbMLeader');
   w.pair(270, 2);
   const hasText = native.contentType === 'mtext' && !!e.text;
   const lastMain = e.vertices[e.vertices.length - 1] ?? { x: 0, y: 0 };
   const doglegLength = e.dogleg ? g.len(e.dogleg) : 0;
-  // CONTEXT_DATA{ ... }
+  // CONTEXT_DATA{ ... } — for block content the context base point (10) is the
+  // block position, as AutoCAD writes it; otherwise the last leader point.
   w.pair(300, 'CONTEXT_DATA{');
   w.pair(40, native.scaleFactor);
-  w.pair(10, lastMain.x);
-  w.pair(20, lastMain.y);
+  w.pair(10, block ? block.position.x : lastMain.x);
+  w.pair(20, block ? block.position.y : lastMain.y);
   w.pair(30, 0);
   w.pair(41, e.textHeight);
   w.pair(140, e.arrowSize);
@@ -295,6 +315,21 @@ export function writeMLeader(w: Writer, e: LeaderEntity, owner: string): void {
   w.pair(176, 0);
   w.pair(177, 0);
   w.pair(290, 1);
+  if (block) {
+    // Slice 2 block content in CONTEXT_DATA: signal, record, placement. The 47
+    // transformation matrix (derived from position/scale/rotation), the 93
+    // block colour and the 14 normal are NOT written — the model is 2D with
+    // normal (0,0,1) and Z scale 1 (36), as PROPOSAL-P18-S2 documents.
+    w.pair(296, 1);
+    w.pair(341, blockRecordHandle!);
+    w.pair(15, block.position.x);
+    w.pair(25, block.position.y);
+    w.pair(35, 0);
+    w.pair(16, block.scale.x);
+    w.pair(26, block.scale.y);
+    w.pair(36, 1);
+    w.pair(46, block.rotation);
+  }
   if (hasText) {
     const source = formattedSource({ text: e.text!, ...(e.raw ? { raw: e.raw } : {}) }) ?? mtextToDxf(e.text!);
     w.pair(304, source);
@@ -375,7 +410,24 @@ export function writeMLeader(w: Writer, e: LeaderEntity, owner: string): void {
   w.pair(291, 1);
   if (doglegLength > 1e-12) w.pair(41, doglegLength);
   w.pair(42, e.arrowSize);
-  w.pair(172, native.contentType === 'mtext' ? 2 : 0);
+  w.pair(172, native.contentType === 'mtext' ? 2 : native.contentType === 'block' ? 1 : 0);
+  if (block) {
+    // Slice 2 trailing block data: the record named again (344), the scale
+    // point (10), the rotation (43), then one entry per attribute value —
+    // ATTDEF handle of this file (330), definition index (177), width (44,
+    // when carried) and the value text (302).
+    w.pair(344, blockRecordHandle!);
+    w.pair(10, block.scale.x);
+    w.pair(20, block.scale.y);
+    w.pair(30, 0);
+    w.pair(43, block.rotation);
+    block.attributes.forEach((a, i) => {
+      w.pair(330, attdefHandles[i]!);
+      w.pair(177, a.index);
+      if (a.width !== undefined) w.pair(44, a.width);
+      w.pair(302, a.value);
+    });
+  }
 }
 
 export function writeImage(w: Writer, e: ImageEntity, owner: string, extras: WriteExtras): void {

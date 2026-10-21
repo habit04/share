@@ -68,6 +68,9 @@ export interface ReadContext {
    *  the source values of the style groups no entity field supplies; a style whose values all
    *  match the specimen constants has NO entry, so authored round trips are untouched. */
   mleaderStyleValues?: ReadonlyMap<string, MLeaderStyleRetained>;
+  /** P18 slice 2 (PROPOSAL-P18-S2 item (1)): BLOCK_RECORD names by upper-case handle
+   *  (TABLES precedes ENTITIES; a MULTILEADER's 341 / trailing 344 name one). */
+  blockRecordNames?: ReadonlyMap<string, string>;
   /** Anonymous blocks replaced by native tables. */
   consumedBlocks?: Set<string>;
   /** Remarks about content that was simplified. */

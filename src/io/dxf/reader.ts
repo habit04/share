@@ -231,6 +231,27 @@ function mleaderStyleValuesOf(pairs: readonly Pair[]): Map<string, MLeaderStyleR
   return out;
 }
 
+/**
+ * The BLOCK_RECORD names of the TABLES section, by upper-case record handle
+ * (P18 slice 2, PROPOSAL-P18-S2 item (2)): a block-content MULTILEADER names its
+ * block record by handle (CONTEXT_DATA 341 / trailing 344), and the name is the
+ * record's group 2. TABLES precedes ENTITIES in the file but the map is built
+ * from the raw pairs up front, like the other OBJECTS pre-scans.
+ */
+function blockRecordNamesOf(pairs: readonly Pair[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (let i = 0; i + 1 < pairs.length; i += 1) {
+    if (pairs[i]!.code !== 0 || pairs[i]!.value !== 'SECTION' || pairs[i + 1]!.value !== 'TABLES') continue;
+    let j = i + 2;
+    while (j < pairs.length && !(pairs[j]!.code === 0 && pairs[j]!.value === 'ENDSEC')) j += 1;
+    for (const o of objects(pairs as Pair[], i + 2, j)) {
+      if (o.kind === 'BLOCK_RECORD' && has(o, 5) && has(o, 2)) out.set(str(o, 5).toUpperCase(), str(o, 2));
+    }
+    i = j;
+  }
+  return out;
+}
+
 /** The reader proper; DIMSTYLE records are collected into `dimStyles`. */
 function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string, DimStyle>, report: ImportReportBuilder, raw: RawDxfEntity[]): DrawingState {
   if (text.length > (opts.maxSourceLength ?? DXF_READ_LIMITS.maxSourceLength)) throw new DxfReadError('DXF exceeds the source text size limit.', 1);
@@ -258,6 +279,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     tableStyles: tableStylesOf(pairs),
     mleaderStyles: mleaderStyleNamesOf(pairs),
     mleaderStyleValues: mleaderStyleValuesOf(pairs),
+    blockRecordNames: blockRecordNamesOf(pairs),
     consumedBlocks: new Set(),
     notes: opts.notes ?? [],
     report,
