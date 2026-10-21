@@ -16,7 +16,10 @@
  * SHA-256 of its code, so a changed plugin is asked about again.
  *
  * Plugins run in the application page (see docs/PLUGIN-API.md, "Security"): they are isolated
- * from each other only as far as errors go. A plugin that throws while loading, whose load
+ * from each other only as far as errors go. The one exception is a plugin whose manifest opts
+ * into P25 isolation (`apiVersion: 2` + `isolation: "worker"` + `capabilities`, admitted as
+ * PROPOSAL-P25 / LEDGER L-011): it runs in the isolated realm in ./plugin-isolation with only
+ * its declared capabilities, and fails closed — never in the page — when no realm is available. A plugin that throws while loading, whose load
  * promise rejects, that does not finish loading within `loadTimeoutMs`, or whose trust check
  * fails is reported on the command line with its name and marked as failed; loading carries on
  * with the next plugin. Errors later on (commands, event listeners, rejected promises, timers
@@ -24,6 +27,9 @@
  */
 import type { Editor } from './editor';
 import { API_VERSION, createApi, pickTextFile, pluginErrorMessage, type ApiHandle, type JcadApi } from './api';
+import { parseCapabilitySet } from './plugin-isolation/capabilities';
+import { IsolatedPluginSession, type RealmTransport } from './plugin-isolation/host';
+import { browserWorkerTransport } from './plugin-isolation/browser-transport';
 import { modal, button } from '../ui/dialogkit';
 import { esc } from '../ui/dom';
 import { ensureFileLimit, MAX_PLUGIN_FILE_BYTES, MAX_PROJECT_FILE_BYTES } from '../io/file-limits';
@@ -38,6 +44,24 @@ export interface PluginManifest {
   main?: string;
   /** Plugin API version the plugin was written for (default 1). */
   apiVersion?: number;
+  /**
+   * P25 isolation opt-in (PROPOSAL-P25, admitted LEDGER L-011): 'worker' runs
+   * the plugin in the isolated realm (API v2) instead of the trusted page.
+   * Absent (or 'page') is exactly the legacy v1 behaviour.
+   */
+  isolation?: 'page' | 'worker';
+  /** Declared capabilities for an isolated ('worker') plugin: required there, forbidden on the page path. */
+  capabilities?: string[];
+}
+
+/**
+ * What the trust prompt is told about an isolated ('worker') plugin
+ * (L-011 C3): that it runs isolated, and the capability set it declared.
+ * Legacy v1 plugins get no details object — their prompt is unchanged.
+ */
+export interface PluginTrustDetails {
+  isolation: 'worker';
+  capabilities: string[];
 }
 
 export interface PluginSource {
@@ -81,8 +105,14 @@ export interface StorageLike {
 
 export interface PluginHostOptions {
   bridge?: PluginsBridge | null;
-  /** Ask the user (default: a modal dialog). */
-  confirm?(name: string, path: string): Promise<boolean>;
+  /** Ask the user (default: a modal dialog). `details` is set only for isolated ('worker') plugins. */
+  confirm?(name: string, path: string, details?: PluginTrustDetails): Promise<boolean>;
+  /**
+   * Create the transport for an isolated ('worker') plugin's realm (default:
+   * a platform Worker where one exists, else none — an isolated load then
+   * fails closed rather than running in the page, L-011 C2).
+   */
+  realmTransport?: () => RealmTransport | null;
   /** Where trust answers are kept (default localStorage). */
   storage?: StorageLike | null;
   /** Run plugin code (default: `new Function('jcad', code)`, falling back to the bridge). */
@@ -132,6 +162,49 @@ const MAX_CODE = 2 * 1024 * 1024;
 
 // ------------------------------------------------------------------ helpers
 
+/**
+ * The admitted isolated-manifest semantics (PROPOSAL-P25, LEDGER L-011),
+ * shared by parseManifest and PluginHost.load — load also sees programmatic
+ * sources that never went through a parser, and their refusal must be just
+ * as atomic. Returns the refusal message, or null when valid. A manifest
+ * declaring neither field is a legacy v1 manifest and always valid here.
+ */
+function isolatedManifestError(m: { apiVersion?: number; isolation?: string; capabilities?: unknown }): string | null {
+  if (m.isolation !== undefined && m.isolation !== 'page' && m.isolation !== 'worker') {
+    return `"isolation" must be "page" or "worker", not ${JSON.stringify(m.isolation)}`;
+  }
+  try {
+    parseCapabilitySet(m.capabilities);
+  } catch (err) {
+    return (err as Error).message;
+  }
+  if (m.isolation === 'worker') {
+    if (m.apiVersion !== 2) return 'an isolated ("worker") plugin must declare "apiVersion": 2 (API v2 is the asynchronous realm API)';
+    if (m.capabilities === undefined) return 'an isolated ("worker") plugin must declare "capabilities" (use [] for a plugin that only loads)';
+  } else if (m.capabilities !== undefined) {
+    return '"capabilities" requires "isolation": "worker" (the trusted page path enforces no capabilities; declaring them there would be misleading)';
+  }
+  return null;
+}
+
+/**
+ * The default realm transport: a platform Worker where one exists, else
+ * none. There is deliberately no fallback — an isolated plugin whose realm
+ * cannot be created fails closed (load ERROR) rather than running in the
+ * page (L-011 C2). In a packaged renderer whose CSP refuses the realm
+ * bootstrap the Worker starts but never handshakes, so the session's load
+ * timeout produces the same fail-closed error; changing that CSP is the
+ * lead's separate decision (L-011 C6), not this wiring's.
+ */
+function defaultRealmTransport(): RealmTransport | null {
+  if (typeof Worker === 'undefined') return null;
+  try {
+    return browserWorkerTransport();
+  } catch {
+    return null;
+  }
+}
+
 /** Parse and check a plugin.json. Throws with a readable message. */
 export function parseManifest(text: string, fallbackName?: string): PluginManifest {
   let raw: unknown;
@@ -148,10 +221,15 @@ export function parseManifest(text: string, fallbackName?: string): PluginManife
   if (!/^[A-Za-z0-9._-]+\.js$/.test(main)) throw new Error(`"main" must be a .js file name in the plugin folder, not "${main}"`);
   const apiVersion = o.apiVersion === undefined ? 1 : Number(o.apiVersion);
   if (!Number.isInteger(apiVersion) || apiVersion < 1) throw new Error('"apiVersion" must be a positive integer');
+  const isoError = isolatedManifestError({ apiVersion, isolation: o.isolation as string | undefined, capabilities: o.capabilities });
+  if (isoError) throw new Error(isoError);
+  const isolation = o.isolation as PluginManifest['isolation'];
   return {
     name,
     main,
     apiVersion,
+    ...(isolation !== undefined ? { isolation } : {}),
+    ...(o.capabilities !== undefined ? { capabilities: [...parseCapabilitySet(o.capabilities)] } : {}),
     ...(typeof o.version === 'string' ? { version: o.version } : {}),
     ...(typeof o.description === 'string' ? { description: o.description } : {}),
     ...(typeof o.author === 'string' ? { author: o.author } : {}),
@@ -242,9 +320,15 @@ export async function evaluatePlugin(code: string, api: JcadApi, name: string, b
   }
 }
 
-function defaultConfirm(editor: Editor): (name: string, path: string) => Promise<boolean> {
-  return (name, path) => {
-    const message = `Load plugin ${name} from ${path}? Plugins run with full access to your drawings.`;
+function defaultConfirm(editor: Editor): (name: string, path: string, details?: PluginTrustDetails) => Promise<boolean> {
+  return (name, path, details) => {
+    // L-011 C3: a worker plugin's prompt presents its isolated status and
+    // declared capability set instead of the full-access warning. With no
+    // details (every legacy v1 plugin) both texts are byte-identical to v1.
+    const risk = details
+      ? `It runs isolated in a separate realm, limited to these declared capabilities: ${details.capabilities.length ? details.capabilities.join(', ') : '(none)'}.`
+      : 'Plugins run with full access to your drawings.';
+    const message = `Load plugin ${name} from ${path}? ${risk}`;
     if (typeof document === 'undefined') return editor.ui?.confirm('Load plugin', message) ?? Promise.resolve(false);
     return new Promise((resolve) => {
       const m = modal('Load Plugin', 460, 'dark');
@@ -256,7 +340,10 @@ function defaultConfirm(editor: Editor): (name: string, path: string) => Promise
         resolve(v);
       };
       m.onClose(() => finish(false));
-      m.body.innerHTML = `<div style="font-size:12px;line-height:1.5">Load plugin <b>${esc(name)}</b> from<br><code style="word-break:break-all">${esc(path)}</code>?<br><br>Plugins run with full access to your drawings. Load only plugins you trust. Your answer is remembered until the plugin's code changes.</div>`;
+      const riskHtml = details
+        ? `This plugin runs <b>isolated</b> in a separate realm, limited to its declared capabilities:<br><code style="word-break:break-all">${esc(details.capabilities.join(', ') || '(none)')}</code>.`
+        : 'Plugins run with full access to your drawings.';
+      m.body.innerHTML = `<div style="font-size:12px;line-height:1.5">Load plugin <b>${esc(name)}</b> from<br><code style="word-break:break-all">${esc(path)}</code>?<br><br>${riskHtml} Load only plugins you trust. Your answer is remembered until the plugin's code changes.</div>`;
       const yes = button('Load', true);
       const no = button("Don't Load");
       yes.addEventListener('click', () => finish(true));
@@ -339,12 +426,28 @@ function watchUncaught(editor: Editor): void {
   });
 }
 
+/** One loaded (or loading) plugin. A worker plugin's `handle` is its session's API handle. */
+interface HostEntry {
+  info: LoadedPlugin;
+  handle: ApiHandle | null;
+  /** The isolated-realm session of a worker plugin; null on the page path. */
+  session: IsolatedPluginSession | null;
+  source: PluginSource;
+}
+
+/** Dispose an entry exactly once over its two resources: a session's dispose() also disposes its API handle. */
+function disposeEntry(entry: HostEntry): void {
+  if (entry.session) entry.session.dispose();
+  else entry.handle?.dispose();
+}
+
 export class PluginHost {
-  private readonly entries = new Map<string, { info: LoadedPlugin; handle: ApiHandle | null; source: PluginSource }>();
+  private readonly entries = new Map<string, HostEntry>();
   private readonly bridge: PluginsBridge | null;
-  private readonly confirmFn: (name: string, path: string) => Promise<boolean>;
+  private readonly confirmFn: (name: string, path: string, details?: PluginTrustDetails) => Promise<boolean>;
   private readonly storage: StorageLike | null;
   private readonly evaluateFn: (code: string, api: JcadApi, name: string) => Promise<unknown>;
+  private readonly realmTransportFactory: (() => RealmTransport | null) | null;
   private readonly loadTimeoutMs: number;
   readonly pickFiles: (accept: string, multiple: boolean) => Promise<Array<{ name: string; text: string }>>;
 
@@ -356,6 +459,7 @@ export class PluginHost {
     this.confirmFn = opts.confirm ?? defaultConfirm(editor);
     this.storage = opts.storage === undefined ? (typeof localStorage !== 'undefined' ? localStorage : null) : opts.storage;
     this.evaluateFn = opts.evaluate ?? ((code, api, name) => evaluatePlugin(code, api, name, this.bridge));
+    this.realmTransportFactory = opts.realmTransport ?? null;
     this.pickFiles = opts.pickFiles ?? defaultPick;
     this.loadTimeoutMs = opts.loadTimeoutMs ?? PLUGIN_LOAD_TIMEOUT_MS;
     const first = !currentHost.has(editor);
@@ -412,7 +516,11 @@ export class PluginHost {
     // (no WebCrypto) a changed plugin could keep a remembered "yes", so it is asked every run.
     const strongHash = /^[0-9a-f]{64}$/.test(hash);
     if (strongHash && hit && hit.hash === hash && (hit.answer === 'yes' || !reask)) return hit.answer === 'yes';
-    const yes = await this.confirmFn(src.manifest.name, src.path);
+    // C3: the trust decision for a worker plugin is told its declared
+    // capabilities + isolated status; a legacy plugin's call is unchanged.
+    const details: PluginTrustDetails | undefined =
+      src.manifest.isolation === 'worker' ? { isolation: 'worker', capabilities: [...(src.manifest.capabilities ?? [])] } : undefined;
+    const yes = await this.confirmFn(src.manifest.name, src.path, details);
     if (!current()) return false;
     if (strongHash) all[key] = { answer: yes ? 'yes' : 'no', hash, at: Date.now() };
     else delete all[key];
@@ -455,7 +563,7 @@ export class PluginHost {
       commands: [],
     };
     const key = name.toUpperCase();
-    const entry = { info, handle: null as ApiHandle | null, source: src };
+    const entry: HostEntry = { info, handle: null, session: null, source: src };
     this.replace(key, entry);
     const current = () => this.entries.get(key) === entry;
     const superseded = () => {
@@ -464,7 +572,23 @@ export class PluginHost {
       return info;
     };
     if (!current()) return superseded();
-    if ((src.manifest.apiVersion ?? 1) > API_VERSION) {
+    // Isolated-manifest semantics are enforced here too, not only in
+    // parseManifest: a programmatic source can carry fields no parser
+    // checked, and refusal must be atomic — before the version ceiling,
+    // trust, transport creation, or any execution (L-011 C2).
+    if (src.manifest.isolation !== undefined || src.manifest.capabilities !== undefined) {
+      const isoError = isolatedManifestError(src.manifest);
+      if (isoError) {
+        info.status = 'error';
+        info.error = isoError;
+        this.editor.log(`Plugin ${name}: ${isoError}.`);
+        return info;
+      }
+    }
+    const isolated = src.manifest.isolation === 'worker';
+    // A valid worker manifest declares apiVersion 2 by definition; the v1
+    // ceiling below applies to the page path only.
+    if (!isolated && (src.manifest.apiVersion ?? 1) > API_VERSION) {
       info.status = 'error';
       info.error = `needs plugin API version ${src.manifest.apiVersion}; this JCad Electrical provides version ${API_VERSION}`;
       this.editor.log(`Plugin ${name}: ${info.error}.`);
@@ -491,6 +615,7 @@ export class PluginHost {
       this.editor.log(`Plugin ${name} not loaded (not trusted). PLUGINLOAD${src.folder ? ` ${src.folder}` : ''} asks again.`);
       return info;
     }
+    if (isolated) return this.loadIsolated(src, entry, current, superseded);
     const handle = createApi(this.editor, name);
     entry.handle = handle;
     try {
@@ -514,10 +639,81 @@ export class PluginHost {
     return info;
   }
 
-  private replace(key: string, entry: { info: LoadedPlugin; handle: ApiHandle | null; source: PluginSource }): void {
+  /**
+   * Load a trusted worker plugin into its isolated realm. Fail-closed
+   * throughout (L-011 C2): no realm transport, a realm that never finishes
+   * loading, or a realm-side failure is a load ERROR — the code never runs
+   * in the page as a fallback.
+   */
+  private async loadIsolated(
+    src: PluginSource,
+    entry: HostEntry,
+    current: () => boolean,
+    superseded: () => LoadedPlugin,
+  ): Promise<LoadedPlugin> {
+    const { info } = entry;
+    const name = src.manifest.name;
+    let transport: RealmTransport | null = null;
+    try {
+      transport = this.realmTransportFactory ? this.realmTransportFactory() : defaultRealmTransport();
+    } catch {
+      transport = null;
+    }
+    if (!transport) {
+      info.status = 'error';
+      info.error = 'plugin declares "isolation": "worker" but no isolated realm transport is available in this environment; refusing to run it in the page';
+      this.editor.log(`Plugin ${name}: ${info.error}.`);
+      return info;
+    }
+    let session: IsolatedPluginSession;
+    try {
+      session = new IsolatedPluginSession(this.editor, {
+        owner: name,
+        capabilities: src.manifest.capabilities ?? [],
+        transport,
+        // The host's own load budget (production default 30 s); the larger
+        // budgets in the test harnesses are harness-only and never wired in.
+        loadTimeoutMs: this.loadTimeoutMs,
+      });
+    } catch (err) {
+      info.status = 'error';
+      info.error = pluginErrorMessage(err);
+      this.editor.log(`Plugin ${name}: ${info.error}.`);
+      return info;
+    }
+    entry.session = session;
+    entry.handle = session.apiHandle;
+    try {
+      await session.load(src.code);
+      if (!current()) {
+        session.dispose();
+        return superseded();
+      }
+      info.status = 'loaded';
+      const cmds = this.commandsOf(name);
+      this.editor.log(`Plugin ${name}${info.version ? ` ${info.version}` : ''} loaded (isolated)${cmds.length ? `: ${cmds.join(', ')}` : ''}.`);
+    } catch (err) {
+      if (!current()) {
+        session.dispose();
+        return superseded();
+      }
+      info.status = 'error';
+      info.error = pluginErrorMessage(err);
+      // Revoke before diagnostics, exactly like the page path: no commands,
+      // listeners or realm survive a failed load.
+      entry.session = null;
+      entry.handle = null;
+      session.dispose();
+      this.editor.log(`[${name}] failed to load: ${info.error}`);
+      if (typeof console !== 'undefined') console.error(`[jcad plugin ${name}]`, err);
+    }
+    return info;
+  }
+
+  private replace(key: string, entry: HostEntry): void {
     const previous = this.entries.get(key);
     this.entries.set(key, entry);
-    previous?.handle?.dispose();
+    if (previous) disposeEntry(previous);
   }
 
   /** Unload a plugin (its commands, listeners and onUnload hooks). */
@@ -526,7 +722,7 @@ export class PluginHost {
     const e = this.entries.get(key);
     if (!e) return false;
     this.entries.delete(key);
-    e.handle?.dispose();
+    disposeEntry(e);
     return true;
   }
 

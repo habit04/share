@@ -1,0 +1,1 @@
+{"apiVersion":2,"author":"JCad Electrical contributors","capabilities":["commands.register","document.read","ui.log"],"description":"Adds HELLOISO, which reports how many objects are selected — from inside the isolated realm.","isolation":"worker","main":"main.js","name":"hello-worker","version":"1.0.0"}
