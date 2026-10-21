@@ -1,7 +1,8 @@
 /**
- * Sheet-set host (P31A wiring — PROPOSAL-P31-A-WIRING, FILED in LEDGER.md,
- * status: awaiting contracts owner; this module is a FILED-UNADMITTED
- * prototype and is marked as such in every delivery artifact).
+ * Sheet-set host (P31A wiring — PROPOSAL-P31-A-WIRING, ADMITTED WITH
+ * CONDITIONS C1–C8 by RULING-P31-A-WIRING in LEDGER.md; built first as a
+ * FILED-UNADMITTED prototype and conformed to the ruling's conditions —
+ * this module carries condition C3, same-drawing disambiguation).
  *
  * The ONLY place sheet-set state lives at runtime. A sheet set spans many
  * drawings (each sheet references an external drawing by path + layout
@@ -28,8 +29,28 @@ import {
   type SheetSetLinkResolver,
   type SheetSetSheet,
 } from '../project/sheet-set';
+import { activeLayout } from '../core/layouts';
 import { samePath } from './paths';
 import type { DocumentSession } from './sessions';
+
+/**
+ * A binding ambiguity surfaced by SheetSetHost.bindSession
+ * (RULING-P31-A-WIRING C3): more than one sheet records the session's
+ * drawing and the recorded layout names do not single one out against the
+ * session document's active layout. A host-level record rather than a
+ * SheetSetLinkIssue: the link-issue kind union lives in
+ * src/project/sheet-set.ts, outside this slice's admitted surface, and an
+ * ambiguity is a binding-time condition (it depends on the session's
+ * document), not a defect of the set itself, so validateSheetSetLinks
+ * cannot see it.
+ */
+export interface SheetBindingAmbiguity {
+  readonly kind: 'ambiguous-drawing';
+  readonly drawingPath: string;
+  /** Candidate sheet ids, in set order. */
+  readonly sheetIds: readonly string[];
+  readonly message: string;
+}
 
 export class SheetSetHost {
   private set: SheetSet | undefined;
@@ -39,6 +60,13 @@ export class SheetSetHost {
   dirty = false;
   /** Issues from the most recent validateLinks call (reported, never repaired). */
   lastIssues: readonly SheetSetLinkIssue[] = [];
+  /**
+   * Binding ambiguity from the most recent bindSession call (C3):
+   * non-empty exactly when that bind left the session UNBOUND because
+   * several sheets record its drawing and none could be singled out.
+   * Reported here — never resolved silently by file order.
+   */
+  bindingIssues: readonly SheetBindingAmbiguity[] = [];
 
   /**
    * Open a set from file text. Dispatch is by extension (.dst → the DST
@@ -53,6 +81,7 @@ export class SheetSetHost {
     this.filePath = path;
     this.dirty = false;
     this.lastIssues = [];
+    this.bindingIssues = [];
   }
 
   /** The held set, or undefined when none is open. */
@@ -99,10 +128,30 @@ export class SheetSetHost {
     return issues;
   }
 
-  /** The sheet whose recorded drawing path matches `path` (host path discipline). */
-  sheetForDrawing(path: string | null | undefined): SheetSetSheet | undefined {
-    if (!this.set || !path) return undefined;
-    return this.set.sheets.find((s) => samePath(s.drawingPath, path));
+  /** Every sheet whose recorded drawing path matches `path` (host path discipline), in set order. */
+  sheetsForDrawing(path: string | null | undefined): readonly SheetSetSheet[] {
+    if (!this.set || !path) return [];
+    return this.set.sheets.filter((s) => samePath(s.drawingPath, path));
+  }
+
+  /**
+   * The sheet a drawing file binds to. Zero or one recorded match resolves
+   * exactly as recorded. MORE THAN ONE match — several sheets recording the
+   * same drawing, the normal shape for a multi-layout drawing — is NEVER
+   * resolved by silently first-matching (RULING-P31-A-WIRING C3): the
+   * recorded layoutName must single out exactly one candidate against
+   * `layoutName` (the relevant layout, compared case-insensitively per the
+   * layouts.ts findLayout convention); where it cannot, the lookup is
+   * undecidable and returns undefined.
+   */
+  sheetForDrawing(path: string | null | undefined, layoutName?: string): SheetSetSheet | undefined {
+    const matches = this.sheetsForDrawing(path);
+    if (matches.length <= 1) return matches[0];
+    if (layoutName) {
+      const byLayout = matches.filter((s) => s.layoutName.toUpperCase() === layoutName.toUpperCase());
+      if (byLayout.length === 1) return byLayout[0];
+    }
+    return undefined;
   }
 
   /**
@@ -110,10 +159,37 @@ export class SheetSetHost {
    * The binding lives on the session (DocumentSession.sheetId), so it parks
    * and restores with the tab. An unmatched drawing clears the binding —
    * a binding is re-derived from the session's file, never kept stale.
+   *
+   * When several sheets record the session's drawing (C3), the candidate
+   * is singled out by its recorded layoutName against the session
+   * document's ACTIVE layout (core/layouts activeLayout — the layout the
+   * document is actually presenting; the Model tab has none). Where no
+   * candidate can be singled out, the session is left UNBOUND and the
+   * ambiguity is surfaced in bindingIssues — one of several candidate
+   * sheets' values is never served by file order.
    */
   bindSession(session: DocumentSession, drawingPath: string | null | undefined): SheetSetSheet | undefined {
-    const sheet = this.sheetForDrawing(drawingPath);
+    const candidates = this.sheetsForDrawing(drawingPath);
+    let sheet: SheetSetSheet | undefined;
+    let ambiguity: SheetBindingAmbiguity | undefined;
+    if (candidates.length === 1) {
+      sheet = candidates[0];
+    } else if (candidates.length > 1) {
+      const layoutName = session.state ? activeLayout(session.state)?.name : undefined;
+      sheet = layoutName ? this.sheetForDrawing(drawingPath, layoutName) : undefined;
+      if (!sheet) {
+        ambiguity = {
+          kind: 'ambiguous-drawing',
+          drawingPath: drawingPath as string,
+          sheetIds: candidates.map((s) => s.id),
+          message:
+            `${candidates.length} sheets record drawing "${drawingPath}" and the session document's active layout ` +
+            'does not single one out; the session is left unbound rather than bound to the first by file order.',
+        };
+      }
+    }
     session.sheetId = sheet?.id;
+    this.bindingIssues = ambiguity ? [ambiguity] : [];
     return sheet;
   }
 
