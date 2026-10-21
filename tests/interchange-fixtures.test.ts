@@ -288,9 +288,10 @@ describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with thei
       close(dimensionMeasurement(al), Math.sqrt(60 * 60 + 40 * 40));
       const r = dims[3]!;
       closePt(r.p1, 200, 30);
-      closePt(r.p2, 217.67766952966369, 47.67766952966369);
-      // No user position (flag 128 off): the text sits the leader length (40 = 10) beyond the arc.
-      closePt(r.linePoint, 224.74873734152916, 54.74873734152916, 5);
+      closePt(r.p2, 218.008005337287, 47.34104217664675);
+      // The genuine file stores the leader endpoint on the arc at AutoCAD's picked angle and the
+      // text point (11/21) it computed; the synthetic hand-placed both at idealized 45-degree spots.
+      closePt(r.linePoint, 227, 55.99999999999994, 5);
       close(dimensionMeasurement(r), 25);
       expect(dimensionText(r)).toBe('R25');
       const dia = dims[4]!;
@@ -307,16 +308,18 @@ describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with thei
     it('angular between two lines and by three points', () => {
       const a2 = dims[5]!;
       closePt(a2.center, 300, 0);
-      closePt(a2.p1, 360, 0);
-      closePt(a2.p2, 330, 51.96152422706632);
-      closePt(a2.linePoint, 300 + 20 * Math.sqrt(3), 20);
+      // AutoCAD stores the two lines' endpoints in its own order (p1 = the 60-degree line's end);
+      // the synthetic stored them in the opposite order. Same lines, same angle.
+      closePt(a2.p1, 330, 51.96152422706632);
+      closePt(a2.p2, 360, 0);
+      closePt(a2.linePoint, 337.5877048314363, 13.68080573302674);
       close(dimensionMeasurement(a2), Math.PI / 3);
       expect(dimensionText(a2)).toBe('60%%d');
       const a3 = dims[6]!;
       closePt(a3.center, 400, 0);
       closePt(a3.p1, 450, 0);
       closePt(a3.p2, 400, 50);
-      closePt(a3.linePoint, 421.21320343559643, 21.213203435596427);
+      closePt(a3.linePoint, 425.980762113533, 14.99999999999997);
       close(dimensionMeasurement(a3), Math.PI / 2);
     });
 
