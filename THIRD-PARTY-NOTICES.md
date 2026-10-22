@@ -98,7 +98,7 @@ runtime dependencies above), none of their code is part of what is distributed.
 | electron | 44.7.0 | MIT | Copyright (c) Electron contributors; Copyright (c) 2013-2020 GitHub Inc. | Runtime shipped inside every installer (see below). | <https://github.com/electron/electron> |
 | @electron/fuses | 1.8.0 | MIT | Copyright (c) 2020 Electron Maintainers. | Build and test tool for setting and verifying the packaged Electron fuse policy. | <https://github.com/electron/fuses> |
 | electron-builder | 26.17.0 | MIT | Copyright (c) 2015 Loopline Systems | Build tool; its NSIS installer stub is part of the Windows installer. | <https://github.com/electron-userland/electron-builder> |
-| vite | 6.4.3 | MIT | Copyright (c) 2019-present, VoidZero Inc. and Vite contributors | Build tool; small Vite runtime helpers (module preload) end up in the renderer bundle. | <https://github.com/vitejs/vite> |
+| vite | 6.4.4 | MIT | Copyright (c) 2019-present, VoidZero Inc. and Vite contributors | Build tool; small Vite runtime helpers (module preload) end up in the renderer bundle. | <https://github.com/vitejs/vite> |
 | typescript | 5.9.3 | Apache-2.0 | Copyright (c) Microsoft Corporation | Compiler only. | <https://github.com/microsoft/TypeScript> |
 | vitest | 5.0.3 | MIT | Copyright (c) 2021-Present Vitest Team | Unit tests only. | <https://github.com/vitest-dev/vitest> |
 | esbuild | 0.25.12 | MIT | Copyright (c) 2020 Evan Wallace | Direct build-tool dependency for the compatible patched Vite toolchain. | <https://github.com/evanw/esbuild> |
@@ -2326,7 +2326,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### vite 6.4.3
+### vite 6.4.4
 
 MIT - Copyright (c) 2019-present, VoidZero Inc. and Vite contributors - <https://github.com/vitejs/vite>
 

@@ -11,3 +11,10 @@ tests/fixtures/interchange/r2018-shx-text.dxf -text -whitespace
 
 # The restricted-PDF host verifies the audited engine glue byte for byte.
 electron/restricted-pdf/assets/qpdf.js -text
+
+# The shaping host also verifies its audited engine glue byte for byte.
+electron/shaping/assets/harfbuzz.js -text
+# Preserve authenticated fixture hashes and the xref fixture's byte budget.
+tests/fixtures/native-dynamic-constraint-handbuilt/PROVENANCE-Q12-HANDBUILT.md -text
+tests/fixtures/native-dynamic-array-handbuilt/oracle-measure.json -text
+tests/fixtures/xref/leaf.dxf -text
