@@ -139,96 +139,142 @@ describe('planUnderlayTiles', () => {
 });
 
 // ------------------------------------------------------------- class F: adapter renderRegion
+// CI hygiene (lead ruling, 2026-10-22, after PR #42): these are pdfjs
+// adapter tests — each gets a CI-suited 30 s per-test timeout (repo
+// default is 5 s) and destroys the document it opens in a finally, so
+// no loading task or session outlives its test.
 describe('F: clipped region rendering (pdfjs adapter)', () => {
   it('the whole ARCH E page at scale 4 still refuses scan-limit (the F failure, unchanged)', async () => {
     const engine = newEngine();
     const opened = await engine.open(archESheet());
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
-    const r = await opened.value.renderPage(1, 4);
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.code).toBe('scan-limit');
-    opened.value.close();
-  });
+    try {
+      const r = await opened.value.renderPage(1, 4);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.code).toBe('scan-limit');
+    } finally {
+      opened.value.close();
+    }
+  }, 30_000);
 
   it('a 400%-zoom clip of the title block renders under the cap, with the title text in it', async () => {
     const engine = newEngine();
     const opened = await engine.open(archESheet());
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
-    // Title block in PDF coords x 1700..2340, y 60..180 -> clip space
-    // (top-left origin): y = 3370-180 .. 3370-60 = 3190..3310.
-    const clip = { x: 1690, y: 3180, width: 660, height: 140 };
-    const r = await opened.value.renderRegion(1, clip, 4);
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.region).toEqual(clip);
-    expect(r.value.width).toBe(2640); // 660 * 4
-    expect(r.value.height).toBe(560); // 140 * 4
-    expect(r.value.width * r.value.height * 4).toBeLessThanOrEqual(DEFAULT_UNDERLAY_CAPS.maxScanBytes);
-    expect(darkPixels(r.value)).toBeGreaterThan(200); // frame lines + TITLE + SCALE 1:50
-    opened.value.close();
-  });
+    try {
+      // Title block in PDF coords x 1700..2340, y 60..180 -> clip space
+      // (top-left origin): y = 3370-180 .. 3370-60 = 3190..3310.
+      const clip = { x: 1690, y: 3180, width: 660, height: 140 };
+      const r = await opened.value.renderRegion(1, clip, 4);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.region).toEqual(clip);
+      expect(r.value.width).toBe(2640); // 660 * 4
+      expect(r.value.height).toBe(560); // 140 * 4
+      expect(r.value.width * r.value.height * 4).toBeLessThanOrEqual(DEFAULT_UNDERLAY_CAPS.maxScanBytes);
+      expect(darkPixels(r.value)).toBeGreaterThan(200); // frame lines + TITLE + SCALE 1:50
+    } finally {
+      opened.value.close();
+    }
+  }, 30_000);
 
   it('a single clip whose raster exceeds the cap refuses scan-limit and says to tile', async () => {
     const engine = newEngine();
     const opened = await engine.open(archESheet());
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
-    const r = await opened.value.renderRegion(1, { x: 0, y: 0, width: 1000, height: 1000 }, 4);
-    expect(r.ok).toBe(false);
-    if (!r.ok) {
-      expect(r.code).toBe('scan-limit');
-      expect(r.reason).toMatch(/planUnderlayTiles/);
+    try {
+      const r = await opened.value.renderRegion(1, { x: 0, y: 0, width: 1000, height: 1000 }, 4);
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.code).toBe('scan-limit');
+        expect(r.reason).toMatch(/planUnderlayTiles/);
+      }
+    } finally {
+      opened.value.close();
     }
-    opened.value.close();
-  });
+  }, 30_000);
 
   it('a clip partially outside the page is intersected; a clip fully outside refuses corrupt', async () => {
     const engine = newEngine();
     const opened = await engine.open(archESheet());
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
-    const part = await opened.value.renderRegion(1, { x: -100, y: -50, width: 300, height: 200 }, 1);
-    expect(part.ok).toBe(true);
-    if (part.ok) expect(part.value.region).toEqual({ x: 0, y: 0, width: 200, height: 150 });
-    const out = await opened.value.renderRegion(1, { x: 5000, y: 0, width: 100, height: 100 }, 1);
-    expect(out.ok).toBe(false);
-    if (!out.ok) expect(out.code).toBe('corrupt');
-    opened.value.close();
-  });
+    try {
+      const part = await opened.value.renderRegion(1, { x: -100, y: -50, width: 300, height: 200 }, 1);
+      expect(part.ok).toBe(true);
+      if (part.ok) expect(part.value.region).toEqual({ x: 0, y: 0, width: 200, height: 150 });
+      const out = await opened.value.renderRegion(1, { x: 5000, y: 0, width: 100, height: 100 }, 1);
+      expect(out.ok).toBe(false);
+      if (!out.ok) expect(out.code).toBe('corrupt');
+    } finally {
+      opened.value.close();
+    }
+  }, 30_000);
 });
 
 // ------------------------------------------------------------- class H: deadline + recovery
-describe('H: hard deadline behaviour (adapter, in-process worker)', () => {
-  // In Node the pdfjs fake worker renders IN-PROCESS and its render loop
-  // never yields to the event loop (measured: zero timer ticks across a
-  // 121 s depth-17 render), so the wall bound itself is proven in the
-  // Chromium run (real dedicated worker, delivery evidence); here the
-  // typed refusal and post-refusal usability are pinned at depth 15.
-  it('the billion-laughs render ends in a typed deadline refusal and the engine stays usable', async () => {
-    const engine = newEngine();
+describe('H: hard deadline behaviour', () => {
+  // The WALL-CLOCK billion-laughs case — the real depth-15 render,
+  // refused by hard worker termination at ~5 s, the document answering
+  // afterwards on a fresh worker, a control rendering exactly — lives
+  // in the REAL-CHROMIUM harness (the F+H delivery's harness/chromium:
+  // Electron renderer, production createWorker path, real dedicated
+  // worker). That is its acceptance home: the hard terminate is a
+  // real-worker property. Its recorded evidence: typed 'deadline'
+  // refusals at 5,069 ms and 5,011 ms with fresh-worker recovery
+  // (fh-chromium-results.json, F+H delivery 2026-10-22).
+  //
+  // The case NO LONGER RUNS in this default suite (lead ruling,
+  // 2026-10-22, after PR #42 CI): in Node the pdfjs fake worker renders
+  // IN-PROCESS and its render loop never yields to the event loop
+  // (measured: zero timer ticks across a 121 s depth-17 render), so the
+  // watchdog can only fire between operator chunks — 17.2 s on an idle
+  // box, catastrophic on a loaded 2-core CI runner (240 s test timeout
+  // on Node 22; an assertion failure on Node 24), after which the still
+  // spinning render starved every later pdfjs test in the run. The leg
+  // below pins the SAME adapter behaviour — the hostile document opens,
+  // a render is refused as a typed 'deadline', the document still
+  // answers, the engine still renders a control — with the deadline
+  // driven by the injected operation clock, so the runaway render never
+  // starts in-process. Full assertions, zero starvation surface.
+  it('billion-laughs: a render whose time runs out is refused as a typed deadline and the engine stays usable', async () => {
+    let t = 0;
+    let jumped = false;
+    const jumpOnceFactory: UnderlayCanvasFactory = {
+      create(width: number, height: number): UnderlayCanvasSlot {
+        if (!jumped) { jumped = true; t = 60_000; } // the render's clock jumps past the 5 s deadline
+        return napiFactory.create(width, height);
+      },
+    };
+    const engine = newEngine({ canvasFactory: jumpOnceFactory, now: () => t });
     const opened = await engine.open(billionLaughs(15));
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
-    const t0 = Date.now();
-    const r = await opened.value.renderPage(1, 1);
-    const wallMs = Date.now() - t0;
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.code).toBe('deadline');
-    // The document still answers afterwards (fresh session re-parse).
-    const sized = await opened.value.pageSize(1);
-    expect(sized.ok).toBe(true);
-    opened.value.close();
+    try {
+      const r = await opened.value.renderPage(1, 1);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.code).toBe('deadline');
+      // The document still answers afterwards.
+      const sized = await opened.value.pageSize(1);
+      expect(sized.ok).toBe(true);
+    } finally {
+      opened.value.close();
+    }
     // And the engine opens + renders a control document.
+    t = 0;
     const control = await engine.open(docOf([{ w: 200, h: 200, content: '0 1 0 rg 20 20 160 160 re f', resources: '' }]));
     expect(control.ok).toBe(true);
     if (!control.ok) return;
-    const cr = await control.value.renderPage(1, 1);
-    expect(cr.ok).toBe(true);
-    control.value.close();
-    console.log(`FH-H depth15 renderPage wall=${wallMs}ms (in-process worker; wall bound proven in Chromium)`);
-  }, 240_000);
+    try {
+      const cr = await control.value.renderPage(1, 1);
+      expect(cr.ok).toBe(true);
+    } finally {
+      control.value.close();
+    }
+  }, 30_000);
 });
 
 // ------------------------------------------------------------- display service tile wiring

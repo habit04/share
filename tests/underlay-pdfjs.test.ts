@@ -10,6 +10,13 @@ import { DEFAULT_UNDERLAY_CAPS } from '../src/io/underlay-adapter';
 // malformed-PDF corpus: every case is a typed refusal or a bounded
 // render — never a throw-through, never a cap breach. Deterministic, no
 // network: pdfjs is fed byte arrays only.
+//
+// CI hygiene (lead ruling, 2026-10-22, after PR #42): every test in this
+// file gets a CI-suited per-test timeout (30 s — the repo default is
+// 5 s, too tight for pdfjs work on a loaded 2-core runner) and creates
+// AND destroys its own document/loading task: a document a test opens
+// is closed in a finally, so no session or worker outlives its test and
+// no pdfjs state is shared across tests.
 
 const WORKER_SRC = new URL('../node_modules/pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).href;
 
@@ -82,46 +89,55 @@ describe('pdfjs adapter: well-formed input', () => {
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
     const doc = opened.value;
-    expect(doc.pageCount).toBe(1);
-    const size = await doc.pageSize(1);
-    expect(size).toEqual({ ok: true, value: { width: 200, height: 100 } });
-    const raster = await doc.renderPage(1, 1);
-    expect(raster.ok).toBe(true);
-    if (raster.ok) {
-      expect(raster.value.width).toBe(200);
-      expect(raster.value.height).toBe(100);
-      expect(raster.value.pageSize).toEqual({ width: 200, height: 100 });
+    try {
+      expect(doc.pageCount).toBe(1);
+      const size = await doc.pageSize(1);
+      expect(size).toEqual({ ok: true, value: { width: 200, height: 100 } });
+      const raster = await doc.renderPage(1, 1);
+      expect(raster.ok).toBe(true);
+      if (raster.ok) {
+        expect(raster.value.width).toBe(200);
+        expect(raster.value.height).toBe(100);
+        expect(raster.value.pageSize).toEqual({ width: 200, height: 100 });
+      }
+      expect(calls.length).toBeGreaterThan(0); // the page's paint ops reached the canvas context
+      const outOfRange = await doc.pageSize(2);
+      expect(outOfRange.ok).toBe(false);
+    } finally {
+      doc.close();
     }
-    expect(calls.length).toBeGreaterThan(0); // the page's paint ops reached the canvas context
-    const outOfRange = await doc.pageSize(2);
-    expect(outOfRange.ok).toBe(false);
-    doc.close();
-  });
+  }, 30_000);
 });
 
 describe('pdfjs adapter: malformed-PDF corpus (typed refusal or bounded render, never a throw)', () => {
   it('truncated file', async () => {
     const bytes = buildPdf().slice(0, Math.floor(buildPdf().length * 0.4));
     const r = await engine().open(bytes);
-    if (r.ok) {
-      expect(r.value.pageCount).toBeLessThanOrEqual(DEFAULT_UNDERLAY_CAPS.maxPages);
-      r.value.close();
-    } else {
-      expect(r.code).toBe('corrupt');
+    try {
+      if (r.ok) {
+        expect(r.value.pageCount).toBeLessThanOrEqual(DEFAULT_UNDERLAY_CAPS.maxPages);
+      } else {
+        expect(r.code).toBe('corrupt');
+      }
+    } finally {
+      if (r.ok) r.value.close();
     }
-  });
+  }, 30_000);
 
   it('bad xref (offsets zeroed)', async () => {
     const text = new TextDecoder().decode(buildPdf()).replace(/\d{10} 00000 n/g, '0000000000 00000 n');
     const r = await engine().open(new TextEncoder().encode(text));
-    if (r.ok) {
-      const raster = await r.value.renderPage(1, 1);
-      expect(raster.ok).toBe(true); // pdfjs rebuilt the xref: a bounded render
-      r.value.close();
-    } else {
-      expect(r.code).toBe('corrupt');
+    try {
+      if (r.ok) {
+        const raster = await r.value.renderPage(1, 1);
+        expect(raster.ok).toBe(true); // pdfjs rebuilt the xref: a bounded render
+      } else {
+        expect(r.code).toBe('corrupt');
+      }
+    } finally {
+      if (r.ok) r.value.close();
     }
-  });
+  }, 30_000);
 
   it('encrypted without a password: corrupt refusal naming the password', async () => {
     const r = await engine().open(buildPdf({ encrypt: true }));
@@ -130,28 +146,31 @@ describe('pdfjs adapter: malformed-PDF corpus (typed refusal or bounded render, 
       expect(r.code).toBe('corrupt');
       expect(r.reason).toMatch(/password|encrypt/i);
     }
-  });
+  }, 30_000);
 
   it('non-PDF bytes: corrupt refusal', async () => {
     const r = await engine().open(new TextEncoder().encode('this is not a pdf at all, just text'));
     expect(r).toMatchObject({ ok: false, code: 'corrupt' });
-  });
+  }, 30_000);
 
   it('absurd page-count claim: refused by the page cap or opened with the real count — never over the cap', async () => {
     const r = await engine().open(buildPdf({ countOverride: 99_999_999 }));
-    if (r.ok) {
-      expect(r.value.pageCount).toBeLessThanOrEqual(DEFAULT_UNDERLAY_CAPS.maxPages);
-      r.value.close();
-    } else {
-      expect(['too-many-pages', 'corrupt']).toContain(r.code);
+    try {
+      if (r.ok) {
+        expect(r.value.pageCount).toBeLessThanOrEqual(DEFAULT_UNDERLAY_CAPS.maxPages);
+      } else {
+        expect(['too-many-pages', 'corrupt']).toContain(r.code);
+      }
+    } finally {
+      if (r.ok) r.value.close();
     }
-  });
+  }, 30_000);
 
   it('zero-page document: typed refusal, not an empty success', async () => {
     const r = await engine().open(buildPdf({ pages: 0 }));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('corrupt');
-  });
+  }, 30_000);
 });
 
 describe('pdfjs adapter: C5 caps enforced in the adapter', () => {
@@ -161,23 +180,26 @@ describe('pdfjs adapter: C5 caps enforced in the adapter', () => {
     big.set(small);
     const r = await engine().open(big);
     expect(r).toMatchObject({ ok: false, code: 'too-large' });
-  });
+  }, 30_000);
 
   it('a real page count over 10,000 refuses (too-many-pages)', async () => {
     const r = await engine().open(buildPdf({ pages: 10_001 }));
     expect(r.ok).toBe(false);
     if (!r.ok) expect(['too-many-pages', 'corrupt']).toContain(r.code);
-  });
+  }, 30_000);
 
   it('a render whose pixels exceed the 8 MiB per-page cap refuses before rendering (scan-limit)', async () => {
     const opened = await engine().open(buildPdf());
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
-    // 200x100pt at scale 11 = 2200x1100 px x 4 B = 9.68 MB > 8 MiB.
-    const r = await opened.value.renderPage(1, 11);
-    expect(r).toMatchObject({ ok: false, code: 'scan-limit' });
-    opened.value.close();
-  });
+    try {
+      // 200x100pt at scale 11 = 2200x1100 px x 4 B = 9.68 MB > 8 MiB.
+      const r = await opened.value.renderPage(1, 11);
+      expect(r).toMatchObject({ ok: false, code: 'scan-limit' });
+    } finally {
+      opened.value.close();
+    }
+  }, 30_000);
 
   it('the per-operation deadline refuses (deadline) when the clock runs out mid-render', async () => {
     let t = 0;
@@ -191,10 +213,13 @@ describe('pdfjs adapter: C5 caps enforced in the adapter', () => {
     const opened = await e.open(buildPdf());
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
-    const r = await opened.value.renderPage(1, 1);
-    expect(r).toMatchObject({ ok: false, code: 'deadline' });
-    opened.value.close();
-  });
+    try {
+      const r = await opened.value.renderPage(1, 1);
+      expect(r).toMatchObject({ ok: false, code: 'deadline' });
+    } finally {
+      opened.value.close();
+    }
+  }, 30_000);
 
   it('a pre-aborted signal refuses (cancelled) at open and at render', async () => {
     const ac = new AbortController();
@@ -204,17 +229,23 @@ describe('pdfjs adapter: C5 caps enforced in the adapter', () => {
     const opened = await engine().open(buildPdf());
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
-    const rr = await opened.value.renderPage(1, 1, { signal: ac.signal });
-    expect(rr).toMatchObject({ ok: false, code: 'cancelled' });
-    opened.value.close();
-  });
+    try {
+      const rr = await opened.value.renderPage(1, 1, { signal: ac.signal });
+      expect(rr).toMatchObject({ ok: false, code: 'cancelled' });
+    } finally {
+      opened.value.close();
+    }
+  }, 30_000);
 
   it('a non-finite or non-positive scale refuses instead of rendering', async () => {
     const opened = await engine().open(buildPdf());
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
-    expect((await opened.value.renderPage(1, 0)).ok).toBe(false);
-    expect((await opened.value.renderPage(1, Number.NaN)).ok).toBe(false);
-    opened.value.close();
-  });
+    try {
+      expect((await opened.value.renderPage(1, 0)).ok).toBe(false);
+      expect((await opened.value.renderPage(1, Number.NaN)).ok).toBe(false);
+    } finally {
+      opened.value.close();
+    }
+  }, 30_000);
 });
