@@ -10,7 +10,7 @@ import { findPattern } from '../../core/hatch';
 import * as g from '../../core/geometry';
 import type { WriteExtras } from './write-core';
 import { textStyleOf } from '../encoding';
-import { writeLeader, writeMLeader, writeImage, writeAcadTable, writeMText, writeDimension, tableDxfForm } from './write-annotations';
+import { writeLeader, writeMLeader, writeImage, writeAcadTable, writeUnderlay, writeMText, writeDimension, tableDxfForm } from './write-annotations';
 
 import type { AttributeDefExt } from '../../electrical/symbol-builder-core';
 import { attdefFlags } from '../../electrical/symbol-builder-core';
@@ -244,6 +244,9 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
       break;
     case 'image':
       writeImage(w, e, owner, extras ?? emptyExtras());
+      break;
+    case 'underlay':
+      writeUnderlay(w, e, owner, extras ?? emptyExtras());
       break;
     case 'table': {
       const picture = extras?.tableBlocks.get(e);

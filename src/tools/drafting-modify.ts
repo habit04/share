@@ -463,6 +463,7 @@ export function stretchEntity(e: Entity, box: Bounds, d: Point): Entity {
       return { ...e, vertices: e.vertices.map(mv), ...(e.textPosition ? { textPosition: mv(e.textPosition) } : {}) };
     case 'table':
     case 'image':
+    case 'underlay':
       return inside(e.position) ? translateEntity(e, d) : e;
   }
 }

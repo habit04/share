@@ -29,6 +29,7 @@ import {
   tableParts,
   imageParts,
   imageBoundary,
+  underlayParts,
   INFINITE_LENGTH,
   inheritedColor,
 } from '../core/entities';
@@ -612,6 +613,12 @@ class PageWriter {
         break;
       case 'image':
         this.image(e, parent, view);
+        break;
+      case 'underlay':
+        // The vector plot consumes the generated frame parts — the same
+        // parts bounds and selection use (underlayParts) — never decoded
+        // page content; a placed reference plots as its frame.
+        this.parts(underlayParts(e), e, parent, view);
         break;
       case 'point': {
         const p = this.P(e.position);

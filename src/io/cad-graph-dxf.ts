@@ -1119,7 +1119,7 @@ export function attachDxfCadGraph(state: DrawingState, pairs: readonly Pair[], o
   const metadataIds = new Set<string>();
   const byId = new Map(nodes.map(node => [node.id, node]));
   for (const node of nodes) {
-    if (node.anchor?.kind === 'entity' && (node.groups.some(([code]) => code === 102) || hasRetainedXdata(node) || node.references?.some(ref => ref.role !== 'owner' && ref.kind !== 'arbitrary' && (node.groups[ref.groupIndex]![0] === 1005 || !['DIMENSION', 'LEADER', 'MULTILEADER', 'MLEADER', 'ACAD_TABLE', 'IMAGE'].includes(node.type))))) metadataIds.add(node.anchor.id);
+    if (node.anchor?.kind === 'entity' && (node.groups.some(([code]) => code === 102) || hasRetainedXdata(node) || node.references?.some(ref => ref.role !== 'owner' && ref.kind !== 'arbitrary' && (node.groups[ref.groupIndex]![0] === 1005 || !['DIMENSION', 'LEADER', 'MULTILEADER', 'MLEADER', 'ACAD_TABLE', 'IMAGE', 'PDFUNDERLAY', 'DWFUNDERLAY', 'DGNUNDERLAY'].includes(node.type))))) metadataIds.add(node.anchor.id);
     if (node.section === 'OBJECTS') for (const ref of node.references ?? []) if (ref.target && ref.role !== 'owner') {
       const target = byId.get(ref.target);
       if (target?.anchor?.kind === 'entity') metadataIds.add(target.anchor.id);
@@ -1164,6 +1164,12 @@ function logicalKeys(records: readonly RecordData[]): Map<RecordData, string> {
     else if (record.type === 'LAYOUT') keys.set(record, JSON.stringify(['layout', layoutName(record).toUpperCase()]));
     else if (record.handle && paths.has(record.handle)) keys.set(record, JSON.stringify(['dictionary', ...paths.get(record.handle)!]));
     else if (record.type === 'IMAGEDEF') keys.set(record, JSON.stringify(['image', identifierValue(record, 1)]));
+    // RULING-P28 C6: an underlay *DEFINITION dedupes on kind + stored path
+    // (group 1) — the IMAGEDEF key analogue. In a graph-carrying state the
+    // model/codec is authoritative for the modelled definition content;
+    // the retained node contributes only unmodelled extras through the
+    // merge, so retained groups are neither doubled nor lost.
+    else if (record.type === 'PDFDEFINITION' || record.type === 'DWFDEFINITION' || record.type === 'DGNDEFINITION') keys.set(record, JSON.stringify(['underlay', record.type, identifierValue(record, 1)]));
   }
   for (const record of records) if (record.type === 'ENDBLK') {
     const owner = byHandle.get(value(record, 330));
@@ -1591,7 +1597,7 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     const provenClip = sourceClip && clipPointers.length === 1
       && node.references?.some(ref => ref.target === sourceClip.id && node.groups[ref.groupIndex]?.[0] === 340
         && node.groups[ref.groupIndex]![1].trim() === clipPointers[0]);
-    const rebuilt = liveComplex ? complexCodes : node.type === 'LAYER' ? new Set([390]) : node.type === 'DIMSTYLE' ? new Set([340, 342, 343, 344]) : node.type === 'LEADER' ? new Set([340]) : node.type === 'VIEWPORT' ? new Set(provenClip ? [331, 340] : [331]) : ['MULTILEADER', 'MLEADER', 'ACAD_TABLE', 'IMAGE'].includes(node.type) ? new Set([340, 341, 342, 343, 344, 360]) : new Set<number>();
+    const rebuilt = liveComplex ? complexCodes : node.type === 'LAYER' ? new Set([390]) : node.type === 'DIMSTYLE' ? new Set([340, 342, 343, 344]) : node.type === 'LEADER' ? new Set([340]) : ['PDFUNDERLAY', 'DWFUNDERLAY', 'DGNUNDERLAY'].includes(node.type) ? new Set([340]) : node.type === 'VIEWPORT' ? new Set(provenClip ? [331, 340] : [331]) : ['MULTILEADER', 'MLEADER', 'ACAD_TABLE', 'IMAGE'].includes(node.type) ? new Set([340, 341, 342, 343, 344, 360]) : new Set<number>();
     let nesting = 0, selectedApp: string | undefined, keepHeader = false, layoutSubclass = false, retainedLayoutBlock = false;
     const existingVariables = new Set(record.groups.filter(([code]) => code === 9).map(([, name]) => name));
     node.groups.forEach(([code, raw], index) => {

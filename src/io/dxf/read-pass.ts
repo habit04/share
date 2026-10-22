@@ -29,7 +29,7 @@ import { hatchGradientRenderProblem, hatchGradientExportProblem } from '../../co
 import { POLYFACE_UNSUPPORTED_REASON, payloadText, native3dObject } from './mesh3d-read';
 
 /** Entity types the reader converts (anything else is reported, or kept raw when safe). */
-const READ_KINDS = new Set(['LINE', 'CIRCLE', 'ARC', 'LWPOLYLINE', 'POLYLINE', 'SOLID', 'TRACE', 'TEXT', 'MTEXT', 'ELLIPSE', 'POINT', 'XLINE', 'RAY', 'DIMENSION', 'SPLINE', 'HATCH', 'LEADER', 'MULTILEADER', 'MLEADER', 'IMAGE', 'ACAD_TABLE', 'INSERT']);
+const READ_KINDS = new Set(['LINE', 'CIRCLE', 'ARC', 'LWPOLYLINE', 'POLYLINE', 'SOLID', 'TRACE', 'TEXT', 'MTEXT', 'ELLIPSE', 'POINT', 'XLINE', 'RAY', 'DIMENSION', 'SPLINE', 'HATCH', 'LEADER', 'MULTILEADER', 'MLEADER', 'IMAGE', 'ACAD_TABLE', 'INSERT', 'PDFUNDERLAY', 'DWFUNDERLAY', 'DGNUNDERLAY']);
 
 /** Records folded into the preceding entity (or block / layout structure). */
 const FOLLOWER_KINDS = new Set(['ATTRIB', 'VERTEX', 'SEQEND', 'ENDBLK', 'BLOCK', 'VIEWPORT']);
@@ -161,9 +161,6 @@ const UNSUPPORTED_REASONS: Record<string, string> = {
   HELIX: 'helixes are not supported',
   MESH: 'meshes are not supported',
   SURFACE: 'surfaces are not supported',
-  PDFUNDERLAY: 'PDF underlays are not supported',
-  DWFUNDERLAY: 'DWF underlays are not supported',
-  DGNUNDERLAY: 'DGN underlays are not supported',
 };
 
 /** A raw record of an unknown entity, or null when it cannot be kept safely. */
