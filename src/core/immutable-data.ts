@@ -13,18 +13,30 @@
  * passed as the root of THIS call, at depth 0. A custom prototype, an accessor, or a
  * Uint8Array anywhere else — inside any other field, or inside a nested object that merely
  * shares an exempt name — still throws exactly as without the exemption. With no exemption
- * argument the behaviour is byte-for-byte the original seal, for every caller.
+ * argument the behaviour is byte-for-byte the original seal, for every caller. A root sealed
+ * WITH an exemption is recorded as a partial seal in a separate set (never the unconditional
+ * sealed fast-path set), so a later strict seal re-walks and fully certifies it (PR #41 (3)).
  */
 const sealed = new WeakSet<object>();
+/**
+ * Roots sealed WITH root-key exemptions (PR #41 (3)): such a seal is
+ * PARTIAL — it certifies "sealed EXCEPT the exempt subtrees" — and the
+ * root is recorded HERE, never in the unconditional `sealed` fast-path
+ * set, so a later strict seal (no exemption argument) re-walks it and
+ * certifies the previously exempt subtrees like everything else. A
+ * partial root completed inside a later walk WITHOUT the exemption is
+ * promoted into `sealed` at that frame's completion.
+ */
+const partiallySealed = new WeakSet<object>();
 
 export function isImmutableData(value: object): boolean {
-  return sealed.has(value);
+  return sealed.has(value) || partiallySealed.has(value);
 }
 
 /** Iterative and sharing-aware: new arrays are visited once; unchanged geometry is skipped. */
 export function sealImmutableData<T>(value: T, exemptRootKeys?: ReadonlySet<PropertyKey>): T {
   if (!value || typeof value !== 'object' || sealed.has(value)) return value;
-  type Frame = { value: object; keys: PropertyKey[] | null; index: number; exempt?: ReadonlySet<PropertyKey> };
+  type Frame = { value: object; keys: PropertyKey[] | null; index: number; exempt?: ReadonlySet<PropertyKey>; partial?: boolean };
   const pending: Frame[] = [];
   const active = new WeakSet<object>();
   const enter = (object: object, isRoot = false): void => {
@@ -35,14 +47,28 @@ export function sealImmutableData<T>(value: T, exemptRootKeys?: ReadonlySet<Prop
     }
     Object.freeze(object);
     active.add(object);
-    pending.push({ value: object, keys: Array.isArray(object) ? null : Reflect.ownKeys(object), index: 0, exempt: isRoot ? exemptRootKeys : undefined });
+    pending.push({
+      value: object,
+      keys: Array.isArray(object) ? null : Reflect.ownKeys(object),
+      index: 0,
+      exempt: isRoot ? exemptRootKeys : undefined,
+      partial: isRoot && exemptRootKeys !== undefined ? true : undefined,
+    });
   };
   enter(value, true);
   while (pending.length) {
     const frame = pending[pending.length - 1]!;
     const length = frame.keys?.length ?? (frame.value as unknown[]).length;
     if (frame.index >= length) {
-      sealed.add(frame.value);
+      // Only the root frame of an exempting call completes partially;
+      // every other completed object was walked in full and is promoted
+      // into the unconditional set (leaving the partial set behind).
+      if (frame.partial) {
+        partiallySealed.add(frame.value);
+      } else {
+        sealed.add(frame.value);
+        partiallySealed.delete(frame.value);
+      }
       active.delete(frame.value);
       pending.pop();
       continue;
