@@ -80,6 +80,34 @@ describe('P25 Fable F3: nested workers are refused in the isolated realm', () =>
   }, 60_000);
 });
 
+/** Storage surfaces the Fable INFO item names, probed from plugin code. */
+const STORAGE_PROBE = `
+  const out = {};
+  out.indexedDBType = typeof indexedDB;
+  out.indexedDBLocked = Object.prototype.hasOwnProperty.call(globalThis, 'indexedDB');
+  out.cachesType = typeof caches;
+  out.cachesLocked = Object.prototype.hasOwnProperty.call(globalThis, 'caches');
+  out.selectionCount = (await jcad.document.selection()).length;
+  return out;
+`;
+
+describe('P25 Fable INFO: realm storage surfaces are stubbed away', () => {
+  it('indexedDB and caches are locked to undefined at handshake; the realm still loads and RPCs', async () => {
+    const ed = makeEditor();
+    const s = session(ed, 'csp-storage-probe', ['document.read']);
+    const report = (await s.loadModule(moduleUrlForBody(STORAGE_PROBE))) as Record<string, unknown>;
+    // Unusable in the realm (in a browser worker these are real objects
+    // on the app origin; the lock shadows them with undefined)…
+    expect(report.indexedDBType).toBe('undefined');
+    expect(report.cachesType).toBe('undefined');
+    // …and locked by the bootstrap, not merely absent in this realm:
+    // hardenGlobals defines both as own properties of the realm global.
+    expect(report.indexedDBLocked).toBe(true);
+    expect(report.cachesLocked).toBe(true);
+    expect(report.selectionCount).toBe(0); // a document.read RPC round trip after stubbing
+  }, 60_000);
+});
+
 describe('P25 CSP ruling: string evaluation in the isolated realm', () => {
   it('eval and new Function are refused in the plugin context (realm globals)', async () => {
     const ed = makeEditor();

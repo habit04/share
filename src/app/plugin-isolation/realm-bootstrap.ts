@@ -369,6 +369,13 @@ export function realmBootstrapMain(importModule?: (url: string) => Promise<unkno
     // transport machinery is untouched and the realm still loads.
     lock('Worker', denyCall('Worker'));
     lock('SharedWorker', denyCall('SharedWorker'));
+    // Fable INFO: storage surfaces on the app origin. The app does not
+    // use IndexedDB or the Cache API from the realm today; locking both
+    // to undefined now (the process/require treatment above) closes the
+    // surface before any future app adoption of either API can silently
+    // become plugin-reachable storage.
+    lock('indexedDB', undefined);
+    lock('caches', undefined);
   }
 
   // ---- message pump
