@@ -52,7 +52,7 @@ describe('UnderlayEntity consumers', () => {
     expect(entityBounds(e, lookup)).toEqual({ min: { x: 10, y: 20 }, max: { x: 12, y: 23 } });
     expect(distanceToEntity({ x: 11, y: 21 }, e, lookup)).toBe(0);
     expect(distanceToEntity({ x: 20, y: 21 }, e, lookup)).toBeGreaterThan(0);
-    expect(gripPoints(e, lookup)).toHaveLength(4);
+    expect(gripPoints(e)).toHaveLength(4);
     expect(snapCandidates(e, lookup)).toHaveLength(5);
     expect(entitySegments(e, lookup).length).toBeGreaterThanOrEqual(6);
     const moved = moveGrip(e, 0, { x: 0, y: 0 }) as UnderlayEntity;
