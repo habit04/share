@@ -525,7 +525,12 @@ export function writeMLeader(w: Writer, e: LeaderEntity, owner: string): void {
     // Slice 2 trailing block data: the record named again (344), the scale
     // point (10), the rotation (43), then one entry per attribute value —
     // ATTDEF handle of this file (330), definition index (177), width (44,
-    // when carried) and the value text (302).
+    // when carried) and the value text (302). R-N1 (PR #43 fix 3): the 177
+    // is AutoCAD's 1-BASED ordinal — fixture F carries 1 and 2 for PART and
+    // REV — while the model index is the 0-based definition position, so
+    // the writer emits index + 1. (Files written before this fix carry the
+    // 0-based index WITH the 330 handles, and the reader's handle path
+    // corroborates either numbering, so they still read correctly.)
     w.pair(344, blockRecordHandle!);
     w.pair(10, block.scale.x);
     w.pair(20, block.scale.y);
@@ -533,7 +538,7 @@ export function writeMLeader(w: Writer, e: LeaderEntity, owner: string): void {
     w.pair(43, block.rotation);
     block.attributes.forEach((a, i) => {
       w.pair(330, attdefHandles[i]!);
-      w.pair(177, a.index);
+      w.pair(177, a.index + 1);
       if (a.width !== undefined) w.pair(44, a.width);
       w.pair(302, a.value);
     });

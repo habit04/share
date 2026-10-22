@@ -32,7 +32,9 @@ export type MLeaderContentType = 'mtext' | 'none' | 'block';
 
 /** One attribute value of a block-content multileader (slice 2). */
 export interface MLeaderBlockAttribute {
-  /** Index into the content block's `BlockDef.attributes` (trailing group 177). */
+  /** Index into the content block's `BlockDef.attributes` — the 0-based
+   *  definition position. The DXF trailing group 177 carries it as
+   *  AutoCAD's 1-based ordinal (index + 1) on write (R-N1). */
   readonly index: number;
   /** The definition tag at that index, resolved on import (the value's identity in-session). */
   readonly tag: string;

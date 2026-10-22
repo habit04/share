@@ -725,8 +725,15 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
             index = p;
           }
         } else {
-          defAttr = pa.index !== undefined && pa.index >= 0 ? def.attributes[pa.index] : undefined;
-          index = pa.index;
+          // No resolvable handle: the 177 alone is the key, read as
+          // AutoCAD's 1-BASED ordinal (R-N1) — position = index - 1. A 0
+          // is not a valid 1-based ordinal; it is tolerated as the first
+          // position (hand-made 0-based files). JCad's own files always
+          // carry the 330 handle, so the either-numbering handle path
+          // above is what reads them, old (0-based) and new alike.
+          const position = pa.index !== undefined && pa.index >= 0 ? (pa.index > 0 ? pa.index - 1 : 0) : undefined;
+          defAttr = position !== undefined ? def.attributes[position] : undefined;
+          index = position;
         }
         if (!defAttr || index === undefined) {
           ok = false;
