@@ -18,6 +18,20 @@ import { payloadText, polyfaceStructureProblem, native3dObject } from './dxf/mes
 import { decodeDimensionPayload } from '../model3d/file-format';
 
 interface RecordData { type: string; section: string; groups: CadGroup[]; handle?: string; line?: number }
+/**
+ * Every DXF group code that carries a handle reference — the ONE source of
+ * truth for the merge's reference scans (the roundtrip rehome repoint, the
+ * regeneration keep-scan, the post-regeneration validation). Derived from
+ * the reader's own cadReferenceKind() table (P22 PR #39 re-review 2, lead
+ * ruling: no hand-maintained subset — Codex hit 345, 349, 390 and 480,
+ * which the old subsets missed), plus the soft/hard owner codes 330/360
+ * (already inside cadReferenceKind's ranges, named for emphasis).
+ */
+const HANDLE_REFERENCE_CODES: ReadonlySet<number> = (() => {
+  const codes = new Set<number>([330, 360]);
+  for (let code = 0; code <= 1005; code++) if (cadReferenceKind(code)) codes.add(code);
+  return codes;
+})();
 /** The $ACADVER value inside a header group list (the group after its 9-group). */
 function headerVersionOf(groups: readonly CadGroup[]): string | undefined {
   const at = groups.findIndex(([code, raw]) => code === 9 && raw.trim() === '$ACADVER');
@@ -1115,7 +1129,7 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       const handle = canon(value(record, 5));
       if (handle && !finalByHandle.has(handle)) finalByHandle.set(handle, record);
     }
-    const referenceCodes = new Set([330, 340, 341, 342, 343, 344, 350, 360]);
+    const referenceCodes = HANDLE_REFERENCE_CODES;
     const rehomed = new Set<string>();
     for (const node of graph.nodes) {
       if (node.type !== 'ACAD_TABLE' || node.anchor?.kind !== 'entity') continue;
@@ -1159,7 +1173,7 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   // groups exactly, so the round trip stays a byte fixed point.
   // P22 PR #39 re-review (Codex P1 pair; lead ruling): the regeneration is
   // SURGICAL — it touches only the recognized derived fields. A CELL_VALUE
-  // rewrite replaces only the derived value groups (the leading run of
+  // rewrite replaces only the derived value groups (the run of
   // 93/90/1/2/3/94/300/302/303/304 after the identity head) and preserves
   // everything else byte-verbatim in position (XDATA 1001..., any
   // unrecognized group); the ACDBDATATABLE rewrite updates only the
@@ -1168,6 +1182,12 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   // still referenced by a surviving record is KEPT, detached from the
   // chain, never deleted into a dangling pointer; after regeneration the
   // final reference set is validated before assembly (below).
+  // P22 PR #39 re-review 2 (Codex residual P1 variants; lead ruling): the
+  // reference scans (rehome, keep-scan, validation) share the ONE
+  // cadReferenceKind-derived code set HANDLE_REFERENCE_CODES, and an
+  // unrecognized layout is parsed tolerantly (999 comments and unknown
+  // groups skipped in place) — never rebuilt wholesale; derived values
+  // that cannot be located at all refuse the save atomically.
   let roundtripRegenerated = false;
   {
     const header = generated.find(record => record.type === 'HEADER');
@@ -1234,70 +1254,75 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
             else if (segment === 6 && code === 360) { const handle = canon(raw); if (handle) retainedHandles.push(handle); }
           }
           const cellHandles = cells.map((_, index) => retainedHandles[index] ?? allocate());
-          // The datatable rewrite is surgical (re-review rule 1): only the
-          // 70/90/91 counts triple and the value runs of the four known
-          // column segments (92 = 2 -> 40 content sums, the first 92 = 1 ->
-          // 93 alignment flags, the second 92 = 1 -> 93 zeros, 92 = 6 ->
-          // 360 cell handles) are regenerated. The identity head, the
-          // segment name groups and every other group — unrecognized
-          // segments and planted groups such as XDATA included — are
-          // preserved byte-verbatim in their original positions. A retained
-          // body in an unrecognized shape (no counts triple, or no known
-          // segment at all) falls back to the wholesale rebuild after the
-          // identity head, exactly as the generating writer emits it.
-          const surgicalBody = ((): CadGroup[] | null => {
+          // The datatable rewrite is surgical (re-review rule 1) AND
+          // tolerant (re-review 2 rule 2): only the 70/90/91 counts and
+          // the value runs of the four known column segments (92 = 2 ->
+          // 40 content sums, the first 92 = 1 -> 93 alignment flags, the
+          // second 92 = 1 -> 93 zeros, 92 = 6 -> 360 cell handles) are
+          // regenerated. Everything else — the identity head, segment
+          // name groups, unrecognized segments, planted groups such as
+          // XDATA, and 999 comments or unknown groups sitting between the
+          // counts or inside a segment's preamble — is preserved
+          // byte-verbatim in its original position: the parse skips them
+          // in place and still locates the derived values around them.
+          // There is NO wholesale-rebuild fallback: if the derived
+          // counts or any known segment's value run cannot be located at
+          // all, the save refuses atomically with an 'unsupported table
+          // data layout' error rather than replacing the whole body.
+          {
+            const unsupportedLayout = (): CadGraphError => new CadGraphError('dependency',
+              `Cannot save: unsupported table data layout — the retained ACDBDATATABLE ${dataHandle} does not carry its derived counts and column segments in a recognizable shape, so its contents cannot be regenerated in place.`);
             const headEnd = dataRecord.groups.findIndex(([code]) => code === 70);
-            if (headEnd < 0) return null;
+            if (headEnd < 0) throw unsupportedLayout();
             const body = dataRecord.groups.slice(headEnd);
-            if (body.length < 3 || body[0]![0] !== 70 || body[1]![0] !== 90 || body[2]![0] !== 91) return null;
-            const out: CadGroup[] = [...dataRecord.groups.slice(0, headEnd), [70, '2'], [90, '4'], [91, String(cells.length)]];
-            let index = 3, oneSegments = 0, sawSegment = false;
+            const out: CadGroup[] = [...dataRecord.groups.slice(0, headEnd), [70, '2']];
+            let counts90 = false, counts91 = false, segmentsBegun = false, sawSegment = false, oneSegments = 0;
+            let index = 1; // body[0] is the 70, already emitted (regenerated)
             while (index < body.length) {
               const group = body[index]!;
-              if (group[0] !== 92) { out.push(group); index += 1; continue; }
-              const type = Number(group[1]);
-              const valueCode = type === 2 ? 40 : type === 1 ? 93 : type === 6 ? 360 : undefined;
-              let cursor = index + 1;
-              const nameGroup = cursor < body.length && body[cursor]![0] === 2 ? body[cursor++]! : undefined;
-              let end = cursor;
-              if (valueCode !== undefined) while (end < body.length && body[end]![0] === valueCode) end += 1;
-              const slot = type === 2 ? 'sums' : type === 6 ? 'handles' : type === 1 && oneSegments === 0 ? 'flags' : type === 1 && oneSegments === 1 ? 'zeros' : undefined;
-              if (type === 1) oneSegments += 1;
-              if (slot === undefined) {
-                // Not a recognized derived segment: preserve it verbatim.
-                for (let at = index; at < Math.max(end, cursor); at += 1) out.push(body[at]!);
-                index = Math.max(end, cursor);
+              if (group[0] === 92) {
+                if (!counts90 || !counts91) throw unsupportedLayout();
+                segmentsBegun = true;
+                const type = Number(group[1]);
+                const valueCode = type === 2 ? 40 : type === 1 ? 93 : type === 6 ? 360 : undefined;
+                const slot = type === 2 ? 'sums' : type === 6 ? 'handles' : type === 1 && oneSegments === 0 ? 'flags' : type === 1 && oneSegments === 1 ? 'zeros' : undefined;
+                if (type === 1) oneSegments += 1;
+                out.push(group);
+                index += 1;
+                if (slot === undefined || valueCode === undefined) continue; // unrecognized segment: its groups pass through verbatim below
+                sawSegment = true;
+                // Segment preamble (the name group and any tolerated
+                // unknowns, e.g. a 999 between the header and its name or
+                // run) is preserved verbatim in place; then the old value
+                // run is located and replaced by the regenerated one.
+                while (index < body.length && body[index]![0] !== valueCode && body[index]![0] !== 92) { out.push(body[index]!); index += 1; }
+                while (index < body.length && body[index]![0] === valueCode) index += 1;
+                if (slot === 'sums') for (const cell of cells) out.push([40, String(tableCellContentSum(cell.content))]);
+                else if (slot === 'handles') for (const handle of cellHandles) out.push([360, handle]);
+                else if (slot === 'flags') for (const cell of cells) out.push([93, cell.alignmentOverride ? '1' : '0']);
+                else for (let at = 0; at < cells.length; at += 1) out.push([93, '0']);
                 continue;
               }
-              sawSegment = true;
+              if (!segmentsBegun && !counts90 && group[0] === 90) { out.push([90, '4']); counts90 = true; index += 1; continue; }
+              if (!segmentsBegun && !counts91 && group[0] === 91) { out.push([91, String(cells.length)]); counts91 = true; index += 1; continue; }
               out.push(group);
-              if (nameGroup) out.push(nameGroup);
-              if (slot === 'sums') for (const cell of cells) out.push([40, String(tableCellContentSum(cell.content))]);
-              else if (slot === 'handles') for (const handle of cellHandles) out.push([360, handle]);
-              else if (slot === 'flags') for (const cell of cells) out.push([93, cell.alignmentOverride ? '1' : '0']);
-              else for (let at = 0; at < cells.length; at += 1) out.push([93, '0']);
-              index = Math.max(end, cursor);
+              index += 1;
             }
-            return sawSegment ? out : null;
-          })();
-          if (surgicalBody) dataRecord.groups = surgicalBody;
-          else {
-            const headEnd = dataRecord.groups.findIndex(([code]) => code === 70);
-            const head = headEnd >= 0 ? dataRecord.groups.slice(0, headEnd) : dataRecord.groups.slice();
-            dataRecord.groups = [...head,
-              [70, '2'], [90, '4'], [91, String(cells.length)], [1, ''], [92, '2'], [2, ''],
-              ...cells.map((cell): CadGroup => [40, String(tableCellContentSum(cell.content))]),
-              [92, '1'], [2, ''], ...cells.map((cell): CadGroup => [93, cell.alignmentOverride ? '1' : '0']),
-              [92, '1'], [2, ''], ...cells.map((): CadGroup => [93, '0']),
-              [92, '6'], [2, ''], ...cellHandles.map((handle): CadGroup => [360, handle])];
+            if (!counts90 || !counts91 || !sawSegment) throw unsupportedLayout();
+            dataRecord.groups = out;
           }
           // Each CELL_VALUE record keeps its identity head (through its 280
-          // group) and gains regenerated value groups: only the leading
-          // run of derived value groups after the head is replaced —
-          // everything past it (XDATA 1001..., any unrecognized group) is
-          // preserved byte-verbatim in position (re-review rule 1). New
-          // cells get a new record on an allocated handle; surplus records
-          // are resolved after the loop (re-review rule 2).
+          // group) and gains regenerated value groups (re-review rule 1),
+          // parsed tolerantly (re-review 2 rule 2): the tail is walked
+          // once — the regenerated value groups are emitted as one block
+          // at the first derived group, old derived groups are dropped
+          // wherever they occur before the suffix (never replayed),
+          // unknown groups inside the derived region (a 999 comment, an
+          // unrecognized code) are kept byte-verbatim in their relative
+          // order, and everything from the first XDATA group (1001...) on
+          // is the preserved suffix, byte-verbatim. New cells get a new
+          // record on an allocated handle; surplus records are resolved
+          // after the loop (re-review rule 2).
           const DERIVED_VALUE_CODES = new Set([93, 90, 1, 2, 3, 94, 300, 302, 303, 304]);
           cells.forEach((cell, index) => {
             const valueGroups = tableRoundtripCellValueGroups(cell) as CadGroup[];
@@ -1306,9 +1331,18 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
               const cut = existing.groups.findIndex(([code]) => code === 280);
               const head = cut >= 0 ? existing.groups.slice(0, cut + 1) : existing.groups.slice();
               const tail = cut >= 0 ? existing.groups.slice(cut + 1) : [];
-              let split = 0;
-              while (split < tail.length && DERIVED_VALUE_CODES.has(tail[split]![0])) split += 1;
-              existing.groups = [...head, ...valueGroups, ...tail.slice(split)];
+              const out: CadGroup[] = [...head];
+              let emitted = false, at = 0;
+              while (at < tail.length && tail[at]![0] < 1000) {
+                const group = tail[at]!;
+                if (DERIVED_VALUE_CODES.has(group[0])) {
+                  if (!emitted) { out.push(...valueGroups); emitted = true; }
+                } else out.push(group);
+                at += 1;
+              }
+              if (!emitted) out.push(...valueGroups);
+              for (; at < tail.length; at += 1) out.push(tail[at]!);
+              existing.groups = out;
             } else {
               const record: RecordData = {
                 type: 'XRECORD', section: 'OBJECTS', handle: cellHandles[index]!,
@@ -1332,13 +1366,13 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
           // this point (retained records as replayed + model-writer
           // records + the regenerated chains; the bounded dictionary /
           // scale insertions below never reference table chains), reading
-          // groups with codes 330/340/341/342/343/344/350/360 — the
-          // reference set this module's rehome pass rewrites — with
+          // every group whose code HANDLE_REFERENCE_CODES carries — the
+          // cadReferenceKind-derived set (re-review 2 rule 1) — with
           // values canonicalized as handles. References from other
           // surplus candidates count only once the candidate is itself
           // kept (fixpoint), so a surplus-to-surplus reference cannot
           // resurrect a record no survivor points at.
-          const REFERENCE_SCAN_CODES = new Set([330, 340, 341, 342, 343, 344, 350, 360]);
+          const REFERENCE_SCAN_CODES = HANDLE_REFERENCE_CODES;
           const kept = new Set<RecordData>();
           let progressed = true;
           while (progressed) {
@@ -1453,16 +1487,18 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   }
   // P22 PR #39 re-review rule 3: when a roundtrip chain was regenerated,
   // the FINAL reference set must be closed before anything is emitted —
-  // every 330/340/350/360 target in the merged output is defined by some
-  // record's group 5 (or 105), the DXF null handle '0' excepted. A dangle
-  // fails the save here, atomically: no output is produced.
+  // every target of every reference code in HANDLE_REFERENCE_CODES (the
+  // cadReferenceKind-derived set, re-review 2 rule 1 — the same source of
+  // truth as the keep-scan above) in the merged output is defined by
+  // some record's group 5 (or 105), the DXF null handle '0' excepted. A
+  // dangle fails the save here, atomically: no output is produced.
   if (roundtripRegenerated) {
     const canonHandle = (raw: string): string | undefined => /^[0-9A-Fa-f]{1,16}$/.test(raw.trim()) ? canonicalCadHandle(raw.trim()) : undefined;
     const defined = new Set<string>();
     for (const record of generated) for (const [code, raw] of record.groups) if (code === 5 || code === 105) { const handle = canonHandle(raw); if (handle) defined.add(handle); }
     const dangling = new Map<string, string>();
     for (const record of generated) for (const [code, raw] of record.groups) {
-      if (code !== 330 && code !== 340 && code !== 350 && code !== 360) continue;
+      if (!HANDLE_REFERENCE_CODES.has(code)) continue;
       const handle = canonHandle(raw);
       if (handle && handle !== '0' && !defined.has(handle)) dangling.set(handle, record.type);
     }
