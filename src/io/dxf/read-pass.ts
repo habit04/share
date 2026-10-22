@@ -254,7 +254,7 @@ export function readEntities(objs: Obj[], ctx: ReadContext, keepRaw = false): En
       return null;
     }
     if (e.type === 'hatch' && e.associative) reportObj(ctx, o, 'simplified', 'associative hatch boundary links are not kept; its boundary geometry is kept and saved non-associative');
-    if (o.kind === 'ACAD_TABLE') reportObj(ctx, o, 'simplified', 'table cells, sizes and supported style defaults are kept; native table editing, formulas, style font names, advanced borders and fills are not modeled, and export uses an INSERT picture with JCAD_TABLE data');
+    if (o.kind === 'ACAD_TABLE') reportObj(ctx, o, 'simplified', 'table cells, sizes and supported style defaults are kept; formulas, style font names, advanced borders and fills are not modeled; DXF export writes a native ACAD_TABLE');
     if (e.type === 'hatch' && e.gradient) {
       const gradientProblem = hatchGradientRenderProblem(e.gradient);
       const exportProblem = hatchGradientExportProblem(e);

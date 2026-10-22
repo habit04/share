@@ -956,8 +956,9 @@ describe('r2000-nested-blocks-xref.dxf: nested INSERTs with ByBlock / ByLayer co
 /*
  * Survives: one native table (position, direction, row heights, column widths); cell text, the
  * merged title, formatted cell text, per-cell height and alignment overrides, the TABLESTYLE's
- * text heights, alignment and margins for the other cells; the *T1 picture is not kept as a block. Lost (matrix: "as INSERT + XDATA"): the table is written as an INSERT of an
- * anonymous block carrying the cells in JCAD_TABLE XDATA, not as ACAD_TABLE.
+ * text heights, alignment and margins for the other cells; the *T1 picture is not kept as a block.
+ * Since P22 the table is written back as a native ACAD_TABLE (with a generated *T picture
+ * block and a synthesized TABLESTYLE), no longer as an INSERT + JCAD_TABLE XDATA.
  */
 describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1032)', () => {
   const f = fixture('r2018-table.dxf');
@@ -974,14 +975,18 @@ describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1
       // original census predicate applied to the non-retained subset: the template's kept
       // furniture (SCALE, VISUALSTYLE, XRECORD, ...) no longer trips it, and no new unsupported
       // or simplified class can enter. The note is pinned to exactly one occurrence by the
-      // 'editing note exactly once' test below — an import-leg property: the round-trip report
-      // carries no ACAD_TABLE item (the written carrier returns as an INSERT kept item).
+      // 'editing note exactly once' test below, asserted on the import leg; the round-trip
+      // leg re-reads the natively written ACAD_TABLE and carries the same single note.
       const items = importReportOf(s)?.items ?? [];
-      const isEditingNote = (i: (typeof items)[number]) => i.type === 'ACAD_TABLE' && i.reason.includes('native table editing');
+      const isEditingNote = (i: (typeof items)[number]) => i.type === 'ACAD_TABLE' && i.reason.includes('DXF export writes a native ACAD_TABLE');
       expect(items.filter((i) => i.action === 'dropped' || (i.action === 'simplified' && !isEditingNote(i)))).toEqual([]);
       expect(items.every((i) => i.action === 'kept' || (i.type === 'STYLE' && i.action === 'unsupported') || isEditingNote(i))).toBe(true);
       expect(s.entities).toHaveLength(1);
-      expect(t).toMatchObject({ layer: 'TABLES', rotation: 0, rowHeights: [9.666666666666668, 12.33333333333333, 7, 7], columnWidths: [40, 25, 25] });
+      expect(t).toMatchObject({ layer: 'TABLES', rotation: 0, columnWidths: [40, 25, 25] });
+      // Row heights: the import leg carries the genuine file's exact doubles (checklist #8).
+      // The round-trip leg carries what P22's native write stores — group 141 at the writer's
+      // 10-decimal precision (the same precision table-native-dxf.test.ts pins via toFixed(10)).
+      expect(t.rowHeights).toEqual(_label === 'after import' ? [9.666666666666668, 12.33333333333333, 7, 7] : [9.6666666667, 12.3333333333, 7, 7]);
       closePt(t.position, 10, 200);
     });
 
@@ -1012,18 +1017,19 @@ describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1
 
   it('the import report carries the ACAD_TABLE editing note exactly once (census-predicate ruling, 2026-10-21)', () => {
     // The one sanctioned simplification of the genuine file: reading its native table reports
-    // once that native table editing is not modeled. Asserted on the import leg — the
-    // round-tripped state's report carries no ACAD_TABLE item at all (the written JCAD_TABLE
-    // carrier returns as an INSERT kept item), so the count is an import property.
-    const notes = (importReportOf(f.imported)?.items ?? []).filter((i) => i.type === 'ACAD_TABLE' && i.reason.includes('native table editing'));
+    // once that formulas, style font names, advanced borders and fills are not modeled.
+    // Asserted on the import leg, where the file carries exactly one table; the key phrase
+    // is P22's reader phrasing ('DXF export writes a native ACAD_TABLE').
+    const notes = (importReportOf(f.imported)?.items ?? []).filter((i) => i.type === 'ACAD_TABLE' && i.reason.includes('DXF export writes a native ACAD_TABLE'));
     expect(notes).toHaveLength(1);
     expect(notes[0]!.action).toBe('simplified');
   });
 
-  it('lost as the matrix says: written as an INSERT of an anonymous block with JCAD_TABLE XDATA, not as ACAD_TABLE', () => {
-    expect(records(f.written, 'ACAD_TABLE')).toHaveLength(0);
-    const insert = records(f.written, 'INSERT').find((r) => r.some(([c, v]) => c === 1001 && v === 'JCAD_TABLE'));
-    expect(group(insert, 2)).toMatch(/^\*U\d+$/);
+  it('written natively (P22): one ACAD_TABLE referencing its *T picture block, no JCAD_TABLE insert', () => {
+    expect(records(f.written, 'ACAD_TABLE')).toHaveLength(1);
+    const rec = records(f.written, 'ACAD_TABLE')[0]!;
+    expect(group(rec, 2)).toMatch(/^\*T\d+$/);
+    expect(records(f.written, 'INSERT').find((r) => r.some(([c, v]) => c === 1001 && v === 'JCAD_TABLE'))).toBeUndefined();
   });
 
   it('cells without an override take the TABLESTYLE text height, alignment and margins (title 5, header 3.5, data 2.5 top centre, margins 1.5)', () => {

@@ -30,13 +30,14 @@ import { writeRetainedSolid } from './model3d-carriers';
 import type { CadNode } from '../../core/cad-graph';
 import { dimStyleRecordPairs } from '../../core/dimension';
 import { writeEntityAnno, writeEntity } from './write-entities';
+import { tableStyleKey, tablePictureForm, tableRoundtripCells, writeTableRoundtrip } from './write-annotations';
 import { attdefFlags } from '../../electrical/symbol-builder-core';
 import { tableParts, dimensionParts } from '../../core/entities';
 import { entityMTextBackground } from '../../core/mtext-background';
 import { materializePolylineWidthFrames } from './polyline-width-blocks';
 import { LAYER_TRANSPARENCY_APP, transparencyToDxf, validColorName } from '../../core/appearance';
 import { namedCameraDisplayCenter, planarNamedCamera } from '../../core/named-view';
-import { annotationScaleRatio, graphAnnotationCarrier, preserveDxfCadGraph } from '../cad-graph-dxf';
+import { annotationScaleRatio, graphAnnotationCarrier, graphTableRoundtripCarriers, preserveDxfCadGraph } from '../cad-graph-dxf';
 
 /** Linetype names referenced anywhere in the drawing (layers, entities, block entities). */
 function usedLinetypes(state: DrawingState): Linetype[] {
@@ -214,8 +215,20 @@ export function writeDxf(state: DrawingState): string {
         : allEntities.some((e) => e.type === 'hatch' && e.gradient) || appearances.some((e) => e.colorName !== undefined || e.trueColor !== undefined) ? 'AC1018' : 'AC1015';
   const sourceVersion = state.cadGraph?.sourceVersion;
   const acadVersion = sourceVersion && /^AC10(?:15|18|21|24|27|32)$/.test(sourceVersion) && sourceVersion > appearanceVersion ? sourceVersion : appearanceVersion;
+  w.acadVersion = acadVersion;
   let imageDict: string | null = null;
   let anon = 0;
+  // P22: native tables. Each table gets a generated *T picture block; tables sharing a
+  // style signature (margins + data/title text heights) share one synthesized TABLESTYLE
+  // in a single ACAD_TABLESTYLE dictionary. Nothing is allocated for a table-free drawing.
+  // P22 F-2 successor: at AC1015 a table also gets its roundtrip chain (extension
+  // dictionary + XRECORD + ACDBDATATABLE + one CELL_VALUE XRECORD per cell) — the
+  // load-time cell source AutoCAD reads at that version — unless the retained graph
+  // already carries a chain for it, which the graph merge replays verbatim instead.
+  const roundtripCarried = acadVersion === 'AC1015' ? graphTableRoundtripCarriers(state) : new Set<string>();
+  let tableStyleDict: string | null = null;
+  const tableStylesToWrite: Array<{ handle: string; name: string; margin: number; dataHeight: number; titleHeight: number }> = [];
+  const tableStyleByKey = new Map<string, (typeof tableStylesToWrite)[number]>();
   for (const e of allEntities) {
     if (e.type === 'image') {
       if (!imageDict) imageDict = w.nextHandle();
@@ -229,10 +242,33 @@ export function writeDxf(state: DrawingState): string {
       let name = '';
       do {
         anon += 1;
-        name = `*U${anon}`;
+        name = `*T${anon}`;
       } while (state.blocks[name] || blockRecordHandles.has(name));
-      extras.tableBlocks.set(e, name);
-      blockRecordHandles.set(name, w.nextHandle());
+      const recordHandle = w.nextHandle();
+      blockRecordHandles.set(name, recordHandle);
+      const key = tableStyleKey(e);
+      const signature = `${key.margin}|${key.dataHeight}|${key.titleHeight}`;
+      let style = tableStyleByKey.get(signature);
+      if (!style) {
+        if (!tableStyleDict) tableStyleDict = w.nextHandle();
+        style = { handle: w.nextHandle(), name: tableStylesToWrite.length === 0 ? 'Standard' : `Standard_${tableStylesToWrite.length + 1}`, ...key };
+        tableStyleByKey.set(signature, style);
+        tableStylesToWrite.push(style);
+      }
+      extras.tableBlocks.set(e, {
+        name, recordHandle, styleHandle: style.handle,
+        ...(acadVersion === 'AC1015' && !roundtripCarried.has(e.id)
+          ? {
+            roundtrip: {
+              dict: w.nextHandle(),
+              record: w.nextHandle(),
+              data: w.nextHandle(),
+              cellHandles: Array.from({ length: e.rowHeights.length * e.columnWidths.length }, () => w.nextHandle()),
+              cells: tableRoundtripCells(e),
+            },
+          }
+          : {}),
+      });
     }
   }
   const tableList = [...extras.tableBlocks.entries()];
@@ -295,6 +331,26 @@ export function writeDxf(state: DrawingState): string {
       cls('IMAGE', 'AcDbRasterImage', 127, true, extras.imageReactors.size);
       cls('IMAGEDEF', 'AcDbRasterImageDef', 0, false, extras.imageDefs.size);
       cls('IMAGEDEF_REACTOR', 'AcDbRasterImageDefReactor', 1, false, extras.imageReactors.size);
+    }
+    if (tableList.length) {
+      // AutoCAD's own registrations for tables (specimen: tests/fixtures/interchange/
+      // r2018-table.dxf): app name 'ObjectDBX Classes', proxy flags 4095 / 1025.
+      const tcls = (name: string, cpp: string, flags: number, isEntity: boolean, instances: number) => {
+        w.pair(0, 'CLASS');
+        w.pair(1, name);
+        w.pair(2, cpp);
+        w.pair(3, 'ObjectDBX Classes');
+        w.pair(90, flags);
+        if (acadVersion !== 'AC1015') w.pair(91, instances);
+        w.pair(280, 0);
+        w.pair(281, isEntity ? 1 : 0);
+      };
+      tcls('TABLESTYLE', 'AcDbTableStyle', 4095, false, tableStylesToWrite.length);
+      tcls('ACAD_TABLE', 'AcDbTable', 1025, true, tableList.length);
+      // The roundtrip chain's one non-core class, registered as the genuine
+      // AC1015 control registers it, only when a chain is generated.
+      const roundtripCount = tableList.filter(([, picture]) => picture.roundtrip).length;
+      if (roundtripCount) tcls('ACDBDATATABLE', 'AcDbDataTable', 0, false, roundtripCount);
     }
     if (createCannoVariable || createAnnoVariable) {
       // AutoCAD's specimen registration (the HANDBUILT fixtures): app name
@@ -580,10 +636,13 @@ export function writeDxf(state: DrawingState): string {
       for (const chunk of chunkDynamicPayload(payload)) w.pair(1000, chunk);
     });
   }
-  for (const [t, name] of tableList) {
-    const owner = blockRecordHandles.get(name)!;
-    blockShell(owner, name, { x: 0, y: 0 }, 1, undefined, () => {
-      for (const part of tableParts(t)) writeEntity(w, part, owner, state.blocks, undefined, extras);
+  for (const [t, picture] of tableList) {
+    const owner = blockRecordHandles.get(picture.name)!;
+    blockShell(owner, picture.name, { x: 0, y: 0 }, 1, undefined, () => {
+      // The picture is generated in the block's local frame (tablePictureForm,
+      // P22 COMP-N N-2) so a re-read table regenerates it byte-exact (P22 fix F2c)
+      // and the block reference lands it on the table's cell grid.
+      for (const part of tableParts(tablePictureForm(t))) writeEntity(w, part, owner, state.blocks, undefined, extras);
     });
   }
   for (const { name, dimension } of dimPictures) {
@@ -647,6 +706,10 @@ export function writeDxf(state: DrawingState): string {
   w.pair(350, layoutPlan.dictionary);
   w.pair(3, 'ACAD_PLOTSTYLENAME');
   w.pair(350, plotStyleDictionary);
+  if (tableStyleDict) {
+    w.pair(3, 'ACAD_TABLESTYLE');
+    w.pair(350, tableStyleDict);
+  }
   if (scaleListDictionary) {
     w.pair(3, 'ACAD_SCALELIST');
     w.pair(350, scaleListDictionary);
@@ -770,6 +833,75 @@ export function writeDxf(state: DrawingState): string {
       w.pair(100, 'AcDbRasterImageDefReactor');
       w.pair(90, 2);
       w.pair(330, r.image ?? '0');
+    }
+  }
+  if (tableStyleDict) {
+    // The ACAD_TABLESTYLE dictionary and its synthesized TABLESTYLE objects (P22 slice 1).
+    // Cell styles in AutoCAD order: data, title, header; border/fill groups carry the
+    // Standard defaults (visible borders, lineweight -2, no fill) — the model's cells do
+    // not carry border/fill data in this slice, and each cell's height/attachment is
+    // written on the ACAD_TABLE itself, so the style only supplies margins and defaults.
+    w.pair(0, 'DICTIONARY');
+    w.pair(5, tableStyleDict);
+    w.pair(330, 'C');
+    w.pair(100, 'AcDbDictionary');
+    w.pair(281, 1);
+    for (const style of tableStylesToWrite) {
+      w.pair(3, style.name);
+      w.pair(350, style.handle);
+    }
+    const cellStyle = (height: number, attachment: number) => {
+      w.pair(7, 'Standard');
+      w.pair(140, height);
+      w.pair(170, attachment);
+      w.pair(62, 0);
+      w.pair(63, 7);
+      w.pair(283, 0);
+      // AutoCAD normalises this row-type group from 512 to 4 when it resaves a
+      // table (the lead's Recipe A resave at the P22 gate); write the normalised
+      // value directly (P22 COMP-N Series 2).
+      w.pair(90, 4);
+      w.pair(91, 0);
+      w.pair(1, '');
+      for (let i = 0; i < 6; i += 1) w.pair(274 + i, -2);
+      for (let i = 0; i < 6; i += 1) w.pair(284 + i, 1);
+      for (let i = 0; i < 6; i += 1) w.pair(64 + i, 0);
+    };
+    for (const style of tableStylesToWrite) {
+      w.pair(0, 'TABLESTYLE');
+      w.pair(5, style.handle);
+      w.pair(102, '{ACAD_REACTORS');
+      w.pair(330, tableStyleDict);
+      w.pair(102, '}');
+      w.pair(330, tableStyleDict);
+      w.pair(100, 'AcDbTableStyle');
+      w.pair(280, 0);
+      w.pair(3, style.name);
+      w.pair(70, 0);
+      w.pair(71, 0);
+      w.pair(40, style.margin);
+      w.pair(41, style.margin);
+      w.pair(280, 0);
+      w.pair(281, 0);
+      cellStyle(style.dataHeight, 2);
+      cellStyle(style.titleHeight, 5);
+      cellStyle(style.dataHeight, 5);
+    }
+  }
+  // The generated AC1015 roundtrip chains (P22 F-2 successor), one per table
+  // whose plan carries one. The extension dictionary's owner is the table
+  // entity's handle as written — recovered from the writer's anchor map,
+  // which every entity written through writeEntityCommon populates.
+  {
+    const roundtrips = tableList.filter(([, picture]) => picture.roundtrip);
+    if (roundtrips.length) {
+      const entityHandleById = new Map<string, string>();
+      for (const [handle, anchor] of w.cadAnchors) if (anchor.kind === 'entity') entityHandleById.set(anchor.id, handle);
+      for (const [t, picture] of roundtrips) {
+        const entityHandle = entityHandleById.get(t.id);
+        if (!entityHandle) throw new Error(`Cannot write the roundtrip chain of table ${t.id}: its written entity handle is unknown.`);
+        writeTableRoundtrip(w, t, picture.roundtrip!, entityHandle);
+      }
     }
   }
   w.pair(0, 'ENDSEC');

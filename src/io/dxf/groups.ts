@@ -117,7 +117,11 @@ export function tokenize(text: string, recover = false, report?: ImportReportBui
     if (pairs.length >= (limits.maxPairs ?? DEFAULT_MAX_PAIRS)) throw new DxfReadError(`Line ${i + 1}: DXF exceeds the group pair limit.`, i + 1);
     if (code === 0 && ++records > (limits.maxRecords ?? DEFAULT_MAX_RECORDS)) throw new DxfReadError(`Line ${i + 1}: DXF exceeds the record limit.`, i + 1);
     // Complex LTYPE9 is literal embedded text; trailing spaces affect its glyph placement.
-    const value = code === 1 || code === 3 || code === 304 || code === 9 && recordKind === 'LTYPE' ? raw : raw.trimEnd();
+    // The cell-value text groups (302, its 303 continuations) are text chunks in the same
+    // sense: a table cell's formatted text may end in spaces, and trimming it in the
+    // retained graph made a re-save of a chain-carrying AC1015 table (P22 F-2 successor)
+    // silently lose them while the entity's own group 1 kept them.
+    const value = code === 1 || code === 3 || code === 302 || code === 303 || code === 304 || code === 9 && recordKind === 'LTYPE' ? raw : raw.trimEnd();
     if (code === 0) recordKind = value.trim();
     pairs.push({ code, value, line: i + 1 });
     if (code === 0 && value.trim() === 'EOF') {

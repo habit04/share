@@ -108,23 +108,30 @@ describe('TABLE / TABLEEDIT commands', () => {
 });
 
 describe('TABLE in DXF', () => {
-  it('survives a JCad save / reopen (INSERT of an anonymous block + JCAD_TABLE xdata)', () => {
+  it('survives a JCad save / reopen as a native ACAD_TABLE with a *T picture block (P22)', () => {
     const d = new Drawing();
-    let t = setCellText(make(), 0, 0, 'PARTS – ÄÖ'); // non-ASCII survives the 7-bit xdata
+    let t = setCellText(make(), 0, 0, 'PARTS – ÄÖ'); // non-ASCII survives the DXF text encoding
     t = setCellText(t, 2, 2, 'line1\nline2');
     d.addEntities([{ ...t, layer: 'TABLES', color: 5 }]);
     const text = writeDxf(d.snapshot);
-    expect(text).toContain('JCAD_TABLE');
-    expect(text).toMatch(/\r\n2\r\n\*U\d+\r\n70\r\n1\r\n/);
+    expect(text).toContain('ACAD_TABLE');
+    // Cells with text exist and no covered cell carries content, so no JCAD_TABLE
+    // preservation carrier xdata is written (the name still appears as a registered APPID).
+    expect(text).not.toContain('1001\r\nJCAD_TABLE');
+    expect(text).toMatch(/\r\n2\r\n\*T\d+\r\n70\r\n1\r\n/);
     const back = readDxf(text);
     const tt = back.entities[0] as TableEntity;
     expect(tt.type).toBe('table');
     expect(tt.layer).toBe('TABLES');
     expect(tt.cells[0]![0]!.text).toBe('PARTS – ÄÖ');
     expect(tt.cells[2]![2]!.text).toBe('line1\nline2');
-    expect(tt.rowHeights).toEqual(t.rowHeights);
-    // The drawing block is not kept as a separate block definition.
-    expect(Object.keys(back.blocks).filter((n) => n.startsWith('*U'))).toHaveLength(0);
+    // Native 141 groups carry the writer's 10-decimal precision (the old xdata JSON was exact),
+    // and since P22 F-1 the multi-line fit floor: row 2 holds the two-line cell (2,2), so its
+    // written height is the fit 2 x 0.18 x 4/3 + 2 x 0.06 = 0.6 (the lead's A15 value), not the
+    // stored single-line 0.36; the single-line rows carry their stored heights.
+    expect(tt.rowHeights).toEqual([0.4533333333, 0.36, 0.6, 0.36]);
+    // The picture block is not kept as a separate block definition.
+    expect(Object.keys(back.blocks).filter((n) => n.startsWith('*T'))).toHaveLength(0);
     // Saving again gives the same table.
     const again = readDxf(writeDxf(back)).entities[0] as TableEntity;
     expect(again.cells).toEqual(tt.cells);

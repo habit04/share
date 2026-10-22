@@ -44,18 +44,20 @@ describe('ACAD_TABLE (as AutoCAD emits it, with its anonymous *T block)', () => 
     expect(b.max.y).toBeLessThan(11);
   });
 
-  it('keeps the table through Save (DXF) and re-open, written as an anonymous block reference', () => {
+  it('keeps the table through Save (DXF) and re-open, written as a native ACAD_TABLE (P22)', () => {
     const text = writeDxf(state);
-    // The table is written as an INSERT of an anonymous *U block (flag 1) that other readers can display.
+    // The table is written as a native ACAD_TABLE whose generated *T picture block
+    // (flag 1) is what other readers display.
+    expect(text).toContain('ACAD_TABLE');
     const lines = text.split(/\r\n/);
     let flags: number | null = null;
     for (let i = 0; i + 1 < lines.length; i += 2) {
       if (lines[i]!.trim() !== '0' || lines[i + 1] !== 'BLOCK') continue;
       const groups = new Map<string, string>();
       for (let j = i + 2; j + 1 < lines.length && lines[j]!.trim() !== '0'; j += 2) if (!groups.has(lines[j]!.trim())) groups.set(lines[j]!.trim(), lines[j + 1]!);
-      if (groups.get('2')?.startsWith('*U')) flags = Number(groups.get('70'));
+      if (groups.get('2')?.startsWith('*T')) flags = Number(groups.get('70'));
     }
-    expect(flags, 'anonymous *U BLOCK with a flags group').not.toBeNull();
+    expect(flags, 'anonymous *T BLOCK with a flags group').not.toBeNull();
     expect(flags! & 1).toBe(1);
     const back = readDxf(text);
     expect(tables(back)).toHaveLength(1);

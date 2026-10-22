@@ -13,6 +13,8 @@ import { commonProps } from './read-core';
 import * as g from '../../core/geometry';
 import type { ReadContext } from './read-core';
 import { mtextFromDxf, hasFormatting } from '../../core/mtext';
+import { isEscapedPlainContent } from './write-annotations';
+import { cellOwners } from '../../core/table';
 import type { MTextAttachment, MTextColumns } from '../../core/mtext';
 
 export function readDimStyleFromEntity(o: Obj, styles: Map<string, DimStyle>, fallback: DimStyle, textStyleHandles?: ReadonlyMap<string, string>): DimStyle {
@@ -426,7 +428,7 @@ export function readTableStyle(o: Obj): TableStyleData {
 }
 
 /** ACAD_TABLE with legacy cell data (91/92 size, 141/142 sizes, 171.. per cell) -> native table. */
-export function readTable(o: Obj, base: ReturnType<typeof commonProps>, style?: TableStyleData): TableEntity | null {
+export function readTable(o: Obj, base: ReturnType<typeof commonProps>, style?: TableStyleData, notes?: string[]): TableEntity | null {
   const gs = afterSubclass(o, 'AcDbTable');
   const firstCell = gs.findIndex((x) => x.code === 171);
   const head = firstCell >= 0 ? gs.slice(0, firstCell) : gs;
@@ -465,15 +467,27 @@ export function readTable(o: Obj, base: ReturnType<typeof commonProps>, style?: 
       const align = int(cg.find((x) => x.code === 170)?.value, rowStyle?.attachment ?? 0);
       const spanC = int(cg.find((x) => x.code === 175)?.value, 1);
       const spanR = int(cg.find((x) => x.code === 176)?.value, 1);
+      // A span claim whose effective extent reaches outside the grid violates
+      // the model's invariant (P22 fix F3): report it through the import
+      // report and leave the cell unmerged, instead of modelling the claim
+      // verbatim and re-emitting it in silence. Sub-1 group values are the
+      // no-claim form (merge-covered cells carry 0/0) and clamp to 1 as before.
+      const effSpan = { rows: Math.max(1, spanR), cols: Math.max(1, spanC) };
+      const spanClaim = effSpan.rows > 1 || effSpan.cols > 1;
+      const spanFits = r + effSpan.rows <= rows && c + effSpan.cols <= cols;
+      if (spanClaim && !spanFits) notes?.push(`Table cell at row ${r + 1}, column ${c + 1} claims a span of ${effSpan.rows} rows x ${effSpan.cols} columns outside the ${rows} x ${cols} table; the claim was ignored and the cell left unmerged.`);
       const plain = text ? mtextFromDxf(text) : '';
       if (plain) anyText = true;
       if (h > 0) heights.push(h);
       row.push({
         text: plain,
-        ...(plain && hasFormatting(text) ? { raw: text } : {}),
+        // Content that is exactly the plain-text encoding of its decoded text
+        // (P22 fix F1) is plain text, not formatting: no raw is kept for it, so
+        // an escape-encoded cell re-exports through the plain path unchanged.
+        ...(plain && hasFormatting(text) && !isEscapedPlainContent(text) ? { raw: text } : {}),
         ...(h > 0 ? { height: h } : {}),
         ...(align >= 1 && align <= 9 ? { attachment: align as MTextAttachment } : {}),
-        ...(spanC > 1 || spanR > 1 ? { span: { rows: Math.max(1, spanR), cols: Math.max(1, spanC) } } : {}),
+        ...(spanClaim && spanFits ? { span: effSpan } : {}),
       });
     }
     cells.push(row);
@@ -494,13 +508,57 @@ export function readTable(o: Obj, base: ReturnType<typeof commonProps>, style?: 
   };
 }
 
+/**
+ * Restore merged-away cell contents from the JCAD_TABLE preservation carrier a native
+ * ACAD_TABLE may carry (P22): the native record writes covered cells virtual and empty,
+ * so any text/formatting the model holds for them rides in the xdata and is merged back
+ * here. Native groups stay authoritative for every visible cell and all geometry.
+ */
+export function restoreCoveredCells(table: TableEntity, preserved: TableEntity): TableEntity {
+  if (preserved.rowHeights.length !== table.rowHeights.length || preserved.columnWidths.length !== table.columnWidths.length) return table;
+  const owners = cellOwners(table);
+  let changed = false;
+  const cells = table.cells.map((row, r) => row.map((cell, c) => {
+    const covered = owners[r]?.[c]?.[0] !== r || owners[r]?.[c]?.[1] !== c;
+    const kept = preserved.cells[r]?.[c];
+    if (!covered || !kept || cell.text !== '' || (kept.text === '' && kept.raw === undefined)) return cell;
+    changed = true;
+    return { ...cell, text: kept.text, ...(kept.raw !== undefined ? { raw: kept.raw } : {}) };
+  }));
+  return changed ? { ...table, cells } : table;
+}
+
 /** A table JCad wrote as an INSERT of an anonymous block with its data in JCAD_TABLE xdata. */
-export function readJcadTable(o: Obj, base: ReturnType<typeof commonProps>): TableEntity | null {
+export function readJcadTable(o: Obj, base: ReturnType<typeof commonProps>, notes?: string[]): TableEntity | null {
   const xd = xdata(o, TABLE_APP);
   if (!xd) return null;
   try {
     const meta = JSON.parse(xd.filter((x) => x.code === 1000).map((x) => x.value).join('')) as Partial<TableEntity>;
     if (!meta.position || !Array.isArray(meta.rowHeights) || !Array.isArray(meta.columnWidths) || !Array.isArray(meta.cells)) return null;
+    // The same span discipline as the native reader (P22 fix F3): a carried
+    // span claim reaching outside the grid is reported and dropped, never
+    // modelled verbatim. The screen judges span claims on well-formed cells
+    // only: a malformed row or cell (a non-array row, a null or non-object
+    // cell) passes through untouched so format validation sees the payload
+    // and reports it (P22 COMP-F1 — dereferencing cell.span here threw, the
+    // catch returned null, and the INSERT fell through to the generic insert
+    // path, silently bypassing table validation).
+    const rows = meta.rowHeights.length;
+    const cols = meta.columnWidths.length;
+    let cells = meta.cells;
+    const spanOutside = (cell: TableCell, r: number, c: number): boolean =>
+      !!cell && typeof cell === 'object' && !!cell.span && (r + cell.span.rows > rows || c + cell.span.cols > cols);
+    if (cells.some((row, r) => Array.isArray(row) && row.some((cell: TableCell, c: number) => spanOutside(cell, r, c)))) {
+      cells = cells.map((row, r) => (Array.isArray(row)
+        ? row.map((cell: TableCell, c: number) => {
+          if (!spanOutside(cell, r, c)) return cell;
+          const span = cell.span!;
+          notes?.push(`Table cell at row ${r + 1}, column ${c + 1} claims a span of ${span.rows} rows x ${span.cols} columns outside the ${rows} x ${cols} table; the claim was ignored and the cell left unmerged.`);
+          const { span: _dropped, ...rest } = cell;
+          return rest;
+        })
+        : row));
+    }
     return {
       ...base,
       type: 'table',
@@ -508,7 +566,7 @@ export function readJcadTable(o: Obj, base: ReturnType<typeof commonProps>): Tab
       rotation: meta.rotation ?? 0,
       rowHeights: meta.rowHeights,
       columnWidths: meta.columnWidths,
-      cells: meta.cells,
+      cells,
       textHeight: meta.textHeight ?? 0.18,
       ...(meta.margin !== undefined ? { margin: meta.margin } : {}),
     };

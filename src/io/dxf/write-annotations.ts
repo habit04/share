@@ -1,18 +1,19 @@
 /**
  * Entity codecs, writer side, for annotation and reference objects: MTEXT, DIMENSION (with the
- * name of its *D picture block), LEADER (+ its MTEXT), IMAGE (+ its IMAGEDEF reactor) and JCad
- * tables (an INSERT of an anonymous block with the cell data as XDATA).
+ * name of its *D picture block), LEADER (+ its MTEXT), IMAGE (+ its IMAGEDEF reactor) and tables
+ * (a native ACAD_TABLE referencing its generated *T picture block and TABLESTYLE; P22).
  */
 import { Writer, writeEntityCommon } from './write-core';
 import type { MTextEntity, DimensionEntity, LeaderEntity, ImageEntity, TableEntity } from '../../core/entities';
-import { formattedSource, mtextToDxf } from '../../core/mtext';
+import { formattedSource, mtextFromDxf, mtextToDxf } from '../../core/mtext';
 import { textStyleOf } from '../encoding';
 import { MTEXT_COLUMNS_APP, MTEXT_BACKGROUND_APP, DIM_TYPE, DIMSTYLE_APP, TABLE_APP } from './codes';
 import { backgroundMetadataChunks } from './mtext-background-data';
 import * as g from '../../core/geometry';
 import { dimensionTextPoint, dimensionMeasurement, dimensionStyleOverrides, dimStyleOverrideCode, DIM_VARIABLES, ordinateDimensionProblem } from '../../core/dimension';
 import { textWidth, leaderParts, leaderPath } from '../../core/entities';
-import type { WriteExtras } from './write-core';
+import { cellOwners, rowHeightFor, TABLE_DEFAULTS } from '../../core/table';
+import type { TableRoundtripPlan, WriteExtras } from './write-core';
 
 export function writeMText(w: Writer, e: MTextEntity, owner: string): void {
   writeEntityCommon(w, e, owner, 'MTEXT', 'AcDbMText');
@@ -288,21 +289,625 @@ export function writeImage(w: Writer, e: ImageEntity, owner: string, extras: Wri
   }
 }
 
-/** Table metadata for the JCAD_TABLE xdata. */
-function tableMeta(t: TableEntity): string {
-  const json = JSON.stringify({ position: t.position, rotation: t.rotation, rowHeights: t.rowHeights, columnWidths: t.columnWidths, cells: t.cells, textHeight: t.textHeight, ...(t.margin !== undefined ? { margin: t.margin } : {}) });
-  // Keep the xdata strings 7-bit so the 255-byte group limit holds in any code page.
-  return json.replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+/**
+ * Encode a table cell's PLAIN text as DXF MTEXT content (P22 fix F1). The model's
+ * `text` is plain text (paragraphs separated by '\n'); written unescaped, any
+ * backslash sequence, brace or %% code it happens to contain is consumed by MTEXT
+ * parsing on re-read and the text comes back altered or lost ('A\PB' -> 'A\nB',
+ * 'C:\new\path' -> 'C:ew'). The encoding escapes exactly what the parser
+ * (core/mtext parseMText) consumes, so plain text round-trips byte-exact:
+ * '\' -> '\\', '{' -> '\{', '}' -> '\}', '\n' -> '\P'. A '%%' pair whose next
+ * character the parser would consume as a code (%%u / %%o / %%k toggles,
+ * %%<digits> character codes) has its second '%' written as the +0025 unicode
+ * escape; a '%%' pair followed by any other character is a three-character
+ * literal to the parser, so all three characters go out raw — escaping the
+ * third would feed the parser a different literal. Genuine formatting never
+ * passes through here: a cell whose `raw` still matches its text is written
+ * from the raw verbatim (formattedSource), never double-escaped.
+ */
+export function mtextPlainToDxf(text: string): string {
+  let out = '';
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]!;
+    if (ch === '\\' || ch === '{' || ch === '}') {
+      out += `\\${ch}`;
+      continue;
+    }
+    if (ch === '\n') {
+      out += '\\P';
+      continue;
+    }
+    if (ch === '%' && text[i + 1] === '%' && i + 2 < text.length) {
+      const c = text[i + 2]!;
+      if (/[uUoOkK\d]/.test(c)) {
+        out += '%\\U+0025';
+        i += 1;
+        continue;
+      }
+      if (c === '\n') {
+        out += '\\U+0025%\\P';
+        i += 2;
+        continue;
+      }
+      if (c === '\r') {
+        out += '\\U+0025%\\U+000D';
+        i += 2;
+        continue;
+      }
+      out += `%%${c}`;
+      i += 2;
+      continue;
+    }
+    out += ch;
+  }
+  return out;
 }
 
-/** A table is written as an INSERT of an anonymous block holding its lines and text, with the cell data as xdata. */
-export function writeTableInsert(w: Writer, t: TableEntity, owner: string, block: string): void {
-  writeEntityCommon(w, t, owner, 'INSERT', 'AcDbBlockReference');
-  w.pair(2, block);
-  w.pair(10, 0);
-  w.pair(20, 0);
+/**
+ * True when `content` is exactly the plain-text encoding (mtextPlainToDxf) of
+ * its own decoded text — i.e. the content carries no formatting beyond what
+ * plain text expresses, so the reader keeps it as plain text with no `raw`.
+ * The reader's raw rule and the carrier's canonical form both use this test,
+ * which is what makes escape-encoded plain text a fixed point of the round
+ * trip instead of an ever-growing layer of formatting.
+ */
+export function isEscapedPlainContent(content: string): boolean {
+  return mtextPlainToDxf(mtextFromDxf(content)) === content;
+}
+
+/**
+ * Guard a generated string against the DXF string layer's own escape decoding
+ * (io/encoding decodeUnicodeEscapes, applied to every group value on read):
+ * a backslash that begins a \U+XXXX or \M+nXXXX pattern is itself written as
+ * the \U+005C escape, which that layer decodes back to exactly the backslash
+ * the MTEXT layer must see. Without the guard, the DXF layer consumes the
+ * pattern first ('X\\U+0041Y' would arrive at the MTEXT parser as 'X\AY').
+ * Applied only to strings this writer generates (plain-encoded cell content
+ * and the JCAD_TABLE carrier); retained `raw` content keeps its as-is bytes.
+ */
+export function guardDxfEscapes(content: string): string {
+  return content.replace(/\\(U\+[0-9A-Fa-f]{4}|M\+[1-5][0-9A-Fa-f]{4})/g, (_m, rest: string) => `\\U+005C${rest}`);
+}
+
+/** The one DXF-layer escape sequence guardDxfEscapes ever emits. */
+const DXF_GUARD_ESCAPE = '\\U+005C';
+
+/**
+ * The end offset for the next chunk of a >250-char guarded table string
+ * written in 250-char group chunks (P22 fix F-1b): at most 250, pulled back
+ * so a split never separates the halves of a surrogate pair and never cuts
+ * a DXF-layer guard escape. The reader decodes \U+XXXX escapes PER GROUP
+ * VALUE (io/dxf/reader), so a guard cut by a chunk boundary is never
+ * decoded at that layer; the MTEXT / JSON parser below it then consumes
+ * the sequence itself and the authored text comes back altered ('%%u' ->
+ * '%\U+0025u'). A split only ever moves EARLIER, and only across a
+ * sequence that would otherwise straddle, so content with no straddling
+ * guard or surrogate pair chunks byte-identically to a plain 250 split.
+ * Serves the two guarded table writers below (ACAD_TABLE cell content and
+ * the JCAD_TABLE carrier); the MTEXT entity writer does not emit guarded
+ * content and keeps its own chunking.
+ */
+function dxfChunkEnd(rest: string): number {
+  let end = 250;
+  // A promoted UTF-8 DXF must not separate the halves of a supplementary character.
+  if (/[\uD800-\uDBFF]/.test(rest[end - 1]!) && /[\uDC00-\uDFFF]/.test(rest[end]!)) end = 249;
+  // Only the last guard starting before the cut can straddle it: guard
+  // occurrences cannot overlap, so every earlier one ends before it starts.
+  const guardAt = rest.lastIndexOf(DXF_GUARD_ESCAPE, end - 1);
+  if (guardAt !== -1 && guardAt + DXF_GUARD_ESCAPE.length > end) end = guardAt;
+  return end;
+}
+
+/**
+ * Table metadata for the JCAD_TABLE xdata, serialised in the reader's
+ * normalised form (P22 fix F2b): the carrier must encode the model as the
+ * native round trip reconstructs it, or the second save rewrites the payload
+ * with reader-normalised cells and stability arrives only at the third write.
+ * Concretely, per grid position (fixed key order): a VISIBLE cell carries its
+ * effective height / attachment (the reader materialises both from groups
+ * 140/170) and its raw only when the reader would keep it (formatted source
+ * present, not the plain encoding of its own text); a merge-COVERED cell
+ * carries its text/raw as authored plus the height / attachment the reader
+ * rebuilds for it from the TABLESTYLE role defaults (title row 0, header
+ * row 1, data elsewhere) — restoreCoveredCells overlays the text/raw onto
+ * exactly that native cell. The effective margin is always present (the
+ * reader materialises it from the style), and the rotation is the written
+ * direction vector's angle (tableDxfRotation).
+ */
+function tableMeta(t: TableEntity): string {
+  const key = tableStyleKey(t);
+  const owners = cellOwners(t);
+  const rows = t.rowHeights.length;
+  const cols = t.columnWidths.length;
+  const cells = Array.from({ length: rows }, (_, r) => Array.from({ length: cols }, (_, c) => {
+    const cell = t.cells[r]?.[c] ?? { text: '' };
+    const covered = owners[r]![c]![0] !== r || owners[r]![c]![1] !== c;
+    if (covered) {
+      const role = r === 0 ? { height: key.titleHeight, attachment: 5 } : r === 1 ? { height: key.dataHeight, attachment: 5 } : { height: key.dataHeight, attachment: 2 };
+      return { text: cell.text, ...(cell.raw !== undefined ? { raw: cell.raw } : {}), height: role.height, attachment: role.attachment };
+    }
+    return {
+      text: cell.text,
+      ...(cell.text !== '' && cell.raw !== undefined && formattedSource(cell) !== null && !isEscapedPlainContent(cell.raw) ? { raw: cell.raw } : {}),
+      height: cell.height ?? t.textHeight,
+      attachment: cell.attachment ?? 5,
+      ...(cell.span && (cell.span.rows > 1 || cell.span.cols > 1) ? { span: cell.span } : {}),
+    };
+  }));
+  // The carrier describes the table AS WRITTEN (P22 F-1): its row heights are the
+  // DXF form's (multi-line fit floor applied), matching the 141s the native record
+  // carries — a carrier serialized with the raw heights would change bytes on the
+  // second save of any table that has both a carrier and a multi-line cell.
+  const json = JSON.stringify({ position: t.position, rotation: tableDxfRotation(t.rotation), rowHeights: tableDxfForm(t).rowHeights, columnWidths: t.columnWidths, cells, textHeight: t.textHeight, margin: t.margin ?? TABLE_DEFAULTS.margin });
+  // Keep the xdata strings 7-bit so the 255-byte group limit holds in any code page.
+  // The DXF-escape guard keeps a cell text containing a literal \U+XXXX sequence
+  // from corrupting the JSON at the string layer on re-read (P22 fix F1).
+  return guardDxfEscapes(json.replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`));
+}
+
+/**
+ * The synthesized TABLESTYLE values for a table (P22 slice 1): the style's margins and its
+ * data / title text heights. The writer groups tables by this signature and emits one
+ * TABLESTYLE object per distinct signature; every cell also writes its effective height
+ * and attachment natively, so no cell depends on style inheritance to round-trip.
+ *
+ * The title height is the first cell's EFFECTIVE height — its override, else the
+ * table's data text height (P22 fix F2a). The reader materializes exactly that
+ * effective height back onto the first cell (its group 140), so synthesis and
+ * reader normalization agree and the second save is stable. The former fallback
+ * to TABLE_DEFAULTS.titleHeight described an unmaterialized model only: a
+ * title-less table's first save claimed 0.25 and its second 0.18.
+ */
+export function tableStyleKey(t: TableEntity): { margin: number; dataHeight: number; titleHeight: number } {
+  return {
+    margin: t.margin ?? TABLE_DEFAULTS.margin,
+    dataHeight: t.textHeight,
+    titleHeight: t.cells[0]?.[0]?.height ?? t.textHeight,
+  };
+}
+
+/** A DXF real as the reader parses it back: the writer's 10-decimal format, as a double. */
+function dxfReal(n: number): number {
+  const v = Number(n.toFixed(10));
+  return v === 0 ? 0 : v;
+}
+
+/**
+ * The rotation a table is written with (P22 fix F2c): the angle of the direction
+ * vector AS THE READER RECONSTRUCTS IT — atan2 of the 10-decimal vector groups,
+ * iterated to its fixed point (two applications; a 2M-angle sweep shows the
+ * second application is the last that can move the value, and that ~2.3% of
+ * angles are unstable without quantizing at all). Writing geometry (the *T
+ * picture, the 11/21 vector) from the unquantized angle made the second save
+ * shift line endpoints by ~1e-10 for those angles; from the converged angle
+ * the first write is already the fixed point. The geometry change is at most
+ * ~1e-10 — below the format's own precision.
+ */
+export function tableDxfRotation(rotation: number): number {
+  const once = Math.atan2(dxfReal(Math.sin(rotation)), dxfReal(Math.cos(rotation)));
+  return Math.atan2(dxfReal(Math.sin(once)), dxfReal(Math.cos(once)));
+}
+
+/**
+ * The line count of a cell's written content (P22 F-1): paragraph breaks in the
+ * string the writer emits for the cell — the formatted source while it still
+ * matches the text, else the plain text converted for DXF, which turns each
+ * '\n' into '\P'. Escaped characters are skipped in pairs, so a literal "\P"
+ * in the text (written '\\P') does not count as a break.
+ */
+function cellLineCount(cell: TableEntity['cells'][number][number]): number {
+  const content = formattedSource(cell) ?? mtextPlainToDxf(cell.text);
+  let lines = 1;
+  for (let i = 0; i < content.length; i += 1) {
+    if (content[i] === '\\') {
+      if (content[i + 1] === 'P') lines += 1;
+      i += 1;
+    }
+  }
+  return lines;
+}
+
+/**
+ * The least height row r may be written with (P22 F-1, the lead's native
+ * re-run item A15): the fit height — lines x text height x 4/3 + top and
+ * bottom margins (rowHeightFor, the model's own measure) — of the row's
+ * tallest MULTI-LINE owner cell, or 0 when the row has none. AutoCAD
+ * recomputes row heights to fit content when it saves: at the re-run it grew
+ * a 0.36 row to 0.6 for a two-line cell at text height 0.18 with 0.06
+ * margins — exactly rowHeightFor(2, 0.18, 0.06) — so a written row that is
+ * too small for its multi-line cells does not survive an AutoCAD save
+ * unchanged. Single-line rows are NOT floored: AutoCAD's own genuine
+ * controls carry authored single-line row heights below the fit height of
+ * a height-override cell (0.4304… under a 0.3 override, fit 0.52), and
+ * those heights are preserved verbatim.
+ */
+function rowHeightFloor(t: TableEntity, r: number, owners: ReturnType<typeof cellOwners>): number {
+  let floor = 0;
+  const margin = t.margin ?? TABLE_DEFAULTS.margin;
+  for (let c = 0; c < t.columnWidths.length; c += 1) {
+    if (owners[r]![c]![0] !== r || owners[r]![c]![1] !== c) continue;
+    const cell = t.cells[r]?.[c];
+    if (!cell) continue;
+    const lines = cellLineCount(cell);
+    if (lines >= 2) floor = Math.max(floor, rowHeightFor(lines, cellHeight(t, cell), margin));
+  }
+  return floor;
+}
+
+/**
+ * A table in the exact form the DXF round trip reconstructs (P22 fix F2c):
+ * position and row/column sizes at the writer's 10-decimal precision, rotation
+ * at tableDxfRotation. Generating the *T picture from this form — instead of
+ * the authored values, whose >10-decimal sizes (a 0.45333… row height) the
+ * file cannot carry — makes the first write byte-identical to every re-save.
+ * Row heights additionally carry the multi-line fit floor (P22 F-1): a stored
+ * height below its row's floor is raised to the floor, at the same
+ * 10-decimal precision, so the raise is itself a fixed point.
+ */
+export function tableDxfForm(t: TableEntity): TableEntity {
+  const owners = cellOwners(t);
+  return {
+    ...t,
+    position: { x: dxfReal(t.position.x), y: dxfReal(t.position.y) },
+    rotation: tableDxfRotation(t.rotation),
+    rowHeights: t.rowHeights.map((h, r) => Math.max(dxfReal(h), dxfReal(rowHeightFloor(t, r, owners)))),
+    columnWidths: t.columnWidths.map(dxfReal),
+  };
+}
+
+/**
+ * The form the *T picture block is generated from (P22 COMP-N N-2): the table's
+ * DXF form re-anchored to the block's local frame — position (0, 0), rotation 0.
+ * AutoCAD stores a table's picture block in local coordinates (specimens: the
+ * lead's Recipe B controls, whose *T geometry extents are [0, W] x [-H, 0] with
+ * base point (0, 0)); the ACAD_TABLE block reference (insertion point + 11/21
+ * direction) then lands the picture exactly on the cell grid. Generating the
+ * picture from the world form instead stored world coordinates in the block,
+ * so the reference displayed the grid one insertion-offset away from the cells
+ * and AutoCAD's TABLEDIT could not pick a cell (gate-a: drawn y [18.47, 20]
+ * vs cell grid y [8.47, 10]). Row/column sizes still pass through tableDxfForm,
+ * so a re-read table regenerates the identical picture.
+ */
+export function tablePictureForm(t: TableEntity): TableEntity {
+  return tableDxfForm({ ...t, position: { x: 0, y: 0 }, rotation: 0 });
+}
+
+/**
+ * A cell's effective text height / attachment, exactly as tableGeometry renders them:
+ * the cell's override, else the table text height / middle-centre (5). Writing anything
+ * else (e.g. a row-role default) would change the model on re-read and move the *T
+ * picture; the role defaults (data 2, title/header 5) live only in the TABLESTYLE.
+ */
+function cellHeight(t: TableEntity, cell: TableEntity['cells'][number][number]): number {
+  return cell.height ?? t.textHeight;
+}
+
+function cellAttachment(cell: TableEntity['cells'][number][number]): number {
+  return cell.attachment ?? 5;
+}
+
+/**
+ * Per-cell group 91 flags of the AC1032 cell-value form, as the genuine AutoCAD
+ * R2018 control writes them (fixtures/interchange/r2018-table-autocad.dxf):
+ * every content-bearing cell carries 0x40000; the cell with a 140 text-height
+ * override adds 0x20; the cell with a 170 alignment override adds 0x1; a
+ * merge-covered cell (no content, no overrides) carries 0.
+ */
+const CELL_FLAG_VALUE = 0x40000;
+const CELL_FLAG_HEIGHT = 0x20;
+const CELL_FLAG_ALIGNMENT = 0x1;
+
+/**
+ * A table is written as a native ACAD_TABLE (P22 slice 1, text cells), referencing its
+ * generated *T picture block (2 / 343) and the synthesized TABLESTYLE (342). The cell
+ * form is version-conditional (P22 COMP-N / N-3): at AC1015..AC1027
+ * AutoCAD's own R2000 per-cell form (P22 F-2: 171.. head with 177 override
+ * flags, text in 3-chunks + a group 1 every cell carries, 140/170 only where
+ * the cell departs from its row role, after the text, 175/176 spans with
+ * covered cells at 1); at AC1032 the cell-value form AutoCAD's own R2018
+ * output uses (301 CELL_VALUE .. 304 ACVALUE_END per cell, overrides only where the
+ * cell departs from its row role's style defaults, flagged in group 91) — AutoCAD
+ * reads ONLY the cell-value form at AC1032 and silently discards legacy cell text
+ * there. Cells covered by a merge are written virtual (173 = 1) with no content, as
+ * AutoCAD does; if a covered cell nevertheless carries text in the model, the full
+ * cell data rides as JCAD_TABLE xdata (the preservation carrier) so it is never
+ * silently stripped, and the reader restores it. The carrier is also written when
+ * no visible cell has text: the native reader (like AutoCAD's) treats a textless
+ * ACAD_TABLE as picture-only, so an all-empty JCad table needs the carrier to reopen
+ * as an editable table instead of a dumb picture insert.
+ */
+/**
+ * The per-cell load-time values of a table's AC1015 roundtrip chain (P22 F-2
+ * successor), row-major over the grid: the content the R2000 entity form
+ * writes for the cell ('' for a merge-covered cell, whose authored text — if
+ * any — rides the JCAD_TABLE carrier alone, exactly as in the entity) and
+ * whether the cell departs from its row role's attachment (the same
+ * departure that puts 0x1 in its group 177 and a 170 after its text).
+ */
+export function tableRoundtripCells(t: TableEntity): Array<{ content: string; alignmentOverride: boolean }> {
+  const owners = cellOwners(t);
+  const roleAttachment = (r: number) => (r <= 1 ? 5 : 2);
+  const cells: Array<{ content: string; alignmentOverride: boolean }> = [];
+  for (let r = 0; r < t.rowHeights.length; r += 1) {
+    for (let c = 0; c < t.columnWidths.length; c += 1) {
+      const cell = t.cells[r]?.[c] ?? { text: '' };
+      const covered = owners[r]![c]![0] !== r || owners[r]![c]![1] !== c;
+      cells.push({
+        content: covered ? '' : formattedSource(cell) ?? guardDxfEscapes(mtextPlainToDxf(cell.text)),
+        alignmentOverride: !covered && cellAttachment(cell) !== roleAttachment(r),
+      });
+    }
+  }
+  return cells;
+}
+
+/**
+ * The ACDBDATATABLE double column for one cell: the position-weighted sum of
+ * the content's UTF-16 code units, sum of (i + 1) * unit[i]. Derived from the
+ * genuine AC1015 control, whose twelve values reproduce exactly under this
+ * reading (the title 'P22 CONTROL TABLE' -> 10614, 'PART' -> 792, an empty
+ * cell -> 0); no other candidate the delivery tested (rendered widths, the
+ * common string hashes) fits more than a subset of the cells.
+ */
+export function tableCellContentSum(content: string): number {
+  let sum = 0;
+  for (let i = 0; i < content.length; i += 1) sum += (i + 1) * content.charCodeAt(i);
+  return sum;
+}
+
+/**
+ * The AC1015 roundtrip chain of one table (P22 F-2 successor), modelled
+ * group-for-group on the genuine R2000 control
+ * (fixtures/interchange/r2000-table-autocad.dxf): the table's extension
+ * dictionary holding ACAD_XREC_ROUNDTRIP -> an XRECORD carrying the
+ * ACAD_ROUNDTRIP_PRE2007_TABLE subgroup (90 rows, 91 cols) and the
+ * ACAD_ROUNDTRIP_PRE2007_TABLECELL subgroup pointing at an ACDBDATATABLE —
+ * a four-column store (a double column with each cell's content sum, two int
+ * columns, a handle column) whose rows are the grid's cells, each handle
+ * naming a CELL_VALUE XRECORD with the cell's load-time value in the same
+ * shape the AC1032 entity form writes inline (93 6 / 90 4 + text, or 93 7 /
+ * 90 0 for an empty cell; group 1 only for a non-empty cell; the text
+ * chunked per RULING O-1). Of the int columns the control exercises only the
+ * first: 1 exactly at the cell whose written form carries the alignment
+ * override (its 'B-200'), 0 elsewhere; the second is 0 at every cell. At
+ * AC1015 AutoCAD fills cell contents at load from this chain — the entity's
+ * own per-cell text is not read until a regen (the lead's native probes) —
+ * so a chain-less AC1015 table loads with every cell empty.
+ */
+export function writeTableRoundtrip(w: Writer, t: TableEntity, rt: TableRoundtripPlan, entityHandle: string): void {
+  const rows = t.rowHeights.length;
+  const cols = t.columnWidths.length;
+  w.pair(0, 'DICTIONARY');
+  w.pair(5, rt.dict);
+  w.pair(330, entityHandle);
+  w.pair(100, 'AcDbDictionary');
+  w.pair(280, 1);
+  w.pair(281, 1);
+  w.pair(3, 'ACAD_XREC_ROUNDTRIP');
+  w.pair(360, rt.record);
+  w.pair(0, 'XRECORD');
+  w.pair(5, rt.record);
+  w.pair(102, '{ACAD_REACTORS');
+  w.pair(330, rt.dict);
+  w.pair(102, '}');
+  w.pair(330, rt.dict);
+  w.pair(100, 'AcDbXrecord');
+  w.pair(280, 1);
+  w.pair(102, 'ACAD_ROUNDTRIP_PRE2007_TABLE');
+  w.pair(90, rows);
+  w.pair(91, cols);
+  w.pair(102, 'ACAD_ROUNDTRIP_PRE2007_TABLECELL');
+  w.pair(360, rt.data);
+  w.pair(0, 'ACDBDATATABLE');
+  w.pair(5, rt.data);
+  w.pair(330, rt.record);
+  w.pair(100, 'ACDBDATATABLE');
+  w.pair(70, 2);
+  w.pair(90, 4);
+  w.pair(91, rt.cells.length);
+  w.pair(1, '');
+  w.pair(92, 2);
+  w.pair(2, '');
+  for (const cell of rt.cells) w.pair(40, tableCellContentSum(cell.content));
+  w.pair(92, 1);
+  w.pair(2, '');
+  for (const cell of rt.cells) w.pair(93, cell.alignmentOverride ? 1 : 0);
+  w.pair(92, 1);
+  w.pair(2, '');
+  for (let i = 0; i < rt.cells.length; i += 1) w.pair(93, 0);
+  w.pair(92, 6);
+  w.pair(2, '');
+  for (const handle of rt.cellHandles) w.pair(360, handle);
+  rt.cells.forEach((cell, i) => {
+    w.pair(0, 'XRECORD');
+    w.pair(5, rt.cellHandles[i]!);
+    w.pair(330, rt.data);
+    w.pair(100, 'AcDbXrecord');
+    w.pair(280, 1);
+    for (const [code, val] of tableRoundtripCellValueGroups(cell)) w.pair(code, val);
+  });
+}
+
+/**
+ * The value groups of one CELL_VALUE XRECORD (everything after its 280
+ * group), in the shape the AC1032 entity form writes inline: 93 6 / 90 4 +
+ * the text (chunked per RULING O-1) for a non-empty cell, 93 7 / 90 0 for
+ * an empty one. Shared by the generating writer above and the cad-graph
+ * merge, which regenerates a retained chain's contents from the current
+ * model on every AC1015 write (P22 PR #39 fix: the chain is derived data).
+ */
+export function tableRoundtripCellValueGroups(cell: { content: string }): Array<[number, string]> {
+  const groups: Array<[number, string]> = [];
+  if (cell.content !== '') {
+    groups.push([93, '6'], [90, '4']);
+    let rest = cell.content;
+    while (rest.length > 250) {
+      const end = dxfChunkEnd(rest);
+      groups.push([2, rest.slice(0, end)]);
+      rest = rest.slice(end);
+    }
+    groups.push([1, rest], [94, '0'], [300, '']);
+    rest = cell.content;
+    while (rest.length > 250) {
+      const end = dxfChunkEnd(rest);
+      groups.push([303, rest.slice(0, end)]);
+      rest = rest.slice(end);
+    }
+    groups.push([302, rest]);
+  } else {
+    groups.push([93, '7'], [90, '0'], [94, '0'], [300, ''], [302, '']);
+  }
+  return groups;
+}
+
+export function writeAcadTable(w: Writer, t: TableEntity, owner: string, picture: { name: string; recordHandle: string; styleHandle: string; roundtrip?: TableRoundtripPlan }): void {
+  writeEntityCommon(w, t, owner, 'ACAD_TABLE', 'AcDbBlockReference', owner, picture.roundtrip?.dict);
+  w.pair(2, picture.name);
+  w.pair(10, t.position.x);
+  w.pair(20, t.position.y);
   w.pair(30, 0);
-  w.pair(1001, TABLE_APP);
-  const meta = tableMeta(t);
-  for (let i = 0; i < meta.length; i += 250) w.pair(1000, meta.slice(i, i + 250));
+  w.pair(100, 'AcDbTable');
+  w.pair(280, 0);
+  w.pair(342, picture.styleHandle);
+  w.pair(343, picture.recordHandle);
+  const rotation = tableDxfRotation(t.rotation);
+  w.pair(11, Math.cos(rotation));
+  w.pair(21, Math.sin(rotation));
+  w.pair(31, 0);
+  w.pair(90, 22);
+  const rows = t.rowHeights.length;
+  const cols = t.columnWidths.length;
+  w.pair(91, rows);
+  w.pair(92, cols);
+  w.pair(93, 0);
+  w.pair(94, 0);
+  w.pair(95, 0);
+  w.pair(96, 0);
+  // The written grid is the table's DXF form (P22 F-1): row heights raised to
+  // the multi-line fit floor, so the 141s agree with the *T picture the same
+  // form generates (writer.ts) and with what AutoCAD's own save computes.
+  for (const h of tableDxfForm(t).rowHeights) w.pair(141, h);
+  for (const width of t.columnWidths) w.pair(142, width);
+  const owners = cellOwners(t);
+  const cellValueForm = w.acadVersion >= 'AC1032';
+  // The row roles of the synthesized TABLESTYLE (writer.ts cellStyle): title row 0 at
+  // the title height, header row 1, data rows below; attachments 5 / 5 / 2. In the
+  // cell-value form a cell states 140 / 170 only where it departs from its role.
+  const styleKey = tableStyleKey(t);
+  const roleHeight = (r: number) => (r === 0 ? styleKey.titleHeight : styleKey.dataHeight);
+  const roleAttachment = (r: number) => (r <= 1 ? 5 : 2);
+  let needsCarrier = false;
+  let anyVisibleText = false;
+  for (let r = 0; r < rows; r += 1) {
+    for (let c = 0; c < cols; c += 1) {
+      const cell = t.cells[r]?.[c] ?? { text: '' };
+      const covered = owners[r]![c]![0] !== r || owners[r]![c]![1] !== c;
+      if (covered && (cell.text !== '' || cell.raw !== undefined)) needsCarrier = true;
+      if (!covered && cell.text !== '') anyVisibleText = true;
+      const span = cell.span ?? { rows: 1, cols: 1 };
+      if (cellValueForm) {
+        w.pair(171, 1);
+        w.pair(172, 0);
+        w.pair(173, covered ? 1 : 0);
+        w.pair(174, 0);
+        w.pair(175, covered ? 1 : span.cols);
+        w.pair(176, covered ? 1 : span.rows);
+        const content = covered ? '' : formattedSource(cell) ?? guardDxfEscapes(mtextPlainToDxf(cell.text));
+        const heightOverride = !covered && cellHeight(t, cell) !== roleHeight(r);
+        const alignmentOverride = !covered && cellAttachment(cell) !== roleAttachment(r);
+        let flags = 0;
+        if (content !== '') flags |= CELL_FLAG_VALUE;
+        if (heightOverride) flags |= CELL_FLAG_HEIGHT;
+        if (alignmentOverride) flags |= CELL_FLAG_ALIGNMENT;
+        w.pair(91, flags);
+        w.pair(178, 0);
+        w.pair(145, 0);
+        if (heightOverride) w.pair(140, cellHeight(t, cell));
+        if (alignmentOverride) w.pair(170, cellAttachment(cell));
+        w.pair(92, 0);
+        w.pair(301, 'CELL_VALUE');
+        if (content !== '') {
+          w.pair(93, 6);
+          w.pair(90, 4);
+          // Text over 250 chars is chunked the way AutoCAD writes it (RULING
+          // O-1, the lead's native re-run): 250-char CONTINUATION groups
+          // FIRST (2 for the plain string, 303 for the formatted), then the
+          // final group (1 / 302) with the remainder. Both sides chunk the
+          // same content at the same points (dxfChunkEnd, the writer's
+          // existing 250 walk). AutoCAD accepts the unchunked form too — the
+          // re-run proved the 300-char cell intact — but matching the native
+          // writer is the ruled posture for other readers.
+          let rest = content;
+          while (rest.length > 250) {
+            const end = dxfChunkEnd(rest);
+            w.pair(2, rest.slice(0, end));
+            rest = rest.slice(end);
+          }
+          w.pair(1, rest);
+          w.pair(94, 0);
+          w.pair(300, '');
+          rest = content;
+          while (rest.length > 250) {
+            const end = dxfChunkEnd(rest);
+            w.pair(303, rest.slice(0, end));
+            rest = rest.slice(end);
+          }
+          w.pair(302, rest);
+        } else {
+          w.pair(93, 7);
+          w.pair(90, 0);
+          w.pair(94, 0);
+          w.pair(300, '');
+          w.pair(302, '');
+        }
+        w.pair(304, 'ACVALUE_END');
+        continue;
+      }
+      // AutoCAD's own R2000 form (P22 F-2), matched group-for-group against the
+      // genuine AC1015 control (fixtures/interchange/r2000-table-autocad.dxf):
+      // no per-cell 91/92, no group 7; group 177 carries the override flags
+      // (0x20 height, 0x1 alignment — the same bits the cell-value form's 91
+      // uses); merge-covered cells carry spans of 1 and an EMPTY group 1, as
+      // every cell carries its text group; 140/170 appear only where the cell
+      // departs from its row role's style defaults, after the text. The
+      // pre-F-2 JCad form (91/92/7, unconditional 140/170, no text group on
+      // covered cells) loaded in AutoCAD with every cell's text empty until a
+      // regen and the overrides never appearing at all.
+      w.pair(171, 1);
+      w.pair(172, 0);
+      w.pair(173, covered ? 1 : 0);
+      w.pair(174, 0);
+      w.pair(175, covered ? 1 : span.cols);
+      w.pair(176, covered ? 1 : span.rows);
+      const legacyHeightOverride = !covered && cellHeight(t, cell) !== roleHeight(r);
+      const legacyAlignmentOverride = !covered && cellAttachment(cell) !== roleAttachment(r);
+      let legacyFlags = 0;
+      if (legacyHeightOverride) legacyFlags |= CELL_FLAG_HEIGHT;
+      if (legacyAlignmentOverride) legacyFlags |= CELL_FLAG_ALIGNMENT;
+      w.pair(177, legacyFlags);
+      w.pair(178, 0);
+      w.pair(145, 0);
+      const content = covered ? '' : formattedSource(cell) ?? guardDxfEscapes(mtextPlainToDxf(cell.text));
+      let rest = content;
+      while (rest.length > 250) {
+        const end = dxfChunkEnd(rest);
+        w.pair(3, rest.slice(0, end));
+        rest = rest.slice(end);
+      }
+      w.pair(1, rest);
+      if (legacyHeightOverride) w.pair(140, cellHeight(t, cell));
+      if (legacyAlignmentOverride) w.pair(170, cellAttachment(cell));
+    }
+  }
+  if (needsCarrier || !anyVisibleText) {
+    w.pair(1001, TABLE_APP);
+    const meta = tableMeta(t);
+    let rest = meta;
+    while (rest.length > 250) {
+      const end = dxfChunkEnd(rest);
+      w.pair(1000, rest.slice(0, end));
+      rest = rest.slice(end);
+    }
+    if (rest) w.pair(1000, rest);
+  }
 }
