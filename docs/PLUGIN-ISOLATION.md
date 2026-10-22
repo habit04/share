@@ -213,7 +213,48 @@ return — which the acceptance tests exercise.
   mid-session changes nothing the realm executes, and any requested
   path outside the snapshot — static or dynamic import alike — is
   refused (404), as are `../`, encoded traversal, unknown sessions
-  and non-script files. Approved bytes are the executed bytes.
+  and non-script files. Approved bytes are the executed bytes. The
+  F1 follow-ups (Fable's F1 re-check R1/R2/R3, the lead's ruling,
+  2026-10-22) tighten the snapshot's edges: hashing canonicalises on
+  the RAW FILE BYTES on both sides — `plugins-read` sends the entry's
+  exact bytes (`codeBytes`) alongside the decoded text, the trust
+  flow and the serve request digest those bytes, and the snapshot
+  verifies and serves them unchanged, so a non-UTF-8 byte (e.g. a
+  Latin-1 byte in a comment) can no longer make an unchanged file
+  unmatchable (the renderer's lossy decode hashed differently from
+  main's raw bytes and looped `ERR_PLUGIN_CHANGED`); the snapshot
+  cap is charged from each file's PRE-READ stat size, before the
+  file is opened or buffered; and after the graph walk every
+  snapshotted file is re-statted and re-hashed — a file changed
+  mid-walk aborts the registration with `ERR_PLUGIN_CHANGED`, so no
+  mixed-version snapshot is ever registered. The v1 path is
+  untouched by the byte canonicalisation: it still evaluates the
+  decoded text (for a Latin-1 entry, exactly the lossy text it has
+  always run), and for UTF-8-clean files the byte digest equals the
+  old text digest, so remembered trust answers carry over; a Latin-1
+  folder entry's remembered hash simply re-keys to the raw-byte
+  digest (one fresh approval question, never a loop).
+  AUTHORING CONSTRAINTS that remain for served (isolated) packages —
+  the graph recogniser is widened (R1) to spaceless forms
+  (`import{x}from'…'`, `export*from'…'`, `export{y}from'…'`) and
+  comment-interposed forms (`/*…*/` and `//` between tokens), and a
+  minified multi-file package snapshots and loads whole; anything
+  the recogniser still cannot see keeps failing CLOSED (absent from
+  the snapshot → serve-time 404 → the load fails; the disk is never
+  consulted as a fallback). Concretely, an isolated package's modules
+  must observe: (1) every cross-file import/export must be a STATIC
+  form with a string-literal specifier — computed dynamic import
+  specifiers (`import(name)`, `import('./' + f)`, template-literal
+  specifiers) are never snapshotted, and a dynamic import of a path
+  outside the snapshot is refused at run time; (2) specifiers must be
+  relative (`./` or `../`), stay inside the package, and name the
+  file under its exact on-disk spelling (case included) with a `.js`
+  or `.mjs` extension — no extensionless or directory imports, no
+  bare/package specifiers; (3) the package root's `jcad.js` is main's
+  shim and is never package content; (4) the whole static graph must
+  fit the 32 MiB snapshot cap, charged by file size; (5) files must
+  not change while a load is being registered (the registration
+  aborts with `ERR_PLUGIN_CHANGED` and the load is retried).
   Measured in the real
   Electron runtime (`scripts/e2e-plugin-csp.mjs`, development build on
   the production `dist`, served through the production `jcad://`

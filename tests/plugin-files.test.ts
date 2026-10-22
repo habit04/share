@@ -256,7 +256,7 @@ describe('actual plugin IPC callback with native filesystem', () => {
     expect(opened).not.toHaveBeenCalled();
   });
   it('retains listing/error behavior and source paths through the checked sender boundary', async () => {
-    const f = await fixture(), app = stores(f.base); expect(await app.invoke('plugins-read', f.folder)).toEqual({ manifest: f.manifest, code: f.code, path: f.file });
+    const f = await fixture(), app = stores(f.base); expect(await app.invoke('plugins-read', f.folder)).toEqual({ manifest: f.manifest, code: f.code, codeBytes: Buffer.from(f.code), path: f.file });
     expect(await app.invoke('plugins-list')).toEqual([{ folder: f.folder, manifest: f.manifest }]);
     await fs.mkdir(path.join(f.root, 'missing')); expect(await app.invoke('plugins-list')).toContainEqual({ folder: 'missing', manifest: null, error: 'no plugin.json' });
     expect(await app.invoke('plugins-read', 'missing')).toBeNull();

@@ -72,20 +72,78 @@ function createPluginRealmRegistry() {
 }
 
 /**
+ * Replace comments in a module's source with spaces (newlines kept), so
+ * the recogniser below sees comment-interposed forms (`import /*c*\/ {y}
+ * from '…'`, `import // note` <newline> `{z} from '…'`) exactly as the
+ * parser does. String and template-literal contents are preserved
+ * verbatim — their text may BE a specifier, and a comment marker inside
+ * a string is not a comment. Deliberately a scanner, not a parser: its
+ * only failure modes are the recogniser's own (bounded over/under-match,
+ * see STATIC_MODULE_SPECIFIER).
+ * @param {string} source
+ * @returns {string}
+ */
+function stripModuleComments(source) {
+  let out = '';
+  let i = 0;
+  let state = 'code'; // code | sq | dq | tpl | line | block
+  const tplBraces = []; // brace depth of each open template ${…}
+  while (i < source.length) {
+    const c = source[i];
+    const d = source[i + 1] ?? '';
+    if (state === 'code') {
+      if (c === '/' && d === '/') { state = 'line'; out += ' '; i += 2; continue; }
+      if (c === '/' && d === '*') { state = 'block'; out += ' '; i += 2; continue; }
+      if (c === "'") state = 'sq';
+      else if (c === '"') state = 'dq';
+      else if (c === '`') state = 'tpl';
+      else if (tplBraces.length > 0 && c === '{') tplBraces[tplBraces.length - 1] += 1;
+      else if (tplBraces.length > 0 && c === '}') {
+        tplBraces[tplBraces.length - 1] -= 1;
+        if (tplBraces[tplBraces.length - 1] === 0) { tplBraces.pop(); state = 'tpl'; }
+      }
+      out += c; i += 1; continue;
+    }
+    if (state === 'line') {
+      if (c === '\n') { state = 'code'; out += '\n'; }
+      i += 1; continue;
+    }
+    if (state === 'block') {
+      if (c === '*' && d === '/') { state = 'code'; i += 2; continue; }
+      if (c === '\n') out += '\n';
+      i += 1; continue;
+    }
+    // String / template states: copy verbatim (honouring escapes).
+    out += c;
+    if (c === '\\' && i + 1 < source.length) { out += source[i + 1]; i += 2; continue; }
+    if (state === 'sq' && c === "'") state = 'code';
+    else if (state === 'dq' && c === '"') state = 'code';
+    else if (state === 'tpl' && c === '`') state = 'code';
+    else if (state === 'tpl' && c === '$' && d === '{') { out += d; i += 2; tplBraces.push(1); state = 'code'; continue; }
+    i += 1;
+  }
+  return out;
+}
+
+/**
  * Static module specifiers in one module's source: `import … from '…'`,
  * `export … from '…'` and bare `import '…'`, with string literals only.
- * Deliberately a recogniser, not a parser: an over-match (a specifier-
- * shaped string in a comment) can only ADD a package file to the
- * snapshot — hash-recorded, inside the package — never reach outside
- * it, and an under-match (a computed specifier) is a dynamic import,
- * governed by the serve-time snapshot lookup like any other request.
+ * Runs over the comment-stripped source and tolerates the spaceless
+ * forms minifiers emit (`import{x}from'…'`, `export*from'…'`,
+ * `export{y}from'…'`) — Fable F1 re-check R1. Deliberately a recogniser,
+ * not a parser: an over-match (a specifier-shaped string in code) can
+ * only ADD a package file to the snapshot — hash-recorded, inside the
+ * package — never reach outside it, and an under-match (a computed
+ * specifier) is a dynamic import, governed by the serve-time snapshot
+ * lookup like any other request. Dynamic `import(…)` never matches:
+ * the clause grammar has no `(`.
  */
-const STATIC_MODULE_SPECIFIER = /\b(?:import|export)\s+(?:[A-Za-z0-9${},*\s]+?\s+from\s+)?['"]([^'"]+)['"]/g;
+const STATIC_MODULE_SPECIFIER = /\b(?:import|export)\s*(?:\{[^{}]*\}|\*(?:\s+as\s+[A-Za-z_$][\w$]*)?|[A-Za-z_$][\w$]*(?:\s*,\s*(?:\{[^{}]*\}|\*(?:\s+as\s+[A-Za-z_$][\w$]*)?))?)?\s*from\s*['"]([^'"]+)['"]|\bimport\s*['"]([^'"]+)['"]/g;
 
 /** @param {string} source @returns {string[]} */
 function staticModuleSpecifiers(source) {
   const out = [];
-  for (const match of source.matchAll(STATIC_MODULE_SPECIFIER)) out.push(match[1]);
+  for (const match of stripModuleComments(source).matchAll(STATIC_MODULE_SPECIFIER)) out.push(match[1] ?? match[2]);
   return out;
 }
 
@@ -112,20 +170,24 @@ function resolvePackageSpecifier(fromRelPath, specifier) {
 }
 
 /**
- * Read one snapshot file under the serving discipline (Part A1, condition
+ * Stat one snapshot file under the serving discipline (Part A1, condition
  * (b)) applied at registration: the file's real path must sit under the
  * package's real root under EXACTLY the requested relative spelling, so
  * symlink/junction escapes and case aliases are refused rather than
- * snapshotted. Returns the file's bytes, or null when no file exists
- * under that spelling (a specifier naming nothing is simply not part of
- * the graph — if live code imports it, the load fails closed at the
- * serve-time lookup). A file that changes while it is read fails with
- * ERR_PLUGIN_CHANGED, v1's stable-read discipline.
+ * snapshotted. This is the walk's PRE-READ step: the snapshot cap is
+ * charged from the returned size BEFORE the file is opened or buffered
+ * (Fable F1 re-check R3a — the charge can never be poisoned by a torn
+ * pre-stat, because the read re-verifies every stat field through the
+ * held handle and the post-walk second pass re-stats and re-hashes the
+ * whole set). Returns the stat identity, or null when no regular file
+ * exists under that spelling (a specifier naming nothing is simply not
+ * part of the graph — if live code imports it, the load fails closed at
+ * the serve-time lookup).
  * @param {string} realRoot
  * @param {string} relPath
- * @returns {Promise<Buffer | null>}
+ * @returns {Promise<{realFile: string, size: bigint, mtimeNs: bigint, ctimeNs: bigint, dev: bigint, ino: bigint} | null>}
  */
-async function readSnapshotFile(realRoot, relPath) {
+async function statSnapshotFile(realRoot, relPath) {
   let realFile;
   try {
     realFile = await fs.realpath(path.join(realRoot, ...relPath.split('/')));
@@ -136,15 +198,36 @@ async function readSnapshotFile(realRoot, relPath) {
   if (contained === null || servedPath(contained) !== `/${relPath}`) {
     throw new Error(`plugin module "${relPath}" resolves outside its package or under a different spelling; refusing to serve this package`);
   }
-  const handle = await fs.open(realFile, 'r');
+  let st;
+  try {
+    st = await fs.stat(realFile, { bigint: true });
+  } catch {
+    return null;
+  }
+  if (!st.isFile()) return null;
+  return { realFile, size: st.size, mtimeNs: st.mtimeNs, ctimeNs: st.ctimeNs, dev: st.dev, ino: st.ino };
+}
+
+function sameStatIdentity(a, b) {
+  return a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs && a.dev === b.dev && a.ino === b.ino;
+}
+
+/**
+ * Read one snapshot file EXACTLY once through a held handle, verifying
+ * the handle's stat still matches the PRE-READ stat on both sides of the
+ * read. A file that changes while it is read fails with
+ * ERR_PLUGIN_CHANGED, v1's stable-read discipline.
+ * @param {{realFile: string, size: bigint, mtimeNs: bigint, ctimeNs: bigint, dev: bigint, ino: bigint}} info
+ * @returns {Promise<Buffer>}
+ */
+async function readSnapshotFile(info) {
+  const handle = await fs.open(info.realFile, 'r');
   try {
     const before = await handle.stat({ bigint: true });
-    if (!before.isFile()) return null;
+    if (!before.isFile() || !sameStatIdentity(before, info)) throw pluginChangedError();
     const bytes = await handle.readFile();
     const after = await handle.stat({ bigint: true });
-    if (before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs || BigInt(bytes.length) !== before.size) {
-      throw pluginChangedError();
-    }
+    if (!sameStatIdentity(after, before) || BigInt(bytes.length) !== before.size) throw pluginChangedError();
     return bytes;
   } finally {
     await handle.close();
@@ -171,6 +254,7 @@ async function readSnapshotFile(realRoot, relPath) {
 async function buildPluginRealmSnapshot(realRoot, entryRelPath, options = {}) {
   const maxBytes = options.maxBytes ?? PLUGIN_REALM_SNAPSHOT_MAX_BYTES;
   const files = new Map();
+  const stats = new Map();
   let totalBytes = 0;
   const seen = new Set();
   const queue = [entryRelPath];
@@ -178,18 +262,39 @@ async function buildPluginRealmSnapshot(realRoot, entryRelPath, options = {}) {
     const relPath = /** @type {string} */ (queue.shift());
     if (seen.has(relPath)) continue;
     seen.add(relPath);
-    const bytes = await readSnapshotFile(realRoot, relPath);
-    if (bytes === null) continue;
-    totalBytes += bytes.length;
-    if (totalBytes > maxBytes) {
+    const info = await statSnapshotFile(realRoot, relPath);
+    if (info === null) continue;
+    // R3(a): the cap is charged from the PRE-READ stat size — an
+    // over-cap file is refused here, before it is opened or buffered.
+    if (totalBytes + Number(info.size) > maxBytes) {
       throw new Error(`plugin package snapshot exceeds the ${maxBytes}-byte snapshot limit at "${relPath}"; refusing to serve this package`);
     }
+    const bytes = await readSnapshotFile(info);
+    totalBytes += bytes.length;
     files.set(relPath, { bytes, sha256: createHash('sha256').update(bytes).digest('hex') });
+    stats.set(relPath, info);
     for (const specifier of staticModuleSpecifiers(bytes.toString('utf8'))) {
       if (!specifier.startsWith('./') && !specifier.startsWith('../')) continue;
       const resolved = resolvePackageSpecifier(relPath, specifier);
       if (resolved === null || resolved === 'jcad.js' || !/\.m?js$/.test(resolved)) continue;
       if (!seen.has(resolved)) queue.push(resolved);
+    }
+  }
+  // R3(b): SECOND-PASS RE-VERIFICATION. The per-read handle checks above
+  // prove each file was stable WHILE it was read; they cannot prove the
+  // set is one version — an early file can change after its read while
+  // later files are walked. Re-stat and re-hash EVERY snapshotted file;
+  // any drift aborts the registration with ERR_PLUGIN_CHANGED, so a
+  // mixed-version snapshot is never registered or served.
+  for (const [relPath, file] of files) {
+    const recorded = stats.get(relPath);
+    const now = await statSnapshotFile(realRoot, relPath);
+    if (now === null || !sameStatIdentity(now, recorded)) {
+      throw pluginChangedError('Plugin source changed while it was being snapshotted; reload the plugin to retry.');
+    }
+    const bytes = await readSnapshotFile(now);
+    if (createHash('sha256').update(bytes).digest('hex') !== file.sha256) {
+      throw pluginChangedError('Plugin source changed while it was being snapshotted; reload the plugin to retry.');
     }
   }
   const entry = files.get(entryRelPath);

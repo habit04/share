@@ -67,6 +67,14 @@ export interface PluginTrustDetails {
 export interface PluginSource {
   manifest: PluginManifest;
   code: string;
+  /**
+   * The entry's EXACT FILE BYTES when the source was read from disk
+   * (folder reads, R2). Hashing (trust + the snapshot's approved-entry
+   * verification) digests these bytes, never a decode/re-encode of
+   * `code`. `code` itself — the lossy UTF-8 decode — remains what v1
+   * evaluates, unchanged.
+   */
+  codeBytes?: Uint8Array;
   /** Where it came from: a folder path, or the picked file name. */
   path: string;
   origin: 'folder' | 'file' | 'script';
@@ -93,7 +101,7 @@ export interface LoadedPlugin {
 export interface PluginsBridge {
   pluginsDir(): Promise<string>;
   pluginsList(): Promise<Array<{ folder: string; manifest: string | null; error?: string }>>;
-  pluginsRead(folder: string): Promise<{ manifest: string; code: string; path: string } | null>;
+  pluginsRead(folder: string): Promise<{ manifest: string; code: string; codeBytes?: Uint8Array; path: string } | null>;
   /** Run a script in the page (used when CSP forbids `new Function`). */
   pluginsEval?(source: string): Promise<unknown>;
   /**
@@ -273,6 +281,35 @@ export async function codeHash(code: string): Promise<string> {
     h = Math.imul(h, 0x01000193) >>> 0;
   }
   return `fnv-${h.toString(16)}`;
+}
+
+/**
+ * SHA-256 (hex) of EXACT BYTES; FNV-1a over the bytes when WebCrypto is
+ * unavailable, which never remembers trust. The R2 canonical form: for a
+ * source read from disk, both the trust/approval hash and the hash the
+ * snapshot verifies against are taken over the file's raw bytes — never
+ * over a decode/re-encode round trip, which is lossy for non-UTF-8
+ * bytes and made main's raw-byte hash unmatchable (ERR_PLUGIN_CHANGED
+ * on an unchanged file). For UTF-8-clean files the digest equals
+ * `codeHash` of the decoded text, so nothing else changes.
+ */
+export async function codeHashBytes(bytes: Uint8Array): Promise<string> {
+  const subtle = globalThis.crypto?.subtle;
+  if (subtle) {
+    const buf = await subtle.digest('SHA-256', bytes as BufferSource);
+    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  let h = 0x811c9dc5;
+  for (const b of bytes) {
+    h ^= b;
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `fnv-${h.toString(16)}`;
+}
+
+/** A source's approval hash: its raw file bytes when it has them (folder reads), else its text. */
+async function sourceHash(src: PluginSource): Promise<string> {
+  return src.codeBytes ? codeHashBytes(src.codeBytes) : codeHash(src.code);
 }
 
 interface TrustEntry {
@@ -531,7 +568,7 @@ export class PluginHost {
 
   /** Is this code trusted? Asks when unknown or changed; `ask` = false never asks (declined stays declined). */
   private async trusted(src: PluginSource, reask: boolean, current: () => boolean = () => true): Promise<boolean> {
-    const hash = await codeHash(src.code);
+    const hash = await sourceHash(src);
     if (!current()) return false;
     const all = readTrust(this.storage);
     const key = trustKey(src);
@@ -804,9 +841,10 @@ export class PluginHost {
     if (src.origin === 'folder' && src.folder && this.bridge?.pluginsServeIsolatedPackage) {
       // Fable F1: main snapshots the package at registration and verifies
       // the snapshot's entry against the hash this load's trust flow
-      // approved — the codeHash of src.code, the exact text `trusted()`
-      // hashed and the user confirmed for this source.
-      const approvedEntryHash = await codeHash(src.code);
+      // approved — `sourceHash`, the same digest `trusted()` computed and
+      // the user confirmed for this source: the entry's raw file bytes
+      // when the source carries them (R2), else its text.
+      const approvedEntryHash = await sourceHash(src);
       const served = await this.bridge.pluginsServeIsolatedPackage(src.folder, approvedEntryHash);
       if (!served || typeof served.entryUrl !== 'string' || !served.entryUrl) return null;
       return {
@@ -865,7 +903,7 @@ export class PluginHost {
     if (!this.bridge) throw new Error('No plugins folder in the browser edition; use PLUGINLOAD to pick the files.');
     const r = await this.bridge.pluginsRead(folder);
     if (!r) throw new Error(`No plugin folder "${folder}".`);
-    return { manifest: parseManifest(r.manifest, folder), code: r.code, path: r.path, origin: 'folder', folder };
+    return { manifest: parseManifest(r.manifest, folder), code: r.code, ...(r.codeBytes ? { codeBytes: r.codeBytes } : {}), path: r.path, origin: 'folder', folder };
   }
 
   /** Load every plugin in userData/plugins (start-up). */

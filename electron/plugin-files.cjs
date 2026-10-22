@@ -32,7 +32,7 @@ function safePluginFolder(name) { if (!isPluginFolderName(name)) throw new Error
  * @param {number} maximum
  * @param {{ checkPath?: (file: string) => Promise<unknown> }} options
  */
-async function readStablePluginFile(root, file, maximum, options) {
+async function readStablePluginFileBytes(root, file, maximum, options) {
   if (typeof root !== 'string' || !path.isAbsolute(root) || root.includes('\0')) throw new Error('Invalid plugin root');
   await options.checkPath?.(file);
   let handle, verified = false;
@@ -74,7 +74,7 @@ async function readStablePluginFile(root, file, maximum, options) {
     }
     if ((await handle.read(extra, 0, 1, length)).bytesRead) throw changed();
     await check();
-    return bytes.toString('utf8');
+    return bytes;
   } catch (error) {
     if (verified && error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) throw changed();
     throw error;
@@ -86,19 +86,31 @@ async function readStablePluginFile(root, file, maximum, options) {
  * @param {unknown} folder
  * @param {{ checkPath?: (file: string) => Promise<unknown> }} [options]
  */
+/**
+ * The decoded-text view of the stable read (Buffer.toString('utf8') —
+ * lossy for non-UTF-8 bytes, exactly the text v1 has always executed).
+ * @param {string} root @param {string} file @param {number} maximum
+ * @param {{ checkPath?: (file: string) => Promise<unknown> }} [options]
+ * @returns {Promise<string>}
+ */
+async function readStablePluginFile(root, file, maximum, options = {}) {
+  return (await readStablePluginFileBytes(root, file, maximum, options)).toString('utf8');
+}
+
 async function readPluginManifest(root, folder, options = {}) {
   return readStablePluginFile(root, path.join(root, safePluginFolder(folder), 'plugin.json'), MAX_PLUGIN_MANIFEST_BYTES, options);
 }
 
 /**
- * Return the same logical source path as the legacy loader/trust key. Missing
- * manifests return null; missing code and malformed entry names remain errors.
+ * Resolve a folder's manifest text and entry file (the same logical source
+ * path as the legacy loader/trust key). Missing manifests return null;
+ * missing code and malformed entry names remain errors.
  * @param {string} root
  * @param {unknown} folder
  * @param {{ checkPath?: (file: string) => Promise<unknown> }} [options]
- * @returns {Promise<{manifest: string, code: string, path: string} | null>}
+ * @returns {Promise<{manifest: string, file: string} | null>}
  */
-async function readPluginSource(root, folder, options = {}) {
+async function readPluginEntry(root, folder, options) {
   const directory = path.join(root, safePluginFolder(folder));
   let manifest;
   try { manifest = await readPluginManifest(root, folder, options); }
@@ -107,8 +119,30 @@ async function readPluginSource(root, folder, options = {}) {
   try { const record = JSON.parse(manifest); if (record && record.main !== undefined) main = String(record.main); }
   catch { /* The renderer reports malformed JSON; the legacy default entry is retained. */ }
   if (!MAIN_RE.test(main)) throw new Error('plugin.json "main" must be a .js file in the plugin folder');
-  const file = path.join(directory, main);
-  return { manifest, code: await readStablePluginFile(root, file, MAX_PLUGIN_CODE_BYTES, options), path: file };
+  return { manifest, file: path.join(directory, main) };
 }
 
-module.exports = { MAX_PLUGIN_MANIFEST_BYTES, MAX_PLUGIN_CODE_BYTES, MAIN_RE, isPluginFolderName, readPluginManifest, readPluginSource };
+async function readPluginSource(root, folder, options = {}) {
+  const entry = await readPluginEntry(root, folder, options);
+  if (entry === null) return null;
+  return { manifest: entry.manifest, code: await readStablePluginFile(root, entry.file, MAX_PLUGIN_CODE_BYTES, options), path: entry.file };
+}
+
+/**
+ * The same folder source as `readPluginSource`, but the entry code as its
+ * EXACT FILE BYTES (Fable F1 re-check R2): hashing canonicalises on these
+ * bytes end to end — the renderer's trust/approval hash and main's
+ * snapshot verification both digest them — while the decoded text
+ * (`readPluginSource`) remains what v1 evaluates, unchanged.
+ * @param {string} root
+ * @param {unknown} folder
+ * @param {{ checkPath?: (file: string) => Promise<unknown> }} [options]
+ * @returns {Promise<{manifest: string, codeBytes: Buffer, path: string} | null>}
+ */
+async function readPluginSourceBytes(root, folder, options = {}) {
+  const entry = await readPluginEntry(root, folder, options);
+  if (entry === null) return null;
+  return { manifest: entry.manifest, codeBytes: await readStablePluginFileBytes(root, entry.file, MAX_PLUGIN_CODE_BYTES, options), path: entry.file };
+}
+
+module.exports = { MAX_PLUGIN_MANIFEST_BYTES, MAX_PLUGIN_CODE_BYTES, MAIN_RE, isPluginFolderName, readPluginManifest, readPluginSource, readPluginSourceBytes };

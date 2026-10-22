@@ -82,6 +82,19 @@ Limits: `plugin.json` up to 64 KB, the main file up to 2 MB, one file per plugin
 your code into that one file if you use several modules (any bundler with an IIFE output
 works; the bundle may refer to the free variable `jcad`).
 
+**Isolated (`"isolation": "worker"`) packages** are the exception to "one file per
+plugin": in the desktop app the entry and its static ES-module graph are snapshotted
+and served to the worker realm (the whole graph capped at 32 MiB). A multi-file
+isolated package must observe the snapshot's authoring constraints — see
+`docs/PLUGIN-ISOLATION.md` §6 for the full list. In short: static imports/exports
+with string-literal specifiers only (spaceless/minified and comment-interposed
+forms are recognised; computed dynamic import specifiers are not), relative
+`./` / `../` specifiers that stay inside the package and name each file under its
+exact on-disk spelling with a `.js` / `.mjs` extension, no bare specifiers, and no
+`jcad.js` file of your own at the package root (that name is the host's shim).
+Anything outside those rules fails closed: the file is not served and the load
+fails rather than falling back to disk.
+
 To distribute a plugin, zip the folder; users unzip it into `<app data>/plugins/` and
 restart or type `PLUGINRELOAD`.
 

@@ -10,7 +10,7 @@ const { atomicWriteFile } = require('../atomic-write.cjs');
 const { createAutosaveStore, safeAutosaveName } = require('../autosave-store.cjs');
 const { stateDir, autosaveDir, enqueueWrite } = require('./app-data.cjs');
 const { readLimitedFile, validateTextSize } = require('../resource-limits.cjs');
-const { isPluginFolderName, MAIN_RE, readPluginManifest, readPluginSource } = require('../plugin-files.cjs');
+const { isPluginFolderName, MAIN_RE, readPluginManifest, readPluginSourceBytes } = require('../plugin-files.cjs');
 const { buildPluginRealmSnapshot } = require('../renderer-origin.cjs');
 
 /** @typedef {import('./context.cjs').MainContext} MainContext */
@@ -82,8 +82,17 @@ function registerStoreIpc(ctx) {
     }
     return out.sort((a, b) => a.folder.localeCompare(b.folder));
   });
-  /** { manifest, code, path } of one plugin folder, or null when it does not exist. */
-  ipcMain.handle('plugins-read', (_ev, folder) => readPluginSource(pluginsDir(), folder, { checkPath: (file) => pathPolicy.insideRoot(pluginsDir(), file, 'plugins-read') }));
+  /**
+   * { manifest, code, codeBytes, path } of one plugin folder, or null when
+   * it does not exist. The entry travels BOTH ways from ONE stable read
+   * (R2): `codeBytes` are the exact file bytes — the renderer's trust and
+   * snapshot-verification hashes digest them — and `code` is those same
+   * bytes decoded (lossy UTF-8), the text v1 has always executed.
+   */
+  ipcMain.handle('plugins-read', async (_ev, folder) => {
+    const source = await readPluginSourceBytes(pluginsDir(), folder, { checkPath: (file) => pathPolicy.insideRoot(pluginsDir(), file, 'plugins-read') });
+    return source === null ? null : { manifest: source.manifest, code: source.codeBytes.toString('utf8'), codeBytes: source.codeBytes, path: source.path };
+  });
 
   // ------------------------------------------------------------------ plugin-realm serving (AMENDMENT-P25-CSP-HOSTING Part A2; Fable F1)
   // The renderer asks main to serve the package of a plugin it has ALREADY
