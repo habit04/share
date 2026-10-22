@@ -66,7 +66,14 @@ describe('F-1: CommonJS identifiers are locked in the realm', () => {
       const report = (await session.load(`
         const out = { cjs: {} };
         for (const k of ['module', 'exports', '__filename', '__dirname', 'process', 'require', 'Buffer']) {
-          out.cjs[k] = eval('typeof ' + k);
+          // Measured off the global object, where the locks live: under the
+          // lead's CSP ruling (2026-10-21) eval itself is refused in the
+          // realm, so this probe's original instrument (eval('typeof ' + k))
+          // is itself denied and the load failed before it could report.
+          // The fact measured — each identifier resolves to undefined — is
+          // the same one the assertions below pin; the refusal of the old
+          // instrument is pinned separately in plugin-isolation-csp.test.ts.
+          out.cjs[k] = typeof globalThis[k];
         }
         let fsRead = 'not-attempted';
         try {

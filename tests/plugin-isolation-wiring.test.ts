@@ -418,7 +418,10 @@ describe('acceptance F-1/F-2, through the public PluginHost path', () => {
       const ed = makeEditor();
       const code = `
         const types = {};
-        for (const k of ['module', 'exports', '__filename', '__dirname']) types[k] = eval('typeof ' + k);
+        // globalThis, not the original eval('typeof ' + k): eval itself is
+        // refused in the realm under the CSP ruling (2026-10-21); see the
+        // session-level regression for the full note.
+        for (const k of ['module', 'exports', '__filename', '__dirname']) types[k] = typeof globalThis[k];
         let fs = 'not-attempted';
         try { fs = 'READ:' + String(module.require('node:fs').readFileSync(${JSON.stringify(sentinelPath)}, 'utf8')); }
         catch { fs = 'threw'; }
