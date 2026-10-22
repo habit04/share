@@ -15,11 +15,19 @@
  * Registration lifetime is the session's: unregister / clear() (plugin
  * unload, app quit) end serving immediately.
  *
+ * Fable F1 (lead's ruling, 2026-10-21): serving is a SNAPSHOT. At
+ * registration main reads the entry plus its static module graph ONCE,
+ * verifies the entry against the approved trust hash (a mismatch fails
+ * the registration with ERR_PLUGIN_CHANGED), records a SHA-256 per file,
+ * and serves only those in-memory bytes for the session's life — disk is
+ * never re-read after registration, and a path outside the snapshot is
+ * refused (404). Approved bytes are the executed bytes.
+ *
  * Handler-test style follows tests/renderer-origin.test.ts: the real
  * installAssetHandler with only the Electron protocol/net transport doubled.
  */
 import { afterAll, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
@@ -27,17 +35,28 @@ import { basename, dirname, join, resolve } from 'node:path';
 const require = createRequire(import.meta.url);
 
 type Handler = (request: { method: string; url: string }) => Promise<Response>;
+interface PluginRealmSnapshotFile {
+  bytes: Buffer;
+  sha256: string;
+}
+interface PluginRealmSnapshot {
+  files: Map<string, PluginRealmSnapshotFile>;
+  entrySha256: string;
+  totalBytes: number;
+}
 interface PluginRealmRegistry {
-  register(sessionId: string, realRoot: string): void;
+  register(sessionId: string, snapshot: PluginRealmSnapshot): void;
   unregister(sessionId: string): void;
   clear(): void;
-  lookup(sessionId: string): string | undefined;
+  lookup(sessionId: string): PluginRealmSnapshot | undefined;
 }
 const origin = require('../electron/renderer-origin.cjs') as {
   WORKER_CSP: string;
   PLUGIN_REALM_JCAD_SHIM: string;
+  PLUGIN_REALM_SNAPSHOT_MAX_BYTES: number;
   assetResponseHeaders(pathname: string): Record<string, string>;
   createPluginRealmRegistry(): PluginRealmRegistry;
+  buildPluginRealmSnapshot(realRoot: string, entryRelPath: string, options?: { approvedEntryHash?: string; maxBytes?: number }): Promise<PluginRealmSnapshot>;
   installAssetHandler(deps: {
     protocol: { handle(scheme: string, fn: Handler): void };
     net: { fetch(url: string): Promise<Response> };
@@ -47,7 +66,10 @@ const origin = require('../electron/renderer-origin.cjs') as {
 };
 
 const SHIM_BODY = 'export default globalThis[Symbol.for("jcad.isolated.jcad")];';
-const ENTRY_BODY = "import jcad from './jcad.js';\nexport default { loaded: true };\n";
+// The entry's static module graph: the shim import (virtual, never
+// snapshotted) plus sub/extra.mjs, which snapshot serving may serve
+// precisely because the entry imports it.
+const ENTRY_BODY = "import jcad from './jcad.js';\nimport './sub/extra.mjs';\nexport default { loaded: true };\n";
 const EXTRA_BODY = 'export const extra = 42;\n';
 const SECRET_BODY = 'TOP-SECRET-OUTSIDE-THE-PACKAGE';
 
@@ -109,17 +131,25 @@ describe('AMENDMENT-P25-CSP-HOSTING (a): WORKER_CSP is byte-unchanged', () => {
   });
 });
 
+/** Snapshot the shared fixture package and register it under SESSION. */
+async function servePkg(): Promise<PluginRealmSnapshot> {
+  const snapshot = await origin.buildPluginRealmSnapshot(realpathSync(pkgDir), 'main.js');
+  registry.register(SESSION, snapshot);
+  return snapshot;
+}
+
 describe('plugin-realm registry', () => {
   it('registers, looks up, unregisters and clears', () => {
     const r = origin.createPluginRealmRegistry();
+    const snap: PluginRealmSnapshot = { files: new Map(), entrySha256: 'x', totalBytes: 0 };
     expect(r.lookup(SESSION)).toBeUndefined();
-    r.register(SESSION, pkgDir);
-    expect(r.lookup(SESSION)).toBe(pkgDir);
+    r.register(SESSION, snap);
+    expect(r.lookup(SESSION)).toBe(snap);
     r.unregister('never-registered');
-    expect(r.lookup(SESSION)).toBe(pkgDir);
+    expect(r.lookup(SESSION)).toBe(snap);
     r.unregister(SESSION);
     expect(r.lookup(SESSION)).toBeUndefined();
-    r.register(SESSION, pkgDir);
+    r.register(SESSION, snap);
     r.clear();
     expect(r.lookup(SESSION)).toBeUndefined();
   });
@@ -127,7 +157,7 @@ describe('plugin-realm registry', () => {
 
 describe('the jcad:// handler serves a registered plugin package under the worker CSP', () => {
   it('serves the entry and nested .mjs files with WORKER_CSP', async () => {
-    registry.register(SESSION, await import('node:fs').then((m) => m.realpathSync(pkgDir)));
+    await servePkg();
     const entry = await get(realm('main.js'));
     expect(entry.status).toBe(200);
     expect(entry.headers.get('content-security-policy')).toBe(origin.WORKER_CSP);
@@ -190,7 +220,7 @@ describe('the jcad:// handler serves a registered plugin package under the worke
   it('teardown: unregister and clear() end serving immediately (condition (c), main side)', async () => {
     registry.unregister(SESSION);
     expect((await get(realm('main.js'))).status).toBe(404);
-    registry.register(SESSION, await import('node:fs').then((m) => m.realpathSync(pkgDir)));
+    await servePkg();
     expect((await get(realm('main.js'))).status).toBe(200);
     registry.clear();
     expect((await get(realm('main.js'))).status).toBe(404);
@@ -219,7 +249,87 @@ describe('main-process wiring for teardown (condition (c)) is in the shipped mai
   });
   it('exposes the serve/unserve bridge through the preload', () => {
     const preload = readFileSync('electron/preload.cjs', 'utf8');
-    expect(preload).toContain("pluginsServeIsolatedPackage: (folder) => ipcRenderer.invoke('plugins-serve-isolated', folder)");
+    expect(preload).toContain("pluginsServeIsolatedPackage: (folder, approvedEntryHash) => ipcRenderer.invoke('plugins-serve-isolated', folder, approvedEntryHash)");
     expect(preload).toContain("pluginsUnserveIsolatedPackage: (sessionId) => ipcRenderer.invoke('plugins-unserve-isolated', sessionId)");
+  });
+});
+
+describe('Fable F1: snapshot serving — approved bytes are the executed bytes', () => {
+  const sha256 = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
+  const F1_SESSION = 'f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1';
+  const f1Tree = mkdtempSync(join(tmpdir(), 'jcad-realm-snapshot-'));
+  const f1Pkg = join(f1Tree, 'pkg');
+  const ENTRY_V1 = "import jcad from './jcad.js';\nimport { v } from './lib.js';\nexport default { v };\n";
+  const LIB_V1 = 'export const v = "approved-lib";\n';
+  const ENTRY_V2 = "import jcad from './jcad.js';\nimport { v } from './lib.js';\nexport default { v, swapped: true };\n";
+  const LIB_V2 = 'export const v = "SWAPPED-PACKAGE-CONTENT";\n';
+  mkdirSync(f1Pkg, { recursive: true });
+  writeFileSync(join(f1Pkg, 'plugin.json'), JSON.stringify({ name: 'snap', main: 'main.js', apiVersion: 2, isolation: 'worker', capabilities: [] }));
+  writeFileSync(join(f1Pkg, 'main.js'), ENTRY_V1);
+  writeFileSync(join(f1Pkg, 'lib.js'), LIB_V1);
+  writeFileSync(join(f1Pkg, 'jcad.js'), 'DISK-JCAD-JS-MUST-NOT-BE-SERVED');
+  writeFileSync(join(f1Pkg, 'orphan.js'), 'export const orphan = true;\n');
+  const f1Root = realpathSync(f1Pkg);
+  const f1Realm = (rel: string) => realm(rel, F1_SESSION);
+
+  afterAll(() => {
+    expect(dirname(resolve(f1Tree))).toBe(resolve(tmpdir()));
+    expect(basename(f1Tree)).toMatch(/^jcad-realm-snapshot-/);
+    rmSync(f1Tree, { recursive: true, force: true });
+  });
+
+  it('the snapshot is the entry plus its static module graph, hashed per file; the disk jcad.js is not package content', async () => {
+    expect(origin.PLUGIN_REALM_SNAPSHOT_MAX_BYTES).toBe(32 * 1024 * 1024);
+    const snap = await origin.buildPluginRealmSnapshot(f1Root, 'main.js');
+    expect([...snap.files.keys()].sort()).toEqual(['lib.js', 'main.js']);
+    expect(snap.entrySha256).toBe(sha256(ENTRY_V1));
+    expect(snap.files.get('main.js')!.sha256).toBe(sha256(ENTRY_V1));
+    expect(snap.files.get('lib.js')!.sha256).toBe(sha256(LIB_V1));
+    expect(snap.files.get('lib.js')!.bytes.toString('utf8')).toBe(LIB_V1);
+    expect(snap.totalBytes).toBe(Buffer.byteLength(ENTRY_V1) + Buffer.byteLength(LIB_V1));
+  });
+
+  it('(i) replacing the package on disk mid-session changes nothing served: the approved bytes are served', async () => {
+    const snap = await origin.buildPluginRealmSnapshot(f1Root, 'main.js', { approvedEntryHash: sha256(ENTRY_V1) });
+    registry.register(F1_SESSION, snap);
+    writeFileSync(join(f1Pkg, 'main.js'), ENTRY_V2);
+    writeFileSync(join(f1Pkg, 'lib.js'), LIB_V2);
+    const entry = await get(f1Realm('main.js'));
+    expect(entry.status).toBe(200);
+    expect(await entry.text()).toBe(ENTRY_V1);
+    const lib = await get(f1Realm('lib.js'));
+    expect(lib.status).toBe(200);
+    expect(await lib.text()).toBe(LIB_V1);
+  });
+
+  it('(ii) a NEW registration after the replacement fails the trust check with ERR_PLUGIN_CHANGED', async () => {
+    const err = await origin.buildPluginRealmSnapshot(f1Root, 'main.js', { approvedEntryHash: sha256(ENTRY_V1) }).then(
+      () => null,
+      (e: unknown) => e as Error & { code?: string },
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.code).toBe('ERR_PLUGIN_CHANGED');
+    // The replaced package can still register — against ITS hash (the
+    // user re-approves the new source through the normal trust flow).
+    const snap2 = await origin.buildPluginRealmSnapshot(f1Root, 'main.js', { approvedEntryHash: sha256(ENTRY_V2) });
+    expect(snap2.entrySha256).toBe(sha256(ENTRY_V2));
+    registry.unregister(F1_SESSION);
+  });
+
+  it('(iii) a path that exists on disk but is not in the snapshot is refused (404)', async () => {
+    const snap = await origin.buildPluginRealmSnapshot(f1Root, 'main.js');
+    registry.register(F1_SESSION, snap);
+    expect((await get(f1Realm('orphan.js'))).status).toBe(404);
+    expect((await get(f1Realm('plugin.json'))).status).toBe(404);
+    registry.unregister(F1_SESSION);
+  });
+
+  it('(iv) a snapshot over the cap is refused with a clear error', async () => {
+    const err = await origin.buildPluginRealmSnapshot(f1Root, 'main.js', { maxBytes: 16 }).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toMatch(/snapshot exceeds/i);
   });
 });
