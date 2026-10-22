@@ -358,6 +358,17 @@ export function realmBootstrapMain(importModule?: (url: string) => Promise<unkno
       };
     lock('eval', denyCall('eval'));
     lock('Function', denyCall('Function'));
+    // Fable F3: nested workers. A plugin that could construct its own
+    // Worker/SharedWorker would gain an unmediated realm — same origin
+    // class, none of this session's stubs, nonces or capability checks.
+    // Worker creation belongs to the host (the realm itself is host-made),
+    // so both constructors are locked to the same throwing stub shape as
+    // Function (a plain function, so `new Worker()` throws this named
+    // refusal rather than an incidental "not a constructor" error). The
+    // stub applies to the plugin realm's globals only; the host's own
+    // transport machinery is untouched and the realm still loads.
+    lock('Worker', denyCall('Worker'));
+    lock('SharedWorker', denyCall('SharedWorker'));
   }
 
   // ---- message pump

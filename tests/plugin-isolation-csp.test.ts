@@ -55,6 +55,31 @@ const EVAL_PROBE = `
   return out;
 `;
 
+/** Nested-worker forms the Fable F3 finding names, attempted from plugin code. */
+const WORKER_PROBE = `
+  const attempt = (fn) => { try { return 'ran:' + String(fn()); } catch (e) { return 'refused:' + (e && e.message ? e.message : String(e)); } };
+  const out = {};
+  out.workerCtor = attempt(() => new Worker('https://example.invalid/nested.js'));
+  out.workerCall = attempt(() => Worker('https://example.invalid/nested.js'));
+  out.sharedWorkerCtor = attempt(() => new SharedWorker('https://example.invalid/nested.js'));
+  out.globalWorkerCtor = attempt(() => new globalThis.Worker('https://example.invalid/nested.js'));
+  out.selectionCount = (await jcad.document.selection()).length;
+  return out;
+`;
+
+describe('P25 Fable F3: nested workers are refused in the isolated realm', () => {
+  it('Worker and SharedWorker are locked to throwing stubs at handshake; the realm still loads and RPCs', async () => {
+    const ed = makeEditor();
+    const s = session(ed, 'csp-worker-probe', ['document.read']);
+    const report = (await s.loadModule(moduleUrlForBody(WORKER_PROBE))) as Record<string, unknown>;
+    for (const form of ['workerCtor', 'workerCall', 'sharedWorkerCtor', 'globalWorkerCtor']) {
+      expect(String(report[form]), form).toMatch(/^refused:/);
+      expect(String(report[form]), form).toContain('not available in the isolated plugin realm');
+    }
+    expect(report.selectionCount).toBe(0); // a document.read RPC round trip after stubbing
+  }, 60_000);
+});
+
 describe('P25 CSP ruling: string evaluation in the isolated realm', () => {
   it('eval and new Function are refused in the plugin context (realm globals)', async () => {
     const ed = makeEditor();
