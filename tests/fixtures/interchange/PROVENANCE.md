@@ -80,8 +80,6 @@ swap and the P22 lineage each carried; there is one copy now.
 
 - `r2018-table.dxf`: `tests/interchange-fixtures.test.ts`,
   `tests/table-native-dxf.test.ts`, `tests/helpers/autocad-export.ts`,
-  `tests/header-acadmaintver-guard.test.ts` (the Series 3 guard's named
-  70/105 leg — inventory corrected at the COMP-N re-composition),
   `tests/fixtures/manifest.json` (the fixed-point sweep).
 - `r2018-dimensions.dxf`: `tests/interchange-fixtures.test.ts`,
   `tests/cad-graph-annotations.test.ts`,
@@ -104,11 +102,22 @@ swap and the P22 lineage each carried; there is one copy now.
   `tests/cad-graph-dxf.test.ts`, `tests/complex-linetype-dxf.test.ts`,
   `tests/dwg-linetype-compatibility.test.ts`, the manifest sweep.
 
+## A purpose-built synthetic input (not one of the five)
+
+`acadmaintver-malformed-pair.dxf` is **synthetic, hand-authored for one
+purpose**: a minimal drawing whose header carries the malformed pair
+(`$ACADVER AC1032` with `$ACADMAINTVER` as group 70, value 105) — the
+Series 3 guard's named input, after the genuine swap retired the pair
+from `r2018-table.dxf`. It is not AutoCAD output and must not be cited
+as such. Consumer: `tests/header-acadmaintver-guard.test.ts` (its first
+leg; the guard's genuine-pair controls stay on genuine files).
+
 ## Assertion dependence on the bogus header pair
 
 Exactly one test asserts on the pair: the Series 3 guard's named leg in
-`tests/header-acadmaintver-guard.test.ts` (a source carrying `70 / 105`
-at AC1032 must not re-emit it). No other test names `$ACADMAINTVER` or
+`tests/header-acadmaintver-guard.test.ts`, against the purpose-built
+fixture above (a source carrying `70 / 105` at AC1032 must not re-emit
+it). No other test names `$ACADMAINTVER` or
 asserts the value 105. Whole-file and fixed-point comparisons over the
 synthetic fixtures (the interchange fixed-point sweep, the table round
 trips) implicitly carried the retained `70 / 105` pair: each replacement
@@ -124,3 +133,6 @@ AutoCAD 2027 R2018 table — the lead's Recipe B control, SHA-256
 with a merged title, a text-height override at (2,2) and an alignment
 override at (3,0), written in AutoCAD's AC1032 cell-value form. Table
 claims that need a native oracle use it, not `r2018-table.dxf`.
+Consumers: `tests/table-p22-compn.test.ts`,
+`tests/header-acadmaintver-guard.test.ts` (the genuine-pair and
+version-move legs).
