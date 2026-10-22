@@ -685,10 +685,30 @@ export function writeAcadTable(w: Writer, t: TableEntity, owner: string, picture
         if (content !== '') {
           w.pair(93, 6);
           w.pair(90, 4);
-          w.pair(1, content);
+          // Text over 250 chars is chunked the way AutoCAD writes it (RULING
+          // O-1, the lead's native re-run): 250-char CONTINUATION groups
+          // FIRST (2 for the plain string, 303 for the formatted), then the
+          // final group (1 / 302) with the remainder. Both sides chunk the
+          // same content at the same points (dxfChunkEnd, the writer's
+          // existing 250 walk). AutoCAD accepts the unchunked form too — the
+          // re-run proved the 300-char cell intact — but matching the native
+          // writer is the ruled posture for other readers.
+          let rest = content;
+          while (rest.length > 250) {
+            const end = dxfChunkEnd(rest);
+            w.pair(2, rest.slice(0, end));
+            rest = rest.slice(end);
+          }
+          w.pair(1, rest);
           w.pair(94, 0);
           w.pair(300, '');
-          w.pair(302, content);
+          rest = content;
+          while (rest.length > 250) {
+            const end = dxfChunkEnd(rest);
+            w.pair(303, rest.slice(0, end));
+            rest = rest.slice(end);
+          }
+          w.pair(302, rest);
         } else {
           w.pair(93, 7);
           w.pair(90, 0);

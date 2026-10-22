@@ -1,21 +1,21 @@
 /**
- * P22 O-1 PIN — the repo-side record of the AC1032 long-cell behaviour, written for
- * the lead's native re-run to judge (gate item O-1, P22 COMP-N).
+ * P22 O-1 — the AC1032 long-cell form, as RE-PINNED by RULING O-1 (the lead's
+ * native re-run, 2026-10-21).
  *
- * Question: at AC1032 (R2018), how must a table cell whose text exceeds 250 chars be
- * stored — one unchunked string, or chunked? AutoCAD's own AC1032 cell-value form
- * (the genuine control, tests/fixtures/interchange/r2018-table-autocad.dxf) stores
- * each cell's text in a single group 1 with its formatted twin in a single group 302,
- * and JCad's writer follows that form at any length: no 250-char chunking, no
- * group 3 / 303 continuations. This test PINS that behaviour — it asserts the
- * current, admitted writer behaviour as the record; whether AutoCAD accepts the
- * unchunked 300-char form on open is exactly what the lead's native re-run
- * (rerun-o1-longcell.dxf, built from this same shape) decides. If the native
- * verdict ever requires chunking, this test is the failing-first record of the
- * change, not a test to weaken quietly.
+ * The original pin asserted the unchunked form (one group 1 / one group 302
+ * for a >250-char cell). The native outcome was (a) HARMLESS — AutoCAD read
+ * the 300-char cell intact on input and reopen (LONGCELL-LEN=300), AUDIT 0 —
+ * but the lead RULES: adopt AutoCAD's own chunking, because matching the
+ * native writer is the posture for other readers. AutoCAD accepts both
+ * forms; this test now pins AutoCAD's: 250-char CONTINUATION groups FIRST
+ * (group 2 for the plain string, group 303 for the formatted twin), then
+ * the final group (1 / 302) with the remainder — the same split points on
+ * both sides. The unchunked pin is superseded, not forgotten: if the writer
+ * ever regresses to it, this test fails.
  *
- * The input mirrors the re-run recipe: the genuine Recipe B control with cell
- * (2,1) replaced by a 300-char numbered-segment string.
+ * The input mirrors the re-run recipe: the genuine Recipe B control
+ * (r2018-table-autocad.dxf) with cell (2,1) replaced by a numbered-segment
+ * string of the stated length.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -60,38 +60,56 @@ function cellChunksOf(text: string): Pair[][] {
   return chunks;
 }
 
-/** Thirty numbered 10-char segments: |01|abcdef|02|abcdef|…|30|abcdef — exactly 300 chars. */
-const LONG = Array.from({ length: 30 }, (_, i) => `|${String(i + 1).padStart(2, '0')}|abcdef`).join('');
-
+const segments = (n: number) => Array.from({ length: n }, (_, i) => `|${String(i + 1).padStart(2, '0')}|abcdef`).join('');
 const controlText = () => decodeDxfBytes(readFileSync(join(import.meta.dirname, 'fixtures', 'interchange', 'r2018-table-autocad.dxf'))).text;
 
-describe('P22 O-1 pin: a >250-char cell at AC1032 is written as ONE unchunked group 1/302', () => {
-  it('the long cell (2,1) of the genuine control, replaced by 300 chars, writes unchunked', () => {
+function writtenWith(cellText: string): string {
+  const state = readDxf(controlText());
+  const table = state.entities.find((e) => e.type === 'table') as TableEntity;
+  expect(table).toBeDefined();
+  const edited = setCellText(table, 2, 1, cellText);
+  return writeDxf({ ...state, entities: state.entities.map((e) => (e === table ? edited : e)) });
+}
+
+const values = (chunk: Pair[], code: number) => chunk.filter(([c]) => c === code).map(([, v]) => v);
+
+describe("P22 O-1 (RULING O-1): a >250-char cell at AC1032 is written in AutoCAD's chunked form", () => {
+  it('300 chars: one 250-char continuation (2/303) FIRST, then the final 1/302 with the 50-char remainder', () => {
+    const LONG = segments(30);
     expect(LONG).toHaveLength(300);
-    const state = readDxf(controlText());
-    const table = state.entities.find((e) => e.type === 'table') as TableEntity;
-    expect(table).toBeDefined();
-    const edited = setCellText(table, 2, 1, LONG);
-    const written = writeDxf({ ...state, entities: state.entities.map((e) => (e === table ? edited : e)) });
-
-    // The written file is AC1032 (the control's version; nothing forces higher).
+    const written = writtenWith(LONG);
     expect(written).toContain('AC1032');
-
-    // Cell (2,1) is row-major chunk 7 of 12. Exactly ONE group 1 and ONE group 302,
-    // each the full 300-char string; no group 3 / 303 continuation chunking.
     const chunks = cellChunksOf(written);
     expect(chunks).toHaveLength(12);
-    const cell = chunks[7]!;
-    const ones = cell.filter(([c]) => c === 1);
-    const formatted = cell.filter(([c]) => c === 302);
-    expect(ones).toHaveLength(1);
-    expect(ones[0]![1]).toBe(LONG);
-    expect(formatted).toHaveLength(1);
-    expect(formatted[0]![1]).toBe(LONG);
-    expect(cell.some(([c]) => c === 3 || c === 303)).toBe(false);
-
-    // And the written file re-reads with the full text intact at (2,1).
+    const cell = chunks[7]!; // (2,1), row-major
+    expect(values(cell, 2)).toEqual([LONG.slice(0, 250)]);
+    expect(values(cell, 1)).toEqual([LONG.slice(250)]);
+    expect(values(cell, 303)).toEqual([LONG.slice(0, 250)]);
+    expect(values(cell, 302)).toEqual([LONG.slice(250)]);
+    expect(values(cell, 3)).toEqual([]);
+    // Both sides reassemble to the full string, and the file re-reads whole.
+    expect(values(cell, 2).join('') + values(cell, 1).join('')).toBe(LONG);
+    expect(values(cell, 303).join('') + values(cell, 302).join('')).toBe(LONG);
     const back = readDxf(written).entities.find((e) => e.type === 'table') as TableEntity;
     expect(back.cells[2]![1]!.text).toBe(LONG);
+    expect(writeDxf(readDxf(written))).toBe(written);
+  });
+
+  it('600 chars: two continuations per side, then the final group with 100 chars', () => {
+    const LONG = segments(60);
+    expect(LONG).toHaveLength(600);
+    const cell = cellChunksOf(writtenWith(LONG))[7]!;
+    expect(values(cell, 2)).toEqual([LONG.slice(0, 250), LONG.slice(250, 500)]);
+    expect(values(cell, 1)).toEqual([LONG.slice(500)]);
+    expect(values(cell, 303)).toEqual([LONG.slice(0, 250), LONG.slice(250, 500)]);
+    expect(values(cell, 302)).toEqual([LONG.slice(500)]);
+  });
+
+  it('a short cell keeps the single-group form (no continuations)', () => {
+    const cell = cellChunksOf(writtenWith('TWO'))[7]!;
+    expect(values(cell, 2)).toEqual([]);
+    expect(values(cell, 303)).toEqual([]);
+    expect(values(cell, 1)).toEqual(['TWO']);
+    expect(values(cell, 302)).toEqual(['TWO']);
   });
 });
