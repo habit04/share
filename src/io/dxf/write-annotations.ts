@@ -649,7 +649,7 @@ export function tableRoundtripCells(t: TableEntity): Array<{ content: string; al
  * cell -> 0); no other candidate the delivery tested (rendered widths, the
  * common string hashes) fits more than a subset of the cells.
  */
-function tableCellContentSum(content: string): number {
+export function tableCellContentSum(content: string): number {
   let sum = 0;
   for (let i = 0; i < content.length; i += 1) sum += (i + 1) * content.charCodeAt(i);
   return sum;
@@ -724,33 +724,40 @@ export function writeTableRoundtrip(w: Writer, t: TableEntity, rt: TableRoundtri
     w.pair(330, rt.data);
     w.pair(100, 'AcDbXrecord');
     w.pair(280, 1);
-    if (cell.content !== '') {
-      w.pair(93, 6);
-      w.pair(90, 4);
-      let rest = cell.content;
-      while (rest.length > 250) {
-        const end = dxfChunkEnd(rest);
-        w.pair(2, rest.slice(0, end));
-        rest = rest.slice(end);
-      }
-      w.pair(1, rest);
-      w.pair(94, 0);
-      w.pair(300, '');
-      rest = cell.content;
-      while (rest.length > 250) {
-        const end = dxfChunkEnd(rest);
-        w.pair(303, rest.slice(0, end));
-        rest = rest.slice(end);
-      }
-      w.pair(302, rest);
-    } else {
-      w.pair(93, 7);
-      w.pair(90, 0);
-      w.pair(94, 0);
-      w.pair(300, '');
-      w.pair(302, '');
-    }
+    for (const [code, val] of tableRoundtripCellValueGroups(cell)) w.pair(code, val);
   });
+}
+
+/**
+ * The value groups of one CELL_VALUE XRECORD (everything after its 280
+ * group), in the shape the AC1032 entity form writes inline: 93 6 / 90 4 +
+ * the text (chunked per RULING O-1) for a non-empty cell, 93 7 / 90 0 for
+ * an empty one. Shared by the generating writer above and the cad-graph
+ * merge, which regenerates a retained chain's contents from the current
+ * model on every AC1015 write (P22 PR #39 fix: the chain is derived data).
+ */
+export function tableRoundtripCellValueGroups(cell: { content: string }): Array<[number, string]> {
+  const groups: Array<[number, string]> = [];
+  if (cell.content !== '') {
+    groups.push([93, '6'], [90, '4']);
+    let rest = cell.content;
+    while (rest.length > 250) {
+      const end = dxfChunkEnd(rest);
+      groups.push([2, rest.slice(0, end)]);
+      rest = rest.slice(end);
+    }
+    groups.push([1, rest], [94, '0'], [300, '']);
+    rest = cell.content;
+    while (rest.length > 250) {
+      const end = dxfChunkEnd(rest);
+      groups.push([303, rest.slice(0, end)]);
+      rest = rest.slice(end);
+    }
+    groups.push([302, rest]);
+  } else {
+    groups.push([93, '7'], [90, '0'], [94, '0'], [300, ''], [302, '']);
+  }
+  return groups;
 }
 
 export function writeAcadTable(w: Writer, t: TableEntity, owner: string, picture: { name: string; recordHandle: string; styleHandle: string; roundtrip?: TableRoundtripPlan }): void {

@@ -24,6 +24,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readDxf, writeDxf } from '../src/io/dxf';
 import { decodeDxfBytes } from '../src/io/encoding';
+import { setCellText } from '../src/core/table';
 
 type Pair = [number, string];
 
@@ -409,4 +410,101 @@ describe('P22 F-2 successor (continued)', () => {
     expect(tableRecord(written).some(([c, v]) => c === 102 && v === '{ACAD_XDICTIONARY')).toBe(false);
   });
 });
+});
+
+/**
+ * P22 PR #39 fix (Codex P1, lead ruling): the roundtrip chain is DERIVED
+ * data. A chain the source file carries must not be replayed verbatim after
+ * the model moved — on every AC1015 write its contents (the CELL_VALUE
+ * xrecords and the ACDBDATATABLE rows/cols/cells) are regenerated from the
+ * CURRENT model, reusing the existing dictionary/XRECORD/datatable/cell
+ * handles where present, keeping unrelated keys in the dictionary, and
+ * leaving an unchanged table's output byte-stable. Codex's three shapes:
+ * edit a cell's text, add a row, and a JCad-authored table saved twice.
+ */
+describe('P22 PR #39 fix: a retained roundtrip chain is regenerated from the current model', () => {
+  const handleOf = (rec: Pair[]) => rec.find(([c]) => c === 5)?.[1];
+
+  it('edit a cell text: the regenerated chain carries the NEW text, handles reused', () => {
+    const state = readDxf(r2000Text());
+    const edited = {
+      ...state,
+      entities: state.entities.map((e) => (e.type === 'table' ? setCellText(e, 2, 2, 'BOLT-M8') : e)),
+    };
+    const written = writeDxf(edited);
+    const chain = chainOf(written);
+    expect(chain, 'a roundtrip chain').not.toBeNull();
+    // The load census (chain), not just the entity, carries the edit.
+    expect(group(chain!.cells[8]!, 302)).toBe('BOLT-M8');
+    expect(group(chain!.cells[8]!, 1)).toBe('BOLT-M8');
+    expect(group(chain!.cells[8]!, 93)).toBe('6');
+    // The datatable content sum for the edited cell is regenerated too.
+    const sums = chain!.data.filter(([c]) => c === 40).map(([, v]) => Number(v));
+    expect(sums[8]).toBe([...'BOLT-M8'].reduce((acc, ch, at) => acc + (at + 1) * ch.charCodeAt(0), 0));
+    // Untouched cells keep their retained contents.
+    expect(group(chain!.cells[9]!, 302)).toBe('B-200');
+    expect(group(chain!.cells[3]!, 302)).toBe('PART');
+    // Handle stability: dictionary, XRECORD, datatable and every CELL_VALUE
+    // keep the handles the source file gave them.
+    const oracle = chainOf(r2000Text())!;
+    expect(handleOf(chain!.dict)).toBe(handleOf(oracle.dict));
+    expect(handleOf(chain!.record)).toBe(handleOf(oracle.record));
+    expect(handleOf(chain!.data)).toBe(handleOf(oracle.data));
+    chain!.cells.forEach((cell, i) => expect(handleOf(cell)).toBe(handleOf(oracle.cells[i]!)));
+  });
+
+  it('add a row: the datatable rows/cells and the XRECORD counts follow the model', () => {
+    const state = readDxf(r2000Text());
+    const grown = {
+      ...state,
+      entities: state.entities.map((e) => (e.type === 'table'
+        ? {
+          ...e,
+          rowHeights: [...e.rowHeights, e.rowHeights[2]!],
+          cells: [...e.cells, [{ text: 'C-300' }, { text: 'WASHER' }, { text: '12' }]],
+        }
+        : e)),
+    };
+    const written = writeDxf(grown);
+    const chain = chainOf(written);
+    expect(chain, 'a roundtrip chain').not.toBeNull();
+    expect(group(chain!.record, 90)).toBe('5');
+    expect(group(chain!.record, 91)).toBe('3');
+    expect(group(chain!.data, 91)).toBe('15');
+    expect(chain!.cells).toHaveLength(15);
+    expect(group(chain!.cells[12]!, 302)).toBe('C-300');
+    expect(group(chain!.cells[13]!, 302)).toBe('WASHER');
+    expect(group(chain!.cells[14]!, 302)).toBe('12');
+    // The pre-existing cells keep their handles and contents.
+    const oracle = chainOf(r2000Text())!;
+    for (let i = 0; i < 12; i++) {
+      expect(handleOf(chain!.cells[i]!)).toBe(handleOf(oracle.cells[i]!));
+      expect(group(chain!.cells[i]!, 302)).toBe(group(oracle.cells[i]!, 302));
+    }
+  });
+
+  it('a JCad-authored table saved twice: regenerated on the second save, once, byte-stable when unchanged', () => {
+    const first = writeDxf(bareState());
+    const firstChain = chainOf(first)!;
+    expect(firstChain).not.toBeNull();
+    // Edit a cell on the re-read state, then save again: the chain in the
+    // second save is JCad's own retained chain — it must still regenerate.
+    const reread = readDxf(first);
+    const edited = {
+      ...reread,
+      entities: reread.entities.map((e) => (e.type === 'table' ? setCellText(e, 1, 0, 'PART-REVISED') : e)),
+    };
+    const second = writeDxf(edited);
+    const recs = records(second);
+    expect(recs.filter((r) => r[0]?.[1] === 'ACDBDATATABLE')).toHaveLength(1);
+    const secondChain = chainOf(second)!;
+    expect(secondChain).not.toBeNull();
+    expect(group(secondChain.cells[3]!, 302)).toBe('PART-REVISED');
+    // Handles are reused across the saves, not re-minted.
+    expect(handleOf(secondChain.dict)).toBe(handleOf(firstChain.dict));
+    expect(handleOf(secondChain.data)).toBe(handleOf(firstChain.data));
+    secondChain.cells.forEach((cell, i) => expect(handleOf(cell)).toBe(handleOf(firstChain.cells[i]!)));
+    // An unchanged third save is a byte fixed point.
+    expect(writeDxf(readDxf(second))).toBe(second);
+  });
 });

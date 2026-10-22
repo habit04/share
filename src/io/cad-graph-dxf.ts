@@ -1,6 +1,6 @@
 /** File handles are resolved once at import and once at export; retained values stay opaque. */
 import { DEFAULT_HEADER, type DrawingState } from '../core/document';
-import type { Entity } from '../core/entities';
+import type { Entity, TableEntity } from '../core/entities';
 import { newId } from '../core/entities';
 import { canonicalCadHandle, cadReferences, cadAnchorKey, cadReferenceKind, cadEntityLists, mapCadEntities, CadGraphError, reconcileCadGraph, validateCadState, type CadAnchor, type CadGraph, type CadGroup, type CadNode } from '../core/cad-graph';
 import { evaluateFields, FIELD_UNAVAILABLE, type FieldContext } from '../core/fields';
@@ -12,6 +12,7 @@ import { headerVariableReemittable, retainNativeLayoutPaper } from './dxf-layout
 import { DIM_VARIABLES } from '../core/dimension';
 import { isScaleName } from '../core/layouts';
 import { solidCarrierGroups } from './dxf/model3d-carriers';
+import { tableCellContentSum, tableRoundtripCells, tableRoundtripCellValueGroups } from './dxf/write-annotations';
 import { MODEL3D_APP } from './dxf/codes';
 import { payloadText, polyfaceStructureProblem, native3dObject } from './dxf/mesh3d-read';
 import { decodeDimensionPayload } from '../model3d/file-format';
@@ -1144,6 +1145,118 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
         record.groups = record.groups.map(([code, raw]) => (referenceCodes.has(code) && canon(raw) === generatedHandle ? [code, retainedHandle!] as CadGroup : [code, raw] as CadGroup));
       }
       rehomed.add(dictionary.id);
+    }
+  }
+  // P22 PR #39 fix (Codex P1; lead ruling): the AC1015 roundtrip chain is
+  // DERIVED data, so a retained chain is never replayed verbatim — on every
+  // AC1015 write its contents (the CELL_VALUE xrecords and the
+  // ACDBDATATABLE rows/cols/cells) are regenerated from the CURRENT model,
+  // in place: the dictionary record is untouched (its ACAD_XREC_ROUNDTRIP
+  // key and every unrelated key stay), and the XRECORD, datatable and cell
+  // records keep their handles (cells positionally; a longer grid allocates
+  // fresh handles for the new cells, a shorter one drops the surplus
+  // records). Regenerating an unchanged table reproduces the retained
+  // groups exactly, so the round trip stays a byte fixed point.
+  {
+    const header = generated.find(record => record.type === 'HEADER');
+    if (header && headerVersionOf(header.groups) === 'AC1015') {
+      const carriedIds = graphTableRoundtripCarriers(state);
+      if (carriedIds.size) {
+        const tables = new Map<string, TableEntity>();
+        for (const list of lists(state)) for (const entity of list) if (entity.type === 'table') tables.set(entity.id, entity);
+        const canon = (raw: string): string | undefined => /^[0-9A-Fa-f]{1,16}$/.test(raw.trim()) ? canonicalCadHandle(raw.trim()) : undefined;
+        const byHandle = new Map<string, RecordData>();
+        for (const record of generated) {
+          const handle = canon(value(record, 5));
+          if (handle && !byHandle.has(handle)) byHandle.set(handle, record);
+        }
+        const dropped = new Set<RecordData>();
+        for (const id of carriedIds) {
+          const table = tables.get(id);
+          if (!table) continue;
+          const node = graph.nodes.find(candidate => candidate.type === 'ACAD_TABLE' && candidate.anchor?.kind === 'entity' && candidate.anchor.id === id);
+          if (!node) continue;
+          const entityHandle = canon(nodeHandles.get(node.id) ?? '');
+          const entityRecord = entityHandle ? byHandle.get(entityHandle) : undefined;
+          if (!entityRecord) continue;
+          const xAt = entityRecord.groups.findIndex(([code, raw]) => code === 102 && raw.trim().toUpperCase() === '{ACAD_XDICTIONARY');
+          if (xAt < 0) continue;
+          const dictHandle = canon(entityRecord.groups[xAt + 1]?.[1] ?? '');
+          const dictRecord = dictHandle ? byHandle.get(dictHandle) : undefined;
+          if (!dictRecord || !dictionaries.has(dictRecord.type)) continue;
+          let entryAt = -1;
+          for (let index = 0; index + 1 < dictRecord.groups.length; index++) {
+            const [code, name] = dictRecord.groups[index]!;
+            if (code === 3 && name.trim().toUpperCase() === 'ACAD_XREC_ROUNDTRIP' && dictRecord.groups[index + 1]![0] === 360) { entryAt = index; break; }
+          }
+          if (entryAt < 0) continue;
+          const recordHandle = canon(dictRecord.groups[entryAt + 1]![1]);
+          const chainRecord = recordHandle ? byHandle.get(recordHandle) : undefined;
+          if (!chainRecord || chainRecord.type !== 'XRECORD') continue;
+          const cells = tableRoundtripCells(table);
+          // The chain XRECORD: rows/cols inside the PRE2007_TABLE subgroup
+          // follow the model; the TABLECELL subgroup names the datatable.
+          let dataHandle: string | undefined;
+          let inTable = false, inCells = false;
+          for (let index = 0; index < chainRecord.groups.length; index++) {
+            const [code, raw] = chainRecord.groups[index]!;
+            if (code === 102) {
+              const marker = raw.trim().toUpperCase();
+              inTable = marker === 'ACAD_ROUNDTRIP_PRE2007_TABLE';
+              inCells = marker === 'ACAD_ROUNDTRIP_PRE2007_TABLECELL';
+              continue;
+            }
+            if (inTable && code === 90) chainRecord.groups[index] = [90, String(table.rowHeights.length)];
+            else if (inTable && code === 91) chainRecord.groups[index] = [91, String(table.columnWidths.length)];
+            else if (inCells && code === 360) dataHandle = canon(raw);
+          }
+          if (!dataHandle) continue;
+          const dataRecord = byHandle.get(dataHandle);
+          if (!dataRecord || dataRecord.type !== 'ACDBDATATABLE') continue;
+          // The retained cell handles, in datatable order (the 92 = 6 column).
+          const retainedHandles: string[] = [];
+          let segment: number | undefined;
+          for (const [code, raw] of dataRecord.groups) {
+            if (code === 92) segment = Number(raw);
+            else if (segment === 6 && code === 360) { const handle = canon(raw); if (handle) retainedHandles.push(handle); }
+          }
+          const cellHandles = cells.map((_, index) => retainedHandles[index] ?? allocate());
+          // The datatable body is regenerated wholesale after its identity
+          // head (the groups before the group 70), exactly as the generating
+          // writer emits it.
+          const headEnd = dataRecord.groups.findIndex(([code]) => code === 70);
+          const head = headEnd >= 0 ? dataRecord.groups.slice(0, headEnd) : dataRecord.groups.slice();
+          dataRecord.groups = [...head,
+            [70, '2'], [90, '4'], [91, String(cells.length)], [1, ''], [92, '2'], [2, ''],
+            ...cells.map((cell): CadGroup => [40, String(tableCellContentSum(cell.content))]),
+            [92, '1'], [2, ''], ...cells.map((cell): CadGroup => [93, cell.alignmentOverride ? '1' : '0']),
+            [92, '1'], [2, ''], ...cells.map((): CadGroup => [93, '0']),
+            [92, '6'], [2, ''], ...cellHandles.map((handle): CadGroup => [360, handle])];
+          // Each CELL_VALUE record keeps its identity head (through its 280
+          // group) and gains regenerated value groups; new cells get a new
+          // record on an allocated handle; surplus records are dropped.
+          cells.forEach((cell, index) => {
+            const valueGroups = tableRoundtripCellValueGroups(cell) as CadGroup[];
+            const existing = byHandle.get(cellHandles[index]!);
+            if (existing && existing.type === 'XRECORD') {
+              const cut = existing.groups.findIndex(([code]) => code === 280);
+              existing.groups = [...(cut >= 0 ? existing.groups.slice(0, cut + 1) : existing.groups.slice()), ...valueGroups];
+            } else {
+              const record: RecordData = {
+                type: 'XRECORD', section: 'OBJECTS', handle: cellHandles[index]!,
+                groups: [[5, cellHandles[index]!], [330, dataHandle!], [100, 'AcDbXrecord'], [280, '1'], ...valueGroups],
+              };
+              generated.push(record);
+              byHandle.set(cellHandles[index]!, record);
+            }
+          });
+          for (let index = cells.length; index < retainedHandles.length; index++) {
+            const surplus = byHandle.get(retainedHandles[index]!);
+            if (surplus && surplus.type === 'XRECORD') dropped.add(surplus);
+          }
+        }
+        if (dropped.size) for (let index = generated.length - 1; index >= 0; index--) if (dropped.has(generated[index]!)) generated.splice(index, 1);
+      }
     }
   }
   // Q11 F2 rework (design U4, insertion branch): a recognized variable the editor
