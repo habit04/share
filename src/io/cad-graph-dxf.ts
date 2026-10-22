@@ -988,7 +988,14 @@ export function attachDxfCadGraph(state: DrawingState, pairs: readonly Pair[], o
   } catch (error) {
     if (!(error instanceof CadGraphError) || error.code !== 'invalid' || !options.onGraphUnavailable || options.sourceFormat === 'DWG'
       || options.model3dHandles?.size || pairs.some(pair => pair.code === 1001 && pair.value.trim() === MODEL3D_APP)) throw error;
-    options.onGraphUnavailable(`${error.message} Retained metadata and object-reference identities could not be imported safely; readable drawing geometry is kept.`);
+    // O4 (AMENDMENT-P17-HANDLES): for a duplicated handle the report also
+    // states how references to it resolve — the read pass's per-list handle
+    // maps keep the LAST same-handle object, so a reference to the handle
+    // points at that object, deterministically.
+    const resolution = error.message.startsWith('Duplicate CAD object handle ')
+      ? ' References to a duplicated handle resolve to the last object with that handle in the file.'
+      : '';
+    options.onGraphUnavailable(`${error.message} Retained metadata and object-reference identities could not be imported safely; readable drawing geometry is kept.${resolution}`);
     const { cadGraph: _graph, ...bare } = state;
     return replaceEntities(bare, entity => { const { cadIdentity: _drop, ...rest } = entity; return rest as Entity; });
   }
