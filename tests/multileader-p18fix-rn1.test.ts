@@ -138,12 +138,15 @@ describe('P18 PR #43 fix (3): R-N1 — trailing 177 is AutoCAD 1-based', () => {
       { index: 0, tag: 'PART', value: 'P-100' },
       { index: 1, tag: 'REV', value: 'A' },
     ]);
-    // The same file with the trailing 330 ATTDEF handles removed: the
-    // index-only fallback must read 177 as the 1-based ordinal.
+    // The same file with the trailing 330 ATTDEF handles renumbered to
+    // handles no ATTDEF in the file carries (another editor's save): the
+    // entries exist but resolve by handle to nothing, so the index-only
+    // fallback decides — and must read 177 as the 1-based ordinal.
     const pairs = pairsOf(F);
     const start = pairs.findIndex((p) => p[0] === 0 && p[1] === 'MULTILEADER');
     const at344 = pairs.findIndex((p, i) => i > start && p[0] === 344);
-    const stripped = pairs.filter((p, i) => !(i > at344 && p[0] === 330));
+    let renumbered = 0;
+    const stripped = pairs.map((p, i) => (i > at344 && p[0] === 330 ? [330, `FFF${(renumbered += 1)}`] as Pair : p));
     const s = readDxf(fromPairs(stripped));
     expect(leaderOf(s).mleader!.block!.attributes).toEqual([
       { index: 0, tag: 'PART', value: 'P-100' },
