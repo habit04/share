@@ -691,15 +691,18 @@ export class PluginHost {
     // means the load fails closed (L-011 C2), exactly like a missing
     // transport.
     let plan: { moduleUrl: string; servedSessionId?: string; revoke?: () => void } | null = null;
+    let refusal: string | null = null;
     try {
-      plan = await this.isolatedModuleUrl(src, transport);
+      const resolved = await this.isolatedModuleUrl(src, transport);
+      if (resolved && 'refusal' in resolved) refusal = resolved.refusal;
+      else plan = resolved;
     } catch {
       plan = null;
     }
     if (!plan) {
       transport.terminate();
       info.status = 'error';
-      info.error = 'plugin declares "isolation": "worker" but its entry cannot be provided to the realm as a module in this environment; refusing to run it in the page';
+      info.error = refusal ?? 'plugin declares "isolation": "worker" but its entry cannot be provided to the realm as a module in this environment; refusing to run it in the page';
       this.editor.log(`Plugin ${name}: ${info.error}.`);
       return info;
     }
@@ -772,6 +775,14 @@ export class PluginHost {
    *     package and the realm loads the served entryUrl — the only URL
    *     the packaged transport ever selects (condition C-J1: it never
    *     selects a string path, and no blob is minted here);
+   *  1b. PACKAGED, NOT FROM THE FOLDER (Fable F2): where a serving
+   *     bridge exists, the realm worker is served under the worker CSP,
+   *     whose `script-src 'self'` refuses blob: imports — a picked-file
+   *     or script plugin would fall through to the blob branch below
+   *     and fail opaquely at the load timeout. The served transport is
+   *     the designed packaged path and it serves installed folder
+   *     packages only, so the load is refused here, explicitly, at
+   *     selection time ({ refusal }).
    *  2. a transport-provided module URL (the Node test harness's file://
    *     modules, Part B4);
    *  3. PLAIN BROWSER / DEV: blob: modules minted from the entry text —
@@ -785,13 +796,19 @@ export class PluginHost {
   private async isolatedModuleUrl(
     src: PluginSource,
     transport: RealmTransport,
-  ): Promise<{ moduleUrl: string; servedSessionId?: string; revoke?: () => void } | null> {
+  ): Promise<{ moduleUrl: string; servedSessionId?: string; revoke?: () => void } | { refusal: string } | null> {
     if (src.origin === 'folder' && src.folder && this.bridge?.pluginsServeIsolatedPackage) {
       const served = await this.bridge.pluginsServeIsolatedPackage(src.folder);
       if (!served || typeof served.entryUrl !== 'string' || !served.entryUrl) return null;
       return {
         moduleUrl: served.entryUrl,
         ...(typeof served.sessionId === 'string' && served.sessionId ? { servedSessionId: served.sessionId } : {}),
+      };
+    }
+    if (this.bridge?.pluginsServeIsolatedPackage && src.origin !== 'folder') {
+      return {
+        refusal:
+          'plugin declares "isolation": "worker" but it was not loaded from the plugins folder; in the desktop app an isolated plugin must be installed in the plugins folder so the app can serve its package to the isolated realm — a picked-file or script plugin cannot be served; refusing to run it in the page',
       };
     }
     if (typeof transport.moduleUrlFor === 'function') {

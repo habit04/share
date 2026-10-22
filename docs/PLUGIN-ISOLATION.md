@@ -224,7 +224,13 @@ return — which the acceptance tests exercise.
   proxy; a realm module can import other URLs the worker CSP's
   `script-src 'self'` allows (the app's own bundled assets and its own
   package); and the dev/browser contexts keep their blob:/file: module
-  forms, where no worker CSP is served.
+  forms, where no worker CSP is served. One named case in the desktop
+  app: an isolated plugin that did NOT come from the plugins folder
+  (picked with PLUGINLOAD, or a script) cannot be served — serving
+  covers installed folder packages only — and it does not fall back to
+  a blob: module, which the realm worker's CSP would refuse anyway;
+  the load is refused at selection time with an error naming exactly
+  that, before any handshake (Fable finding F2, closed).
 - A realm plugin with `document.read` can still *exfiltrate what it read* through any
   output channel it also holds (e.g. `ui.log`, `files.save`); capabilities reduce the
   surface, they do not make a granted-read plugin trustworthy. Network stubs (T8) are
