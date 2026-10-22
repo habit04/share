@@ -11,6 +11,14 @@
  * live session each envelope also carries a single-use sequence id (`id`:
  * minted from a monotonic counter by the sender), which the host consumes
  * on first receipt; a replayed envelope is dropped with no effect (X2).
+ *
+ * AMENDMENT-P25-CSP-HOSTING Part B1 / condition C-J2, stated in words: the
+ * handshake's nonce exchange and session binding are UNCHANGED by the
+ * module form — the same session id and realm/host nonce pair authenticate
+ * every envelope exactly as in the string form; `moduleUrl` only replaces
+ * the `code` payload. The realm now loads that URL as an ES module instead
+ * of compiling a body string; the bootstrap contains no string evaluation
+ * at all, so no transport can select a string path (condition C-J1).
  */
 
 /** Protocol version of the isolated realm API (manifest apiVersion 2). */
@@ -51,7 +59,15 @@ export interface HandshakeMessage {
   hostNonce: string;
   name: string;
   version: string;
-  code: string;
+  /**
+   * The plugin entry's module URL (Part B1): the realm loads it with a
+   * dynamic import() and the module's default export becomes the load
+   * report. Served from the main-vetted package
+   * (jcad://app/plugin-realm/<session>/…) in the packaged runtime,
+   * file:// in the Node harness, blob: in the plain browser — chosen by
+   * the host (PluginHost), never by the realm or the plugin.
+   */
+  moduleUrl: string;
 }
 
 export interface LoadDoneMessage {

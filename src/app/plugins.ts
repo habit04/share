@@ -96,6 +96,16 @@ export interface PluginsBridge {
   pluginsRead(folder: string): Promise<{ manifest: string; code: string; path: string } | null>;
   /** Run a script in the page (used when CSP forbids `new Function`). */
   pluginsEval?(source: string): Promise<unknown>;
+  /**
+   * CSP hosting (AMENDMENT-P25-CSP-HOSTING Part A2): ask the main process
+   * to serve this (already trusted) plugin folder's package to its
+   * isolated realm. Main vets the package from its own record — the
+   * renderer passes the folder NAME, never a path — and returns the
+   * session's served URLs. Absent in the plain browser.
+   */
+  pluginsServeIsolatedPackage?(folder: string): Promise<{ sessionId: string; baseUrl: string; entryUrl: string }>;
+  /** Drop a plugin-realm serving registration (the session was disposed). */
+  pluginsUnserveIsolatedPackage?(sessionId: string): Promise<unknown>;
 }
 
 export interface StorageLike {
@@ -160,6 +170,16 @@ export const TRUST_KEY = 'jcad.plugins.trusted';
 const NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const MAX_CODE = 2 * 1024 * 1024;
 
+/**
+ * The jcad.js shim body — byte-identical to the one the main process
+ * serves for plugin-realm packages (electron/renderer-origin.cjs
+ * PLUGIN_REALM_JCAD_SHIM, byte-pinned in tests/plugin-realm-serving.test.ts).
+ * The blob: fallback in isolatedModuleUrl mints the same shim as a blob
+ * module so a module-authored entry's `import jcad from './jcad.js'`
+ * resolves in the plain browser exactly as it does in the packaged realm.
+ */
+const JCAD_SHIM_MODULE = 'export default globalThis[Symbol.for("jcad.isolated.jcad")];';
+
 // ------------------------------------------------------------------ helpers
 
 /**
@@ -191,10 +211,10 @@ function isolatedManifestError(m: { apiVersion?: number; isolation?: string; cap
  * The default realm transport: a platform Worker where one exists, else
  * none. There is deliberately no fallback — an isolated plugin whose realm
  * cannot be created fails closed (load ERROR) rather than running in the
- * page (L-011 C2). In a packaged renderer whose CSP refuses the realm
- * bootstrap the Worker starts but never handshakes, so the session's load
- * timeout produces the same fail-closed error; changing that CSP is the
- * lead's separate decision (L-011 C6), not this wiring's.
+ * page (L-011 C2). In the packaged renderer the realm loads the plugin's
+ * entry as a module served by the main process under the worker CSP
+ * (AMENDMENT-P25-CSP-HOSTING); a realm that never finishes loading still
+ * fails closed on the session's load timeout.
  */
 function defaultRealmTransport(): RealmTransport | null {
   if (typeof Worker === 'undefined') return null;
@@ -665,6 +685,34 @@ export class PluginHost {
       this.editor.log(`Plugin ${name}: ${info.error}.`);
       return info;
     }
+    // Part B3 (AMENDMENT-P25-CSP-HOSTING): the realm loads its entry as a
+    // module — the host obtains the module URL before the session exists,
+    // and no body string ever crosses the handshake. Nothing available
+    // means the load fails closed (L-011 C2), exactly like a missing
+    // transport.
+    let plan: { moduleUrl: string; servedSessionId?: string; revoke?: () => void } | null = null;
+    try {
+      plan = await this.isolatedModuleUrl(src, transport);
+    } catch {
+      plan = null;
+    }
+    if (!plan) {
+      transport.terminate();
+      info.status = 'error';
+      info.error = 'plugin declares "isolation": "worker" but its entry cannot be provided to the realm as a module in this environment; refusing to run it in the page';
+      this.editor.log(`Plugin ${name}: ${info.error}.`);
+      return info;
+    }
+    // Condition (c): a served registration lives exactly as long as the
+    // session — the session's single dispose choke point unserves it on
+    // unload, supersede, failed load and timeout alike.
+    const servedSessionId = plan.servedSessionId;
+    const unserve =
+      servedSessionId && this.bridge?.pluginsUnserveIsolatedPackage
+        ? () => {
+            void Promise.resolve(this.bridge!.pluginsUnserveIsolatedPackage!(servedSessionId)).catch(() => undefined);
+          }
+        : null;
     let session: IsolatedPluginSession;
     try {
       session = new IsolatedPluginSession(this.editor, {
@@ -674,8 +722,11 @@ export class PluginHost {
         // The host's own load budget (production default 30 s); the larger
         // budgets in the test harnesses are harness-only and never wired in.
         loadTimeoutMs: this.loadTimeoutMs,
+        ...(unserve ? { onDisposed: unserve } : {}),
       });
     } catch (err) {
+      plan.revoke?.();
+      unserve?.();
       info.status = 'error';
       info.error = pluginErrorMessage(err);
       this.editor.log(`Plugin ${name}: ${info.error}.`);
@@ -684,7 +735,7 @@ export class PluginHost {
     entry.session = session;
     entry.handle = session.apiHandle;
     try {
-      await session.load(src.code);
+      await session.loadModule(plan.moduleUrl);
       if (!current()) {
         session.dispose();
         return superseded();
@@ -706,8 +757,65 @@ export class PluginHost {
       session.dispose();
       this.editor.log(`[${name}] failed to load: ${info.error}`);
       if (typeof console !== 'undefined') console.error(`[jcad plugin ${name}]`, err);
+    } finally {
+      // A blob: entry/shim pair is revoked once the load has settled — the
+      // realm has imported them by then (or never will).
+      plan.revoke?.();
     }
     return info;
+  }
+
+  /**
+   * Resolve how this isolated load's entry reaches the realm as a module
+   * (Part B3), in order:
+   *  1. PACKAGED: the bridge serves the plugin folder's main-vetted
+   *     package and the realm loads the served entryUrl — the only URL
+   *     the packaged transport ever selects (condition C-J1: it never
+   *     selects a string path, and no blob is minted here);
+   *  2. a transport-provided module URL (the Node test harness's file://
+   *     modules, Part B4);
+   *  3. PLAIN BROWSER / DEV: blob: modules minted from the entry text —
+   *     valid there because no worker CSP is served; under the packaged
+   *     worker CSP `blob:` is refused by `script-src 'self'`, and the
+   *     packaged path above never selects it. The entry text is
+   *     module-authored, so its `./jcad.js` specifier is rewritten to a
+   *     shim blob carrying the identical one-line shim body.
+   * Returns null when none is available: the load then fails closed.
+   */
+  private async isolatedModuleUrl(
+    src: PluginSource,
+    transport: RealmTransport,
+  ): Promise<{ moduleUrl: string; servedSessionId?: string; revoke?: () => void } | null> {
+    if (src.origin === 'folder' && src.folder && this.bridge?.pluginsServeIsolatedPackage) {
+      const served = await this.bridge.pluginsServeIsolatedPackage(src.folder);
+      if (!served || typeof served.entryUrl !== 'string' || !served.entryUrl) return null;
+      return {
+        moduleUrl: served.entryUrl,
+        ...(typeof served.sessionId === 'string' && served.sessionId ? { servedSessionId: served.sessionId } : {}),
+      };
+    }
+    if (typeof transport.moduleUrlFor === 'function') {
+      const url = transport.moduleUrlFor(src.code);
+      return url ? { moduleUrl: url } : null;
+    }
+    if (typeof Blob !== 'undefined' && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+      const shimUrl = URL.createObjectURL(new Blob([JCAD_SHIM_MODULE], { type: 'text/javascript' }));
+      try {
+        const text = src.code.split("'./jcad.js'").join(`'${shimUrl}'`).split('"./jcad.js"').join(`"${shimUrl}"`);
+        const entryUrl = URL.createObjectURL(new Blob([text], { type: 'text/javascript' }));
+        return {
+          moduleUrl: entryUrl,
+          revoke: () => {
+            URL.revokeObjectURL(entryUrl);
+            URL.revokeObjectURL(shimUrl);
+          },
+        };
+      } catch {
+        URL.revokeObjectURL(shimUrl);
+        return null;
+      }
+    }
+    return null;
   }
 
   private replace(key: string, entry: HostEntry): void {

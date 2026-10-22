@@ -21,18 +21,18 @@
 //   (2) serving: the realm worker asset is served from jcad://app/assets/
 //       worker/ WITH the worker CSP header; the page and its main script
 //       carry no CSP header (the page's meta policy is unchanged);
-//   (3) plugin context: a worker-isolated plugin is loaded by driving the
-//       realm worker directly with the host handshake — (a) eval and
-//       new Function are refused in the plugin context, (b) the plugin
-//       still works (loads, registers a command, and the command answers
-//       an RPC round trip).
-// At the pre-amendment head, leg (3b) is EXPECTED TO FAIL in this runtime:
-// the realm bootstrap compiles the plugin body through the Function
-// constructor (realm-bootstrap.ts, CSP-CALL-SITE), which the worker CSP
-// refuses, so the plugin fails closed at load. Leg (3a) passes on that
-// same refusal. The CSP hosting amendment
-// (reviews/DRAFT-AMENDMENT-P25-CSP-HOSTING.md) is what turns (3b) green;
-// this script is its acceptance test and does not pass until it lands.
+//   (3) plugin context: a worker-isolated plugin is loaded the packaged
+//       way (AMENDMENT-P25-CSP-HOSTING): a probe package written into the
+//       profile's plugins folder is served by the main process under
+//       jcad://app/plugin-realm/<session>/ with the worker CSP, and the
+//       realm worker is driven with a host handshake carrying the served
+//       entry URL as a module — (a) eval and new Function are refused in
+//       the plugin context, (b) the plugin still works (loads, registers
+//       a command, and the command answers an RPC round trip). Serving
+//       discipline is probed alongside: the entry carries WORKER_CSP, a
+//       traversal fetch is refused, and an unserved session serves
+//       nothing. All legs are expected GREEN since the amendment landed;
+//       this script is its acceptance test.
 //
 //   npm run build && node scripts/e2e-plugin-csp.mjs                the development build (electron . on dist/)
 //   node scripts/e2e-plugin-csp.mjs --packaged "<path to the test application executable>"
@@ -41,7 +41,7 @@
 // A private profile is used and deleted. JCAD_PLUGIN_CSP_OUT=<file> writes the results as JSON.
 import { _electron as electron } from 'playwright';
 import { createRequire } from 'node:module';
-import { existsSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { applicationWindow, closeApplication } from './electron-window.mjs';
@@ -184,23 +184,38 @@ try {
   check(headers.page.status === 200 && headers.page.csp === null, 'the page response carries no CSP header (its meta policy applies)', headers.page);
   check(headers.main !== null && headers.main.status === 200 && headers.main.csp === null, 'the main renderer script response carries no CSP header', headers.main);
 
-  // (3) The plugin context: drive the realm worker with the host handshake.
-  const realm = await page.evaluate(async (/** @type {string} */ wurl) => {
+  // (3) The plugin context, the packaged way: the probe package (written
+  // into this profile's plugins folder before this block) is served by the
+  // main process, and the realm worker is driven with a host handshake
+  // carrying the served entry URL as a module.
+  const probeDir = join(profile, 'plugins', 'csp-probe');
+  mkdirSync(probeDir, { recursive: true });
+  writeFileSync(join(probeDir, 'plugin.json'), JSON.stringify({ name: 'csp-probe', version: '0', apiVersion: 2, isolation: 'worker', capabilities: ['commands.register', 'document.read'], main: 'main.js' }));
+  writeFileSync(join(probeDir, 'main.js'), [
+    "import jcad from './jcad.js';",
+    "let evalOutcome = 'not-tried';",
+    "try { eval('1'); evalOutcome = 'ran'; } catch (e) { evalOutcome = 'refused:' + e.name; }",
+    "let fnOutcome = 'not-tried';",
+    "try { new Function('return 1')(); fnOutcome = 'ran'; } catch (e) { fnOutcome = 'refused:' + e.name; }",
+    "await jcad.commands.register({ name: 'CSPPING', run: async (jcad) => {",
+    "  const n = (await jcad.document.selection()).length;",
+    "  return 'pong:' + n + ':eval=' + evalOutcome + ':fn=' + fnOutcome;",
+    '} });',
+    'export default { loaded: true, evalOutcome, fnOutcome };',
+    '',
+  ].join('\n'));
+  await page.waitForTimeout(1_000); // let the startup plugin scan (empty folder) settle first
+  const probe = await page.evaluate(async (/** @type {string} */ wurl) => {
+    const bridge = /** @type {any} */ (window).jcad;
+    const served = await bridge.pluginsServeIsolatedPackage('csp-probe');
+    const entryResp = await fetch(served.entryUrl);
+    const entry = { status: entryResp.status, csp: entryResp.headers.get('content-security-policy'), body: await entryResp.text() };
+    const travResp = await fetch(`${served.baseUrl}..%2fmain.js`);
+    const traversal = { status: travResp.status, body: await travResp.text() };
     const session = 'csp-e2e-session';
     const realmNonce = 'csp-e2e-realm-nonce';
     const hostNonce = 'csp-e2e-host-nonce';
-    const code = [
-      "let evalOutcome = 'not-tried';",
-      "try { eval('1'); evalOutcome = 'ran'; } catch (e) { evalOutcome = 'refused:' + e.name; }",
-      "let fnOutcome = 'not-tried';",
-      "try { new Function('return 1')(); fnOutcome = 'ran'; } catch (e) { fnOutcome = 'refused:' + e.name; }",
-      "await jcad.commands.register({ name: 'CSPPING', run: async (jcad) => {",
-      "  const n = (await jcad.document.selection()).length;",
-      "  return 'pong:' + n + ':eval=' + evalOutcome + ':fn=' + fnOutcome;",
-      '} });',
-      'return { loaded: true, evalOutcome, fnOutcome };',
-    ].join('\n');
-    return await new Promise((resolveProbe) => {
+    const realm = await new Promise((resolveProbe) => {
       const w = new Worker(wurl, { type: 'module' });
       /** @type {any} */
       let loadDone = null;
@@ -233,26 +248,28 @@ try {
         }
       };
       w.onerror = (e) => { loadDone = { ok: false, error: String(e.message || e) }; clearTimeout(timer); finish(); };
-      w.postMessage({ kind: 'handshake', v: 2, session, realmNonce, hostNonce, name: 'csp-probe', version: '0', code });
+      w.postMessage({ kind: 'handshake', v: 2, session, realmNonce, hostNonce, name: 'csp-probe', version: '0', moduleUrl: served.entryUrl });
     });
+    await bridge.pluginsUnserveIsolatedPackage(served.sessionId);
+    const afterResp = await fetch(served.entryUrl);
+    return { served, entry, traversal, realm, afterUnserve: afterResp.status };
   }, workerUrl);
-  const loadError = realm.loadDone && realm.loadDone.ok === false ? String(realm.loadDone.error ?? '') : '';
-  const cspRefusal = /EvalError|Refused to evaluate|unsafe-eval|Content Security Policy/i.test(loadError);
+  check(probe.entry.status === 200 && probe.entry.csp === WORKER_CSP && probe.entry.body.includes('CSPPING'),
+    '(2b) the plugin-realm entry is served from the vetted package under the worker CSP', probe.entry);
+  check(probe.traversal.status !== 200 && !probe.traversal.body.includes('CSPPING'),
+    '(2c) an encoded traversal out of the served package is refused', probe.traversal);
+  const realm = /** @type {any} */ (probe.realm);
   if (realm.loadDone && realm.loadDone.ok === true) {
     const report = realm.loadDone.report ?? {};
     check(String(report.evalOutcome ?? '').startsWith('refused:') && String(report.fnOutcome ?? '').startsWith('refused:'),
       '(3a) eval and new Function are refused in the plugin context', report);
     check(realm.callRes !== null && realm.callRes.ok === true && String(realm.callRes.value ?? '').startsWith('pong:0:'),
-      '(3b) the plugin still works: it loads and its command answers an RPC round trip', realm.callRes);
+      '(3b) the plugin still works: it loads as a served module and its command answers an RPC round trip', realm.callRes);
   } else {
-    // The realm was reached and the bootstrap answered — with the platform's
-    // refusal of the plugin-body call site. That IS leg (3a)'s evidence in
-    // this runtime, and leg (3b)'s recorded blocker.
-    check(realm.loadDone !== null && cspRefusal,
-      '(3a) string evaluation is refused in the plugin context (the realm load fails closed on the worker CSP)', realm.loadDone);
-    check(false,
-      '(3b) the plugin still works: it loads and its command answers an RPC round trip — BLOCKED at the pre-amendment head: the worker CSP refuses the bootstrap plugin-body call site (realm-bootstrap.ts CSP-CALL-SITE)', realm.loadDone);
+    check(false, '(3a) eval and new Function are refused in the plugin context', realm.loadDone);
+    check(false, '(3b) the plugin still works: it loads as a served module and its command answers an RPC round trip', realm.loadDone);
   }
+  check(probe.afterUnserve === 404, '(2d) an unserved session serves nothing', probe.afterUnserve);
 
   check(pageErrors.length === 0, 'no page errors', pageErrors);
 } catch (err) {

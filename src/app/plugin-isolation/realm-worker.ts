@@ -6,4 +6,9 @@
  */
 import { realmBootstrapMain } from './realm-bootstrap';
 
-realmBootstrapMain();
+// The platform's native dynamic import, handed to the bootstrap as its
+// module loader (AMENDMENT-P25-CSP-HOSTING Part B): this entry is a real
+// module, so the expression is the platform's own; the bootstrap body
+// deliberately contains no literal import() of its own (it is also
+// serialised into the Node test realm — see realm-bootstrap.ts).
+realmBootstrapMain((url) => import(url));

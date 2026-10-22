@@ -16,13 +16,16 @@
  *      validation, cad-graph reconciliation and settings allow-lists are
  *      exactly v1's semantics.
  *
- * Lifecycle: `load(code)` handshakes and waits for the realm's load-done
- * (bounded by loadTimeoutMs). `dispose()` runs the realm's unload hooks on a
- * best-effort bounded wait, then revokes everything: the v1 handle is
- * disposed (commands/listeners removed), pending host->realm calls are
- * cancelled, all file grants die, and the transport is terminated. A failed
- * or timed-out load disposes the session the same way — an isolated plugin
- * NEVER falls back to running in the page.
+ * Lifecycle: `loadModule(moduleUrl)` handshakes — the handshake's nonce
+ * exchange and session binding are unchanged by the module form (Part B1 /
+ * C-J2: `moduleUrl` only replaces the old `code` payload) — and waits for
+ * the realm's load-done (bounded by loadTimeoutMs). `dispose()` runs the
+ * realm's unload hooks on a best-effort bounded wait, then revokes
+ * everything: the v1 handle is disposed (commands/listeners removed),
+ * pending host->realm calls are cancelled, all file grants die, and the
+ * transport is terminated. A failed or timed-out load disposes the session
+ * the same way — an isolated plugin NEVER falls back to running in the
+ * page.
  */
 import type { Editor } from '../editor';
 import { createApi, pickTextFile, pluginErrorMessage, type ApiHandle } from '../api';
@@ -40,6 +43,14 @@ export interface RealmTransport {
   post(msg: unknown): void;
   onMessage(cb: (msg: unknown) => void): void;
   terminate(): void;
+  /**
+   * A module URL for an entry text, when this transport can provide one
+   * (Part B3 selection): the Node test harness implements it with file://
+   * module files; the production browser transport does not (PluginHost
+   * then uses the serving bridge or a blob: module). Never a string path —
+   * the realm loads modules only.
+   */
+  moduleUrlFor?(entryText: string): string;
 }
 
 export interface DenialRecord {
@@ -60,6 +71,14 @@ export interface IsolatedSessionOptions {
   callTimeoutMs?: number;
   /** Host file picker for files.requestRead grants (default: the v1 picker). */
   pickTextFile?: (accept: string) => Promise<{ name: string; text: string } | null>;
+  /**
+   * Called exactly once when the session is disposed, on every dispose
+   * path (unload, supersede, failed or timed-out load). PluginHost uses it
+   * to drop the main-process plugin-realm serving registration of a
+   * packaged session (condition (c): the registration's lifetime is the
+   * session's).
+   */
+  onDisposed?: () => void;
 }
 
 interface Grant {
@@ -193,6 +212,7 @@ export class IsolatedPluginSession {
   private readonly loadTimeoutMs: number;
   private readonly callTimeoutMs: number;
   private readonly picker: (accept: string) => Promise<{ name: string; text: string } | null>;
+  private readonly onDisposed: (() => void) | null;
   private readonly pendingCalls = new Map<string, PendingCall>();
   private readonly consumedEnvelopeIds = new Set<string>();
   /** Per-kind eviction watermark (X2-W): the highest envelope-id counter ever evicted from the consumed set, per envelope kind. */
@@ -214,6 +234,7 @@ export class IsolatedPluginSession {
     this.loadTimeoutMs = opts.loadTimeoutMs ?? 30_000;
     this.callTimeoutMs = opts.callTimeoutMs ?? 30_000;
     this.picker = opts.pickTextFile ?? ((accept: string) => pickTextFile(accept));
+    this.onDisposed = opts.onDisposed ?? null;
     this.sessionId = `p25-${++sessionCounter}-${nonce().slice(0, 8)}`;
     this.handle = createApi(editor, opts.owner);
     this.transport.onMessage((msg) => this.receive(msg));
@@ -230,8 +251,12 @@ export class IsolatedPluginSession {
 
   // ------------------------------------------------------------------ load / dispose
 
-  /** Handshake and run the plugin code in the realm. Resolves with the plugin's load report. */
-  async load(code: string): Promise<unknown> {
+  /**
+   * Handshake and load the plugin's entry module in the realm (Part B1:
+   * the realm import()s `moduleUrl`; there is no body-string form).
+   * Resolves with the plugin's load report (the module's default export).
+   */
+  async loadModule(moduleUrl: string): Promise<unknown> {
     if (this._disposed) throw new Error(`isolated plugin "${this.owner}" session is already disposed`);
     if (this.loadSettle) throw new Error(`isolated plugin "${this.owner}" is already loading`);
     const done = new Promise<unknown>((resolve, reject) => {
@@ -250,7 +275,7 @@ export class IsolatedPluginSession {
       hostNonce: this.hostNonce,
       name: this.owner,
       version: this.handle.api.version,
-      code,
+      moduleUrl,
     });
     return done;
   }
@@ -291,6 +316,13 @@ export class IsolatedPluginSession {
       this.handle.dispose();
     } finally {
       this.transport.terminate();
+    }
+    if (this.onDisposed) {
+      try {
+        this.onDisposed();
+      } catch {
+        /* a teardown callback (e.g. unserving) must never break disposal */
+      }
     }
   }
 

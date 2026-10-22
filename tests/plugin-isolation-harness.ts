@@ -46,6 +46,10 @@ let entrySeq = 0;
 function ensureModuleDir(): string {
   if (!moduleDir) {
     moduleDir = mkdtempSync(join(tmpdir(), 'jcad-p25-modules-'));
+    // The shim is a .js file holding ESM: the package marker makes Node
+    // treat every .js in this directory as a module (in the packaged
+    // runtime the worker's module loader does the same for served files).
+    writeFileSync(join(moduleDir, 'package.json'), '{"type":"module"}\n');
     writeFileSync(join(moduleDir, 'jcad.js'), `${JCAD_SHIM_SOURCE}\n`);
   }
   return moduleDir;

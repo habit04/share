@@ -11,9 +11,10 @@
  * through the realm's globals, must be refused by the bootstrap itself —
  * so the refusal is a property of the realm, not only of one serving
  * context — while an ordinary worker plugin still loads and answers RPC
- * round trips. The packaged-Electron proof (the platform refusing the
- * bootstrap's own plugin-body call site, realm-bootstrap.ts) is
- * scripts/e2e-plugin-csp.mjs; it remains the lead's Windows gate item.
+ * round trips. Since AMENDMENT-P25-CSP-HOSTING the realm loads its entry
+ * as a module (no plugin-body call site exists); the packaged-Electron
+ * proof is scripts/e2e-plugin-csp.mjs and remains the lead's Windows
+ * gate item.
  */
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import type { Editor as EditorType } from '../src/app/editor';

@@ -169,37 +169,62 @@ return — which the acceptance tests exercise.
 ## 6. Limitations / open gates
 
 - Wired into `PluginHost` behind the manifest opt-in (slice 2, L-011 conditions
-  C1–C7). In an environment with no realm transport — including a packaged
-  renderer whose worker CSP refuses the plugin body (next bullet) — a worker
-  plugin fails closed at load; it never runs in the page as a fallback.
-- The Electron packaged worker path is now RULED and measured (the lead's CSP
-  ruling, 2026-10-21; the CSP-ruling delivery). The ruling: no `'unsafe-eval'`
-  anywhere in the packaged renderer and no widening of the page CSP; the realm
-  lives in the dedicated worker under the path-scoped worker CSP
-  (`electron/renderer-origin.cjs`: `WORKER_CSP = "default-src 'none';
-  script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; base-uri 'none'"`
-  on `assets/worker/*`). Measured in the real Electron runtime
-  (`scripts/e2e-plugin-csp.mjs`, development build on the production `dist`,
-  served through the production `jcad://` handler): the page refuses `eval` /
-  `new Function` from real page code; the realm worker asset
-  (`assets/worker/realm-worker-<hash>.js`) is served with `WORKER_CSP`; and
-  the realm refuses the plugin body itself — the bootstrap compiles the body
-  string through the Function constructor (`realm-bootstrap.ts`,
-  CSP-CALL-SITE), which `script-src 'self' 'wasm-unsafe-eval'` refuses, so a
-  worker plugin fails closed at load in this runtime (the realm's load-done
-  error is Chromium's "Evaluating a string as JavaScript violates the
-  following Content Security Policy directive because 'unsafe-eval' is not an
-  allowed source of script"). The realm additionally locks its own
+  C1–C7). In an environment with no realm transport (or no way to provide the
+  entry to the realm as a module) a worker plugin fails closed at load; it
+  never runs in the page as a fallback.
+- The Electron packaged worker path is RULED, measured and now HOSTED (the
+  lead's CSP ruling, 2026-10-21; AMENDMENT-P25-CSP-HOSTING, admitted
+  2026-10-21 and landed in the CSP-hosting delivery). The ruling stands: no
+  `'unsafe-eval'` anywhere in the packaged renderer, no widening of the page
+  CSP, and `WORKER_CSP` is byte-unchanged (`electron/renderer-origin.cjs`:
+  `WORKER_CSP = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval';
+  connect-src 'self'; base-uri 'none'"`). The realm lives in the dedicated
+  worker under that path-scoped worker CSP. Under the amendment the main
+  process serves the trusted plugin's own package files — vetted in main
+  from its own record (the renderer names the folder, never a path;
+  `plugin.json` must parse and its `main` must name a file present in the
+  package under that exact spelling) — under
+  `jcad://app/plugin-realm/<session>/` with the same `WORKER_CSP`, and the
+  realm loads its entry as an ES module (a dynamic `import()` of the served
+  entry URL). The bootstrap contains no string evaluation at all: the
+  Function-constructor body call site of the CSP-ruling delivery is
+  removed, so no transport can select a string path (the handshake's nonce
+  exchange and session binding are unchanged — `moduleUrl` only replaces
+  the `code` payload). An isolated entry is therefore authored as a
+  module: its first line is `import jcad from './jcad.js';` (a one-line
+  shim main serves from memory, whose default export is the session's
+  `jcad` proxy, parked on the realm global under
+  `Symbol.for('jcad.isolated.jcad')` for exactly the duration of the
+  import and deleted when the import settles), its top level may use
+  top-level await, and its default export is the load report. A serving
+  registration lives exactly as long as its session (dropped on unload,
+  on window close and on app quit), and serving is realpath-confined to
+  the package under the exact requested spelling — `../`, encoded
+  traversal, symlink/junction escapes and case variants are refused, as
+  are unknown sessions and non-script files. Measured in the real
+  Electron runtime (`scripts/e2e-plugin-csp.mjs`, development build on
+  the production `dist`, served through the production `jcad://`
+  handler): the page refuses `eval` / `new Function` from real page code;
+  the realm worker asset and the plugin-realm entry are served with
+  `WORKER_CSP`; a traversal fetch is refused and an unserved session
+  serves nothing; and a worker plugin loads in the plugin context and
+  its command answers an RPC round trip, while `eval` / `new Function`
+  stay refused there (the realm additionally locks its own
   `eval`/`Function` globals to throwing stubs at handshake time, so the
-  plugin-context refusal is a property of the realm, not only of the serving
-  context. What remains open is exactly leg (b) of the ruling — a working
-  plugin in the packaged runtime — blocked on ONE design change, drafted as
-  `reviews/DRAFT-AMENDMENT-P25-CSP-HOSTING.md`: main-process-vetted plugin
-  package files served under `jcad://app/plugin-realm/<session>/` with the
-  worker CSP and loaded by the realm as module scripts (no string
-  evaluation). Until that amendment is admitted and lands, worker isolation
-  is NOT claimed for the packaged renderer; the Windows gate re-runs the e2e
-  script against the packaged executable.
+  plugin-context refusal is a property of the realm, not only of the
+  serving context). Remaining gates, stated plainly: a Fable security
+  review of the amendment (pre-composition) and the lead's packaged
+  Windows gate (the `--packaged` run of the e2e, leg (3b) green there)
+  are still outstanding — until that gate passes, worker isolation is
+  NOT claimed for the packaged renderer. Limits that survive the
+  amendment: the served bytes are the user's own trusted-at-load plugin
+  files (the CSP confines how they run; it does not make them
+  trustworthy); the `jcad.js` slot is readable by any realm code during
+  the import and carries only that session's own capability-enforcing
+  proxy; a realm module can import other URLs the worker CSP's
+  `script-src 'self'` allows (the app's own bundled assets and its own
+  package); and the dev/browser contexts keep their blob:/file: module
+  forms, where no worker CSP is served.
 - A realm plugin with `document.read` can still *exfiltrate what it read* through any
   output channel it also holds (e.g. `ui.log`, `files.save`); capabilities reduce the
   surface, they do not make a granted-read plugin trustworthy. Network stubs (T8) are

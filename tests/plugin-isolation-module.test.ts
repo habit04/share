@@ -122,9 +122,12 @@ describe('C-J1: no string path exists for any transport to select', () => {
   it('the shipped bootstrap source contains no plugin-body string evaluation', () => {
     expect(REALM_BOOTSTRAP_SOURCE).not.toContain('FunctionCtor');
     expect(REALM_BOOTSTRAP_SOURCE).not.toContain('CSP-CALL-SITE');
-    expect(REALM_BOOTSTRAP_SOURCE).not.toContain('new Function');
+    expect(REALM_BOOTSTRAP_SOURCE).not.toMatch(/new Function\s*\(/);
     expect(REALM_BOOTSTRAP_SOURCE).not.toContain('msg.code');
+    // The module loader is present (as the serialised source's argument
+    // expression), and no test-transform helper leaked into the realm code.
     expect(REALM_BOOTSTRAP_SOURCE).toContain('import(');
+    expect(REALM_BOOTSTRAP_SOURCE).not.toContain('__vite');
   });
 
   it('the handshake carries moduleUrl and no code; session + nonce binding are unchanged (C-J2 shape)', async () => {

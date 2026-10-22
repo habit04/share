@@ -17,22 +17,29 @@
  *   and cannot forge messages: it has no nonce (threat T5);
  * - `eval` and the `Function` constructor are likewise locked to throwing
  *   stubs at handshake time (the lead's CSP ruling, 2026-10-21: eval and
- *   new Function are refused in the plugin context). The bootstrap's own
- *   single plugin-body call site uses the constructor reference captured
- *   in this closure before hardening — plugin code cannot reach it;
- * - the plugin runs with `jcad` as its only parameter, the v1 convention.
+ *   new Function are refused in the plugin context);
+ * - the plugin entry is loaded as an ES module — a dynamic import() of the
+ *   host-supplied module URL (AMENDMENT-P25-CSP-HOSTING Part B) — and the
+ *   bootstrap contains NO string evaluation at all: the Function-constructor
+ *   body compilation of the CSP-ruling delivery is gone, so there is no
+ *   call site any transport could select to compile a plugin body string.
+ *   The entry module receives the session's `jcad` proxy through the
+ *   one-line jcad.js shim (Part B2, in the handshake handler below).
+ *
+ * The importer itself arrives as this function's argument, never as a
+ * literal `import()` in this body: this function is serialised verbatim
+ * into the Node worker_threads realm (REALM_BOOTSTRAP_SOURCE below),
+ * where a literal dynamic-import expression would be rewritten by the
+ * test pipeline's module transform into a helper that does not exist in
+ * the bare realm. The browser worker entry (realm-worker.ts, a real
+ * module) passes the platform's native dynamic import; the serialised
+ * source string appends the same expression as inert text the transform
+ * leaves alone, so the tested realm code and the shipped realm code run
+ * the identical function.
  */
 
-export function realmBootstrapMain(): void {
+export function realmBootstrapMain(importModule?: (url: string) => Promise<unknown>): void {
   const g = globalThis as unknown as Record<string, unknown>;
-
-  // The realm's ONE string-evaluation capability, captured into this closure
-  // before the globals are hardened: hardenGlobals() locks the realm's
-  // `Function` and `eval` globals to throwing stubs, so the bootstrap's own
-  // plugin-body call site (CSP-CALL-SITE, in the handshake handler below)
-  // uses this captured reference. It never leaves the closure, so plugin
-  // code cannot reach it.
-  const FunctionCtor = g.Function as typeof Function | undefined;
 
   // ---- transport detection (browser/Electron worker, or Node worker_threads)
   let send: (msg: unknown) => void = () => {
@@ -336,12 +343,12 @@ export function realmBootstrapMain(): void {
     lock('__dirname', undefined);
     // CSP ruling (2026-10-21): eval and the Function constructor are refused
     // in the plugin context. The stub is a plain function (not an arrow) so
-    // that `new Function(...)` throws this same named refusal instead of an
-    // incidental "not a constructor" TypeError. The bootstrap's own single
-    // use of the constructor goes through the closure-captured reference
-    // (FunctionCtor above), never through this global. Residue, stated
-    // plainly: a function object's own `.constructor` chain still reaches
-    // the intrinsic in a realm with no CSP — the packaged worker CSP
+    // that a Function construction throws this same named refusal instead
+    // of an incidental "not a constructor" TypeError. No bootstrap code uses the
+    // constructor at all — the realm loads its plugin entry as a module
+    // (Part B), it compiles no body string. Residue, stated plainly: a
+    // function object's own `.constructor` chain still reaches the
+    // intrinsic in a realm with no CSP — the packaged worker CSP
     // (script-src 'self' 'wasm-unsafe-eval') is the platform-level refusal
     // there, and in every realm the host's capability enforcement bounds
     // what realm-local code can do: no channel, no nonce, no host globals.
@@ -366,44 +373,49 @@ export function realmBootstrapMain(): void {
       hardenGlobals();
       const jcad = buildJcad(String(msg.name ?? 'plugin'), String(msg.version ?? ''));
       jcadRef = jcad;
-      const code = String(msg.code ?? '');
-      let result: unknown;
-      try {
-        if (typeof FunctionCtor !== 'function') throw new Error('the isolated realm provides no Function constructor for the plugin body');
-        // The plugin body runs inside an async scope so v2 plugins may use
-        // top-level await (every jcad call is a promise); a top-level return
-        // becomes the load report, and a synchronous throw becomes a load
-        // failure — the same outcomes v1 produces for sync/async bodies.
-        // CSP-CALL-SITE: the realm's single string evaluation — it compiles
-        // the plugin body, through the closure-captured constructor (the
-        // realm's `Function` global is locked before plugin code runs).
-        // The packaged worker CSP (script-src 'self' 'wasm-unsafe-eval',
-        // electron/renderer-origin.cjs WORKER_CSP) refuses this call, so a
-        // worker plugin fails closed at load in the packaged renderer until
-        // the CSP hosting amendment (reviews/DRAFT-AMENDMENT-P25-CSP-HOSTING.md)
-        // lands; no other code in this bootstrap evaluates strings.
-        const fn = new FunctionCtor('jcad', `return (async () => {\n${code}\n})();\n//# sourceURL=jcad-isolated/${encodeURIComponent(String(msg.name ?? 'plugin'))}.js`) as (j: unknown) => unknown;
-        result = fn.call(undefined, jcad);
-      } catch (err) {
+      const moduleUrl = typeof msg.moduleUrl === 'string' ? msg.moduleUrl : '';
+      const failLoad = (err: unknown) => {
         send({ kind: 'load-done', v: 2, session, nonce: realmNonce, ok: false, error: err instanceof Error ? err.message : String(err) });
+      };
+      if (!moduleUrl) {
+        failLoad(new Error('the isolated handshake carries no module URL; the realm loads its plugin entry as a module and compiles no body string'));
         return;
       }
-      const done = (value: unknown) => {
-        let report: unknown;
-        try {
-          report = value === undefined ? null : JSON.parse(JSON.stringify(value)) as unknown;
-        } catch {
-          report = { unreportable: true };
-        }
-        send({ kind: 'load-done', v: 2, session, nonce: realmNonce, ok: true, report });
-      };
-      if (result && typeof (result as Promise<unknown>).then === 'function') {
-        (result as Promise<unknown>).then(done, (err: unknown) => {
-          send({ kind: 'load-done', v: 2, session, nonce: realmNonce, ok: false, error: err instanceof Error ? err.message : String(err) });
-        });
-      } else {
-        done(result);
+      if (typeof importModule !== 'function') {
+        failLoad(new Error('the isolated realm has no module loader; the realm loads its plugin entry as a module and compiles no body string'));
+        return;
       }
+      // Part B2: hand the session's jcad proxy to the entry module through
+      // the well-known global slot the jcad.js shim reads
+      // (`export default globalThis[Symbol.for("jcad.isolated.jcad")]`),
+      // import the entry, and delete the slot as soon as the import
+      // settles. The slot carries only THIS session's proxy — which
+      // enforces the declared capabilities on every call — and no nonce;
+      // the load report is the module namespace's default export,
+      // JSON-cloned exactly as a body report was under the string form.
+      // A module that throws, or imports something unresolvable, fails
+      // the load closed.
+      const slots = g as Record<PropertyKey, unknown>;
+      const JCAD_SLOT = Symbol.for('jcad.isolated.jcad');
+      slots[JCAD_SLOT] = jcad;
+      void importModule(moduleUrl)
+        .then((namespace) => {
+          const value = (namespace as { default?: unknown } | null)?.default;
+          let report: unknown;
+          try {
+            report = value === undefined ? null : JSON.parse(JSON.stringify(value)) as unknown;
+          } catch {
+            report = { unreportable: true };
+          }
+          send({ kind: 'load-done', v: 2, session, nonce: realmNonce, ok: true, report });
+        }, failLoad)
+        .finally(() => {
+          try {
+            delete slots[JCAD_SLOT];
+          } catch {
+            slots[JCAD_SLOT] = undefined;
+          }
+        });
       return;
     }
     if (msg.session !== session) return;
@@ -483,5 +495,11 @@ export function realmBootstrapMain(): void {
   });
 }
 
-/** The bootstrap as source text (Node worker_threads `eval` path). */
-export const REALM_BOOTSTRAP_SOURCE = `(${realmBootstrapMain.toString()})();`;
+/**
+ * The bootstrap as source text (Node worker_threads `eval` path). The
+ * module importer is appended as an argument expression — inert string
+ * content here, real code only when the worker evaluates it — for the
+ * reason realmBootstrapMain's header gives: no literal dynamic-import
+ * expression may appear in the serialised function body itself.
+ */
+export const REALM_BOOTSTRAP_SOURCE = `(${realmBootstrapMain.toString()})((url) => import(url));`;

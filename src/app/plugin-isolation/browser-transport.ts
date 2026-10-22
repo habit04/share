@@ -7,11 +7,11 @@
  *
  * NOTE (docs/PLUGIN-ISOLATION.md §6): in the packaged Electron renderer this
  * worker is served under the main process's worker CSP (script-src 'self'
- * 'wasm-unsafe-eval'), which — per the lead's CSP ruling (2026-10-21) —
- * refuses the bootstrap's plugin-body string evaluation: a worker plugin
- * fails closed at load there until the CSP hosting amendment
- * (reviews/DRAFT-AMENDMENT-P25-CSP-HOSTING.md) lands. Verified in the real
- * Electron runtime by scripts/e2e-plugin-csp.mjs.
+ * 'wasm-unsafe-eval'). Since AMENDMENT-P25-CSP-HOSTING landed, the realm
+ * loads the plugin entry as a module — from the main-served plugin-realm
+ * root in the packaged runtime, a blob:/file: module elsewhere — and the
+ * bootstrap evaluates no strings, so worker plugins load under that CSP.
+ * Verified in the real Electron runtime by scripts/e2e-plugin-csp.mjs.
  */
 import type { RealmTransport } from './host';
 
