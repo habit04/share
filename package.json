@@ -93,7 +93,9 @@
           "**/*"
         ]
       },
-      "package.json"
+      "package.json",
+      "!node_modules/@napi-rs/canvas/**",
+      "!node_modules/@napi-rs/canvas-*/**"
     ],
     "asarUnpack": [
       "electron/dwg-protocol.cjs",
