@@ -1430,8 +1430,10 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       if (surplus.size) {
         // A surplus object still referenced by a surviving record is kept,
         // detached; an unreferenced one is dropped. Fixpoint, because a
-        // kept surplus may itself reference another surplus.
-        const referenceCodes = new Set([330, 340, 341, 342, 343, 344, 350, 360]);
+        // kept surplus may itself reference another surplus. The scan uses
+        // the ONE cadReferenceKind-derived code set (P22 re-review 2 rule
+        // 1) — no hand-maintained subset here either.
+        const referenceCodes = HANDLE_REFERENCE_CODES;
         const surplusHandles = new Set([...surplus].map((record) => canon(value(record, 5))!));
         const kept = new Set<RecordData>();
         let changed = true;
