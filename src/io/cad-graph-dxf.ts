@@ -1162,14 +1162,23 @@ function logicalKeys(records: readonly RecordData[]): Map<RecordData, string> {
     else if (record.type === 'HEADER') keys.set(record, 'header');
     else if (record.type === 'BLOCK') keys.set(record, JSON.stringify(['block', name.toUpperCase()]));
     else if (record.type === 'LAYOUT') keys.set(record, JSON.stringify(['layout', layoutName(record).toUpperCase()]));
+    // RULING-P28 C6, corrected by PR #42 fix 2: an underlay DEFINITION
+    // dedupes on its REAL identity — kind + stored path (group 1) +
+    // page/model as stored (group 2). The C6 key omitted the page, so
+    // two pages of one PDF collided and the merge kept a copy per pass
+    // (2 -> 3 -> 5 -> 9 -> 17 definitions). This branch also runs BEFORE
+    // the dictionary branch: a definition owned through a named
+    // sub-dictionary (ACAD_PDFDEFINITIONS and kin) keys by the same
+    // identity as the generated records, which the writer parents to
+    // the root dictionary directly — keyed by dictionary path, the two
+    // never matched and dictionary-owned definitions duplicated too.
+    // In a graph-carrying state the model/codec is authoritative for
+    // the modelled definition content; the retained node contributes
+    // only unmodelled extras through the merge, so retained groups are
+    // neither doubled nor lost.
+    else if (record.type === 'PDFDEFINITION' || record.type === 'DWFDEFINITION' || record.type === 'DGNDEFINITION') keys.set(record, JSON.stringify(['underlay', record.type, identifierValue(record, 1), identifierValue(record, 2)]));
     else if (record.handle && paths.has(record.handle)) keys.set(record, JSON.stringify(['dictionary', ...paths.get(record.handle)!]));
     else if (record.type === 'IMAGEDEF') keys.set(record, JSON.stringify(['image', identifierValue(record, 1)]));
-    // RULING-P28 C6: an underlay *DEFINITION dedupes on kind + stored path
-    // (group 1) — the IMAGEDEF key analogue. In a graph-carrying state the
-    // model/codec is authoritative for the modelled definition content;
-    // the retained node contributes only unmodelled extras through the
-    // merge, so retained groups are neither doubled nor lost.
-    else if (record.type === 'PDFDEFINITION' || record.type === 'DWFDEFINITION' || record.type === 'DGNDEFINITION') keys.set(record, JSON.stringify(['underlay', record.type, identifierValue(record, 1)]));
   }
   for (const record of records) if (record.type === 'ENDBLK') {
     const owner = byHandle.get(value(record, 330));
@@ -1348,6 +1357,35 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   for (const record of generated) if (record.type === 'IMAGEDEF_REACTOR') {
     const owner = generatedByHandle.get(value(record, 330)), sourceOwner = owner && match.get(owner), node = sourceOwner && imageReactors.get(sourceOwner.id);
     if (node && !matched.has(node.id)) { match.set(record, node); matched.add(node.id); }
+  }
+  // PR #42 fix 2, second half: a definition whose stored path the model
+  // edited cannot match on its full identity (the source key carries
+  // the old path). Its identity survives in (kind, page/model): when
+  // exactly ONE unmatched source definition and ONE unmatched generated
+  // record share it, they are the same definition — the generated
+  // record (model authoritative for the path, RULING-P28 C6) takes the
+  // retained node's place and its extras merge once, instead of the
+  // stale record surviving beside the new one (4 definitions, old path
+  // included). Ambiguous pairings are left unmatched on purpose.
+  const isUnderlayDefinition = (type: string) => type === 'PDFDEFINITION' || type === 'DWFDEFINITION' || type === 'DGNDEFINITION';
+  const unmatchedSourcesByPage = new Map<string, CadNode[]>();
+  graph.nodes.forEach((node, index) => {
+    if (matched.has(node.id) || !isUnderlayDefinition(node.type)) return;
+    const key = JSON.stringify(['underlay-page', node.type, identifierValue(sources[index]!, 2)]);
+    unmatchedSourcesByPage.set(key, [...(unmatchedSourcesByPage.get(key) ?? []), node]);
+  });
+  const unmatchedGeneratedByPage = new Map<string, RecordData[]>();
+  for (const record of generated) {
+    if (match.has(record) || !isUnderlayDefinition(record.type)) continue;
+    const key = JSON.stringify(['underlay-page', record.type, identifierValue(record, 2)]);
+    unmatchedGeneratedByPage.set(key, [...(unmatchedGeneratedByPage.get(key) ?? []), record]);
+  }
+  for (const [key, recordsForPage] of unmatchedGeneratedByPage) {
+    const nodesForPage = unmatchedSourcesByPage.get(key) ?? [];
+    if (recordsForPage.length === 1 && nodesForPage.length === 1) {
+      match.set(recordsForPage[0]!, nodesForPage[0]!);
+      matched.add(nodesForPage[0]!.id);
+    }
   }
   const hintHandles = new Map(graph.generatedHandles?.map(hint => [hint.key, canonicalCadHandle(hint.handle)]));
   const generatedSlots = structuralKeys(generated);

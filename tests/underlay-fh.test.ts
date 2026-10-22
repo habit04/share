@@ -16,6 +16,7 @@ const Mp = Map.prototype as unknown as Record<string, unknown>;
 if (!Mp.getOrInsert) { Mp.getOrInsert = function (this: Map<unknown, unknown>, k: unknown, v: unknown) { if (!this.has(k)) this.set(k, v); return this.get(k); }; Mp.getOrInsertComputed = function (this: Map<unknown, unknown>, k: unknown, f: (k: unknown) => unknown) { if (!this.has(k)) this.set(k, f(k)); return this.get(k); }; }
 
 import { createPdfjsEngine } from '../src/io/underlay-pdfjs';
+import { gatedWorkerFactory } from './pdfjs-gated-worker';
 import { planUnderlayTiles, underlayRefusal, type UnderlayCanvasFactory, type UnderlayCanvasSlot, type UnderlayRasterEngine } from '../src/io/underlay-engine';
 import { DEFAULT_UNDERLAY_CAPS } from '../src/io/underlay-adapter';
 import { createUnderlayDisplayService } from '../src/app/underlay-render';
@@ -234,22 +235,28 @@ describe('H: hard deadline behaviour', () => {
   // watchdog can only fire between operator chunks — 17.2 s on an idle
   // box, catastrophic on a loaded 2-core CI runner (240 s test timeout
   // on Node 22; an assertion failure on Node 24), after which the still
-  // spinning render starved every later pdfjs test in the run. The leg
-  // below pins the SAME adapter behaviour — the hostile document opens,
-  // a render is refused as a typed 'deadline', the document still
-  // answers, the engine still renders a control — with the deadline
-  // driven by the injected operation clock, so the runaway render never
-  // starts in-process. Full assertions, zero starvation surface.
-  it('billion-laughs: a render whose time runs out is refused as a typed deadline and the engine stays usable', async () => {
-    let t = 0;
-    let jumped = false;
-    const jumpOnceFactory: UnderlayCanvasFactory = {
-      create(width: number, height: number): UnderlayCanvasSlot {
-        if (!jumped) { jumped = true; t = 60_000; } // the render's clock jumps past the 5 s deadline
-        return napiFactory.create(width, height);
-      },
-    };
-    const engine = newEngine({ canvasFactory: jumpOnceFactory, now: () => t });
+  // spinning render starved every later pdfjs test in the run.
+  //
+  // PR #42 fix 3 (fast-machine audit): the 37fd537 replacement leg drove
+  // the deadline from the INJECTED operation clock — a one-time jump on
+  // the first canvas create. That removed the wall-clock coupling but
+  // kept a subtler one: the refusal only lands if the jump is consumed
+  // at a canvas create the adapter makes BEFORE the render starts,
+  // which is pdfjs's internal call ordering, not a contract — and on a
+  // fast machine Codex saw the depth-15 render finish first (ok:true).
+  // The leg below pins the SAME adapter behaviour — the hostile
+  // document opens, a render is refused as a typed 'deadline', the
+  // document still answers, the engine still renders a control — with
+  // the gated-worker fixture of fix 1: the worker NEVER answers the
+  // render's operator-list request, so the operation-wide supervisor
+  // alone can settle the call, at the cap, at any CPU speed.
+  it('billion-laughs: a render the worker never answers is refused as a typed deadline and the engine stays usable', async () => {
+    const gate = gatedWorkerFactory((worker, index) => { if (index === 0) worker.drop('GetOperatorList'); });
+    const engine = createPdfjsEngine({
+      createWorker: gate.createWorker,
+      canvasFactory: napiFactory,
+      caps: { ...DEFAULT_UNDERLAY_CAPS, deadlineMs: 2_000 },
+    });
     const opened = await engine.open(billionLaughs(15));
     expect(opened.ok).toBe(true);
     if (!opened.ok) return;
@@ -257,14 +264,16 @@ describe('H: hard deadline behaviour', () => {
       const r = await opened.value.renderPage(1, 1);
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.code).toBe('deadline');
-      // The document still answers afterwards.
+      expect(gate.workers[0]!.terminations).toBe(1);
+      // The document still answers afterwards (its size was cached by
+      // the stalled render's own lookup; fresh-worker recovery of a
+      // terminated session is pinned in underlay-pdfjs-deadline.test.ts).
       const sized = await opened.value.pageSize(1);
       expect(sized.ok).toBe(true);
     } finally {
       opened.value.close();
     }
     // And the engine opens + renders a control document.
-    t = 0;
     const control = await engine.open(docOf([{ w: 200, h: 200, content: '0 1 0 rg 20 20 160 160 re f', resources: '' }]));
     expect(control.ok).toBe(true);
     if (!control.ok) return;
