@@ -33,8 +33,10 @@ describe('native complex linetype definitions and STYLE references', () => {
   it('retains gas text and anonymous shape resources through edit, undo/redo and fresh reopen', () => {
     const doc = new Drawing(readDxf(source)), before = doc.snapshot.header!.linetypes;
     expect(linetype(doc.snapshot, 'GAS_LINE').complex!.elements[1]).toMatchObject({ flags: 2, shapeNumber: 0, style: { kind: 'text', name: 'Standard', sourceHandle: '11' }, scale: 2.54, rotation: 0, offsetX: -2.54, offsetY: -1.27, text: 'GAS' });
-    expect(linetype(doc.snapshot, 'FENCELINE1').complex!.elements[1]).toMatchObject({ flags: 4, shapeNumber: 133, style: { kind: 'shape', sourceId: '32' }, scale: 2.54, rotation: 0, offsetX: -2.54, offsetY: 0 });
-    expect(shapeStylesOf(doc.snapshot)['32']).toEqual({ name: '', flags: 1, font: 'ltypeshp.shx', bigFont: '', height: 0, widthFactor: 1, oblique: 0, generation: 0, lastHeight: 2.5 });
+    // Genuine handles (checklist r2018-truecolor-linetypes #21): Standard stays '11',
+    // the anonymous shape style is '267' (the synthetic's was '32').
+    expect(linetype(doc.snapshot, 'FENCELINE1').complex!.elements[1]).toMatchObject({ flags: 4, shapeNumber: 133, style: { kind: 'shape', sourceId: '267' }, scale: 2.54, rotation: 0, offsetX: -2.54, offsetY: 0 });
+    expect(shapeStylesOf(doc.snapshot)['267']).toEqual({ name: '', flags: 1, font: 'ltypeshp.shx', bigFont: '', height: 0, widthFactor: 1, oblique: 0, generation: 0, lastHeight: 2.5 });
     expect(Object.keys(textStylesOf(doc.snapshot))).toEqual(['Standard']);
     doc.addEntities([{ id: 'edit', type: 'line', layer: '0', color: 1, a: { x: 0, y: 0 }, b: { x: 5, y: 8 } }]);
     expect(doc.dirty).toBe(true); expect(doc.undo()).toBe(true); expect(doc.redo()).toBe(true);
@@ -43,7 +45,7 @@ describe('native complex linetype definitions and STYLE references', () => {
     expect(linetype(reopened, 'GAS_LINE').complex!.elements[1]).toMatchObject({ flags: 2, text: 'GAS', style: { kind: 'text', name: 'Standard' }, scale: 2.54 });
     const shapeReference = linetype(reopened, 'FENCELINE1').complex!.elements[1]!.style!;
     expect(shapeReference.kind).toBe('shape');
-    if (shapeReference.kind === 'shape') expect(shapeStylesOf(reopened)[shapeReference.sourceId]).toEqual(shapeStylesOf(doc.snapshot)['32']);
+    if (shapeReference.kind === 'shape') expect(shapeStylesOf(reopened)[shapeReference.sourceId]).toEqual(shapeStylesOf(doc.snapshot)['267']);
     expect(reopened.entities.some((entity) => entity.id === 'edit')).toBe(false); // IDs regenerate; edited geometry remains.
     expect(reopened.entities.some((entity) => entity.type === 'line' && entity.b.x === 5 && entity.b.y === 8)).toBe(true);
     const shapes = records(written, 'STYLE').filter((record) => Number(value(record, 70)) & 1);
@@ -52,7 +54,7 @@ describe('native complex linetype definitions and STYLE references', () => {
     const pointers = records(written, 'LTYPE').flatMap((record) => record.filter(([code]) => code === 340).map(([, handle]) => handle));
     const styleHandles = records(written, 'STYLE').map((record) => value(record, 5));
     expect(pointers.every((handle) => styleHandles.includes(handle))).toBe(true);
-    expect(pointers).toContain('11'); expect(pointers).toContain('32');
+    expect(pointers).toContain('11'); expect(pointers).toContain('267');
     expect(new Set(styleHandles).size).toBe(styleHandles.length);
   });
   it('retains trailing/leading literal text, native radians, and absolute/unknown rotation flags', () => {

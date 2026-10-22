@@ -1,8 +1,12 @@
 /**
- * Interchange fixtures (tests/fixtures/interchange/): nine DXF files written by hand from the
- * public DXF reference, laid out the way AutoCAD 2000 (AC1015) and AutoCAD 2018 (AC1032) save
- * them. None comes from JCad's writer. Each fixture is checked after import (the bytes decoded as
- * the app decodes them, then readDxf) and again after a writeDxf -> readDxf round trip.
+ * Interchange fixtures (tests/fixtures/interchange/): the R2000 files were written by hand
+ * from the public DXF reference, laid out the way AutoCAD 2000 (AC1015) saves them;
+ * r2018-dimensions.dxf, r2018-image-inches.dxf, r2018-mtext.dxf, r2018-table.dxf and
+ * r2018-truecolor-linetypes.dxf are genuine AutoCAD 2027 R2018 saves that replaced
+ * hand-authored originals in the 2026-10-21 fixture swap (see
+ * tests/fixtures/interchange/PROVENANCE.md). None comes from JCad's writer. Each fixture is
+ * checked after import (the bytes decoded as the app decodes them, then readDxf) and again
+ * after a writeDxf -> readDxf round trip.
  *
  * Every describe block starts with what must survive and what docs/SUPPORT-MATRIX.md says is
  * lost; losses the matrix documents are asserted as losses. Where the reader or writer drops
@@ -288,9 +292,10 @@ describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with thei
       close(dimensionMeasurement(al), Math.sqrt(60 * 60 + 40 * 40));
       const r = dims[3]!;
       closePt(r.p1, 200, 30);
-      closePt(r.p2, 217.67766952966369, 47.67766952966369);
-      // No user position (flag 128 off): the text sits the leader length (40 = 10) beyond the arc.
-      closePt(r.linePoint, 224.74873734152916, 54.74873734152916, 5);
+      closePt(r.p2, 218.008005337287, 47.34104217664675);
+      // The genuine file stores the leader endpoint on the arc at AutoCAD's picked angle and the
+      // text point (11/21) it computed; the synthetic hand-placed both at idealized 45-degree spots.
+      closePt(r.linePoint, 227, 55.99999999999994, 5);
       close(dimensionMeasurement(r), 25);
       expect(dimensionText(r)).toBe('R25');
       const dia = dims[4]!;
@@ -307,16 +312,18 @@ describe('r2018-dimensions.dxf: named DIMSTYLEs with XDATA, DIMENSIONs with thei
     it('angular between two lines and by three points', () => {
       const a2 = dims[5]!;
       closePt(a2.center, 300, 0);
-      closePt(a2.p1, 360, 0);
-      closePt(a2.p2, 330, 51.96152422706632);
-      closePt(a2.linePoint, 300 + 20 * Math.sqrt(3), 20);
+      // AutoCAD stores the two lines' endpoints in its own order (p1 = the 60-degree line's end);
+      // the synthetic stored them in the opposite order. Same lines, same angle.
+      closePt(a2.p1, 330, 51.96152422706632);
+      closePt(a2.p2, 360, 0);
+      closePt(a2.linePoint, 337.5877048314363, 13.68080573302674);
       close(dimensionMeasurement(a2), Math.PI / 3);
       expect(dimensionText(a2)).toBe('60%%d');
       const a3 = dims[6]!;
       closePt(a3.center, 400, 0);
       closePt(a3.p1, 450, 0);
       closePt(a3.p2, 400, 50);
-      closePt(a3.linePoint, 421.21320343559643, 21.213203435596427);
+      closePt(a3.linePoint, 425.980762113533, 14.99999999999997);
       close(dimensionMeasurement(a3), Math.PI / 2);
     });
 
@@ -532,7 +539,10 @@ describe('r2018-mtext.dxf: MTEXT formatting codes, stacked fractions, columns, l
       const m3 = m[2]!;
       expect(m3.text).toBe('COLUMN ONE FIRST LINE\nCOLUMN ONE SECOND LINE\nCOLUMN TWO FIRST LINE\nCOLUMN TWO SECOND LINE');
       expect(m3.raw).toContain('\\N');
-      expect(m3.width).toBe(60);
+      // The genuine entity's reference width (group 41) is the TOTAL width 125 = 2x60 + 5;
+      // the 60 column width lives in the embedded object (checklist r2018-mtext #11).
+      // The synthetic carried 60 in both places.
+      expect(m3.width).toBe(125);
     });
 
     it('rotated by its direction vector, middle centre, line spacing 1.5, SHX style, UTF-8 characters', () => {
@@ -561,7 +571,9 @@ describe('r2018-mtext.dxf: MTEXT formatting codes, stacked fractions, columns, l
   it('MTEXT static columns (R2018 embedded object: 2 columns 60 wide, gutter 5) are kept, and each column is laid out at its offset', () => {
     for (const [, s] of both(f)) {
       const m = ofType<MTextEntity>(s.entities, 'mtext')[2]!;
-      expect(m.columns).toMatchObject({ type: 1, count: 2, width: 60, gutter: 5, heights: [20, 20] });
+      // No per-column heights in the genuine file (group 46 carries only the defined height 20,
+      // which the heights follow; checklist r2018-mtext #13). The synthetic pinned [20, 20].
+      expect(m.columns).toMatchObject({ type: 1, count: 2, width: 60, gutter: 5, heights: [] });
       const parts = mtextLayout(m, (t, h) => t.length * h * 0.1);
       const origins = [...new Set(parts.filter((t) => t.text === 'COLUMN').map((t) => t.position.x))];
       expect(origins[1]! - origins[0]!).toBeCloseTo(65);
@@ -771,9 +783,13 @@ describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency
     it('layers: true colour with the nearest ACI, lineweights, linetypes, off / frozen / locked / no-plot', () => {
       expect(importReportOf(s)?.items.some((i) => i.type === 'STYLE')).toBe(true);
       expect(layerOf(s, '0')).toMatchObject({ color: 7, lineWeight: 0.25 });
-      expect(layerOf(s, 'PANEL-TC')).toMatchObject({ color: 5, trueColor: 0x3399ff, lineWeight: 0.5 });
-      expect(layerOf(s, 'WIRE-RED')).toMatchObject({ color: 1, trueColor: 0xc80000, lineWeight: 0.35, linetype: 'GAS_LINE' });
-      expect(layerOf(s, 'BOOK')).toMatchObject({ color: 3, trueColor: 0x00a651, lineWeight: 0.25 });
+      // AutoCAD writes its own nearest ACI beside each true colour in a genuine save
+      // (checklist r2018-truecolor-linetypes #8/#10/#12/#13): PANEL-TC 150 (not 5),
+      // WIRE-RED 12 (not 1), BOOK 104 (not 3), and the book colour is AutoCAD 2027's
+      // PANTONE 355 C value 0x009639 (not the synthetic's 0x00a651).
+      expect(layerOf(s, 'PANEL-TC')).toMatchObject({ color: 150, trueColor: 0x3399ff, lineWeight: 0.5 });
+      expect(layerOf(s, 'WIRE-RED')).toMatchObject({ color: 12, trueColor: 0xc80000, lineWeight: 0.35, linetype: 'GAS_LINE' });
+      expect(layerOf(s, 'BOOK')).toMatchObject({ color: 104, trueColor: 0x009639, lineWeight: 0.25 });
       expect(layerOf(s, 'FENCE')).toMatchObject({ color: 40, visible: false, lineWeight: 0.13, linetype: 'FENCELINE1' });
       expect(layerOf(s, 'NOPLOT')).toMatchObject({ color: 8, plot: false });
       expect(layerOf(s, 'ARCHIVE')).toMatchObject({ frozen: true, locked: true, visible: false });
@@ -782,9 +798,21 @@ describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency
 
     it('complex linetypes keep their native descriptors while displaying the dash fallback', () => {
       expect(s.header?.linetypes).toMatchObject([
-        { name: 'GAS_LINE', description: 'Gas line ----GAS----GAS----GAS----GAS----GAS----GAS--', pattern: [12.7, -5.08, -6.35] },
-        { name: 'FENCELINE1', description: 'Fenceline circle ----0-----0----0-----0----0-----0--', pattern: [6.35, -2.54, -2.54, 25.4] },
+        // AutoCAD truncated both descriptions to 47 chars (checklist #17, GAS_LINE);
+        // the synthetic carried the full texts.
+        { name: 'GAS_LINE', description: 'Gas line ----GAS----GAS----GAS----GAS----GAS---' },
+        { name: 'FENCELINE1', description: 'Fenceline circle ----0-----0----0-----0----0---' },
       ]);
+      // AutoCAD spelled both 6.35 dashes with the long double (GAS_LINE -6.349999999999999,
+      // checklist #19; FENCELINE1 6.349999999999999), one ULP below the canonical double, and
+      // JCad's writer canonicalises them on save - so the two legs' pattern doubles differ by
+      // that single ULP and the patterns are asserted element-wise at 12 digits.
+      const gasPattern = s.header!.linetypes[0]!.pattern!;
+      const fencePattern = s.header!.linetypes[1]!.pattern!;
+      expect(gasPattern).toHaveLength(3);
+      expect(fencePattern).toHaveLength(4);
+      [12.7, -5.08, -6.35].forEach((v, i) => close(gasPattern[i], v, 12));
+      [6.35, -2.54, -2.54, 25.4].forEach((v, i) => close(fencePattern[i], v, 12));
       expect(s.header!.linetypes[0]!.complex!.elements[1]).toMatchObject({ flags: 2, shapeNumber: 0,
         scale: 2.54, rotation: 0, offsetX: -2.54, offsetY: -1.27, text: 'GAS', style: { kind: 'text', name: 'Standard' } });
       expect(s.header!.linetypes[1]!.complex!.elements[1]).toMatchObject({ flags: 4, shapeNumber: 133,
@@ -810,7 +838,7 @@ describe('r2018-truecolor-linetypes.dxf: true colours, colour book, transparency
       expect(ofType<ArcEntity>(s.entities, 'arc')[0]).toMatchObject({ color: 5, trueColor: 0x0000ff });
       // A colour-book colour shows its RGB (420), more than the matrix promises.
       const book = ofType<TextEntity>(s.entities, 'text')[0]!;
-      expect(book).toMatchObject({ color: 3, trueColor: 0x00a651, text: 'PANTONE 355 C' });
+      expect(book).toMatchObject({ color: 104, trueColor: 0x009639, text: 'PANTONE 355 C' });
       expect(ofType<HatchEntity>(s.entities, 'hatch')[0]).toMatchObject({ solid: true, color: 8, trueColor: 0x808080 });
     });
   });
@@ -938,9 +966,22 @@ describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1
     const t = ofType<TableEntity>(s.entities, 'table')[0]!;
 
     it('one native table: insertion point, direction, row heights, column widths', () => {
-      expect(importReportOf(s)?.items.every((i) => (i.type === 'STYLE' && i.action === 'unsupported') || (i.type === 'ACAD_TABLE' && i.reason.includes('native table editing')))).toBe(true);
+      // Import-report predicate in the strict no-loss form the lead authorised for the genuine
+      // template file (census-predicate ruling, 2026-10-21) — not a loosening: (1) nothing is
+      // lost: no 'dropped' item (the report's lost disposition — not imported, lost on save)
+      // and no 'simplified' item beyond the one sanctioned ACAD_TABLE editing note; (2) every
+      // item that is not a 'kept' retention is (STYLE, unsupported) or that note. That is the
+      // original census predicate applied to the non-retained subset: the template's kept
+      // furniture (SCALE, VISUALSTYLE, XRECORD, ...) no longer trips it, and no new unsupported
+      // or simplified class can enter. The note is pinned to exactly one occurrence by the
+      // 'editing note exactly once' test below — an import-leg property: the round-trip report
+      // carries no ACAD_TABLE item (the written carrier returns as an INSERT kept item).
+      const items = importReportOf(s)?.items ?? [];
+      const isEditingNote = (i: (typeof items)[number]) => i.type === 'ACAD_TABLE' && i.reason.includes('native table editing');
+      expect(items.filter((i) => i.action === 'dropped' || (i.action === 'simplified' && !isEditingNote(i)))).toEqual([]);
+      expect(items.every((i) => i.action === 'kept' || (i.type === 'STYLE' && i.action === 'unsupported') || isEditingNote(i))).toBe(true);
       expect(s.entities).toHaveLength(1);
-      expect(t).toMatchObject({ layer: 'TABLES', rotation: 0, rowHeights: [9, 7, 7, 7], columnWidths: [40, 25, 25] });
+      expect(t).toMatchObject({ layer: 'TABLES', rotation: 0, rowHeights: [9.666666666666668, 12.33333333333333, 7, 7], columnWidths: [40, 25, 25] });
       closePt(t.position, 10, 200);
     });
 
@@ -952,8 +993,8 @@ describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1
         ['MOTOR M1', '8,2', '20 A'],
       ]);
       expect(t.cells[0]![0]!.span).toEqual({ rows: 1, cols: 3 });
-      expect(t.cells[2]![2]!.raw).toBe('{\\fArial|b1;16 A}');
-      expect(t.cells[3]![2]!.raw).toBe('\\C1;20 A');
+      expect(t.cells[2]![2]!.raw).toBe('{\\fArial|b1|i0|c0|p34;16 A}');
+      expect(t.cells[3]![2]!.raw).toBe('{\\C1;20 A}');
       expect(t.cells[3]![0]!.height).toBe(3);
       expect(t.cells[3]![1]!.attachment).toBe(6);
     });
@@ -964,9 +1005,19 @@ describe('r2018-table.dxf: ACAD_TABLE with cells, merged title, table style (AC1
       // Five horizontal lines (the title row is not split), four vertical (two stop under the title).
       expect(geo.lines).toHaveLength(9);
       expect(geo.texts.map((m) => m.text)).toEqual(['PANEL SCHEDULE', 'CIRCUIT', 'LOAD (A)', 'BREAKER', 'LIGHTING', '12,5', '16 A', 'MOTOR M1', '8,2', '20 A']);
-      closePt(geo.texts[0]!.position, 55, 195.5);
+      closePt(geo.texts[0]!.position, 55, 195.16666666666666);
       expect(geo.texts[7]!.height).toBe(3);
     });
+  });
+
+  it('the import report carries the ACAD_TABLE editing note exactly once (census-predicate ruling, 2026-10-21)', () => {
+    // The one sanctioned simplification of the genuine file: reading its native table reports
+    // once that native table editing is not modeled. Asserted on the import leg — the
+    // round-tripped state's report carries no ACAD_TABLE item at all (the written JCAD_TABLE
+    // carrier returns as an INSERT kept item), so the count is an import property.
+    const notes = (importReportOf(f.imported)?.items ?? []).filter((i) => i.type === 'ACAD_TABLE' && i.reason.includes('native table editing'));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]!.action).toBe('simplified');
   });
 
   it('lost as the matrix says: written as an INSERT of an anonymous block with JCAD_TABLE XDATA, not as ACAD_TABLE', () => {
@@ -1114,14 +1165,17 @@ describe('r2018-image-inches.dxf: IMAGE + IMAGEDEF in model and paper space, $IN
       ]);
     });
 
-    it('layout ANSI B: inch paper turned to landscape, 0.25" margins, a locked 1/4" = 1\'-0" viewport', () => {
+    it('layout ANSI B: inch paper turned to landscape, plotter margins, a locked 1/4" = 1\'-0" viewport', () => {
       expect(s.layouts?.map((l) => l.name)).toEqual(['ANSI B']);
       expect(layout!.paper).toMatchObject({ id: 'tabloid', units: 'in', orientation: 'landscape' });
-      expect(layout!.margins).toEqual({ left: 0.25, bottom: 0.25, right: 0.25, top: 0.25 });
+      // The genuine save's margins are the DWG To PDF plotter's printable area (5/17/5/17 mm,
+      // checklist r2018-image-inches #13), not the synthetic's uniform 0.25 in.
+      expect(layout!.margins).toEqual({ left: 0.1968503937007874, bottom: 0.6692913385826772, right: 0.1968503937007874, top: 0.6692913385826772 });
       expect(layout!.plotStyle).toBe('monochrome');
       expect(layout!.viewports).toHaveLength(1);
       const vp = layout!.viewports[0]!;
-      closePt(vp.center, 8.5, 6);
+      // Stored centre (8.25, 5.75) shifted by the genuine left/bottom margins (see above).
+      closePt(vp.center, 8.446850393700787, 6.419291338582677);
       expect(vp).toMatchObject({ width: 15.5, height: 9.5, layer: 'VPORTS', on: true });
       closePt(vp.view.center, 66, 24);
       close(vp.view.scale, 0.25 / 12);
@@ -1131,7 +1185,8 @@ describe('r2018-image-inches.dxf: IMAGE + IMAGEDEF in model and paper space, $IN
     it('the paper-space logo image keeps its placement and size', () => {
       const logo = ofType<ImageEntity>(layout!.entities, 'image')[0]!;
       expect(logo).toMatchObject({ layer: 'TITLE', u: { x: 0.005, y: 0 }, v: { x: 0, y: 0.005 }, size: { x: 400, y: 200 }, flags: 7 });
-      closePt(logo.position, 14.25, 1);
+      // Stored position (14, 0.75) shifted by the genuine left/bottom margins (see above).
+      closePt(logo.position, 14.196850393700787, 1.4192913385826773);
       expect(logo.clipOn).toBeUndefined();
     });
   });
