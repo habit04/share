@@ -90,7 +90,16 @@ writeFileSync(join(pkgDir, 'sub', 'extra.mjs'), EXTRA_BODY);
 writeFileSync(join(pkgDir, 'notes.txt'), 'package notes, not a script');
 writeFileSync(join(pkgDir, 'jcad.js'), 'DISK-JCAD-JS-MUST-NOT-BE-SERVED');
 writeFileSync(join(otherDir, 'secret.js'), SECRET_BODY);
-symlinkSync(join(otherDir, 'secret.js'), join(pkgDir, 'escape.js'));
+// W-2 (lead ruling, 2026-10-22): creating a file symlink needs
+// privilege on Windows (Developer Mode or an elevated shell) — an
+// EPERM here must SKIP the one test that uses the link (with the
+// reason recorded), never kill the whole file at import time.
+let symlinkFailure: unknown = null;
+try {
+  symlinkSync(join(otherDir, 'secret.js'), join(pkgDir, 'escape.js'));
+} catch (err) {
+  symlinkFailure = err;
+}
 
 const SESSION = '0123456789abcdef0123456789abcdef';
 const registry = origin.createPluginRealmRegistry();
@@ -191,7 +200,10 @@ describe('the jcad:// handler serves a registered plugin package under the worke
     }
   });
 
-  it('refuses a symlink escape out of the package', async () => {
+  // Skipped only where symlink creation itself was refused (EPERM —
+  // Windows without Developer Mode or an elevated shell): the guard
+  // above records the failure instead of dying at import (W-2).
+  it.skipIf(symlinkFailure !== null)('refuses a symlink escape out of the package', async () => {
     const r = await get(realm('escape.js'));
     expect(r.status).not.toBe(200);
     expect(await r.text()).not.toContain(SECRET_BODY);
@@ -407,3 +419,60 @@ describe('W-1 (lead ruling, 2026-10-22): approval binds the WHOLE snapshot — t
     writeFileSync(join(w1Pkg, 'dep.js'), DEP_V1);
   });
 });
+
+describe('W-2 (lead ruling, 2026-10-22): the escape discipline through a directory JUNCTION — runs everywhere', () => {
+  // A junction is the UNPRIVILEGED directory-link form on Windows (no
+  // Developer Mode, no elevation), so this variant of the escape test
+  // runs on every platform. POSIX has no junctions: there a directory
+  // symlink is created instead — the same mechanism, resolved by the
+  // same realpath + containment code (statSnapshotFile) and the same
+  // snapshot-membership lookup at serve time, so the variant exercises
+  // the identical discipline.
+  const jTree = mkdtempSync(join(tmpdir(), 'jcad-realm-junction-'));
+  const jOutside = join(jTree, 'outside');
+  mkdirSync(jOutside, { recursive: true });
+  writeFileSync(join(jOutside, 'secret.js'), SECRET_BODY);
+  const mkPkg = (name: string, entryBody: string): string => {
+    const dir = join(jTree, name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'plugin.json'), JSON.stringify({ name, main: 'main.js', apiVersion: 2, isolation: 'worker', capabilities: [] }));
+    writeFileSync(join(dir, 'main.js'), entryBody);
+    return dir;
+  };
+  // pkgLink's entry imports THROUGH the junction; pkgClean merely has one.
+  const linkPkg = mkPkg('pkglink', "import jcad from './jcad.js';\nimport './link/secret.js';\nexport default { loaded: true };\n");
+  const cleanPkg = mkPkg('pkgclean', "import jcad from './jcad.js';\nexport default { loaded: true };\n");
+  let junctionFailure: unknown = null;
+  try {
+    symlinkSync(jOutside, join(linkPkg, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
+    symlinkSync(jOutside, join(cleanPkg, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
+  } catch (err) {
+    junctionFailure = err;
+  }
+  const JSESSION = 'abcdefabcdefabcdefabcdefabcdefab';
+
+  afterAll(() => {
+    expect(dirname(resolve(jTree))).toBe(resolve(tmpdir()));
+    expect(basename(jTree)).toMatch(/^jcad-realm-junction-/);
+    rmSync(jTree, { recursive: true, force: true });
+  });
+
+  it.skipIf(junctionFailure !== null)('registration refuses a module graph that reaches through the junction out of the package', async () => {
+    const err = await origin.buildPluginRealmSnapshot(realpathSync(linkPkg), 'main.js').then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toMatch(/resolves outside its package/);
+  });
+
+  it.skipIf(junctionFailure !== null)('serving refuses a path through the junction (it is not in the snapshot)', async () => {
+    const snap = await origin.buildPluginRealmSnapshot(realpathSync(cleanPkg), 'main.js');
+    registry.register(JSESSION, snap);
+    const r = await get(realm('link/secret.js', JSESSION));
+    expect(r.status).not.toBe(200);
+    expect(await r.text()).not.toContain(SECRET_BODY);
+    registry.unregister(JSESSION);
+  });
+});
+
