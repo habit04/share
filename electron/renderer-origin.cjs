@@ -60,12 +60,36 @@ function pluginChangedError(message = 'Plugin source changed while it was read; 
  */
 function createPluginRealmRegistry() {
   const snapshots = new Map();
+  const owners = new Map();
   return {
-    /** @param {string} sessionId @param {{ files: Map<string, { bytes: Buffer, sha256: string }>, entrySha256: string, manifestSha256: string, totalBytes: number }} snapshot */
-    register(sessionId, snapshot) { snapshots.set(sessionId, snapshot); },
-    /** @param {string} sessionId */
-    unregister(sessionId) { snapshots.delete(sessionId); },
-    clear() { snapshots.clear(); },
+    /**
+     * @param {string} sessionId
+     * @param {{ files: Map<string, { bytes: Buffer, sha256: string }>, entrySha256: string, manifestSha256: string, totalBytes: number }} snapshot
+     * @param {unknown} [owner] the registering webContents (W-3): when
+     * recorded, only this owner may unregister the session.
+     */
+    register(sessionId, snapshot, owner) {
+      snapshots.set(sessionId, snapshot);
+      if (owner !== undefined) owners.set(sessionId, owner);
+      else owners.delete(sessionId);
+    },
+    /**
+     * Drop one registration. W-3 sender/owner check: a registration
+     * WITH a recorded owner refuses an unregister from any other
+     * sender (a no-op returning false — one window cannot end another
+     * window's plugin session); a registration with no recorded owner
+     * unregisters as before. clear() is the main process's own
+     * teardown and is never owner-checked.
+     * @param {string} sessionId
+     * @param {unknown} [owner] the sender asking to unregister
+     * @returns {boolean} whether a registration was dropped
+     */
+    unregister(sessionId, owner) {
+      if (owners.has(sessionId) && owners.get(sessionId) !== owner) return false;
+      owners.delete(sessionId);
+      return snapshots.delete(sessionId);
+    },
+    clear() { snapshots.clear(); owners.clear(); },
     /** @param {string} sessionId */
     lookup(sessionId) { return snapshots.get(sessionId); },
   };
@@ -429,25 +453,33 @@ function containedAssetRelative(realRoot, realFile) {
  * @param {ReturnType<typeof createPluginRealmRegistry>} pluginRealm
  */
 async function pluginRealmResponse(url, pluginRealm) {
+  // W-3: EVERY plugin-realm response — served file, shim and refusal
+  // alike — carries X-Content-Type-Options: nosniff, so no response
+  // from this root can be MIME-sniffed into a different content type.
+  const respond = (response) => {
+    const headers = new Headers(response.headers);
+    headers.set('X-Content-Type-Options', 'nosniff');
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  };
   const parts = url.pathname.split('/').slice(2); // [sessionId, ...rel]
   const sessionId = parts[0];
   const rawRel = parts.slice(1);
-  if (!sessionId || !PLUGIN_REALM_SESSION.test(sessionId) || rawRel.length === 0) return new Response('Not found', { status: 404 });
+  if (!sessionId || !PLUGIN_REALM_SESSION.test(sessionId) || rawRel.length === 0) return respond(new Response('Not found', { status: 404 }));
   let rel;
   try {
     rel = rawRel.map((seg) => decodeURIComponent(seg));
-  } catch { return new Response('Not found', { status: 404 }); }
-  if (rel.some((seg) => seg === '' || seg === '.' || seg === '..' || /[/\\\0:]/.test(seg))) return new Response('Forbidden', { status: 403 });
+  } catch { return respond(new Response('Not found', { status: 404 })); }
+  if (rel.some((seg) => seg === '' || seg === '.' || seg === '..' || /[/\\\0:]/.test(seg))) return respond(new Response('Forbidden', { status: 403 }));
   const snapshot = pluginRealm.lookup(sessionId);
-  if (!snapshot) return new Response('Not found', { status: 404 });
+  if (!snapshot) return respond(new Response('Not found', { status: 404 }));
   const relPath = rel.join('/');
   const decideAs = `/plugin-realm/${sessionId}/${relPath}`;
   if (relPath === 'jcad.js') {
-    return withAssetHeaders(new Response(PLUGIN_REALM_JCAD_SHIM, { headers: { 'content-type': 'text/javascript' } }), decideAs);
+    return respond(withAssetHeaders(new Response(PLUGIN_REALM_JCAD_SHIM, { headers: { 'content-type': 'text/javascript' } }), decideAs));
   }
   const file = snapshot.files.get(relPath);
-  if (!file) return new Response('Not found', { status: 404 });
-  return withAssetHeaders(new Response(file.bytes, { headers: { 'content-type': 'text/javascript' } }), decideAs);
+  if (!file) return respond(new Response('Not found', { status: 404 }));
+  return respond(withAssetHeaders(new Response(file.bytes, { headers: { 'content-type': 'text/javascript' } }), decideAs));
 }
 
 function installAssetHandler({ protocol, net, root, pluginRealm }) {

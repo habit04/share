@@ -46,8 +46,8 @@ interface PluginRealmSnapshot {
   totalBytes: number;
 }
 interface PluginRealmRegistry {
-  register(sessionId: string, snapshot: PluginRealmSnapshot): void;
-  unregister(sessionId: string): void;
+  register(sessionId: string, snapshot: PluginRealmSnapshot, owner?: unknown): void;
+  unregister(sessionId: string, owner?: unknown): boolean;
   clear(): void;
   lookup(sessionId: string): PluginRealmSnapshot | undefined;
 }
@@ -476,3 +476,51 @@ describe('W-2 (lead ruling, 2026-10-22): the escape discipline through a directo
   });
 });
 
+describe('W-3 (lead ruling, 2026-10-22): unserve is owner-checked; served responses carry nosniff', () => {
+  const W3_SESSION = '33333333333333333333333333333333';
+  // Opaque identity tokens standing in for the webContents objects the
+  // IPC handlers pass: identity is all the check compares.
+  const ownerA = { name: 'webContents-A' };
+  const ownerB = { name: 'webContents-B' };
+
+  it('only the registering owner may unserve: a foreign unserve is refused (no-op) and the session keeps serving', async () => {
+    const snap = await origin.buildPluginRealmSnapshot(realpathSync(pkgDir), 'main.js');
+    registry.register(W3_SESSION, snap, ownerA);
+    expect(registry.unregister(W3_SESSION, ownerB)).toBe(false);
+    const still = await get(realm('main.js', W3_SESSION));
+    expect(still.status).toBe(200);
+    expect(await still.text()).toBe(ENTRY_BODY);
+    expect(registry.unregister(W3_SESSION, ownerA)).toBe(true);
+    expect((await get(realm('main.js', W3_SESSION))).status).toBe(404);
+  });
+
+  it('an unowned registration unserves as before (internal callers and clear() are unaffected)', async () => {
+    const snap = await origin.buildPluginRealmSnapshot(realpathSync(pkgDir), 'main.js');
+    registry.register(W3_SESSION, snap);
+    expect(registry.unregister(W3_SESSION)).toBe(true);
+    expect(registry.lookup(W3_SESSION)).toBeUndefined();
+    expect(registry.unregister(W3_SESSION)).toBe(false);
+  });
+
+  it('every plugin-realm response carries X-Content-Type-Options: nosniff (file, shim and refusal alike)', async () => {
+    const snap = await origin.buildPluginRealmSnapshot(realpathSync(pkgDir), 'main.js');
+    registry.register(W3_SESSION, snap);
+    for (const rel of ['main.js', 'sub/extra.mjs', 'jcad.js']) {
+      const r = await get(realm(rel, W3_SESSION));
+      expect(r.status, rel).toBe(200);
+      expect(r.headers.get('x-content-type-options'), rel).toBe('nosniff');
+      expect(r.headers.get('content-security-policy'), rel).toBe(origin.WORKER_CSP);
+    }
+    const missing = await get(realm('missing.js', W3_SESSION));
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get('x-content-type-options')).toBe('nosniff');
+    registry.unregister(W3_SESSION);
+  });
+
+  it('the IPC handlers pass the sender through: serve registers it, unserve is checked against it', () => {
+    const ipc = readFileSync('electron/main/ipc-stores.cjs', 'utf8');
+    expect(ipc).toMatch(/pluginRealm\.register\(sessionId, snapshot, ev\.sender\)/);
+    expect(ipc).toMatch(/unregister\(sessionId, ev\.sender\)/);
+    expect(ipc).toContain("ipcMain.handle('plugins-serve-isolated', async (ev, folder, approvedEntryHash, approvedManifestHash) => {");
+  });
+});

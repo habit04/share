@@ -117,7 +117,7 @@ function registerStoreIpc(ctx) {
   // re-read after registration, so the realm executes the approved bytes
   // (approved bytes = executed bytes, for the whole graph). Main never
   // evaluates, transforms or wraps the served bytes.
-  ipcMain.handle('plugins-serve-isolated', async (_ev, folder, approvedEntryHash, approvedManifestHash) => {
+  ipcMain.handle('plugins-serve-isolated', async (ev, folder, approvedEntryHash, approvedManifestHash) => {
     const pluginRealm = ctx.pluginRealm;
     if (!pluginRealm) throw new Error('Plugin realm serving is unavailable in this build');
     if (!isPluginFolderName(folder)) throw new Error('Invalid plugin folder name');
@@ -156,13 +156,20 @@ function registerStoreIpc(ctx) {
       throw err;
     }
     const sessionId = randomBytes(16).toString('hex');
-    pluginRealm.register(sessionId, snapshot);
+    // W-3: the registration is bound to the requesting webContents;
+    // only that sender may unserve it (see the unserve handler).
+    pluginRealm.register(sessionId, snapshot, ev.sender);
     return { sessionId, baseUrl: `jcad://app/plugin-realm/${sessionId}/`, entryUrl: `jcad://app/plugin-realm/${sessionId}/${main}`, manifestHash: snapshot.manifestSha256 };
   });
-  /** Drop one plugin-realm registration (the renderer reports its session disposed). */
-  ipcMain.handle('plugins-unserve-isolated', (_ev, sessionId) => {
-    if (typeof sessionId === 'string') ctx.pluginRealm?.unregister(sessionId);
-    return true;
+  /**
+   * Drop one plugin-realm registration (the renderer reports its session
+   * disposed). W-3 sender/owner check: the unserve is honoured only from
+   * the webContents that registered the session — a foreign sender's
+   * unserve is a no-op and the result says so (false).
+   */
+  ipcMain.handle('plugins-unserve-isolated', (ev, sessionId) => {
+    if (typeof sessionId !== 'string') return false;
+    return ctx.pluginRealm?.unregister(sessionId, ev.sender) ?? false;
   });
 
   // ------------------------------------------------------------------ catalog packs (app data folder / packs)

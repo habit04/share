@@ -230,7 +230,12 @@ return — which the acceptance tests exercise.
   registration with `ERR_PLUGIN_CHANGED`: the load is refused, the
   remembered approval is forgotten, and the next load asks the user
   again before the new package's manifest is bound. Approved bytes
-  are the executed bytes for the WHOLE graph. The
+  are the executed bytes for the WHOLE graph. Two serving hardenings
+  ride with it (W-3): a registration is bound to the webContents
+  that requested it — only that sender may unserve the session (a
+  foreign unserve is refused as a no-op) — and every plugin-realm
+  response, served file, shim and refusal alike, carries
+  `X-Content-Type-Options: nosniff`. The
   F1 follow-ups (Fable's F1 re-check R1/R2/R3, the lead's ruling,
   2026-10-22) tighten the snapshot's edges: hashing canonicalises on
   the RAW FILE BYTES on both sides — `plugins-read` sends the entry's
