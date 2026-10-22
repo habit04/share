@@ -45,6 +45,19 @@
  *   10 x13 @ -5, 20 x13 @ -8, 11 x7 @ -5, 21 x7 @ -8, all inside the *T1 span). The
  *   other three [1] hashes, every [0] input hash and the [2] legacy goldens are
  *   byte-unchanged.
+ * - P22 F-2 exception (2026-10-21, same discipline): the acad-table [1] output hash was
+ *   updated once more on the rebased lineage, because AC1015 cells are now written in
+ *   AutoCAD's own R2000 form (the lead's native re-run: the pre-F-2 form loaded with empty
+ *   cell text until a regen and its unconditional 140/170 never appeared). Verified
+ *   pair-by-pair against the b7a45e0 output (the rebased head before F-1/F-2/O-1): the
+ *   delta is EXACTLY the per-cell form change over the fixture's 6 cells — per cell the
+ *   groups 91, 92 and 7 are removed and 177 is added; the unconditional 140 is removed
+ *   (6 pairs); the unconditional 170 is removed and re-stated only on the two cells whose
+ *   attachment departs from their row role (net -4 pairs) — 22 pairs fewer in total, cell
+ *   texts and order unchanged, and everything outside the ACAD_TABLE cell chunks,
+ *   including every 141/142, byte-identical. F-1 does not touch this fixture (no
+ *   multi-line cell) and O-1 does not (every text is under 250 chars). The other three
+ *   [1] hashes, every [0] input hash and the [2] legacy goldens are byte-unchanged.
  * - Every fixture's output is also compared with the output for the same state carrying an empty
  *   model, and checked for any trace of the 3D records.
  */
@@ -61,7 +74,7 @@ const BASELINES: Readonly<Record<string, readonly [string, string, string]>> = {
   'block-colors': ['d44dd28a3a2d19a88de28c2b6ef18ce4622109b709c8add8ddf27826f37de98f', '826c47754d9e093493c812bc4ad8ef9767fabeec611b0eb40aa971340afe8c81', '712755e567e4b52f3dd87f501eccfe6269ef930d1a754f93019a917c41af4a6e'],
   hatch: ['99872d47f2af1a55fd8462083b25926fabd788fead26427f9d7202839b7aaa82', '0690ef325b7b5fa09e789a0db9d276f2427a0006851c56f64e2af8756bd55b67', '2f683468b3d721d2170c8dd2bc1c5c3eebaa20fffcb5891e9092e6a673e4e34b'],
   'polyline-widths': ['41ff2357bdb4653396400d44113273203ea0fdc10e8efec283b56ec5108818fb', '51f8507514c66efa3714ddb3cea5c9bf8271636d49f1e1628a69f4a182e76ba3', '67fbdf3d4849505709756959a95e0ed0a001619554d80209a7f5f58ee22c4dc5'],
-  'acad-table': ['0e3a7e374c9372782fc73c1875fe3ba80f43836e4a6217cb681b36734ccbfd29', 'b3c914e76f253e03c74e9d19ce661078b5896717d10576c220e6311390254aef', '495a35c874461dfafc244d185ad1c3a070ebf93df346581a33b9ab0913a7c4b5'],
+  'acad-table': ['0e3a7e374c9372782fc73c1875fe3ba80f43836e4a6217cb681b36734ccbfd29', '6e7d055b0cf8a0aedd20877cfa7aa2732e678f696ebaa727edafdeef3bb1ac1c', '495a35c874461dfafc244d185ad1c3a070ebf93df346581a33b9ab0913a7c4b5'],
 };
 import { Drawing, type DrawingState } from '../src/core/document';
 import { readDxf, writeDxf } from '../src/io/dxf';
