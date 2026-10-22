@@ -21,7 +21,8 @@
  */
 import type { UnderlayDefinition } from '../core/underlay';
 import type { UnderlayEntity } from '../core/entities';
-import type { UnderlayRasterEngine } from '../io/underlay-engine';
+import { planUnderlayTiles, type UnderlayCanvasFactory, type UnderlayClipRect, type UnderlayRasterEngine } from '../io/underlay-engine';
+import { DEFAULT_UNDERLAY_CAPS } from '../io/underlay-adapter';
 import type { UnderlayDisplayContent } from '../render/underlay-content';
 
 /** Bytes of the referenced file, or null when they cannot be obtained. NO referenced-file I/O happens anywhere else in P28. */
@@ -53,6 +54,18 @@ export function createUnderlayDisplayService(deps: {
   requestRedraw?: () => void;
   /** Long-edge pixel target for rasters (the engine's per-page cap still rules). */
   targetPixels?: number;
+  /**
+   * The page region currently visible for a definition (engine clip
+   * space: page units, top-left origin), when the composition root can
+   * supply one (F-class tile wiring, 2026-10-22). When a region is
+   * supplied, the load requests ONLY the tiles covering that region via
+   * renderRegion — planned under the C5 per-page cap — and composites
+   * them into the page bitmap (the rest stays transparent); when it is
+   * not, the load renders the whole page exactly as before.
+   */
+  visibleRegion?: (def: UnderlayDefinition) => UnderlayClipRect | undefined;
+  /** Canvas factory for the tile composite. Default: DOM canvases. */
+  tileCanvasFactory?: UnderlayCanvasFactory;
 }): UnderlayDisplayService {
   const target = deps.targetPixels ?? 1024;
   const cache = new Map<string, Entry>();
@@ -86,6 +99,44 @@ export function createUnderlayDisplayService(deps: {
           }
           const size = sized.value;
           const scale = target / Math.max(size.width, size.height);
+          // F-class tile path: with a visible-region hint, request ONLY
+          // the tiles covering the visible part of the page and
+          // composite them; a tile refusal fails the load closed
+          // (frame + label), exactly like a whole-page refusal.
+          const hint = deps.visibleRegion?.(def);
+          const region: UnderlayClipRect | undefined = hint
+            ? {
+                x: Math.max(0, hint.x),
+                y: Math.max(0, hint.y),
+                width: Math.min(size.width, hint.x + hint.width) - Math.max(0, hint.x),
+                height: Math.min(size.height, hint.y + hint.height) - Math.max(0, hint.y),
+              }
+            : undefined;
+          if (region && region.width > 0 && region.height > 0) {
+            const tiles = planUnderlayTiles(region, scale, DEFAULT_UNDERLAY_CAPS.maxScanBytes);
+            if (tiles.length === 0) {
+              entry.state = 'failed';
+              return;
+            }
+            const factory = deps.tileCanvasFactory ?? domTileCanvasFactory;
+            const width = Math.max(1, Math.ceil(size.width * scale));
+            const height = Math.max(1, Math.ceil(size.height * scale));
+            const composite = factory.create(width, height);
+            const ctx = composite.context as { drawImage(image: unknown, dx: number, dy: number): void };
+            for (const tile of tiles) {
+              const r = await doc.renderRegion(page, tile, scale);
+              if (!r.ok) {
+                entry.state = 'failed';
+                return;
+              }
+              ctx.drawImage(r.value.image, Math.round(tile.x * scale), Math.round(tile.y * scale));
+            }
+            entry.page = size;
+            entry.image = { bitmap: composite.canvas as CanvasImageSource, width: composite.width, height: composite.height };
+            entry.state = 'ready';
+            deps.requestRedraw?.();
+            return;
+          }
           const raster = await doc.renderPage(page, scale);
           if (!raster.ok) {
             entry.state = 'failed';
@@ -124,3 +175,14 @@ export function createUnderlayDisplayService(deps: {
     },
   };
 }
+
+const domTileCanvasFactory: UnderlayCanvasFactory = {
+  create(width: number, height: number) {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('a 2d canvas context is unavailable for the tile composite');
+    return { canvas, context, width, height };
+  },
+};

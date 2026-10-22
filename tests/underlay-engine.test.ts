@@ -44,6 +44,11 @@ function fakeEngine(opts: { pages?: number; fail?: boolean } = {}): UnderlayRast
             if (!sized.ok) return sized;
             return { ok: true as const, value: { image: { fakeBitmap: true }, width: Math.round(200 * scale), height: Math.round(100 * scale), pageSize: sized.value } };
           },
+          async renderRegion(page: number, region: { x: number; y: number; width: number; height: number }, scale: number) {
+            const sized = await this.pageSize(page);
+            if (!sized.ok) return sized;
+            return { ok: true as const, value: { image: { fakeBitmap: true, region }, width: Math.round(region.width * scale), height: Math.round(region.height * scale), pageSize: sized.value, region } };
+          },
           close() { /* no-op */ },
         },
       };
