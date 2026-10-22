@@ -380,6 +380,24 @@ export class PropertiesPalette {
         b.appendChild(this.row('Height', num(Math.hypot(e.v.x, e.v.y) * e.size.y)));
         b.appendChild(this.row('Clipped', e.clipOn ? 'Yes' : 'No'));
         break;
+      case 'underlay': {
+        // Truthful rows only: the path and page live on the definition in
+        // the underlays sibling, joined by handle — never invented from
+        // the placement (RULING-P28 C2/C4).
+        const def = Object.values(doc.snapshot.underlays ?? {}).find((d) => (d.handle ?? '').toUpperCase() === e.definitionHandle);
+        b.appendChild(this.row('Kind', `${e.kind.toUpperCase()} underlay`));
+        b.appendChild(this.row('Path', def ? def.sourcePath : '(definition not in this drawing)'));
+        if (def?.page) b.appendChild(this.row('Page', def.page));
+        b.appendChild(this.row('Definition', e.definitionHandle));
+        b.appendChild(this.row('Display', (e.flags & 2) !== 0 ? 'On' : 'Off'));
+        b.appendChild(this.row('Clipped', (e.flags & 1) !== 0 && !!e.clipBoundary ? 'Yes' : 'No'));
+        b.appendChild(this.row('Monochrome', (e.flags & 4) !== 0 ? 'Yes' : 'No'));
+        if (e.contrast !== undefined) b.appendChild(this.row('Contrast', String(e.contrast)));
+        if (e.fade !== undefined) b.appendChild(this.row('Fade', String(e.fade)));
+        b.appendChild(this.row('X', numInput(e.position.x, (n) => patch({ position: { x: n, y: e.position.y } }))));
+        b.appendChild(this.row('Y', numInput(e.position.y, (n) => patch({ position: { x: e.position.x, y: n } }))));
+        break;
+      }
     }
   }
 
@@ -556,6 +574,8 @@ function kindName(e: Entity): string {
       return 'Table';
     case 'image':
       return 'Raster Image';
+    case 'underlay':
+      return `${e.kind.toUpperCase()} Underlay`;
     default:
       return e.type.charAt(0).toUpperCase() + e.type.slice(1);
   }

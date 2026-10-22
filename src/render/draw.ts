@@ -1,4 +1,6 @@
-import type { Entity, BlockLookup, Layer, PolylineEntity, TextEntity, MTextEntity, XlineEntity, RayEntity, HatchEntity, ImageEntity } from '../core/entities';
+import type { Entity, BlockLookup, Layer, PolylineEntity, TextEntity, MTextEntity, XlineEntity, RayEntity, HatchEntity, ImageEntity, UnderlayEntity } from '../core/entities';
+import { underlayDisplayList } from '../core/underlay';
+import type { UnderlayContentSource } from './underlay-content';
 import {
   explodeInsert,
   entityBounds,
@@ -15,6 +17,8 @@ import {
   tableParts,
   imageParts,
   imageBoundary,
+  underlayParts,
+  underlayPlacementOf,
   inheritedColor,
 } from '../core/entities';
 import type { PlotStyleTable } from '../core/plot-styles';
@@ -53,6 +57,8 @@ export interface DrawStyle {
   hidden?: ReadonlySet<string>;
   /** Bitmap source for IMAGE entities (overrides renderSettings.imageLoader). */
   imageLoader?: ImageLoader;
+  /** Resolved content for underlay placements (overrides renderSettings.underlaySource). */
+  underlaySource?: UnderlayContentSource;
   /** Captured plot-only table context; ordinary Canvas drawing has no table state. */
   plot?: {
     readonly table: PlotStyleTable;
@@ -129,6 +135,11 @@ export const renderSettings: {
    * cannot read arbitrary files) images draw as a frame with their file name.
    */
   imageLoader?: ImageLoader;
+  /**
+   * Content source for underlay placements (app/underlay-render.ts over the
+   * engine interface). Without one, underlays draw as frame + cross.
+   */
+  underlaySource?: UnderlayContentSource;
   /** Called when a bitmap finished loading so the view can repaint. */
   requestRedraw?: () => void;
 } = {
@@ -482,6 +493,60 @@ function drawImage(ctx: CanvasRenderingContext2D, e: ImageEntity, tf: Transform,
   drawParts(ctx, parts.slice(0, 1), tf, layers, lookup, style, e);
 }
 
+/**
+ * An underlay placement, drawn by consuming the model's display list
+ * (core/underlay.ts underlayDisplayList) — the same op list the plot path
+ * is specified against (RULING-P28 C4). With no resolved definition the
+ * placement is the generated frame + cross parts and NO label (a label is
+ * only ever a real definition's stored path). With a definition: frame /
+ * clip-frame / cross / label ops become primitives drawn like any other
+ * parts; the image op draws the rasterized page bitmap into the frame
+ * quad (the drawImage transform technique), with the placement fade.
+ */
+function drawUnderlay(ctx: CanvasRenderingContext2D, e: UnderlayEntity, tf: Transform, layers: readonly Layer[], lookup: BlockLookup, style: DrawStyle): void {
+  const res = (style.underlaySource ?? renderSettings.underlaySource)?.(e);
+  if (!res?.definition) {
+    drawParts(ctx, underlayParts(e), tf, layers, lookup, style, e);
+    return;
+  }
+  const def = res.definition;
+  const content = res.image ? (res.page ?? { width: res.image.width, height: res.image.height }) : undefined;
+  const ops = underlayDisplayList(underlayPlacementOf(e), def, content);
+  const styleProps = { layer: e.layer, color: e.color, linetype: e.linetype, lineWeight: e.lineWeight };
+  for (const op of ops) {
+    if (op.op === 'image' && res.image) {
+      const [ll, lr, ur, ul] = op.corners;
+      if (!ll || !lr || !ur || !ul) continue;
+      const bmp = res.image.bitmap;
+      const W = res.image.width;
+      const H = res.image.height;
+      canvasSave(ctx, () => {
+        const o = tf.toScreen(ul);
+        const ax = g.sub(tf.toScreen(ur), o);
+        const ay = g.sub(tf.toScreen(ll), o);
+        ctx.transform(ax.x / W, ax.y / W, ay.x / H, ay.y / H, o.x, o.y);
+        if (e.fade) ctx.globalAlpha *= Math.max(0, 1 - e.fade / 100);
+        ctx.drawImage(bmp, 0, 0, W, H);
+      });
+    } else if (op.op === 'frame' || op.op === 'clip-frame') {
+      drawParts(ctx, [{ ...styleProps, id: `${e.id}:${op.op}`, type: 'polyline', points: [...op.points], closed: true }], tf, layers, lookup, style, e);
+    } else if (op.op === 'cross') {
+      const [a, b, c, d] = op.points;
+      if (!a || !b || !c || !d) continue;
+      drawParts(ctx, [
+        { ...styleProps, id: `${e.id}:x1`, type: 'line', a, b },
+        { ...styleProps, id: `${e.id}:x2`, type: 'line', a: c, b: d },
+      ], tf, layers, lookup, style, e);
+    } else if (op.op === 'label') {
+      const frame = ops.find((o) => o.op === 'frame');
+      const ys = frame ? frame.points.map((p) => p.y) : [];
+      const frameH = ys.length ? Math.max(...ys) - Math.min(...ys) : 0;
+      const th = frameH > 0 ? frameH * 0.08 : 0.1;
+      drawParts(ctx, [{ ...styleProps, id: `${e.id}:n`, type: 'text', position: op.at, text: op.text, height: th, rotation: e.rotation, align: 'left' }], tf, layers, lookup, style, e);
+    }
+  }
+}
+
 /** PDMODE point marker. Size: PDSIZE > 0 absolute, 0 = 5% of view height, < 0 = percent of view height. */
 function drawPointMarker(ctx: CanvasRenderingContext2D, pos: Point, tf: Transform): void {
   const s = tf.toScreen(pos);
@@ -720,6 +785,9 @@ function drawGeometry(
       break;
     case 'image':
       drawImage(ctx, e, tf, layers, lookup, style);
+      break;
+    case 'underlay':
+      drawUnderlay(ctx, e, tf, layers, lookup, style);
       break;
   }
 }

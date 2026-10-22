@@ -152,6 +152,161 @@ Each fixture: open in AutoCAD, attach, save, close, reopen, confirm the
 underlay still displays — then commit the file plus a one-line
 provenance note (AutoCAD version, accoreconsole script used).
 
+## PDF wiring slice (this delivery — RULING-P28 C1–C9 + P28-DEP FINAL ruling 2026-10-21)
+
+The integration and the PDF raster path, built against pdfjs **behind an
+interface** so the engine stays swappable. Composition into the integrated
+head remains P28's turn (FIFTH, C9) — this is a development slice.
+
+### Engine seam (`src/io/underlay-engine.ts`, `src/io/underlay-pdfjs.ts`)
+
+`UnderlayRasterEngine` is the whole contract: `open(bytes)` → a document
+with `pageCount`, `pageSize(page)`, `renderPage(page, scale)` → a raster,
+`close()`. Failure is a typed refusal in the slice-1 probe vocabulary —
+never a throw across the seam. The ONLY file importing `pdfjs-dist`
+(exact pin **6.4.299**, Apache-2.0, notice in `THIRD-PARTY-NOTICES.md`) is
+`src/io/underlay-pdfjs.ts`; pdfjs loads lazily on first open. Every other
+P28 consumer (the display service, the draw path) depends on the interface
+alone and is tested against a fake engine with zero pdfjs import.
+
+Dep-ruling conditions as implemented: `isEvalSupported: false` AND
+`enableScripting: false` are set expressly on every `getDocument` call
+(in pdfjs 6 the eval evaluator itself was removed — the former is
+belt-and-braces, verified absent from the pinned build); pdfjs runs in a dedicated worker
+(`src/io/pdfjs-worker-entry.ts`, emitted by Vite under `assets/worker/`,
+served by `electron/renderer-origin.cjs` with the path-scoped WORKER_CSP
+`script-src 'self' 'wasm-unsafe-eval'` + `connect-src 'self'` — the same
+posture as the manifold kernel worker; **no electron change was needed**
+and the page CSP is untouched); ALL C5 caps are enforced inside the
+adapter (64 MiB input before parsing, 10,000 pages, 8 MiB per-page
+rendered pixels charged BEFORE rendering, 5 s per-operation deadline,
+AbortSignal cancellation). The malformed-PDF corpus
+(`tests/underlay-pdfjs.test.ts`: truncated, bad xref, encrypted without a
+password, non-PDF bytes, absurd page-count claim, zero-page) yields a
+typed refusal or a bounded render for every case, deterministically,
+with no network.
+
+### Model integration (C1–C8)
+
+- `UnderlayEntity` in the entity union: the C1 placement fields; group 5
+  is `EntityBase.cadIdentity`, group 8 is `EntityBase.layer` — neither
+  stored twice. The bridge to the isolated model is
+  `underlayPlacementOf(e)` in `src/core/entities.ts`.
+- Definitions live in the `DrawingState.underlays` sibling keyed by
+  definition id (C2). Id minting: the codec's `underlaydef:<HANDLE>`; a
+  repeat gets `~2`, `~3`, … in file order — collision-free across
+  definitions and (by the `underlaydef:` prefix) against entity ids.
+  Reader post-pass join: `placement.definitionHandle ===
+  definition.handle`. Unreferenced definitions are retained and written
+  back; a dangling placement is kept, reported `simplified`, and displays
+  as frame+cross with no path label.
+- Import-report semantics (C3): `kept` ⟺ placement modelled AND
+  definition modelled; `simplified` ⟺ definition missing (the only
+  simplified case); a codec-refused record is dropped with the codec's
+  reason and never aborts siblings. No referenced-file I/O at import —
+  bytes reach the engine only through the injected byte source of the
+  display service.
+- C5: `entityGeometryWork` charges the variant's actual stored size
+  (clip-boundary points + retained-group count); definitions are not
+  entities and carry no entity work.
+- C6 disposition (for the coordinator to file in LEDGER.md before this
+  slice composes): in graph-carrying states the model/codec is
+  authoritative for *UNDERLAY/*DEFINITION content; the retained node
+  supplies only unmodelled extras through the merge. The cad-graph diff
+  is exactly three entries: the DEFINITION dedupe key
+  `['underlay', kind, group-1]` beside IMAGEDEF's `['image', group-1]`,
+  the underlay entity kinds in the rebuilt-pointer set with `{340}`, and
+  the kinds in the metadata exclusion list. Round-trip evidence: exactly
+  one *UNDERLAY and one *DEFINITION per model pair, retained groups
+  neither doubled nor lost, second save byte-stable.
+- C7: the sibling rides every state spread (transact, outsideHistory,
+  project()/paper-space, load, undo/redo) — proven in
+  `tests/underlay-integration.test.ts`; definition mutation only via
+  `Drawing.transact` (no definition-editing UI in scope).
+- C8: definitions emitted in OBJECTS through the codec on the
+  IMAGEDEF-from-extras pattern (stored path verbatim, never normalised);
+  definition handles allocated in an identifiable pre-pass in
+  `writeDxf` before ENTITIES emission; CLASS registrations for the three
+  entity + three definition kinds presence-gated; the no-underlay fixed
+  point is proven by the existing byteproof/interchange suites (zero
+  underlay output for drawings without underlays).
+
+### Consumer census (C4) — switch audit
+
+| Consumer | Behaviour |
+| --- | --- |
+| `affineCompound` / `similarityTransform` / `blockTransform` / `mirrorEntityAcross` | frame transform via the compound path; rotation from the transformed X axis, scales from directional magnitudes |
+| `entityTypeName` | `PDFUNDERLAY` / `DWFUNDERLAY` / `DGNUNDERLAY` by kind |
+| `compoundParts` (widened) / `underlayParts` | frame polyline + cross lines — the same generated parts for bounds, snap, selection, hit-testing, Canvas fallback and the vector plot; NO label (path lives on the definition) |
+| `entityBounds` / `distanceToEntity` / `gripPoints` / `moveGrip` / `snapCandidates` / `entitySegments` | via the frame points / parts; a point inside the frame is distance 0 |
+| `drawEntity` (Canvas + raster plot via `plotting.ts`) | consumes `underlayDisplayList`: image op draws the engine raster into the frame quad; frame/clip-frame/cross/label ops become primitives; no definition → `underlayParts` fallback |
+| `pdf-vector.ts` (vector plot) | consumes `underlayParts` — a placed reference plots as its frame, never decoded content |
+| `selection.ts` polygon segments / regions | via `compoundParts`, beside `image` |
+| `properties.ts` (both `image` sites) | truthful kind / path / page / flags rows joined to the definition by handle; type name per kind |
+| `api.ts` `normalizeEntity` | stated rule: placements are NOT plugin-authorable in this slice (refused with a named error, like every compound/reference type's absence from `ENTITY_TYPES`); placements arriving from DXF are gated by the codec + `validateUnderlayPlacement` (via `geometryProblem`) |
+| `drafting-modify.ts` STRETCH | whole-entity translate by insertion point, beside `image`/`table` |
+| `inquiry.ts` LIST | kind, insertion, definition handle, joined path/page |
+| `explodeCompound` | returns **null** exactly: a reference does not explode into its referent (the IMAGE precedent); no decoded content is invented |
+| `geometryProblem` (import-report) | explicit `underlay` case: first `validateUnderlayPlacement` problem, or null |
+
+Not edited, per C4: `src/core/constraints/*`, `src/ai/*` (its snapshot
+switch keeps its existing default for the new variant), `scene-sink.ts`
+(its `default:` already routes through `entitySegments`),
+`src/app/editor/selection.ts` (a LIST-log switch over six types; other
+types simply have no log line there).
+
+Transform semantics: transforms move position/rotation/scales and never
+touch `definitionHandle`, `retainedGroups`, or the definition's
+`sourcePath`. The clip boundary is **definition-space** data (page
+coordinates, like an IMAGE's pixel clip): it is stored verbatim under
+transforms — its world outline follows the frame. Mirroring follows the
+corner-sequence: the mapped frame is the exact reflection, so quad-drawn
+content mirrors correctly.
+
+### Display service (`src/app/underlay-render.ts`)
+
+Resolves placements → definitions, opens PDF bytes through the injected
+byte source + the engine interface, caches one raster per definition
+(long-edge target 1024 px, engine caps still rule), and serves the draw
+path synchronously (frame + label while loading or after any failure —
+the IMAGE bitmap-cache pattern). Page selection: the definition's page
+field as a numeric 1-based index; named destinations (`Sheet1`) are NOT
+resolved in this slice — they open page 1. DWF/DGN definitions are never
+opened. The desktop bridge exposes no generic file-byte read today
+(`read-image` returns data URLs), so no `main.ts` byte wiring exists in
+this slice: the composition root installs the service when it has a byte
+channel; until then placements render frame + label.
+
+### Pre-composition acceptance obligation — the 8-class CAD corpus
+
+The FINAL ruling makes the comparison's 8-class CAD corpus
+(`reviews/P28-DEP-COMPARISON.md` §1.3: A linework precision, B line
+weights & dashes, C hatches & patterns, D transparency, E text,
+F large format incl. the 400% clipped-tile leg, G colour,
+H adversarial/malformed) **P28's acceptance test before composition**.
+It is NOT executed by this slice: classes A–G need ≥ 4 real CAD-plotted
+files each plus reference rasters (Acrobat / Chrome print-to-image at
+matched DPI) and human spot-point checks. What this slice lands is the
+corpus-test SCAFFOLD, `tests/underlay-corpus-scaffold.test.ts`: the
+class table with §1.3 floors and thresholds, per-class fixture
+directories, the scoring rules restated, and classes A–G recorded as
+explicit TODO cases (never silently skipped, never claimed as run).
+Class H is the fuzz leg: its buildable cases are executed in
+`tests/underlay-pdfjs.test.ts` and mapped expressly in the scaffold
+(truncated, corrupt xref, encrypted-without-password, non-PDF bytes,
+absurd page-count claim, zero-page, plus the C5 cap-containment tests);
+the remaining class-H cases (recursive patterns, font bombs,
+billion-laughs streams) need crafted fixtures and land with the corpus
+population. The corpus binds to the engine interface's output, so it
+survives an engine swap unchanged.
+
+### What this slice does NOT prove
+
+Native AutoCAD fidelity of the written underlay records (the lead's
+fixtures recipes 1–3 + Windows gate at composition); DWG underlays (not
+admitted); the full test suite (a composition precondition, stated
+outstanding in the delivery VALIDATION).
+
 ## Next slices (in order)
 
 1. Integration per admitted PROPOSAL-P28 (entity variant + optional

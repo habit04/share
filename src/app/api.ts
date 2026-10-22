@@ -197,6 +197,11 @@ export function normalizeEntity(input: unknown, state: DrawingState, mode: 'add'
     throw new TypeError('Entities must be plain data (no functions or class instances).');
   }
   const type = e.type;
+  // Stated rule (RULING-P28 C4): underlay placements are NOT plugin-authorable
+  // in this slice — like every other compound/reference type they are absent
+  // from ENTITY_TYPES; a placement enters a drawing only from a DXF underlay
+  // record (where the codec + validateUnderlayPlacement gate it) or not at all.
+  if (type === 'underlay') throw new TypeError('Underlay placements cannot be authored through the plugin API; they are read from DXF underlay records.');
   if (typeof type !== 'string' || !ENTITY_TYPES.has(type)) throw new TypeError(`Unknown entity type "${String(type)}".`);
   if (mode === 'replace') {
     const old = typeof e.id === 'string' ? state.entities.find((x) => x.id === e.id) : undefined;
