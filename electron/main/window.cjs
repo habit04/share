@@ -258,6 +258,16 @@ function createWindows(ctx, devUrl, allowInspection = !app.isPackaged) {
     installWindowStatePersistence(win);
     buildMenu(win, ctx);
     secureContents(win.webContents);
+    // Plugin-realm registrations belong to this window's renderer (Fable
+    // F4): its process going away, or its webContents being destroyed,
+    // ends every registration at once — not only window close and app
+    // quit (main.cjs) — so a crashed or discarded renderer never leaves
+    // a live session id serving its snapshot.
+    if (ctx.pluginRealm) {
+      const endPluginRealmSessions = () => ctx.pluginRealm.clear();
+      win.webContents.on('render-process-gone', endPluginRealmSessions);
+      win.webContents.once('destroyed', endPluginRealmSessions);
+    }
     // Unsaved work: the renderer's Save All workflow decides; the close (and a quit) waits for it.
     let pendingClose = null;
     win.on('close', (e) => {

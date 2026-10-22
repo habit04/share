@@ -198,7 +198,9 @@ return — which the acceptance tests exercise.
   import and deleted when the import settles), its top level may use
   top-level await, and its default export is the load report. A serving
   registration lives exactly as long as its session (dropped on unload,
-  on window close and on app quit). Serving is a snapshot (Fable
+  on window close and on app quit, and cleared wholesale when the
+  window's renderer process goes away or its webContents is destroyed —
+  Fable F4). Serving is a snapshot (Fable
   finding F1, fixed): at registration main reads the entry plus its
   static module graph exactly once — each file realpath-confined to
   the package under its exact spelling, so symlink/junction escapes

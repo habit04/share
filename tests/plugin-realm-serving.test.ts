@@ -247,6 +247,12 @@ describe('main-process wiring for teardown (condition (c)) is in the shipped mai
     expect(main).toMatch(/app\.on\('will-quit', \(\) => pluginRealm\.clear\(\)\)/);
     expect(main).toMatch(/window-all-closed[\s\S]{0,200}pluginRealm\.clear\(\)/);
   });
+  it('clears registrations when the renderer process goes away or its webContents is destroyed (Fable F4)', () => {
+    const win = readFileSync('electron/main/window.cjs', 'utf8');
+    expect(win).toMatch(/const endPluginRealmSessions = \(\) => ctx\.pluginRealm\.clear\(\)/);
+    expect(win).toMatch(/webContents\.on\('render-process-gone', endPluginRealmSessions\)/);
+    expect(win).toMatch(/webContents\.once\('destroyed', endPluginRealmSessions\)/);
+  });
   it('exposes the serve/unserve bridge through the preload', () => {
     const preload = readFileSync('electron/preload.cjs', 'utf8');
     expect(preload).toContain("pluginsServeIsolatedPackage: (folder, approvedEntryHash) => ipcRenderer.invoke('plugins-serve-isolated', folder, approvedEntryHash)");
