@@ -213,7 +213,24 @@ return — which the acceptance tests exercise.
   mid-session changes nothing the realm executes, and any requested
   path outside the snapshot — static or dynamic import alike — is
   refused (404), as are `../`, encoded traversal, unknown sessions
-  and non-script files. Approved bytes are the executed bytes. The
+  and non-script files. Approved bytes are the executed bytes.
+  Approval binds the WHOLE snapshot, not just the entry (W-1, the
+  lead's ruling at the c0bf820 packaged gate, 2026-10-22 — this
+  overrules the earlier note that dependency-only changes serve
+  under an unchanged entry's approval): main computes a MANIFEST
+  hash over the sorted (path, sha256) list of every snapshotted file
+  — the entry included — and reports it with the registration; the
+  host stores it in the plugin's trust record next to the entry hash.
+  On the next load the remembered manifest travels back and main
+  verifies the fresh snapshot against it alongside the entry check
+  (the entry check remains the fast path; the manifest includes the
+  entry, so the two can only disagree when the graph changed under an
+  unchanged entry — exactly the case the manifest exists to catch).
+  A changed dependency with an unchanged entry therefore fails the
+  registration with `ERR_PLUGIN_CHANGED`: the load is refused, the
+  remembered approval is forgotten, and the next load asks the user
+  again before the new package's manifest is bound. Approved bytes
+  are the executed bytes for the WHOLE graph. The
   F1 follow-ups (Fable's F1 re-check R1/R2/R3, the lead's ruling,
   2026-10-22) tighten the snapshot's edges: hashing canonicalises on
   the RAW FILE BYTES on both sides — `plugins-read` sends the entry's

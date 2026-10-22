@@ -132,7 +132,7 @@ contextBridge.exposeInMainWorld('jcad', {
   // Plugin-realm serving (AMENDMENT-P25-CSP-HOSTING Part A2; Fable F1): main snapshots and serves a
   // trusted plugin's package to its isolated realm under jcad://app/plugin-realm/<session>/; the
   // renderer passes the SHA-256 of the entry it approved, and main verifies the snapshot against it.
-  pluginsServeIsolatedPackage: (folder, approvedEntryHash) => ipcRenderer.invoke('plugins-serve-isolated', folder, approvedEntryHash),
+  pluginsServeIsolatedPackage: (folder, approvedEntryHash, approvedManifestHash) => ipcRenderer.invoke('plugins-serve-isolated', folder, approvedEntryHash, approvedManifestHash),
   pluginsUnserveIsolatedPackage: (sessionId) => ipcRenderer.invoke('plugins-unserve-isolated', sessionId),
   /** Runs plugin code in the page after the user confirmed it; the page CSP has no 'unsafe-eval' for new Function. */
   pluginsEval: (source) => webFrame.executeJavaScript(String(source)),

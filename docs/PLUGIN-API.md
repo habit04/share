@@ -93,7 +93,9 @@ forms are recognised; computed dynamic import specifiers are not), relative
 exact on-disk spelling with a `.js` / `.mjs` extension, no bare specifiers, and no
 `jcad.js` file of your own at the package root (that name is the host's shim).
 Anything outside those rules fails closed: the file is not served and the load
-fails rather than falling back to disk.
+fails rather than falling back to disk. Your approval covers the whole package:
+if any file in the graph changes after you approved the plugin — not just the
+entry — the next load is refused and you are asked again.
 
 To distribute a plugin, zip the folder; users unzip it into `<app data>/plugins/` and
 restart or type `PLUGINRELOAD`.

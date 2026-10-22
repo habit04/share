@@ -94,30 +94,38 @@ function registerStoreIpc(ctx) {
     return source === null ? null : { manifest: source.manifest, code: source.codeBytes.toString('utf8'), codeBytes: source.codeBytes, path: source.path };
   });
 
-  // ------------------------------------------------------------------ plugin-realm serving (AMENDMENT-P25-CSP-HOSTING Part A2; Fable F1)
+  // ------------------------------------------------------------------ plugin-realm serving (AMENDMENT-P25-CSP-HOSTING Part A2; Fable F1; W-1)
   // The renderer asks main to serve the package of a plugin it has ALREADY
   // trusted through the existing trust flow (plugins.ts), and passes the
-  // SHA-256 of the entry it approved. Main resolves the package from its
-  // OWN record — the folder name under the plugins dir, never a
+  // SHA-256 of the entry it approved plus — once one is remembered — the
+  // MANIFEST hash of the whole package it approved (W-1: approval binds
+  // the whole snapshot, not just the entry). Main resolves the package
+  // from its OWN record — the folder name under the plugins dir, never a
   // renderer-supplied path — vets it (plugin.json parses; its "main"
   // names an entry file present in the package under that exact spelling),
   // then takes the F1 SNAPSHOT: the entry plus its static module graph is
   // read once, each file realpath-confined under its exact spelling, the
-  // entry is verified against the approved hash (a changed entry fails
-  // the registration with ERR_PLUGIN_CHANGED) and a SHA-256 is recorded
-  // per file. The registry holds the snapshot's in-memory bytes; the
+  // entry AND the whole-graph manifest are verified against the approved
+  // hashes (a changed entry or a changed dependency fails the
+  // registration with ERR_PLUGIN_CHANGED) and a SHA-256 is recorded
+  // per file. The snapshot's own manifest hash travels back in the
+  // result so the renderer can remember it in the trust record. The
+  // registry holds the snapshot's in-memory bytes; the
   // jcad:// handler serves ONLY those bytes under
   // jcad://app/plugin-realm/<sessionId>/ with the worker CSP until the
   // renderer unserves the session or the app quits — disk is never
   // re-read after registration, so the realm executes the approved bytes
-  // (approved bytes = executed bytes). Main never evaluates, transforms
-  // or wraps the served bytes.
-  ipcMain.handle('plugins-serve-isolated', async (_ev, folder, approvedEntryHash) => {
+  // (approved bytes = executed bytes, for the whole graph). Main never
+  // evaluates, transforms or wraps the served bytes.
+  ipcMain.handle('plugins-serve-isolated', async (_ev, folder, approvedEntryHash, approvedManifestHash) => {
     const pluginRealm = ctx.pluginRealm;
     if (!pluginRealm) throw new Error('Plugin realm serving is unavailable in this build');
     if (!isPluginFolderName(folder)) throw new Error('Invalid plugin folder name');
     if (typeof approvedEntryHash !== 'string' || !/^[0-9a-f]{64}$/.test(approvedEntryHash)) {
       throw new Error('plugins-serve-isolated needs the SHA-256 of the plugin entry the user approved');
+    }
+    if (approvedManifestHash !== undefined && (typeof approvedManifestHash !== 'string' || !/^[0-9a-f]{64}$/.test(approvedManifestHash))) {
+      throw new Error('plugins-serve-isolated needs the SHA-256 manifest of the plugin package the user approved, when one is remembered');
     }
     const root = pluginsDir();
     const packageDir = path.join(root, folder);
@@ -137,10 +145,19 @@ function registerStoreIpc(ctx) {
     if (!stored.includes(main)) throw new Error(`plugin entry "${main}" does not exist in the plugin folder`);
     await pathPolicy.insideRoot(root, path.join(packageDir, main), 'plugins-serve-isolated');
     const realRoot = await fs.realpath(packageDir);
-    const snapshot = await buildPluginRealmSnapshot(realRoot, main, { approvedEntryHash });
+    let snapshot;
+    try {
+      snapshot = await buildPluginRealmSnapshot(realRoot, main, { approvedEntryHash, approvedManifestHash });
+    } catch (err) {
+      // Electron IPC drops an error's `code` on the way to the renderer;
+      // the token rides in the MESSAGE so the renderer can recognise the
+      // trust failure and re-ask (W-1), exactly as the code names it here.
+      if (err && err.code === 'ERR_PLUGIN_CHANGED') throw new Error(`ERR_PLUGIN_CHANGED: ${err.message}`);
+      throw err;
+    }
     const sessionId = randomBytes(16).toString('hex');
     pluginRealm.register(sessionId, snapshot);
-    return { sessionId, baseUrl: `jcad://app/plugin-realm/${sessionId}/`, entryUrl: `jcad://app/plugin-realm/${sessionId}/${main}` };
+    return { sessionId, baseUrl: `jcad://app/plugin-realm/${sessionId}/`, entryUrl: `jcad://app/plugin-realm/${sessionId}/${main}`, manifestHash: snapshot.manifestSha256 };
   });
   /** Drop one plugin-realm registration (the renderer reports its session disposed). */
   ipcMain.handle('plugins-unserve-isolated', (_ev, sessionId) => {

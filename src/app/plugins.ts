@@ -105,17 +105,21 @@ export interface PluginsBridge {
   /** Run a script in the page (used when CSP forbids `new Function`). */
   pluginsEval?(source: string): Promise<unknown>;
   /**
-   * CSP hosting (AMENDMENT-P25-CSP-HOSTING Part A2; Fable F1): ask the
-   * main process to serve this (already trusted) plugin folder's package
-   * to its isolated realm. Main vets the package from its own record —
-   * the renderer passes the folder NAME, never a path — snapshots it and
-   * returns the session's served URLs. `approvedEntryHash` is the
-   * SHA-256 of the entry code this host's trust flow approved (the
-   * codeHash of the loaded source); main verifies its snapshot's entry
-   * against it and refuses a changed entry with ERR_PLUGIN_CHANGED.
+   * CSP hosting (AMENDMENT-P25-CSP-HOSTING Part A2; Fable F1; W-1): ask
+   * the main process to serve this (already trusted) plugin folder's
+   * package to its isolated realm. Main vets the package from its own
+   * record — the renderer passes the folder NAME, never a path —
+   * snapshots it and returns the session's served URLs plus the
+   * snapshot's MANIFEST hash. `approvedEntryHash` is the SHA-256 of
+   * the entry code this host's trust flow approved (the codeHash of
+   * the loaded source); `approvedManifestHash`, when the trust record
+   * remembers one, is the manifest hash of the whole package that
+   * approval covered. Main verifies its snapshot against BOTH and
+   * refuses a changed entry OR a changed dependency with
+   * ERR_PLUGIN_CHANGED (W-1: approval binds the whole snapshot).
    * Absent in the plain browser.
    */
-  pluginsServeIsolatedPackage?(folder: string, approvedEntryHash?: string): Promise<{ sessionId: string; baseUrl: string; entryUrl: string }>;
+  pluginsServeIsolatedPackage?(folder: string, approvedEntryHash?: string, approvedManifestHash?: string): Promise<{ sessionId: string; baseUrl: string; entryUrl: string; manifestHash?: string }>;
   /** Drop a plugin-realm serving registration (the session was disposed). */
   pluginsUnserveIsolatedPackage?(sessionId: string): Promise<unknown>;
 }
@@ -315,6 +319,15 @@ async function sourceHash(src: PluginSource): Promise<string> {
 interface TrustEntry {
   answer: 'yes' | 'no';
   hash: string;
+  /**
+   * W-1: for a folder plugin served to the isolated realm, the MANIFEST
+   * hash of the whole package the remembered answer approved (over the
+   * sorted (path, sha256) list of every snapshotted file, entry
+   * included), as reported by main at the first served load under this
+   * approval. Absent until then — and absent for page plugins, whose
+   * approval binds the entry alone (they execute no served graph).
+   */
+  manifestHash?: string;
   at: number;
 }
 
@@ -338,6 +351,19 @@ function writeTrust(storage: StorageLike | null, v: Record<string, TrustEntry>):
 }
 
 const trustKey = (src: PluginSource) => `${src.origin}:${src.path}`;
+
+/**
+ * The serve path's trust failure (main refusing a package that changed
+ * since approval): main raises it with the ERR_PLUGIN_CHANGED code, and
+ * its IPC handler also names the token in the message — the only part
+ * of an error that always survives ipcRenderer.invoke — so both forms
+ * are recognised here.
+ */
+function isPluginChangedError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { code?: unknown; message?: unknown };
+  return e.code === 'ERR_PLUGIN_CHANGED' || (typeof e.message === 'string' && e.message.includes('ERR_PLUGIN_CHANGED'));
+}
 
 declare global {
   interface Window {
@@ -587,6 +613,35 @@ export class PluginHost {
     else delete all[key];
     writeTrust(this.storage, all);
     return yes;
+  }
+
+  /** Drop the remembered trust answer for one source, so its next load asks again. */
+  private forgetSource(src: PluginSource): void {
+    const all = readTrust(this.storage);
+    const key = trustKey(src);
+    if (key in all) {
+      delete all[key];
+      writeTrust(this.storage, all);
+    }
+  }
+
+  /**
+   * W-1: remember the manifest hash main reported for a served package,
+   * bound to the approval that serve ran under. Only a remembered "yes"
+   * for THIS entry hash gains a manifest (the E-10 discipline: an
+   * unremembered approval — the FNV fallback, a declined answer — binds
+   * nothing beyond itself).
+   */
+  private rememberManifestHash(src: PluginSource, approvedEntryHash: string, manifestHash: string): void {
+    if (!/^[0-9a-f]{64}$/.test(manifestHash)) return;
+    const all = readTrust(this.storage);
+    const key = trustKey(src);
+    const hit = all[key];
+    if (!hit || hit.answer !== 'yes' || hit.hash !== approvedEntryHash) return;
+    if (hit.manifestHash !== manifestHash) {
+      all[key] = { ...hit, manifestHash };
+      writeTrust(this.storage, all);
+    }
   }
 
   /** Forget remembered answers (all, or one plugin's by name). Returns how many were removed. */
@@ -844,9 +899,34 @@ export class PluginHost {
       // approved — `sourceHash`, the same digest `trusted()` computed and
       // the user confirmed for this source: the entry's raw file bytes
       // when the source carries them (R2), else its text.
+      // W-1: the approval binds the WHOLE snapshot, not just the entry —
+      // when the trust record remembers a manifest hash under this very
+      // approval, it travels with the entry hash and main verifies the
+      // whole graph against it; the manifest main reports back from a
+      // successful serve is remembered for the next load.
       const approvedEntryHash = await sourceHash(src);
-      const served = await this.bridge.pluginsServeIsolatedPackage(src.folder, approvedEntryHash);
+      const remembered = readTrust(this.storage)[trustKey(src)];
+      const approvedManifestHash =
+        remembered && remembered.answer === 'yes' && remembered.hash === approvedEntryHash && typeof remembered.manifestHash === 'string'
+          ? remembered.manifestHash
+          : undefined;
+      let served: { sessionId: string; baseUrl: string; entryUrl: string; manifestHash?: string } | null;
+      try {
+        served = await this.bridge.pluginsServeIsolatedPackage(src.folder, approvedEntryHash, approvedManifestHash);
+      } catch (err) {
+        if (!isPluginChangedError(err)) throw err;
+        // The package on disk no longer matches the approval — a changed
+        // entry, or (W-1) a changed dependency under an unchanged entry.
+        // Forget the remembered answer so the next load asks again, and
+        // refuse THIS load (fail-closed, L-011 C2).
+        this.forgetSource(src);
+        return {
+          refusal:
+            'plugin declares "isolation": "worker" but its package changed since it was approved (the entry or a file in its module graph differs from the approved package); refusing to run it — reload the plugin to approve the new package',
+        };
+      }
       if (!served || typeof served.entryUrl !== 'string' || !served.entryUrl) return null;
+      if (typeof served.manifestHash === 'string') this.rememberManifestHash(src, approvedEntryHash, served.manifestHash);
       return {
         moduleUrl: served.entryUrl,
         ...(typeof served.sessionId === 'string' && served.sessionId ? { servedSessionId: served.sessionId } : {}),

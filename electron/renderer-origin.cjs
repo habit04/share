@@ -61,7 +61,7 @@ function pluginChangedError(message = 'Plugin source changed while it was read; 
 function createPluginRealmRegistry() {
   const snapshots = new Map();
   return {
-    /** @param {string} sessionId @param {{ files: Map<string, { bytes: Buffer, sha256: string }>, entrySha256: string, totalBytes: number }} snapshot */
+    /** @param {string} sessionId @param {{ files: Map<string, { bytes: Buffer, sha256: string }>, entrySha256: string, manifestSha256: string, totalBytes: number }} snapshot */
     register(sessionId, snapshot) { snapshots.set(sessionId, snapshot); },
     /** @param {string} sessionId */
     unregister(sessionId) { snapshots.delete(sessionId); },
@@ -238,9 +238,15 @@ async function readSnapshotFile(info) {
  * Take the F1 snapshot of one vetted plugin package: read the entry plus
  * its static module graph (relative `import`/`export … from` specifiers,
  * resolved inside the package) exactly once, record a SHA-256 per file,
- * and — when the caller supplies the hash the user approved — verify the
- * entry against it. A mismatch is the trust check failing: the error
- * carries v1's ERR_PLUGIN_CHANGED code. Dynamic `import()` specifiers
+ * and — when the caller supplies the hashes the user approved — verify
+ * the snapshot against them. Two checks, one trust decision (W-1, the
+ * lead's ruling 2026-10-22): the ENTRY check compares the entry file's
+ * hash alone (the approval's original identity, and the fast path the
+ * renderer's own read can compute), and the MANIFEST check compares a
+ * hash over the sorted (path, sha256) list of EVERY snapshotted file —
+ * entry included — so a changed dependency with an unchanged entry also
+ * fails. Either mismatch is the trust check failing: the error carries
+ * v1's ERR_PLUGIN_CHANGED code. Dynamic `import()` specifiers
  * are not walked (they are computed at run time); they resolve at serve
  * time against this same snapshot — a path in the snapshot serves, a
  * path outside it is refused (404). The one virtual file, the root
@@ -248,8 +254,8 @@ async function readSnapshotFile(info) {
  * it is never snapshotted.
  * @param {string} realRoot the package directory's real path
  * @param {string} entryRelPath the entry's package-relative path (the manifest's "main")
- * @param {{ approvedEntryHash?: string, maxBytes?: number }} [options]
- * @returns {Promise<{ files: Map<string, { bytes: Buffer, sha256: string }>, entrySha256: string, totalBytes: number }>}
+ * @param {{ approvedEntryHash?: string, approvedManifestHash?: string, maxBytes?: number }} [options]
+ * @returns {Promise<{ files: Map<string, { bytes: Buffer, sha256: string }>, entrySha256: string, manifestSha256: string, totalBytes: number }>}
  */
 async function buildPluginRealmSnapshot(realRoot, entryRelPath, options = {}) {
   const maxBytes = options.maxBytes ?? PLUGIN_REALM_SNAPSHOT_MAX_BYTES;
@@ -302,7 +308,20 @@ async function buildPluginRealmSnapshot(realRoot, entryRelPath, options = {}) {
   if (options.approvedEntryHash !== undefined && options.approvedEntryHash !== entry.sha256) {
     throw pluginChangedError('Plugin source changed since it was approved; reload the plugin to approve the new source.');
   }
-  return { files, entrySha256: entry.sha256, totalBytes };
+  // W-1: the MANIFEST hash — SHA-256 over the canonical manifest text:
+  // one line per snapshotted file, "<sha256>\0<package-relative path>\n",
+  // lines ordered by path (code-unit order). The NUL separator and the
+  // fixed-width hash keep the encoding unambiguous for any path a
+  // package can contain. The entry is one of the lines, so the manifest
+  // binds the entry too; the separate entry check above remains as the
+  // approval's fast path (and the only check for a first registration,
+  // which has no remembered manifest yet).
+  const manifestText = [...files.keys()].sort().map((relPath) => `${files.get(relPath).sha256}\0${relPath}\n`).join('');
+  const manifestSha256 = createHash('sha256').update(manifestText, 'utf8').digest('hex');
+  if (options.approvedManifestHash !== undefined && options.approvedManifestHash !== manifestSha256) {
+    throw pluginChangedError('Plugin package changed since it was approved; reload the plugin to approve the new package.');
+  }
+  return { files, entrySha256: entry.sha256, manifestSha256, totalBytes };
 }
 
 /**

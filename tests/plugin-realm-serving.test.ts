@@ -42,6 +42,7 @@ interface PluginRealmSnapshotFile {
 interface PluginRealmSnapshot {
   files: Map<string, PluginRealmSnapshotFile>;
   entrySha256: string;
+  manifestSha256: string;
   totalBytes: number;
 }
 interface PluginRealmRegistry {
@@ -56,7 +57,7 @@ const origin = require('../electron/renderer-origin.cjs') as {
   PLUGIN_REALM_SNAPSHOT_MAX_BYTES: number;
   assetResponseHeaders(pathname: string): Record<string, string>;
   createPluginRealmRegistry(): PluginRealmRegistry;
-  buildPluginRealmSnapshot(realRoot: string, entryRelPath: string, options?: { approvedEntryHash?: string; maxBytes?: number }): Promise<PluginRealmSnapshot>;
+  buildPluginRealmSnapshot(realRoot: string, entryRelPath: string, options?: { approvedEntryHash?: string; approvedManifestHash?: string; maxBytes?: number }): Promise<PluginRealmSnapshot>;
   installAssetHandler(deps: {
     protocol: { handle(scheme: string, fn: Handler): void };
     net: { fetch(url: string): Promise<Response> };
@@ -141,7 +142,7 @@ async function servePkg(): Promise<PluginRealmSnapshot> {
 describe('plugin-realm registry', () => {
   it('registers, looks up, unregisters and clears', () => {
     const r = origin.createPluginRealmRegistry();
-    const snap: PluginRealmSnapshot = { files: new Map(), entrySha256: 'x', totalBytes: 0 };
+    const snap: PluginRealmSnapshot = { files: new Map(), entrySha256: 'x', manifestSha256: 'y', totalBytes: 0 };
     expect(r.lookup(SESSION)).toBeUndefined();
     r.register(SESSION, snap);
     expect(r.lookup(SESSION)).toBe(snap);
@@ -255,8 +256,16 @@ describe('main-process wiring for teardown (condition (c)) is in the shipped mai
   });
   it('exposes the serve/unserve bridge through the preload', () => {
     const preload = readFileSync('electron/preload.cjs', 'utf8');
-    expect(preload).toContain("pluginsServeIsolatedPackage: (folder, approvedEntryHash) => ipcRenderer.invoke('plugins-serve-isolated', folder, approvedEntryHash)");
+    expect(preload).toContain("pluginsServeIsolatedPackage: (folder, approvedEntryHash, approvedManifestHash) => ipcRenderer.invoke('plugins-serve-isolated', folder, approvedEntryHash, approvedManifestHash)");
     expect(preload).toContain("pluginsUnserveIsolatedPackage: (sessionId) => ipcRenderer.invoke('plugins-unserve-isolated', sessionId)");
+  });
+  it('wires the W-1 manifest through the serve handler: verified in main, reported back, ERR_PLUGIN_CHANGED named in the IPC message', () => {
+    const ipc = readFileSync('electron/main/ipc-stores.cjs', 'utf8');
+    expect(ipc).toContain('approvedManifestHash');
+    expect(ipc).toMatch(/buildPluginRealmSnapshot\(realRoot, main, \{ approvedEntryHash, approvedManifestHash \}\)/);
+    expect(ipc).toContain('manifestHash: snapshot.manifestSha256');
+    expect(ipc).toContain("err.code === 'ERR_PLUGIN_CHANGED'");
+    expect(ipc).toContain('`ERR_PLUGIN_CHANGED: ${err.message}`');
   });
 });
 
@@ -337,5 +346,64 @@ describe('Fable F1: snapshot serving — approved bytes are the executed bytes',
     );
     expect(err).toBeInstanceOf(Error);
     expect(err!.message).toMatch(/snapshot exceeds/i);
+  });
+});
+
+describe('W-1 (lead ruling, 2026-10-22): approval binds the WHOLE snapshot — the manifest hash', () => {
+  const sha256 = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
+  const w1Tree = mkdtempSync(join(tmpdir(), 'jcad-realm-manifest-'));
+  const w1Pkg = join(w1Tree, 'pkg');
+  const W1_ENTRY = "import jcad from './jcad.js';\nimport { v } from './dep.js';\nexport default { v };\n";
+  const DEP_V1 = 'export const v = "dep-one";\n';
+  const DEP_V2 = 'export const v = "dep-two";\n';
+  mkdirSync(w1Pkg, { recursive: true });
+  writeFileSync(join(w1Pkg, 'plugin.json'), JSON.stringify({ name: 'mani', main: 'main.js', apiVersion: 2, isolation: 'worker', capabilities: [] }));
+  writeFileSync(join(w1Pkg, 'main.js'), W1_ENTRY);
+  writeFileSync(join(w1Pkg, 'dep.js'), DEP_V1);
+  const w1Root = realpathSync(w1Pkg);
+
+  afterAll(() => {
+    expect(dirname(resolve(w1Tree))).toBe(resolve(tmpdir()));
+    expect(basename(w1Tree)).toMatch(/^jcad-realm-manifest-/);
+    rmSync(w1Tree, { recursive: true, force: true });
+  });
+
+  /** The manifest hash, recomputed independently from a snapshot's file records. */
+  const manifestOf = (snap: PluginRealmSnapshot): string => {
+    const lines = [...snap.files.keys()].sort().map((rel) => `${snap.files.get(rel)!.sha256}\0${rel}\n`);
+    return createHash('sha256').update(lines.join(''), 'utf8').digest('hex');
+  };
+
+  it('the snapshot carries a manifest hash over the sorted (path, sha256) list of EVERY snapshotted file', async () => {
+    const snap = await origin.buildPluginRealmSnapshot(w1Root, 'main.js');
+    expect(typeof snap.manifestSha256).toBe('string');
+    expect(snap.manifestSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(snap.manifestSha256).toBe(manifestOf(snap));
+    // The entry is part of the manifest (the manifest includes it), and
+    // the entry check keeps working alongside it.
+    expect(snap.entrySha256).toBe(sha256(W1_ENTRY));
+  });
+
+  it('a changed DEPENDENCY with an unchanged entry fails against the approved manifest with ERR_PLUGIN_CHANGED', async () => {
+    const approved = await origin.buildPluginRealmSnapshot(w1Root, 'main.js', { approvedEntryHash: sha256(W1_ENTRY) });
+    const manifestV1 = approved.manifestSha256;
+    // The unchanged package verifies against its own manifest.
+    const again = await origin.buildPluginRealmSnapshot(w1Root, 'main.js', { approvedEntryHash: sha256(W1_ENTRY), approvedManifestHash: manifestV1 });
+    expect(again.manifestSha256).toBe(manifestV1);
+    // Change ONLY the dependency; the entry (and its approved hash) is
+    // untouched — the entry check alone would pass, the manifest must not.
+    writeFileSync(join(w1Pkg, 'dep.js'), DEP_V2);
+    const err = await origin.buildPluginRealmSnapshot(w1Root, 'main.js', { approvedEntryHash: sha256(W1_ENTRY), approvedManifestHash: manifestV1 }).then(
+      () => null,
+      (e: unknown) => e as Error & { code?: string },
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.code).toBe('ERR_PLUGIN_CHANGED');
+    // An unbound registration (a fresh approval) snapshots the new graph
+    // and reports its NEW manifest — different from the approved one.
+    const fresh = await origin.buildPluginRealmSnapshot(w1Root, 'main.js', { approvedEntryHash: sha256(W1_ENTRY) });
+    expect(fresh.manifestSha256).not.toBe(manifestV1);
+    expect(fresh.manifestSha256).toBe(manifestOf(fresh));
+    writeFileSync(join(w1Pkg, 'dep.js'), DEP_V1);
   });
 });
