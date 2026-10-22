@@ -14,6 +14,37 @@
  *   b6abbace outputs: for each of the four, the delta is EXACTLY the deletion of the two pairs
  *   (9, $CANNOSCALE), (2, 1:1) at pair index 142 and nothing else. [0] input hashes and the
  *   [2] legacy goldens are byte-unchanged.
+ * - P22 native-table exception (2026-10-21, P22 slice 1, same discipline as the F2 update):
+ *   the acad-table [1] output hash was updated once more, because tables are now written
+ *   natively (ACAD_TABLE + *T picture block + synthesized TABLESTYLE in an ACAD_TABLESTYLE
+ *   dictionary) instead of INSERT + JCAD_TABLE xdata — that replacement is the slice's
+ *   intended output change. Verified pair-by-pair against the fe9f6b8e output: the delta is
+ *   exactly (a) the two CLASS registrations (TABLESTYLE, ACAD_TABLE), (b) the INSERT +
+ *   JCAD_TABLE record replaced by the ACAD_TABLE record, (c) the *U1 picture block renamed
+ *   *T1 with unchanged content, (d) the added dictionary + TABLESTYLE object, and
+ *   (e) consequent handle renumbering including $HANDSEED — nothing else differs. The other
+ *   three [1] hashes, every [0] input hash and the [2] legacy goldens are byte-unchanged,
+ *   and every table-free fixture remains byte-identical to the pre-integration writer.
+ * - P22 COMP-N N-2 exception (2026-10-21, same discipline): the acad-table [1] output hash was
+ *   updated once more, because the *T picture block is now generated in the table's local frame
+ *   (position (0, 0), rotation 0) instead of world coordinates — the lead's Windows gate found
+ *   AutoCAD's TABLEDIT cannot pick a cell when the picture is stored in world coordinates
+ *   (gate-a 20/22), while AutoCAD's own *T blocks are insertion-relative. Verified pair-by-pair
+ *   against the 206728f3 output: the delta is EXACTLY 40 value lines, all inside the *T1
+ *   BLOCK..ENDBLK span, all coordinate groups (10/20/11/21), each shifted by exactly the
+ *   fixture table's position (-5 in x, -8 in y) — nothing else differs. The other three [1]
+ *   hashes, every [0] input hash and the [2] legacy goldens are byte-unchanged.
+ * - P22 COMP-N combined exception (2026-10-21, same discipline): the acad-table [1] output
+ *   hash was updated once more at the COMP-N re-composition, because the two cleared
+ *   COMP-N deltas compose on this fixture and N-3 Series 2 (the lead's optional item)
+ *   writes the synthesized TABLESTYLE row-type group 90 as AutoCAD's normalised 4
+ *   instead of 512. Verified pair-by-pair against the 7ab8ae70 output (the N-2 head):
+ *   the delta is EXACTLY three value lines (512 -> 4, the three TABLESTYLE cell-style
+ *   row blocks) — nothing else differs; verified against the N-3 head's output, the
+ *   delta is exactly the N-2 exception's 40 local-frame coordinate lines (same census:
+ *   10 x13 @ -5, 20 x13 @ -8, 11 x7 @ -5, 21 x7 @ -8, all inside the *T1 span). The
+ *   other three [1] hashes, every [0] input hash and the [2] legacy goldens are
+ *   byte-unchanged.
  * - Every fixture's output is also compared with the output for the same state carrying an empty
  *   model, and checked for any trace of the 3D records.
  */
@@ -30,7 +61,7 @@ const BASELINES: Readonly<Record<string, readonly [string, string, string]>> = {
   'block-colors': ['d44dd28a3a2d19a88de28c2b6ef18ce4622109b709c8add8ddf27826f37de98f', '826c47754d9e093493c812bc4ad8ef9767fabeec611b0eb40aa971340afe8c81', '712755e567e4b52f3dd87f501eccfe6269ef930d1a754f93019a917c41af4a6e'],
   hatch: ['99872d47f2af1a55fd8462083b25926fabd788fead26427f9d7202839b7aaa82', '0690ef325b7b5fa09e789a0db9d276f2427a0006851c56f64e2af8756bd55b67', '2f683468b3d721d2170c8dd2bc1c5c3eebaa20fffcb5891e9092e6a673e4e34b'],
   'polyline-widths': ['41ff2357bdb4653396400d44113273203ea0fdc10e8efec283b56ec5108818fb', '51f8507514c66efa3714ddb3cea5c9bf8271636d49f1e1628a69f4a182e76ba3', '67fbdf3d4849505709756959a95e0ed0a001619554d80209a7f5f58ee22c4dc5'],
-  'acad-table': ['0e3a7e374c9372782fc73c1875fe3ba80f43836e4a6217cb681b36734ccbfd29', 'fe9f6b8e006af9d2539745678caa49e9a3bb9631a20c1e99a7107f71e12a26f7', '495a35c874461dfafc244d185ad1c3a070ebf93df346581a33b9ab0913a7c4b5'],
+  'acad-table': ['0e3a7e374c9372782fc73c1875fe3ba80f43836e4a6217cb681b36734ccbfd29', 'b3c914e76f253e03c74e9d19ce661078b5896717d10576c220e6311390254aef', '495a35c874461dfafc244d185ad1c3a070ebf93df346581a33b9ab0913a7c4b5'],
 };
 import { Drawing, type DrawingState } from '../src/core/document';
 import { readDxf, writeDxf } from '../src/io/dxf';
