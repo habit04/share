@@ -56,7 +56,7 @@ describe('isolated manifest + capabilities', () => {
 async function loadedSession(ed: EditorType, capabilities: string[]) {
   const transport = new LoopbackTransport();
   const s = new IsolatedPluginSession(ed, { owner: 'proto', capabilities, transport });
-  const loadP = s.load('/* test realm */');
+  const loadP = s.loadModule('file:///p25-loopback-entry.mjs'); // the loopback realm never fetches it; the test answers load-done itself
   const hs = transport.handshake();
   transport.emit({ kind: 'load-done', v: 2, session: hs.session, nonce: hs.realmNonce, ok: true, report: { ready: true } });
   await loadP;
@@ -147,7 +147,7 @@ describe('host dispatcher: authentication, capabilities, staleness', () => {
     const ed = makeEditor();
     const transport = new LoopbackTransport();
     const s = new IsolatedPluginSession(ed, { owner: 'proto2', capabilities: [], transport, loadTimeoutMs: 200 });
-    const loadP = s.load('x');
+    const loadP = s.loadModule('file:///p25-loopback-entry.mjs');
     const hs = transport.handshake();
     transport.emit({ kind: 'load-done', v: 2, session: hs.session, nonce: 'forged', ok: true, report: null });
     await expect(loadP).rejects.toThrow(/did not finish loading/);

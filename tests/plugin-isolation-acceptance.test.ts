@@ -16,7 +16,7 @@ import type { Editor as EditorType } from '../src/app/editor';
 import { evaluatePlugin } from '../src/app/plugins';
 import { createApi } from '../src/app/api';
 import { IsolatedPluginSession } from '../src/app/plugin-isolation/host';
-import { nodeWorkerTransport } from './plugin-isolation-harness';
+import { moduleUrlForBody, nodeWorkerTransport } from './plugin-isolation-harness';
 
 let Editor: typeof EditorType;
 beforeAll(async () => {
@@ -98,7 +98,7 @@ describe('P25 regression contrast: legacy trusted path vs isolated realm', () =>
     const ed = makeEditor();
     (globalThis as Record<string, unknown>).__p25HostSecret = 'HOST-SECRET';
     const s = session(ed, 'probe-new', []); // NO capabilities declared at all
-    const report = (await s.load(REALM_PROBE)) as Record<string, unknown>;
+    const report = (await s.loadModule(moduleUrlForBody(REALM_PROBE))) as Record<string, unknown>;
     expect(report.secretType).toBe('undefined');
     expect(report.windowType).toBe('undefined');
     expect(report.documentType).toBe('undefined');
@@ -140,7 +140,7 @@ describe('P25 isolated realm: useful work still works, mediated', () => {
       const note = await jcad.settings.get('plugin:note');
       return { before, after, note };
     `;
-    const report = (await s.load(code)) as { before: number; after: number; note: string };
+    const report = (await s.loadModule(moduleUrlForBody(code))) as { before: number; after: number; note: string };
     expect(report.after).toBe(report.before + 2);
     expect(report.note).toBe('hello');
     expect(ed.doc.dirty).toBe(true);
@@ -169,7 +169,7 @@ describe('P25 isolated realm: useful work still works, mediated', () => {
       } catch (e) { outcome = 'rolled-back:' + (e.code ?? 'error'); }
       return { outcome, count: (await jcad.document.entities()).length };
     `;
-    const report = (await s.load(code)) as { outcome: string; count: number };
+    const report = (await s.loadModule(moduleUrlForBody(code))) as { outcome: string; count: number };
     expect(report.outcome).toMatch(/^rolled-back:/);
     expect(report.count).toBe(0);
     expect(ed.doc.entities).toHaveLength(0);
@@ -188,24 +188,24 @@ describe('P25 isolated realm: useful work still works, mediated', () => {
       const forged = await jcad.files.readGrant('grant-forged-1').then(() => 'allowed', (e) => 'denied:' + (e.code ?? 'error'));
       return { grant: g.grant, name: first.name, text: first.text, second, forged };
     `;
-    const r1 = (await s1.load(code1)) as { grant: string; name: string; text: string; second: string; forged: string };
+    const r1 = (await s1.loadModule(moduleUrlForBody(code1))) as { grant: string; name: string; text: string; second: string; forged: string };
     expect(r1.name).toBe('note.txt');
     expect(r1.text).toBe('grant me');
     expect(r1.second).toBe('denied:grant-used');
     expect(r1.forged).toBe('denied:unknown-grant');
     // After the issuing session is disposed, its outstanding grant is stale everywhere.
     const s1b = session(ed, 'grantor-2', ['files.read'], { pickTextFile: picker });
-    const gOnly = (await s1b.load(`const g = await jcad.files.requestRead('.txt'); return { grant: g.grant };`)) as { grant: string };
+    const gOnly = (await s1b.loadModule(moduleUrlForBody(`const g = await jcad.files.requestRead('.txt'); return { grant: g.grant };`))) as { grant: string };
     s1b.dispose();
     const s2 = session(ed, 'successor', ['files.read'], { pickTextFile: picker });
-    const r2 = (await s2.load(`return { stale: await jcad.files.readGrant(${JSON.stringify(gOnly.grant)}).then(() => 'allowed', (e) => 'denied:' + (e.code ?? 'error')) };`)) as { stale: string };
+    const r2 = (await s2.loadModule(moduleUrlForBody(`return { stale: await jcad.files.readGrant(${JSON.stringify(gOnly.grant)}).then(() => 'allowed', (e) => 'denied:' + (e.code ?? 'error')) };`))) as { stale: string };
     expect(r2.stale).toBe('denied:unknown-grant');
   }, 60_000);
 
   it('a plugin that never finishes loading times out and the realm is terminated, editor untouched', async () => {
     const ed = makeEditor();
     const s = session(ed, 'hangs', ['ui.log'], { loadTimeoutMs: 300 });
-    await expect(s.load('return new Promise(() => {});')).rejects.toThrow(/did not finish loading/);
+    await expect(s.loadModule(moduleUrlForBody('return new Promise(() => {});'))).rejects.toThrow(/did not finish loading/);
     expect(s.disposed).toBe(true);
     expect(ed.doc.entities).toHaveLength(0);
   }, 60_000);
@@ -213,7 +213,7 @@ describe('P25 isolated realm: useful work still works, mediated', () => {
   it('load errors inside the realm surface as load failures and register nothing', async () => {
     const ed = makeEditor();
     const s = session(ed, 'broken', ['commands.register']);
-    await expect(s.load("jcad.commands.register({ name: 'HALF', run() {} }); throw new Error('realm oops');")).rejects.toThrow(/realm oops/);
+    await expect(s.loadModule(moduleUrlForBody("jcad.commands.register({ name: 'HALF', run() {} }); throw new Error('realm oops');"))).rejects.toThrow(/realm oops/);
     expect(ed.commands.has('HALF')).toBe(false);
   }, 60_000);
 });

@@ -18,7 +18,7 @@
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import type { Editor as EditorType } from '../src/app/editor';
 import { IsolatedPluginSession } from '../src/app/plugin-isolation/host';
-import { nodeWorkerTransport } from './plugin-isolation-harness';
+import { moduleUrlForBody, nodeWorkerTransport } from './plugin-isolation-harness';
 
 let Editor: typeof EditorType;
 beforeAll(async () => {
@@ -58,7 +58,7 @@ describe('P25 CSP ruling: string evaluation in the isolated realm', () => {
   it('eval and new Function are refused in the plugin context (realm globals)', async () => {
     const ed = makeEditor();
     const s = session(ed, 'csp-probe', []);
-    const report = (await s.load(EVAL_PROBE)) as Record<string, string>;
+    const report = (await s.loadModule(moduleUrlForBody(EVAL_PROBE))) as Record<string, string>;
     for (const form of ['directEval', 'indirectEval', 'globalEval', 'functionCtor', 'functionCall', 'globalFunction']) {
       expect(report[form], form).toMatch(/^refused:/);
       expect(report[form], form).not.toContain('ran:');
@@ -79,7 +79,7 @@ describe('P25 CSP ruling: string evaluation in the isolated realm', () => {
       const selectedAtLoad = (await jcad.document.selection()).length;
       return { registered: true, selectedAtLoad };
     `;
-    const report = (await s.load(code)) as { registered: boolean; selectedAtLoad: number };
+    const report = (await s.loadModule(moduleUrlForBody(code))) as { registered: boolean; selectedAtLoad: number };
     expect(report.registered).toBe(true);
     expect(report.selectedAtLoad).toBe(0); // a document.read RPC round trip at load time
     ed.runCommand('CSPPING');

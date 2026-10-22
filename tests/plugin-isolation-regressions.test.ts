@@ -27,7 +27,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Editor as EditorType } from '../src/app/editor';
 import { IsolatedPluginSession } from '../src/app/plugin-isolation/host';
-import { nodeWorkerTransport } from './plugin-isolation-harness';
+import { moduleUrlForBody, nodeWorkerTransport } from './plugin-isolation-harness';
 
 let Editor: typeof EditorType;
 beforeAll(async () => {
@@ -63,7 +63,7 @@ describe('F-1: CommonJS identifiers are locked in the realm', () => {
       loadTimeoutMs: 60_000,
     });
     try {
-      const report = (await session.load(`
+      const report = (await session.loadModule(moduleUrlForBody(`
         const out = { cjs: {} };
         for (const k of ['module', 'exports', '__filename', '__dirname', 'process', 'require', 'Buffer']) {
           // Measured off the global object, where the locks live: under the
@@ -91,7 +91,7 @@ describe('F-1: CommonJS identifiers are locked in the realm', () => {
         }
         out.cp = cp;
         return out;
-      `)) as { cjs: Record<string, string>; fsRead: string; cp: string };
+      `))) as { cjs: Record<string, string>; fsRead: string; cp: string };
       // The four CJS identifiers join the already-locked globals.
       expect(report.cjs.module).toBe('undefined');
       expect(report.cjs.exports).toBe('undefined');
@@ -120,7 +120,7 @@ describe('F-2: transact refuses non-stageable mutating calls', () => {
       loadTimeoutMs: 60_000,
     });
     try {
-      const report = (await session.load(`
+      const report = (await session.loadModule(moduleUrlForBody(`
         let err = null;
         try {
           await jcad.document.transact(async () => {
@@ -130,7 +130,7 @@ describe('F-2: transact refuses non-stageable mutating calls', () => {
           });
         } catch (e) { err = String((e && e.message) || e); }
         return { err, after: await jcad.settings.get('plugin:inside') };
-      `)) as { err: string | null; after?: unknown };
+      `))) as { err: string | null; after?: unknown };
       // The refusal (fail-closed) is what ends the transaction...
       expect(report.err).toMatch(/cannot run inside document\.transact/);
       // ...and nothing persisted: the setting was never written.
@@ -151,7 +151,7 @@ describe('F-2: transact refuses non-stageable mutating calls', () => {
       loadTimeoutMs: 60_000,
     });
     try {
-      const report = (await session.load(`
+      const report = (await session.loadModule(moduleUrlForBody(`
         await jcad.document.add({ type: 'line', a: { x: 2, y: 2 }, b: { x: 3, y: 3 } });
         const before = (await jcad.document.entities()).length;
         let err = null;
@@ -172,7 +172,7 @@ describe('F-2: transact refuses non-stageable mutating calls', () => {
         });
         const final = (await jcad.document.entities()).length;
         return { before, err, after, insideCount, final };
-      `)) as { before: number; err: string | null; after: number; insideCount: number; final: number };
+      `))) as { before: number; err: string | null; after: number; insideCount: number; final: number };
       expect(report.err).toMatch(/cannot run inside document\.transact/);
       // The pre-existing entity survived: the undo never executed.
       expect(report.after).toBe(report.before);

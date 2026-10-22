@@ -79,6 +79,8 @@ function trackedNodeTransport(): RealmTransport & { terminated: boolean } {
       t.terminated = true;
       inner.terminate();
     },
+    // The harness transport's file:// module-URL hook (Part B4), forwarded.
+    ...(inner.moduleUrlFor ? { moduleUrlFor: (text: string) => inner.moduleUrlFor!(text) } : {}),
   };
   return t;
 }
@@ -509,5 +511,95 @@ describe('example isolated plugin', () => {
     ed.selection = new Set(['a', 'b']);
     ed.runCommand('HELLOISO');
     await vi.waitFor(() => expect(ed.history).toContain('Hello from isolated hello-worker! 2 objects selected.'));
+  }, 60_000);
+});
+
+// ------------------------------------------------------------------ CSP hosting amendment (Part B3 + conditions C-J1, (c))
+
+const SERVED_SESSION = 'aabbccdd00112233aabbccdd00112233';
+/** A bridge with the Part A2 serving capability, over the in-memory folders. */
+function serveCapableBridge() {
+  const serveCalls: string[] = [];
+  const unserveCalls: string[] = [];
+  const bridge: PluginsBridge = {
+    ...fakeBridge({ iso: { manifest: workerManifest('iso', ISO_CAPS), code: ISO_PLUGIN } }),
+    pluginsServeIsolatedPackage: async (folder: string) => {
+      serveCalls.push(folder);
+      return { sessionId: SERVED_SESSION, baseUrl: `jcad://app/plugin-realm/${SERVED_SESSION}/`, entryUrl: `jcad://app/plugin-realm/${SERVED_SESSION}/main.js` };
+    },
+    pluginsUnserveIsolatedPackage: async (sessionId: string) => {
+      unserveCalls.push(sessionId);
+      return true;
+    },
+  };
+  return { bridge, serveCalls, unserveCalls };
+}
+
+describe('CSP hosting amendment: module-URL selection and serving teardown', () => {
+  it('C-J1: the packaged transport never selects the string path — the handshake carries the served entryUrl, no code, and no blob is minted', async () => {
+    const ed = makeEditor();
+    const { bridge, serveCalls, unserveCalls } = serveCapableBridge();
+    const loop = new LoopbackTransport();
+    const host = makeHost(ed, { bridge, storage: memoryStorage(), confirm: async () => true, realmTransport: () => loop });
+    let blobsMinted = 0;
+    const originalCreateObjectURL = URL.createObjectURL;
+    URL.createObjectURL = ((...args: Parameters<typeof URL.createObjectURL>) => {
+      blobsMinted++;
+      return originalCreateObjectURL(...args);
+    }) as typeof URL.createObjectURL;
+    try {
+      const loading = host.loadAll();
+      await vi.waitFor(() => expect(loop.inbox.length).toBeGreaterThan(0));
+      const hs = loop.handshake() as unknown as Record<string, unknown>;
+      // Main was asked to serve the trusted folder (by name, never a path)…
+      expect(serveCalls).toEqual(['iso']);
+      // …and the realm is handed exactly the served entry URL: no body
+      // string crosses the handshake, and the blob fallback never ran.
+      expect(hs.moduleUrl).toBe(`jcad://app/plugin-realm/${SERVED_SESSION}/main.js`);
+      expect('code' in hs).toBe(false);
+      expect(blobsMinted).toBe(0);
+      loop.emit({ kind: 'load-done', v: 2, session: hs.session, nonce: hs.realmNonce, ok: true, report: null });
+      const out = await loading;
+      expect(out.map((p) => `${p.name}:${p.status}`)).toEqual(['iso:loaded']);
+      // (c) The registration lives exactly as long as the session: unload unserves it.
+      expect(unserveCalls).toEqual([]);
+      expect(host.unload('iso')).toBe(true);
+      expect(unserveCalls).toEqual([SERVED_SESSION]);
+    } finally {
+      URL.createObjectURL = originalCreateObjectURL;
+    }
+  }, 60_000);
+
+  it('(c) a failed isolated load unserves the session registration too', async () => {
+    const ed = makeEditor();
+    const { bridge, unserveCalls } = serveCapableBridge();
+    const loop = new LoopbackTransport();
+    const host = makeHost(ed, { bridge, storage: memoryStorage(), confirm: async () => true, realmTransport: () => loop });
+    const loading = host.loadAll();
+    await vi.waitFor(() => expect(loop.inbox.length).toBeGreaterThan(0));
+    const hs = loop.handshake();
+    loop.emit({ kind: 'load-done', v: 2, session: hs.session, nonce: hs.realmNonce, ok: false, error: 'realm refused the module' });
+    const out = await loading;
+    expect(out.map((p) => `${p.name}:${p.status}`)).toEqual(['iso:error']);
+    expect(unserveCalls).toEqual([SERVED_SESSION]);
+  }, 60_000);
+
+  it('dev/browser selection: with no serving bridge the realm gets a blob: module URL (never a body string)', async () => {
+    const ed = makeEditor();
+    const loop = new LoopbackTransport();
+    const host = makeHost(ed, { bridge: null, storage: memoryStorage(), confirm: async () => true, realmTransport: () => loop });
+    const src: PluginSource = {
+      manifest: { name: 'blobby', apiVersion: 2, isolation: 'worker', capabilities: [] },
+      code: "import jcad from './jcad.js';\nexport default {};",
+      path: 'picked/main.js',
+      origin: 'file',
+    };
+    const loading = host.load(src);
+    await vi.waitFor(() => expect(loop.inbox.length).toBeGreaterThan(0));
+    const hs = loop.handshake() as unknown as Record<string, unknown>;
+    expect(String(hs.moduleUrl)).toMatch(/^blob:/);
+    expect('code' in hs).toBe(false);
+    loop.emit({ kind: 'load-done', v: 2, session: hs.session, nonce: hs.realmNonce, ok: true, report: null });
+    expect((await loading).status).toBe('loaded');
   }, 60_000);
 });
