@@ -1269,6 +1269,13 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
           // counts or any known segment's value run cannot be located at
           // all, the save refuses atomically with an 'unsupported table
           // data layout' error rather than replacing the whole body.
+          // Re-review 3 (Codex P1; lead ruling) adds the run-boundary
+          // rule: a non-derived group INSIDE a known segment's value run
+          // (between its first and last value) splits the run — the tail
+          // behind it would replay as stale values — so it too refuses
+          // atomically, and an invariant pass over the rewritten body
+          // requires every regenerated column's value count to equal the
+          // declared cell count before the body is committed.
           {
             const unsupportedLayout = (): CadGraphError => new CadGraphError('dependency',
               `Cannot save: unsupported table data layout — the retained ACDBDATATABLE ${dataHandle} does not carry its derived counts and column segments in a recognizable shape, so its contents cannot be regenerated in place.`);
@@ -1297,6 +1304,21 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
                 // run is located and replaced by the regenerated one.
                 while (index < body.length && body[index]![0] !== valueCode && body[index]![0] !== 92) { out.push(body[index]!); index += 1; }
                 while (index < body.length && body[index]![0] === valueCode) index += 1;
+                // Re-review 3 rule 1 (Codex P1; lead ruling): the run just
+                // consumed must be the column's WHOLE run. If another value
+                // of this column appears later in the same segment (before
+                // the next 92), a non-derived group (a 999 comment, an
+                // unknown group) sits INSIDE the run — between its first and
+                // last value — and the tail behind it would be replayed as
+                // stale values behind the regenerated ones (23 values
+                // against a declared 91 of 12). No clever parsing: refuse
+                // the save atomically. Groups outside the runs — before the
+                // first value (the preamble above), after the last value,
+                // between whole columns — are not caught here and stay
+                // preserved by the main loop.
+                for (let scan = index; scan < body.length && body[scan]![0] !== 92; scan += 1) {
+                  if (body[scan]![0] === valueCode) throw unsupportedLayout();
+                }
                 if (slot === 'sums') for (const cell of cells) out.push([40, String(tableCellContentSum(cell.content))]);
                 else if (slot === 'handles') for (const handle of cellHandles) out.push([360, handle]);
                 else if (slot === 'flags') for (const cell of cells) out.push([93, cell.alignmentOverride ? '1' : '0']);
@@ -1309,6 +1331,32 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
               index += 1;
             }
             if (!counts90 || !counts91 || !sawSegment) throw unsupportedLayout();
+            // Re-review 3 rule 2 (lead ruling): belt-and-braces invariant
+            // on the rewritten body, checked before it is committed — every
+            // regenerated column carries exactly the declared cell count
+            // (the 91 emitted above, derived from the model). The walk
+            // mirrors the segment/slot logic of the rewrite itself; any
+            // mismatch refuses the save atomically with the same error
+            // rather than writing a column whose value count disagrees
+            // with its own declared counts.
+            {
+              let expected: number | undefined;
+              let seen = 0, oneCount = 0;
+              const checkColumn = () => { if (expected !== undefined && seen !== cells.length) throw unsupportedLayout(); };
+              for (const group of out.slice(headEnd)) {
+                const code = group[0];
+                if (code === 92) {
+                  checkColumn();
+                  const type = Number(group[1]);
+                  expected = type === 2 ? 40 : type === 6 ? 360 : type === 1 && oneCount < 2 ? 93 : undefined;
+                  if (type === 1) oneCount += 1;
+                  seen = 0;
+                  continue;
+                }
+                if (expected !== undefined && code === expected) seen += 1;
+              }
+              checkColumn();
+            }
             dataRecord.groups = out;
           }
           // Each CELL_VALUE record keeps its identity head (through its 280

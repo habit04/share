@@ -942,3 +942,123 @@ describe('P22 PR #39 re-review 2: reference kinds from cadReferenceKind; unrecog
     expect(() => writeDxf(readDxf(noSegments))).toThrowError(/unsupported table data layout/);
   });
 });
+
+/**
+ * P22 PR #39 re-review 3 (Codex P1; lead ruling): the tolerant datatable
+ * parse consumed only the FIRST contiguous value run of a derived column.
+ * A 999 comment (or any unknown group) planted after the first value of a
+ * derived ACDBDATATABLE column — the 40 content sums, either 93 column,
+ * the 360 cell handles — split the run: the writer emitted the 12
+ * regenerated values and then replayed the 11 stale ones behind the
+ * comment, writing 23 values against the declared 91 = 12 (probe at
+ * 690aa79: every split column tallies 23; the unsplit control tallies
+ * 12/12/12/12). Ruling, simplest safe form — no clever parsing:
+ * (1) ANY non-derived group INSIDE a derived value run (between the
+ *     column's first and last value) refuses the save atomically with
+ *     'unsupported table data layout'. Groups OUTSIDE the runs (before a
+ *     column's first value, after its last value, between whole columns)
+ *     stay preserved exactly as re-review 2 pinned them.
+ * (2) Belt-and-braces invariant, checked on the rewritten body before it
+ *     is committed: every regenerated column's value count must equal the
+ *     declared cell count (the 91 the rewrite itself emits, derived from
+ *     the model); any mismatch refuses with the same error.
+ */
+describe('P22 PR #39 re-review 3: a split derived column refuses atomically; outside-the-run groups stay preserved', () => {
+  const handleOf = (rec: Pair[]) => rec.find(([c]) => c === 5)?.[1];
+  const flatPairs = (text: string): Pair[] => {
+    const lines = text.split(/\r?\n/);
+    const pairs: Pair[] = [];
+    for (let i = 0; i + 1 < lines.length; i += 2) pairs.push([parseInt(lines[i]!, 10), lines[i + 1]!]);
+    return pairs;
+  };
+  const emitText = (pairs: Pair[]): string => pairs.map(([c, v]) => `${c}\n${v}`).join('\n') + '\n';
+  const recordSpan = (pairs: Pair[], type: string, handle: string): { start: number; end: number } => {
+    const starts: number[] = [];
+    pairs.forEach((p, i) => { if (p[0] === 0) starts.push(i); });
+    for (let s = 0; s < starts.length; s++) {
+      const start = starts[s]!, end = starts[s + 1] ?? pairs.length;
+      const slice = pairs.slice(start, end);
+      if (slice[0]?.[1] === type && slice.find(([c]) => c === 5)?.[1] === handle) return { start, end };
+    }
+    throw new Error(`record ${type} ${handle} not found`);
+  };
+  /** Insert groups right after the n-th (1-based) group with `code` in the record (type, handle). */
+  const insertAfterNth = (text: string, type: string, handle: string, code: number, n: number, extra: Pair[]): string => {
+    const pairs = flatPairs(text);
+    const { start, end } = recordSpan(pairs, type, handle);
+    let seen = 0;
+    for (let i = start; i < end; i++) {
+      if (pairs[i]![0] === code) { seen += 1; if (seen === n) { pairs.splice(i + 1, 0, ...extra); return emitText(pairs); } }
+    }
+    throw new Error(`group ${code} occurrence ${n} not found in ${type} ${handle}`);
+  };
+  const canonPairs = (rec: Pair[]): string[] => rec.map(([c, v]) =>
+    HANDLE_CODES.has(c) ? `${c}=h:${v}` : REAL_CHAIN_CODES.has(c) ? `${c}=n:${Number(v)}` : INT_CHAIN_CODES.has(c) ? `${c}=i:${parseInt(v, 10)}` : `${c}=s:${v}`);
+  /** Value tallies per column segment of a datatable body, in segment order. */
+  const columnTallies = (data: Pair[]): Array<{ seg: number; code: number; count: number }> => {
+    const out: Array<{ seg: number; code: number; count: number }> = [];
+    let cur: { seg: number; code: number; count: number } | undefined;
+    for (const [c, v] of data) {
+      if (c === 92) {
+        const type = parseInt(v, 10);
+        cur = { seg: type, code: type === 2 ? 40 : type === 6 ? 360 : 93, count: 0 };
+        out.push(cur);
+        continue;
+      }
+      if (cur && c === cur.code) cur.count += 1;
+    }
+    return out;
+  };
+  const dataHandleOf = () => handleOf(chainOf(r2000Text())!.data)!;
+
+  it("split 40 column: a 999 after the first content sum refuses the save atomically with 'unsupported table data layout' (no file written)", () => {
+    const planted = insertAfterNth(r2000Text(), 'ACDBDATATABLE', dataHandleOf(), 40, 1, [[999, 'SPLIT-40']]);
+    expect(() => writeDxf(readDxf(planted))).toThrowError(/unsupported table data layout/);
+  });
+
+  it('split first 93 column (alignment flags): a 999 after the first flag refuses the save atomically', () => {
+    const planted = insertAfterNth(r2000Text(), 'ACDBDATATABLE', dataHandleOf(), 93, 1, [[999, 'SPLIT-93-FLAGS']]);
+    expect(() => writeDxf(readDxf(planted))).toThrowError(/unsupported table data layout/);
+  });
+
+  it('split second 93 column (zeros): a 999 after the first zero refuses the save atomically', () => {
+    // The zeros column's first value is the record's 13th 93 (12 flags precede it).
+    const planted = insertAfterNth(r2000Text(), 'ACDBDATATABLE', dataHandleOf(), 93, 13, [[999, 'SPLIT-93-ZEROS']]);
+    expect(() => writeDxf(readDxf(planted))).toThrowError(/unsupported table data layout/);
+  });
+
+  it('split 360 column: a 999 after the first cell handle refuses the save atomically', () => {
+    const planted = insertAfterNth(r2000Text(), 'ACDBDATATABLE', dataHandleOf(), 360, 1, [[999, 'SPLIT-360']]);
+    expect(() => writeDxf(readDxf(planted))).toThrowError(/unsupported table data layout/);
+  });
+
+  it('split 40 column with an UNKNOWN group (301) inside the run refuses the save atomically, exactly like a 999', () => {
+    const planted = insertAfterNth(r2000Text(), 'ACDBDATATABLE', dataHandleOf(), 40, 1, [[301, 'SPLIT-UNKNOWN']]);
+    expect(() => writeDxf(readDxf(planted))).toThrowError(/unsupported table data layout/);
+  });
+
+  it('a 999 after the LAST value of the 40 column (between whole columns) is OUTSIDE the run: preserved in place, the save succeeds, every column keeps exactly the declared count', () => {
+    const oracle = chainOf(r2000Text())!;
+    const planted = insertAfterNth(r2000Text(), 'ACDBDATATABLE', dataHandleOf(), 40, 12, [[999, 'BETWEEN-COLUMNS']]);
+    const written = writeDxf(readDxf(planted));
+    const chain = chainOf(written)!;
+    expect(chain).not.toBeNull();
+    // The body equals the oracle's with the 999 spliced in right after the
+    // final content sum — counts and all four column runs regenerated.
+    const expected = [...oracle.data];
+    expected.splice(expected.map(([c]) => c).lastIndexOf(40) + 1, 0, [999, 'BETWEEN-COLUMNS']);
+    expect(canonPairs(chain.data)).toEqual(canonPairs(expected));
+    expect(group(chain.data, 91)).toBe('12');
+    expect(columnTallies(chain.data).map(({ count }) => count)).toEqual([12, 12, 12, 12]);
+    // The planted shape is itself a fixed point.
+    expect(writeDxf(readDxf(written))).toBe(written);
+  });
+
+  it('the ordinary control still saves byte-normally: the unmodified round trip is the fixed point and every column carries the declared 12 values', () => {
+    const written = writeDxf(readDxf(r2000Text()));
+    expect(writeDxf(readDxf(written))).toBe(written);
+    const chain = chainOf(written)!;
+    expect(group(chain.data, 91)).toBe('12');
+    expect(columnTallies(chain.data).map(({ count }) => count)).toEqual([12, 12, 12, 12]);
+  });
+});
