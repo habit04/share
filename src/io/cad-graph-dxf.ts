@@ -292,6 +292,36 @@ export function graphAnnotationCarrier(state: DrawingState): { variables: Readon
   const scaleList = scaleListOf(records);
   return { variables, dictionary, scaleList: { dictionary: scaleList?.dictionary !== undefined, names: new Set(scaleList?.entries.keys() ?? []) } };
 }
+/**
+ * Which modelled tables already carry the AC1015 roundtrip chain in the
+ * retained graph (P22 F-2 successor): the table node's extension dictionary
+ * holds an ACAD_XREC_ROUNDTRIP entry whose XRECORD carries the
+ * ACAD_ROUNDTRIP_PRE2007_TABLE subgroup. The model writer generates the chain
+ * only for tables NOT in this set — a carried chain is replayed verbatim by
+ * the merge below, the same posture as the annotation variables: generating
+ * beside it would emit a second, unreferenced chain and leave the entity
+ * pointing at the retained one.
+ */
+export function graphTableRoundtripCarriers(state: DrawingState): ReadonlySet<string> {
+  const carried = new Set<string>();
+  const graph = state.cadGraph;
+  if (!graph) return carried;
+  const byId = new Map(graph.nodes.map(node => [node.id, node]));
+  for (const node of graph.nodes) {
+    if (node.type !== 'ACAD_TABLE' || node.anchor?.kind !== 'entity') continue;
+    const extension = node.references?.find(ref => ref.role === 'extension');
+    const dictionary = extension?.target ? byId.get(extension.target) : undefined;
+    if (!dictionary || !dictionaries.has(dictionary.type)) continue;
+    for (let index = 0; index + 1 < dictionary.groups.length; index++) {
+      const [code, name] = dictionary.groups[index]!;
+      if (code !== 3 || name.trim().toUpperCase() !== 'ACAD_XREC_ROUNDTRIP') continue;
+      const target = dictionary.references?.find(ref => ref.groupIndex === index + 1)?.target;
+      const record = target ? byId.get(target) : undefined;
+      if (record?.type === 'XRECORD' && record.groups.some(([c, v]) => c === 102 && v.trim().toUpperCase() === 'ACAD_ROUNDTRIP_PRE2007_TABLE')) carried.add(node.anchor.id);
+    }
+  }
+  return carried;
+}
 interface FieldExpansion {
   work: number;
   memo: Map<string, string | undefined>;

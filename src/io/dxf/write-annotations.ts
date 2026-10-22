@@ -13,7 +13,7 @@ import * as g from '../../core/geometry';
 import { dimensionTextPoint, dimensionMeasurement, dimensionStyleOverrides, dimStyleOverrideCode, DIM_VARIABLES, ordinateDimensionProblem } from '../../core/dimension';
 import { textWidth, leaderParts, leaderPath } from '../../core/entities';
 import { cellOwners, rowHeightFor, TABLE_DEFAULTS } from '../../core/table';
-import type { WriteExtras } from './write-core';
+import type { TableRoundtripPlan, WriteExtras } from './write-core';
 
 export function writeMText(w: Writer, e: MTextEntity, owner: string): void {
   writeEntityCommon(w, e, owner, 'MTEXT', 'AcDbMText');
@@ -616,8 +616,145 @@ const CELL_FLAG_ALIGNMENT = 0x1;
  * ACAD_TABLE as picture-only, so an all-empty JCad table needs the carrier to reopen
  * as an editable table instead of a dumb picture insert.
  */
-export function writeAcadTable(w: Writer, t: TableEntity, owner: string, picture: { name: string; recordHandle: string; styleHandle: string }): void {
-  writeEntityCommon(w, t, owner, 'ACAD_TABLE', 'AcDbBlockReference');
+/**
+ * The per-cell load-time values of a table's AC1015 roundtrip chain (P22 F-2
+ * successor), row-major over the grid: the content the R2000 entity form
+ * writes for the cell ('' for a merge-covered cell, whose authored text — if
+ * any — rides the JCAD_TABLE carrier alone, exactly as in the entity) and
+ * whether the cell departs from its row role's attachment (the same
+ * departure that puts 0x1 in its group 177 and a 170 after its text).
+ */
+export function tableRoundtripCells(t: TableEntity): Array<{ content: string; alignmentOverride: boolean }> {
+  const owners = cellOwners(t);
+  const roleAttachment = (r: number) => (r <= 1 ? 5 : 2);
+  const cells: Array<{ content: string; alignmentOverride: boolean }> = [];
+  for (let r = 0; r < t.rowHeights.length; r += 1) {
+    for (let c = 0; c < t.columnWidths.length; c += 1) {
+      const cell = t.cells[r]?.[c] ?? { text: '' };
+      const covered = owners[r]![c]![0] !== r || owners[r]![c]![1] !== c;
+      cells.push({
+        content: covered ? '' : formattedSource(cell) ?? guardDxfEscapes(mtextPlainToDxf(cell.text)),
+        alignmentOverride: !covered && cellAttachment(cell) !== roleAttachment(r),
+      });
+    }
+  }
+  return cells;
+}
+
+/**
+ * The ACDBDATATABLE double column for one cell: the position-weighted sum of
+ * the content's UTF-16 code units, sum of (i + 1) * unit[i]. Derived from the
+ * genuine AC1015 control, whose twelve values reproduce exactly under this
+ * reading (the title 'P22 CONTROL TABLE' -> 10614, 'PART' -> 792, an empty
+ * cell -> 0); no other candidate the delivery tested (rendered widths, the
+ * common string hashes) fits more than a subset of the cells.
+ */
+function tableCellContentSum(content: string): number {
+  let sum = 0;
+  for (let i = 0; i < content.length; i += 1) sum += (i + 1) * content.charCodeAt(i);
+  return sum;
+}
+
+/**
+ * The AC1015 roundtrip chain of one table (P22 F-2 successor), modelled
+ * group-for-group on the genuine R2000 control
+ * (fixtures/interchange/r2000-table-autocad.dxf): the table's extension
+ * dictionary holding ACAD_XREC_ROUNDTRIP -> an XRECORD carrying the
+ * ACAD_ROUNDTRIP_PRE2007_TABLE subgroup (90 rows, 91 cols) and the
+ * ACAD_ROUNDTRIP_PRE2007_TABLECELL subgroup pointing at an ACDBDATATABLE —
+ * a four-column store (a double column with each cell's content sum, two int
+ * columns, a handle column) whose rows are the grid's cells, each handle
+ * naming a CELL_VALUE XRECORD with the cell's load-time value in the same
+ * shape the AC1032 entity form writes inline (93 6 / 90 4 + text, or 93 7 /
+ * 90 0 for an empty cell; group 1 only for a non-empty cell; the text
+ * chunked per RULING O-1). Of the int columns the control exercises only the
+ * first: 1 exactly at the cell whose written form carries the alignment
+ * override (its 'B-200'), 0 elsewhere; the second is 0 at every cell. At
+ * AC1015 AutoCAD fills cell contents at load from this chain — the entity's
+ * own per-cell text is not read until a regen (the lead's native probes) —
+ * so a chain-less AC1015 table loads with every cell empty.
+ */
+export function writeTableRoundtrip(w: Writer, t: TableEntity, rt: TableRoundtripPlan, entityHandle: string): void {
+  const rows = t.rowHeights.length;
+  const cols = t.columnWidths.length;
+  w.pair(0, 'DICTIONARY');
+  w.pair(5, rt.dict);
+  w.pair(330, entityHandle);
+  w.pair(100, 'AcDbDictionary');
+  w.pair(280, 1);
+  w.pair(281, 1);
+  w.pair(3, 'ACAD_XREC_ROUNDTRIP');
+  w.pair(360, rt.record);
+  w.pair(0, 'XRECORD');
+  w.pair(5, rt.record);
+  w.pair(102, '{ACAD_REACTORS');
+  w.pair(330, rt.dict);
+  w.pair(102, '}');
+  w.pair(330, rt.dict);
+  w.pair(100, 'AcDbXrecord');
+  w.pair(280, 1);
+  w.pair(102, 'ACAD_ROUNDTRIP_PRE2007_TABLE');
+  w.pair(90, rows);
+  w.pair(91, cols);
+  w.pair(102, 'ACAD_ROUNDTRIP_PRE2007_TABLECELL');
+  w.pair(360, rt.data);
+  w.pair(0, 'ACDBDATATABLE');
+  w.pair(5, rt.data);
+  w.pair(330, rt.record);
+  w.pair(100, 'ACDBDATATABLE');
+  w.pair(70, 2);
+  w.pair(90, 4);
+  w.pair(91, rt.cells.length);
+  w.pair(1, '');
+  w.pair(92, 2);
+  w.pair(2, '');
+  for (const cell of rt.cells) w.pair(40, tableCellContentSum(cell.content));
+  w.pair(92, 1);
+  w.pair(2, '');
+  for (const cell of rt.cells) w.pair(93, cell.alignmentOverride ? 1 : 0);
+  w.pair(92, 1);
+  w.pair(2, '');
+  for (let i = 0; i < rt.cells.length; i += 1) w.pair(93, 0);
+  w.pair(92, 6);
+  w.pair(2, '');
+  for (const handle of rt.cellHandles) w.pair(360, handle);
+  rt.cells.forEach((cell, i) => {
+    w.pair(0, 'XRECORD');
+    w.pair(5, rt.cellHandles[i]!);
+    w.pair(330, rt.data);
+    w.pair(100, 'AcDbXrecord');
+    w.pair(280, 1);
+    if (cell.content !== '') {
+      w.pair(93, 6);
+      w.pair(90, 4);
+      let rest = cell.content;
+      while (rest.length > 250) {
+        const end = dxfChunkEnd(rest);
+        w.pair(2, rest.slice(0, end));
+        rest = rest.slice(end);
+      }
+      w.pair(1, rest);
+      w.pair(94, 0);
+      w.pair(300, '');
+      rest = cell.content;
+      while (rest.length > 250) {
+        const end = dxfChunkEnd(rest);
+        w.pair(303, rest.slice(0, end));
+        rest = rest.slice(end);
+      }
+      w.pair(302, rest);
+    } else {
+      w.pair(93, 7);
+      w.pair(90, 0);
+      w.pair(94, 0);
+      w.pair(300, '');
+      w.pair(302, '');
+    }
+  });
+}
+
+export function writeAcadTable(w: Writer, t: TableEntity, owner: string, picture: { name: string; recordHandle: string; styleHandle: string; roundtrip?: TableRoundtripPlan }): void {
+  writeEntityCommon(w, t, owner, 'ACAD_TABLE', 'AcDbBlockReference', owner, picture.roundtrip?.dict);
   w.pair(2, picture.name);
   w.pair(10, t.position.x);
   w.pair(20, t.position.y);

@@ -142,7 +142,14 @@ describe('P22 fix F3: out-of-bounds span claims are reported, never modelled', (
       expect(notes.length, `code ${code} notes`).toBeGreaterThan(0);
       expect(notes.join(' ')).toMatch(/span/i);
       expect(tableSize(back)).toEqual({ width: 5, height: back.rowHeights.reduce((a, b) => a + b, 0) });
-      const re = writeDxf(stateOf(back));
+      // P22 F-2 successor consequence, recorded: a written AC1015 table now
+      // carries the native roundtrip chain, so on re-read its entity keeps a
+      // CAD identity (the graph's rule for records carrying a 102 block) —
+      // the same treatment a genuine AutoCAD table already had. Re-homing
+      // such an entity into a fresh Drawing bare is refused by design, so
+      // the re-save below strips the identity; the span assertions above and
+      // below are untouched.
+      const re = writeDxf(stateOf({ ...back, cadIdentity: undefined }));
       expect(re).not.toContain('\r\n99\r\n');
     }
   });

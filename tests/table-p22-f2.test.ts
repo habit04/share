@@ -133,3 +133,179 @@ describe("P22 F-2: AC1015 cells in AutoCAD's R2000 form (golden: the genuine AC1
     expect(writeDxf(readDxf(written))).toBe(written);
   });
 });
+
+/**
+ * P22 F-2 successor — the AC1015 roundtrip chain (the lead's native re-run,
+ * second round): the R2000-form entity alone still loads in AutoCAD with every
+ * cell EMPTY (text = '', 91 = 0) until a regen. The lead's two probes on the
+ * genuine control isolated the mechanism: removing the table's
+ * extension-dictionary reference reproduces the empty census exactly, while
+ * removing the entity's 92/310 cache changes nothing — at AC1015 AutoCAD
+ * fills cell contents at load from the chain
+ *   table xdict -> ACAD_XREC_ROUNDTRIP (XRECORD) -> ACDBDATATABLE
+ *     -> one CELL_VALUE XRECORD per cell.
+ * A chain the SOURCE file carries is retained and replayed verbatim by the
+ * cad-graph merge (the control round trip above already contains it); what
+ * was missing is GENERATION: a table whose source carries no chain (a
+ * JCad-authored table, or one read from a chain-less file) was written with
+ * no chain at all. These legs write the control's own model with the
+ * retained graph dropped — the JCad-authored equivalent — and require the
+ * generated chain to canon-equal the control's, object for object.
+ */
+interface Chain {
+  dict: Pair[];
+  record: Pair[];
+  data: Pair[];
+  cells: Pair[][];
+}
+
+const HANDLE_CODES = new Set([5, 330, 340, 341, 342, 343, 344, 350, 360]);
+const REAL_CHAIN_CODES = new Set([40]);
+const INT_CHAIN_CODES = new Set([70, 90, 91, 92, 93, 94, 280, 281]);
+
+/** The roundtrip chain hanging off an ACAD_TABLE record, or null when absent. */
+function chainOf(text: string): Chain | null {
+  const recs = records(text);
+  const byHandle = new Map<string, Pair[]>();
+  for (const rec of recs) {
+    const handle = rec.find(([c]) => c === 5)?.[1];
+    if (handle) byHandle.set(handle, rec);
+  }
+  const table = tableRecord(text);
+  const tableHandle = table.find(([c]) => c === 5)?.[1];
+  const xdictAt = table.findIndex(([c, v]) => c === 102 && v === '{ACAD_XDICTIONARY');
+  if (xdictAt < 0) return null;
+  const dictHandle = table[xdictAt + 1]?.[1];
+  const dict = dictHandle ? byHandle.get(dictHandle) : undefined;
+  if (!dict || dict[0]?.[1] !== 'DICTIONARY') return null;
+  const entryAt = dict.findIndex(([c, v]) => c === 3 && v === 'ACAD_XREC_ROUNDTRIP');
+  if (entryAt < 0) return null;
+  const record = byHandle.get(dict[entryAt + 1]?.[1] ?? '');
+  if (!record || record[0]?.[1] !== 'XRECORD') return null;
+  const cellMarkAt = record.findIndex(([c, v]) => c === 102 && v === 'ACAD_ROUNDTRIP_PRE2007_TABLECELL');
+  if (cellMarkAt < 0) return null;
+  const data = byHandle.get(record[cellMarkAt + 1]?.[1] ?? '');
+  if (!data || data[0]?.[1] !== 'ACDBDATATABLE') return null;
+  const cells: Pair[][] = [];
+  for (const [, handle] of data.filter(([c]) => c === 360)) {
+    const cell = byHandle.get(handle);
+    if (!cell || cell[0]?.[1] !== 'XRECORD') return null;
+    cells.push(cell);
+  }
+  void tableHandle;
+  return { dict, record, data, cells };
+}
+
+/** Canonical form of a chain: handles replaced by their structural role. */
+function canonChain(text: string, chain: Chain): string[] {
+  const table = tableRecord(text);
+  const roles = new Map<string, string>();
+  roles.set(table.find(([c]) => c === 5)![1], '@TABLE');
+  roles.set(chain.dict.find(([c]) => c === 5)![1], '@DICT');
+  roles.set(chain.record.find(([c]) => c === 5)![1], '@RECORD');
+  roles.set(chain.data.find(([c]) => c === 5)![1], '@DATA');
+  chain.cells.forEach((cell, i) => roles.set(cell.find(([c]) => c === 5)![1], `@CELL${i}`));
+  const canonRecord = (rec: Pair[], tag: string): string[] => [
+    tag,
+    ...rec.slice(1).map(([c, v]) =>
+      HANDLE_CODES.has(c) ? `${c}=h:${roles.get(v) ?? `?${v}`}`
+        : REAL_CHAIN_CODES.has(c) ? `${c}=n:${Number(v)}`
+          : INT_CHAIN_CODES.has(c) ? `${c}=i:${parseInt(v, 10)}`
+            : `${c}=s:${v}`),
+  ];
+  return [
+    ...canonRecord(chain.dict, 'DICTIONARY'),
+    ...canonRecord(chain.record, 'XRECORD'),
+    ...canonRecord(chain.data, 'ACDBDATATABLE'),
+    ...chain.cells.flatMap((cell, i) => canonRecord(cell, `CELLVALUE${i}`)),
+  ];
+}
+
+/** The control's table model with no retained graph: the JCad-authored equivalent. */
+const bareState = () => ({ ...readDxf(r2000Text()), cadGraph: undefined });
+
+describe('P22 F-2 successor: the AC1015 roundtrip chain is generated when the source carries none', () => {
+  it("JCad's generated chain equals the control's, object for object", () => {
+    const written = writeDxf(bareState());
+    expect(written).toContain('AC1015');
+    const mine = chainOf(written);
+    expect(mine, 'a generated roundtrip chain').not.toBeNull();
+    const oracle = chainOf(r2000Text());
+    expect(oracle, "the control's roundtrip chain").not.toBeNull();
+    expect(canonChain(written, mine!)).toEqual(canonChain(r2000Text(), oracle!));
+  });
+
+  it("the chain carries every cell's load-time census (text + flags)", () => {
+    const written = writeDxf(bareState());
+    const chain = chainOf(written);
+    expect(chain).not.toBeNull();
+    // XRECORD header: rows x cols of the table.
+    expect(group(chain!.record, 90)).toBe('4');
+    expect(group(chain!.record, 91)).toBe('3');
+    // ACDBDATATABLE header: 4 schema columns, one row per grid cell.
+    expect(group(chain!.data, 90)).toBe('4');
+    expect(group(chain!.data, 91)).toBe('12');
+    expect(chain!.cells).toHaveLength(12);
+    const chunks = cellChunksOf(written);
+    const sums = chain!.data.filter(([c]) => c === 40).map(([, v]) => Number(v));
+    const alignFlags = chain!.data.filter(([c]) => c === 93).map(([, v]) => parseInt(v, 10));
+    // The two 93 columns interleave in one record: first 12 values are the
+    // first column, the next 12 the second (all-zero in the control too).
+    const firstIntColumn = alignFlags.slice(0, 12);
+    const secondIntColumn = alignFlags.slice(12, 24);
+    expect(secondIntColumn).toEqual(new Array(12).fill(0));
+    chunks.forEach((chunk, i) => {
+      const text = chunk.filter(([c]) => c === 3 || c === 1).map(([, v]) => v).join('');
+      const cell = chain!.cells[i]!;
+      // CELL_VALUE content: 302 always carries the text; a group 1 only when non-empty.
+      expect(group(cell, 302)).toBe(text);
+      expect(group(cell, 1)).toBe(text === '' ? undefined : text);
+      expect(group(cell, 93)).toBe(text === '' ? '7' : '6');
+      expect(group(cell, 90)).toBe(text === '' ? '0' : '4');
+      expect(group(cell, 94)).toBe('0');
+      expect(group(cell, 300)).toBe('');
+      // Datatable double column: the position-weighted sum of the content.
+      const expected = [...text].reduce((acc, ch, at) => acc + (at + 1) * ch.charCodeAt(0), 0);
+      expect(sums[i]).toBe(expected);
+      // Datatable first int column: 1 exactly where the entity's 177 carries
+      // the alignment-override bit (the control's B-200 cell).
+      expect(firstIntColumn[i]).toBe(parseInt(group(chunk, 177)!, 10) & 1);
+    });
+  });
+
+  it('a retained chain is replayed, never duplicated by a generated one', () => {
+    const written = writeDxf(readDxf(r2000Text()));
+    const recs = records(written);
+    expect(recs.filter((r) => r[0]?.[1] === 'ACDBDATATABLE')).toHaveLength(1);
+    expect(recs.filter((r) => r.some(([c, v]) => c === 102 && v === 'ACAD_ROUNDTRIP_PRE2007_TABLE'))).toHaveLength(1);
+    expect(chainOf(written)).not.toBeNull();
+  });
+
+  it('the generated chain survives a re-read + re-write intact, exactly once', () => {
+    // Byte identity is NOT the assertion: this control's model carries
+    // annotation settings (CANNOSCALE + scale list) whose graph-less first
+    // write is not byte-stable at base — the variable/scale dictionaries are
+    // allocated on a different path once a graph exists (pre-existing,
+    // chain-independent; the with-graph round trip above IS a byte fixed
+    // point). The chain's own stability is what this leg pins: carried on
+    // re-read, canon-identical, never duplicated.
+    const written = writeDxf(bareState());
+    const rewritten = writeDxf(readDxf(written));
+    const before = chainOf(written);
+    const after = chainOf(rewritten);
+    expect(before).not.toBeNull();
+    expect(after).not.toBeNull();
+    expect(canonChain(rewritten, after!)).toEqual(canonChain(written, before!));
+    expect(records(rewritten).filter((r) => r[0]?.[1] === 'ACDBDATATABLE')).toHaveLength(1);
+  });
+
+  it('no chain is generated at AC1032 (the cell-value form is the load path there)', () => {
+    // The graph-carrying state: its sourceVersion is what makes the write
+    // AC1032. The R2018 model carries no chain, so any ACDBDATATABLE in the
+    // output would be a (wrong) generation.
+    const written = writeDxf(readDxf(r2018Text()));
+    expect(written).toContain('AC1032');
+    expect(records(written).some((r) => r[0]?.[1] === 'ACDBDATATABLE')).toBe(false);
+    expect(tableRecord(written).some(([c, v]) => c === 102 && v === '{ACAD_XDICTIONARY')).toBe(false);
+  });
+});

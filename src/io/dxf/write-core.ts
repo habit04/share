@@ -81,11 +81,20 @@ export function writePaperSpaceFlag(w: Writer, spaceOwner: string): void {
   if (paperOwners.has(spaceOwner)) w.pair(67, 1);
 }
 
-export function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: string, subclass: string, spaceOwner = owner): void {
+export function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: string, subclass: string, spaceOwner = owner, extensionDictionary?: string): void {
   w.pair(0, kind);
   const handle = w.reservedEntityHandles.get(e) ?? w.nextHandle();
   w.pair(5, handle);
   w.anchor(handle, { kind: 'entity', id: e.id });
+  // An extension dictionary rides between the handle and the owner, exactly
+  // where AutoCAD puts it (the genuine AC1015 table control): 102 block, the
+  // hard-owner 360, 102 close. Only the native table's roundtrip chain uses
+  // this today (P22 F-2 successor).
+  if (extensionDictionary) {
+    w.pair(102, '{ACAD_XDICTIONARY');
+    w.pair(360, extensionDictionary);
+    w.pair(102, '}');
+  }
   w.pair(330, owner);
   w.pair(100, 'AcDbEntity');
   writePaperSpaceFlag(w, spaceOwner);
@@ -127,6 +136,21 @@ export function writeTextStyle(w: Writer, placement: TextPlacement & { readonly 
   w.pair(51, g.deg(placement.oblique ?? 0));
 }
 
+/**
+ * A generated AC1015 roundtrip chain for one native table (P22 F-2 successor):
+ * the handles of its extension dictionary, roundtrip XRECORD, ACDBDATATABLE
+ * and per-cell CELL_VALUE XRECORDs, plus the per-cell load-time values the
+ * chain carries (row-major). Present only when the table is written at
+ * AC1015 and the retained graph carries no chain for it.
+ */
+export interface TableRoundtripPlan {
+  dict: string;
+  record: string;
+  data: string;
+  cellHandles: string[];
+  cells: Array<{ content: string; alignmentOverride: boolean }>;
+}
+
 /** Handles and names the writer allocates before the entity pass (images, tables). */
 export interface WriteExtras {
   /** IMAGEDEF handle per image path. */
@@ -134,7 +158,7 @@ export interface WriteExtras {
   /** IMAGEDEF_REACTOR handle per image entity, and the image's own handle once written. */
   imageReactors: Map<ImageEntity, { reactor: string; image?: string; def: string }>;
   /** Native-table write data per table: its *T picture block (name + BLOCK_RECORD handle) and TABLESTYLE handle. */
-  tableBlocks: Map<TableEntity, { name: string; recordHandle: string; styleHandle: string }>;
+  tableBlocks: Map<TableEntity, { name: string; recordHandle: string; styleHandle: string; roundtrip?: TableRoundtripPlan }>;
   /** DIMASZ × DIMSCALE of the header style (leaders store their arrow size as an override when it differs). */
   arrowSize: number;
 }
