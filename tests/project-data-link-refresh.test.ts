@@ -198,8 +198,11 @@ describe('P31-B host seam — (10) parse rules', () => {
     expect(parseDelimitedSource(enc('a\tb'), 'f.csv')).toEqual({ kind: 'grid', grid: [['a\tb']] });
     expect(parseDelimitedSource(enc('a,b'), 'f.xlsx').kind).toBe('refuse');
   });
-  it('pads short rows with empty cells (the stated trailing-cell convention)', () => {
-    expect(parseDelimitedSource(enc('a,b,c\nx'), 'f.csv')).toEqual({ kind: 'grid', grid: [['a', 'b', 'c'], ['x', '', '']] });
+  it('keeps short rows ragged; the trailing-cell convention reads missing cells as empty at extraction (PR #41 (2))', () => {
+    // Ruled contract change (PR #41 (2)): the whole grid is never padded;
+    // rows stay ragged from the parse and the empty-cell reading happens
+    // lazily inside extractSourceRange (pinned in the PR #41 test file).
+    expect(parseDelimitedSource(enc('a,b,c\nx'), 'f.csv')).toEqual({ kind: 'grid', grid: [['a', 'b', 'c'], ['x']] });
   });
   it('refuses malformed quotes: unterminated field and junk after a closing quote', () => {
     expect(parseDelimitedSource(enc('"abc'), 'f.csv').kind).toBe('refuse');

@@ -33,17 +33,22 @@
  * an escaped quote, a closing quote must be followed by the delimiter, a
  * line ending or EOF (anything else is malformed and refuses the whole
  * parse, as does an unterminated quoted field); a quote anywhere else is
- * a literal character. CRLF, LF and lone CR are line endings. Short rows
- * are padded with empty cells (the trailing-cell convention — stated
- * here, and the snapshot digest is computed over the padded grid, so the
- * digest both sides compare is over the same canonical grid). Numbers
+ * a literal character. CRLF, LF and lone CR are line endings. Rows stay
+ * RAGGED after parsing — the whole grid is never padded (PR #41 (2)):
+ * the trailing-cell convention lives at extraction, where a missing
+ * cell inside the requested range reads as empty, and the snapshot
+ * digest is computed over the extracted range grid, so the digest both
+ * sides compare is over the same canonical grid. Numbers
  * stay TEXT: nothing is coerced, and formula-looking text (e.g.
  * =SUM(A1:A2)) lands as literal cell text — refresh never evaluates.
  *
  * BOUNDED WORK (pinned): a source file over 8 MiB is refused BEFORE
  * parsing; a link range over 100,000 cells is refused at creation and
  * by the record validator; a single parsed cell over 32 KiB of UTF-8
- * refuses the whole refresh.
+ * refuses the whole refresh; a source whose grid BOUNDS more than
+ * 1,000,000 cells (rows x widest row) refuses the parse — a small
+ * ragged file (e.g. one wide row over many short rows) must not
+ * materialize its bounding box.
  *
  * PATH DISCIPLINE (Q7): a recorded absolute path is used as recorded
  * (only absolute-created links may point outside the drawing tree);
@@ -78,6 +83,8 @@ export const DATA_LINKS_NOT_SAVED_NOTICE =
 
 export const DATA_LINK_SOURCE_MAX_BYTES = 8 * 1024 * 1024;
 export const DATA_LINK_CELL_MAX_BYTES = 32 * 1024;
+/** Parse cap on a source grid's bounding box: rows x widest row (PR #41 (2)). */
+export const DATA_LINK_PARSE_CELL_CAP = 1_000_000;
 
 /** The app's file seam, narrowed to what data links need. */
 export interface DataLinkFileSeam {
@@ -94,6 +101,37 @@ export type DataLinkHostOutcome =
 const refused = (reason: string, issue?: DataLinkIssue): DataLinkHostOutcome => ({
   kind: 'refused', reason, ...(issue ? { issue } : {}), notice: DATA_LINKS_NOT_SAVED_NOTICE,
 });
+
+/* ------------------------------------------------------------------ */
+/* Per-link generation registry (PR #41 (1): stale-refresh guard)      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A monotonically increasing generation per (drawing, link id), bumped
+ * by every mutation this seam applies to a link (create, re-range, a
+ * refresh that writes). refreshDataLink captures the generation BEFORE
+ * its async source read and re-validates it after: a mismatch — or the
+ * link record no longer being the very record captured, or the link
+ * being gone — means the world moved during the read and the snapshot
+ * is discarded, never applied.
+ */
+const linkGenerations = new WeakMap<Drawing, Map<string, number>>();
+
+function linkGenerationOf(drawing: Drawing, linkId: string): number {
+  return linkGenerations.get(drawing)?.get(linkId) ?? 0;
+}
+
+function bumpLinkGeneration(drawing: Drawing, linkId: string): void {
+  let map = linkGenerations.get(drawing);
+  if (!map) {
+    map = new Map();
+    linkGenerations.set(drawing, map);
+  }
+  map.set(linkId, (map.get(linkId) ?? 0) + 1);
+}
+
+/** The exact stale-refresh surface (PR #41 (1)). */
+export const LINK_CHANGED_DURING_REFRESH = 'link changed during refresh; retry';
 
 /* ------------------------------------------------------------------ */
 /* Path discipline (Q7)                                                */
@@ -155,6 +193,8 @@ export function parseDelimitedSource(bytes: Uint8Array, fileName: string): Delim
   let fieldStart = true;
   let fieldQuoted = false;
   let rowHasContent = false;
+  let width = 0;
+  let overCap = false;
   const endField = (): void => {
     row.push(field);
     field = '';
@@ -166,9 +206,13 @@ export function parseDelimitedSource(bytes: Uint8Array, fileName: string): Delim
     rows.push(row);
     row = [];
     rowHasContent = false;
+    // PR #41 (2): the bounding box is checked as rows land, so an
+    // over-cap source is refused without ever materializing the box.
+    width = Math.max(width, rows[rows.length - 1]!.length);
+    if (rows.length * width > DATA_LINK_PARSE_CELL_CAP) overCap = true;
   };
   let i = 0;
-  while (i < text.length) {
+  while (i < text.length && !overCap) {
     const ch = text[i]!;
     if (inQuotes) {
       if (ch === '"') {
@@ -213,13 +257,20 @@ export function parseDelimitedSource(bytes: Uint8Array, fileName: string): Delim
     rowHasContent = true;
     i += 1;
   }
-  if (inQuotes) return { kind: 'refuse', reason: 'malformed quote: unterminated quoted field' };
-  if (rowHasContent || row.length > 0 || field.length > 0) endRow();
-
-  const width = rows.reduce((max, r) => Math.max(max, r.length), 0);
+  if (!overCap) {
+    if (inQuotes) return { kind: 'refuse', reason: 'malformed quote: unterminated quoted field' };
+    if (rowHasContent || row.length > 0 || field.length > 0) endRow();
+  }
+  if (overCap || rows.length * width > DATA_LINK_PARSE_CELL_CAP) {
+    return {
+      kind: 'refuse',
+      reason: `source grid bounds ${rows.length} rows x ${width} columns = ${rows.length * width} cells, over the 1,000,000-cell parse cap`,
+    };
+  }
+  // Rows stay ragged (PR #41 (2)): no padding pass. The 32 KiB cell cap
+  // is checked over the cells actually present in the source.
   const encoder = new TextEncoder();
   for (const r of rows) {
-    while (r.length < width) r.push('');
     for (const cellText of r) {
       if (encoder.encode(cellText).length > DATA_LINK_CELL_MAX_BYTES) {
         return { kind: 'refuse', reason: 'a source cell exceeds the 32 KiB cap' };
@@ -232,15 +283,24 @@ export function parseDelimitedSource(bytes: Uint8Array, fileName: string): Delim
 /**
  * The source range sliced out of a parsed grid: exactly what the file
  * covers, never padded into existence — a short slice is how R2 sees a
- * source that shrank.
+ * source that shrank. Parsed rows are ragged (PR #41 (2)): a cell a
+ * short row does not carry reads as empty INSIDE the extracted range
+ * (the trailing-cell convention, applied lazily here — only the
+ * requested range, bounded by the link cell cap, is materialized), and
+ * the slice never extends past the widest row the file carries.
  */
 export function extractSourceRange(
   grid: readonly (readonly string[])[], range: DataLink['sourceRange'],
 ): string[][] {
+  const width = grid.reduce((max, r) => Math.max(max, r.length), 0);
+  const sliceCols = Math.max(0, Math.min(range.firstCol + range.colCount, width) - range.firstCol);
   const rows: string[][] = [];
   const endRow = Math.min(range.firstRow + range.rowCount, grid.length);
   for (let r = range.firstRow; r < endRow; r += 1) {
-    rows.push(grid[r]!.slice(range.firstCol, range.firstCol + range.colCount));
+    const source = grid[r]!;
+    const out: string[] = [];
+    for (let c = 0; c < sliceCols; c += 1) out.push(source[range.firstCol + c] ?? '');
+    rows.push(out);
   }
   return rows;
 }
@@ -254,6 +314,7 @@ export function createDataLink(drawing: Drawing, spec: CreateDataLinkSpec): Data
   if (evaluation.kind === 'refuse') return refused(evaluation.message, evaluation.issue);
   const link = evaluation.link;
   drawing.transactDrawing((state) => ({ ...state, dataLinks: [...(state.dataLinks ?? []), link] }));
+  bumpLinkGeneration(drawing, link.id);
   return { kind: 'created', link, notice: DATA_LINKS_NOT_SAVED_NOTICE };
 }
 
@@ -269,6 +330,7 @@ export function reRangeDataLink(
     ...state,
     dataLinks: (state.dataLinks ?? []).map((candidate) => (candidate.id === linkId ? next : candidate)),
   }));
+  bumpLinkGeneration(drawing, linkId);
   return { kind: 're-ranged', link: next, notice: DATA_LINKS_NOT_SAVED_NOTICE };
 }
 
@@ -322,8 +384,19 @@ export async function refreshDataLink(
 ): Promise<DataLinkHostOutcome> {
   const link = findDataLink(drawing.snapshot, linkId);
   if (!link) return refused(`no data link with id "${linkId}" in this drawing`);
+  // PR #41 (1): capture the link's generation BEFORE the async read.
+  const startGeneration = linkGenerationOf(drawing, linkId);
   const source = await readSourceSnapshot(drawing, seam, link);
   if (source.kind === 'refused') return source.outcome;
+  // Re-validate before applying ANYTHING: the same drawing/session must
+  // still hold this very link record at the captured generation — a
+  // re-range, a concurrent refresh, an undo, or a newly loaded drawing
+  // replaces the record (and a seam mutation bumps the generation), and
+  // any of them discards the snapshot instead of writing stale data.
+  const current = findDataLink(drawing.snapshot, linkId);
+  if (!current || current !== link || linkGenerationOf(drawing, linkId) !== startGeneration) {
+    return refused(LINK_CHANGED_DURING_REFRESH);
+  }
   const evaluation = evaluateRefreshDataLink(
     drawing.snapshot,
     link,
@@ -346,6 +419,7 @@ export async function refreshDataLink(
       // THE one refresh transact call site (Q8: one undo step; signature
       // invalidation folds into this same transition via commitTransition).
       drawing.transactDrawing(() => next);
+      bumpLinkGeneration(drawing, linkId);
       return { kind: 'refreshed', link: findDataLink(drawing.snapshot, linkId) ?? link, notice: DATA_LINKS_NOT_SAVED_NOTICE };
     }
   }
