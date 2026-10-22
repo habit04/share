@@ -1157,11 +1157,24 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   // fresh handles for the new cells, a shorter one drops the surplus
   // records). Regenerating an unchanged table reproduces the retained
   // groups exactly, so the round trip stays a byte fixed point.
+  // P22 PR #39 re-review (Codex P1 pair; lead ruling): the regeneration is
+  // SURGICAL — it touches only the recognized derived fields. A CELL_VALUE
+  // rewrite replaces only the derived value groups (the leading run of
+  // 93/90/1/2/3/94/300/302/303/304 after the identity head) and preserves
+  // everything else byte-verbatim in position (XDATA 1001..., any
+  // unrecognized group); the ACDBDATATABLE rewrite updates only the
+  // 70/90/91 counts and the four known column segments' value runs and
+  // likewise preserves every other group. A surplus cell record that is
+  // still referenced by a surviving record is KEPT, detached from the
+  // chain, never deleted into a dangling pointer; after regeneration the
+  // final reference set is validated before assembly (below).
+  let roundtripRegenerated = false;
   {
     const header = generated.find(record => record.type === 'HEADER');
     if (header && headerVersionOf(header.groups) === 'AC1015') {
       const carriedIds = graphTableRoundtripCarriers(state);
       if (carriedIds.size) {
+        roundtripRegenerated = true;
         const tables = new Map<string, TableEntity>();
         for (const list of lists(state)) for (const entity of list) if (entity.type === 'table') tables.set(entity.id, entity);
         const canon = (raw: string): string | undefined => /^[0-9A-Fa-f]{1,16}$/.test(raw.trim()) ? canonicalCadHandle(raw.trim()) : undefined;
@@ -1170,7 +1183,7 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
           const handle = canon(value(record, 5));
           if (handle && !byHandle.has(handle)) byHandle.set(handle, record);
         }
-        const dropped = new Set<RecordData>();
+        const surplus = new Set<RecordData>();
         for (const id of carriedIds) {
           const table = tables.get(id);
           if (!table) continue;
@@ -1221,26 +1234,81 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
             else if (segment === 6 && code === 360) { const handle = canon(raw); if (handle) retainedHandles.push(handle); }
           }
           const cellHandles = cells.map((_, index) => retainedHandles[index] ?? allocate());
-          // The datatable body is regenerated wholesale after its identity
-          // head (the groups before the group 70), exactly as the generating
-          // writer emits it.
-          const headEnd = dataRecord.groups.findIndex(([code]) => code === 70);
-          const head = headEnd >= 0 ? dataRecord.groups.slice(0, headEnd) : dataRecord.groups.slice();
-          dataRecord.groups = [...head,
-            [70, '2'], [90, '4'], [91, String(cells.length)], [1, ''], [92, '2'], [2, ''],
-            ...cells.map((cell): CadGroup => [40, String(tableCellContentSum(cell.content))]),
-            [92, '1'], [2, ''], ...cells.map((cell): CadGroup => [93, cell.alignmentOverride ? '1' : '0']),
-            [92, '1'], [2, ''], ...cells.map((): CadGroup => [93, '0']),
-            [92, '6'], [2, ''], ...cellHandles.map((handle): CadGroup => [360, handle])];
+          // The datatable rewrite is surgical (re-review rule 1): only the
+          // 70/90/91 counts triple and the value runs of the four known
+          // column segments (92 = 2 -> 40 content sums, the first 92 = 1 ->
+          // 93 alignment flags, the second 92 = 1 -> 93 zeros, 92 = 6 ->
+          // 360 cell handles) are regenerated. The identity head, the
+          // segment name groups and every other group — unrecognized
+          // segments and planted groups such as XDATA included — are
+          // preserved byte-verbatim in their original positions. A retained
+          // body in an unrecognized shape (no counts triple, or no known
+          // segment at all) falls back to the wholesale rebuild after the
+          // identity head, exactly as the generating writer emits it.
+          const surgicalBody = ((): CadGroup[] | null => {
+            const headEnd = dataRecord.groups.findIndex(([code]) => code === 70);
+            if (headEnd < 0) return null;
+            const body = dataRecord.groups.slice(headEnd);
+            if (body.length < 3 || body[0]![0] !== 70 || body[1]![0] !== 90 || body[2]![0] !== 91) return null;
+            const out: CadGroup[] = [...dataRecord.groups.slice(0, headEnd), [70, '2'], [90, '4'], [91, String(cells.length)]];
+            let index = 3, oneSegments = 0, sawSegment = false;
+            while (index < body.length) {
+              const group = body[index]!;
+              if (group[0] !== 92) { out.push(group); index += 1; continue; }
+              const type = Number(group[1]);
+              const valueCode = type === 2 ? 40 : type === 1 ? 93 : type === 6 ? 360 : undefined;
+              let cursor = index + 1;
+              const nameGroup = cursor < body.length && body[cursor]![0] === 2 ? body[cursor++]! : undefined;
+              let end = cursor;
+              if (valueCode !== undefined) while (end < body.length && body[end]![0] === valueCode) end += 1;
+              const slot = type === 2 ? 'sums' : type === 6 ? 'handles' : type === 1 && oneSegments === 0 ? 'flags' : type === 1 && oneSegments === 1 ? 'zeros' : undefined;
+              if (type === 1) oneSegments += 1;
+              if (slot === undefined) {
+                // Not a recognized derived segment: preserve it verbatim.
+                for (let at = index; at < Math.max(end, cursor); at += 1) out.push(body[at]!);
+                index = Math.max(end, cursor);
+                continue;
+              }
+              sawSegment = true;
+              out.push(group);
+              if (nameGroup) out.push(nameGroup);
+              if (slot === 'sums') for (const cell of cells) out.push([40, String(tableCellContentSum(cell.content))]);
+              else if (slot === 'handles') for (const handle of cellHandles) out.push([360, handle]);
+              else if (slot === 'flags') for (const cell of cells) out.push([93, cell.alignmentOverride ? '1' : '0']);
+              else for (let at = 0; at < cells.length; at += 1) out.push([93, '0']);
+              index = Math.max(end, cursor);
+            }
+            return sawSegment ? out : null;
+          })();
+          if (surgicalBody) dataRecord.groups = surgicalBody;
+          else {
+            const headEnd = dataRecord.groups.findIndex(([code]) => code === 70);
+            const head = headEnd >= 0 ? dataRecord.groups.slice(0, headEnd) : dataRecord.groups.slice();
+            dataRecord.groups = [...head,
+              [70, '2'], [90, '4'], [91, String(cells.length)], [1, ''], [92, '2'], [2, ''],
+              ...cells.map((cell): CadGroup => [40, String(tableCellContentSum(cell.content))]),
+              [92, '1'], [2, ''], ...cells.map((cell): CadGroup => [93, cell.alignmentOverride ? '1' : '0']),
+              [92, '1'], [2, ''], ...cells.map((): CadGroup => [93, '0']),
+              [92, '6'], [2, ''], ...cellHandles.map((handle): CadGroup => [360, handle])];
+          }
           // Each CELL_VALUE record keeps its identity head (through its 280
-          // group) and gains regenerated value groups; new cells get a new
-          // record on an allocated handle; surplus records are dropped.
+          // group) and gains regenerated value groups: only the leading
+          // run of derived value groups after the head is replaced —
+          // everything past it (XDATA 1001..., any unrecognized group) is
+          // preserved byte-verbatim in position (re-review rule 1). New
+          // cells get a new record on an allocated handle; surplus records
+          // are resolved after the loop (re-review rule 2).
+          const DERIVED_VALUE_CODES = new Set([93, 90, 1, 2, 3, 94, 300, 302, 303, 304]);
           cells.forEach((cell, index) => {
             const valueGroups = tableRoundtripCellValueGroups(cell) as CadGroup[];
             const existing = byHandle.get(cellHandles[index]!);
             if (existing && existing.type === 'XRECORD') {
               const cut = existing.groups.findIndex(([code]) => code === 280);
-              existing.groups = [...(cut >= 0 ? existing.groups.slice(0, cut + 1) : existing.groups.slice()), ...valueGroups];
+              const head = cut >= 0 ? existing.groups.slice(0, cut + 1) : existing.groups.slice();
+              const tail = cut >= 0 ? existing.groups.slice(cut + 1) : [];
+              let split = 0;
+              while (split < tail.length && DERIVED_VALUE_CODES.has(tail[split]![0])) split += 1;
+              existing.groups = [...head, ...valueGroups, ...tail.slice(split)];
             } else {
               const record: RecordData = {
                 type: 'XRECORD', section: 'OBJECTS', handle: cellHandles[index]!,
@@ -1251,11 +1319,43 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
             }
           });
           for (let index = cells.length; index < retainedHandles.length; index++) {
-            const surplus = byHandle.get(retainedHandles[index]!);
-            if (surplus && surplus.type === 'XRECORD') dropped.add(surplus);
+            const record = byHandle.get(retainedHandles[index]!);
+            if (record && record.type === 'XRECORD') surplus.add(record);
           }
         }
-        if (dropped.size) for (let index = generated.length - 1; index >= 0; index--) if (dropped.has(generated[index]!)) generated.splice(index, 1);
+        if (surplus.size) {
+          // Re-review rule 2: a surplus record still referenced by any
+          // surviving record is KEPT as-is — detached from the chain (the
+          // regenerated datatable no longer lists its handle) so no
+          // pointer dangles; only proven-unreferenced records are
+          // deleted. The scan covers every record in the merged set at
+          // this point (retained records as replayed + model-writer
+          // records + the regenerated chains; the bounded dictionary /
+          // scale insertions below never reference table chains), reading
+          // groups with codes 330/340/341/342/343/344/350/360 — the
+          // reference set this module's rehome pass rewrites — with
+          // values canonicalized as handles. References from other
+          // surplus candidates count only once the candidate is itself
+          // kept (fixpoint), so a surplus-to-surplus reference cannot
+          // resurrect a record no survivor points at.
+          const REFERENCE_SCAN_CODES = new Set([330, 340, 341, 342, 343, 344, 350, 360]);
+          const kept = new Set<RecordData>();
+          let progressed = true;
+          while (progressed) {
+            progressed = false;
+            const referenced = new Set<string>();
+            for (const record of generated) {
+              if (surplus.has(record) && !kept.has(record)) continue;
+              for (const [code, raw] of record.groups) if (REFERENCE_SCAN_CODES.has(code)) { const handle = canon(raw); if (handle) referenced.add(handle); }
+            }
+            for (const candidate of surplus) {
+              if (kept.has(candidate)) continue;
+              const handle = canon(value(candidate, 5));
+              if (handle && referenced.has(handle)) { kept.add(candidate); progressed = true; }
+            }
+          }
+          for (let index = generated.length - 1; index >= 0; index--) if (surplus.has(generated[index]!) && !kept.has(generated[index]!)) generated.splice(index, 1);
+        }
       }
     }
   }
@@ -1350,6 +1450,23 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   for (const record of generated) if (record.type === 'CLASS') {
     const count = instances.get(identifierValue(record, 1).toUpperCase()) ?? 0;
     record.groups = record.groups.map(([code, raw]) => [code, code === 91 ? String(count) : raw]);
+  }
+  // P22 PR #39 re-review rule 3: when a roundtrip chain was regenerated,
+  // the FINAL reference set must be closed before anything is emitted —
+  // every 330/340/350/360 target in the merged output is defined by some
+  // record's group 5 (or 105), the DXF null handle '0' excepted. A dangle
+  // fails the save here, atomically: no output is produced.
+  if (roundtripRegenerated) {
+    const canonHandle = (raw: string): string | undefined => /^[0-9A-Fa-f]{1,16}$/.test(raw.trim()) ? canonicalCadHandle(raw.trim()) : undefined;
+    const defined = new Set<string>();
+    for (const record of generated) for (const [code, raw] of record.groups) if (code === 5 || code === 105) { const handle = canonHandle(raw); if (handle) defined.add(handle); }
+    const dangling = new Map<string, string>();
+    for (const record of generated) for (const [code, raw] of record.groups) {
+      if (code !== 330 && code !== 340 && code !== 350 && code !== 360) continue;
+      const handle = canonHandle(raw);
+      if (handle && handle !== '0' && !defined.has(handle)) dangling.set(handle, record.type);
+    }
+    if (dangling.size) throw new CadGraphError('dependency', `Cannot save: the regenerated AC1015 roundtrip chain leaves dangling handle reference(s) ${[...dangling].map(([handle, type]) => `${handle} (referenced from a ${type} record)`).join(', ')}.`);
   }
   const out: string[] = [];
   for (const section of ['HEADER', 'CLASSES', 'TABLES', 'BLOCKS', 'ENTITIES', 'OBJECTS', ...new Set(generated.map(r => r.section).filter(s => !['HEADER', 'CLASSES', 'TABLES', 'BLOCKS', 'ENTITIES', 'OBJECTS'].includes(s)))]) {

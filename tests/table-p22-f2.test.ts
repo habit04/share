@@ -508,3 +508,190 @@ describe('P22 PR #39 fix: a retained roundtrip chain is regenerated from the cur
     expect(writeDxf(readDxf(second))).toBe(second);
   });
 });
+
+/**
+ * P22 PR #39 re-review (Codex P1 pair, lead ruling): regeneration touches
+ * ONLY the recognized derived fields.
+ * (1) A CELL_VALUE rewrite replaces only the recognized value groups and an
+ *     ACDBDATATABLE rewrite only the counts/column entries — everything
+ *     else (XDATA 1001..., unrecognized groups) survives byte-verbatim in
+ *     position.
+ * (2) Shrinking never dangles a pointer: a surplus cell record still
+ *     referenced by a surviving object is kept as-is, detached from the
+ *     chain; only proven-unreferenced records are deleted.
+ * (3) After regeneration the final reference set is validated — every
+ *     330/340/350/360 target defined — and a dangle that keeping cannot
+ *     repair fails the save atomically.
+ */
+describe('P22 PR #39 re-review: regeneration is surgical, shrinking never dangles, output is validated', () => {
+  const handleOf = (rec: Pair[]) => rec.find(([c]) => c === 5)?.[1];
+  const flatPairs = (text: string): Pair[] => {
+    const lines = text.split(/\r?\n/);
+    const pairs: Pair[] = [];
+    for (let i = 0; i + 1 < lines.length; i += 2) pairs.push([parseInt(lines[i]!, 10), lines[i + 1]!]);
+    return pairs;
+  };
+  const emitText = (pairs: Pair[]): string => pairs.map(([c, v]) => `${c}\n${v}`).join('\n') + '\n';
+  const recordSpan = (pairs: Pair[], type: string, handle: string): { start: number; end: number } => {
+    const starts: number[] = [];
+    pairs.forEach((p, i) => { if (p[0] === 0) starts.push(i); });
+    for (let s = 0; s < starts.length; s++) {
+      const start = starts[s]!, end = starts[s + 1] ?? pairs.length;
+      const slice = pairs.slice(start, end);
+      if (slice[0]?.[1] === type && slice.find(([c]) => c === 5)?.[1] === handle) return { start, end };
+    }
+    throw new Error(`record ${type} ${handle} not found`);
+  };
+  /** Append groups at the end of the record (type, handle). */
+  const plantInto = (text: string, type: string, handle: string, extra: Pair[]): string => {
+    const pairs = flatPairs(text);
+    const { end } = recordSpan(pairs, type, handle);
+    pairs.splice(end, 0, ...extra);
+    return emitText(pairs);
+  };
+  /** Insert a whole new record right after the record (type, handle). */
+  const plantAfter = (text: string, type: string, handle: string, record: Pair[]): string => {
+    const pairs = flatPairs(text);
+    const { end } = recordSpan(pairs, type, handle);
+    pairs.splice(end, 0, ...record);
+    return emitText(pairs);
+  };
+  /** Set the value of the (unique) group `code` inside the record (type, handle). */
+  const corruptGroup = (text: string, type: string, handle: string, code: number, value: string): string => {
+    const pairs = flatPairs(text);
+    const { start, end } = recordSpan(pairs, type, handle);
+    for (let i = start; i < end; i++) if (pairs[i]![0] === code) { pairs[i] = [code, value]; return emitText(pairs); }
+    throw new Error(`group ${code} not found in ${type} ${handle}`);
+  };
+  const shrinkLastRow = (state: ReturnType<typeof readDxf>) => ({
+    ...state,
+    entities: state.entities.map((e) => (e.type === 'table'
+      ? { ...e, rowHeights: e.rowHeights.slice(0, 3), cells: e.cells.slice(0, 3) }
+      : e)),
+  });
+  /** The final reference set of a written file: dangling 330/340/350/360 targets (null handle '0' excepted). */
+  const danglingOf = (text: string): string[] => {
+    const recs = records(text);
+    const canon = (s: string) => s.trim().toUpperCase().replace(/^0+(?=.)/, '');
+    const defined = new Set<string>();
+    for (const r of recs) for (const [c, v] of r) if (c === 5 || c === 105) defined.add(canon(v));
+    const bad = new Set<string>();
+    for (const r of recs) for (const [c, v] of r) {
+      if (c !== 330 && c !== 340 && c !== 350 && c !== 360) continue;
+      if (!/^[0-9A-Fa-f]+$/.test(v.trim())) continue;
+      const h = canon(v);
+      if (h !== '0' && !defined.has(h)) bad.add(h);
+    }
+    return [...bad];
+  };
+
+  it('no-edit roundtrip: XDATA on a CELL_VALUE and an unrecognized datatable group survive byte-verbatim; derived groups are regenerated, not replayed', () => {
+    const oracle = chainOf(r2000Text())!;
+    const cell0 = handleOf(oracle.cells[0]!)!;
+    const dataHandle = handleOf(oracle.data)!;
+    let planted = plantInto(r2000Text(), 'XRECORD', cell0, [[1001, 'CODEX_REVIEW'], [1000, 'KEEP-ME']]);
+    planted = plantInto(planted, 'ACDBDATATABLE', dataHandle, [[1001, 'CODEX_REVIEW'], [1000, 'DATA-KEEP']]);
+    // Corrupt two derived values in the retained records: if the save
+    // replayed them, the corruption would reach the output; regeneration
+    // derives both from the model instead.
+    planted = corruptGroup(planted, 'XRECORD', cell0, 302, 'STALE-VALUE');
+    planted = corruptGroup(planted, 'ACDBDATATABLE', dataHandle, 91, '99');
+    const written = writeDxf(readDxf(planted));
+    const chain = chainOf(written)!;
+    expect(chain).not.toBeNull();
+    // Regenerated groups are compared canonically (AutoCAD pads integer
+    // values in the source file; JCad's emission does not — the file's
+    // standing canon); preserved groups are compared as exact pairs.
+    const canonPairs = (rec: Pair[]): string[] => rec.map(([c, v]) =>
+      HANDLE_CODES.has(c) ? `${c}=h:${v}` : REAL_CHAIN_CODES.has(c) ? `${c}=n:${Number(v)}` : INT_CHAIN_CODES.has(c) ? `${c}=i:${parseInt(v, 10)}` : `${c}=s:${v}`);
+    // The CELL_VALUE: regenerated value groups (the model's text, not the
+    // stale retained one) with the XDATA byte-identical in its position.
+    expect(canonPairs(chain.cells[0]!)).toEqual(canonPairs([...oracle.cells[0]!, [1001, 'CODEX_REVIEW'], [1000, 'KEEP-ME']]));
+    expect(chain.cells[0]!.slice(-2)).toEqual([[1001, 'CODEX_REVIEW'], [1000, 'KEEP-ME']]);
+    // The datatable: regenerated counts/entries with the planted
+    // unrecognized groups byte-identical at the end of the record.
+    expect(canonPairs(chain.data)).toEqual(canonPairs([...oracle.data, [1001, 'CODEX_REVIEW'], [1000, 'DATA-KEEP']]));
+    expect(chain.data.slice(-2)).toEqual([[1001, 'CODEX_REVIEW'], [1000, 'DATA-KEEP']]);
+    expect(group(chain.data, 91)).toBe('12');
+    // Every other cell regenerates to its oracle record.
+    for (let i = 1; i < 12; i++) expect(canonPairs(chain.cells[i]!)).toEqual(canonPairs(oracle.cells[i]!));
+    // And the planted shape is itself a fixed point.
+    expect(writeDxf(readDxf(written))).toBe(written);
+  });
+
+  it('340 -> surplus CELL_VALUE + delete a row: the referenced record is kept detached, the save succeeds, the reference set is closed', () => {
+    const oracle = chainOf(r2000Text())!;
+    const dataHandle = handleOf(oracle.data)!;
+    const lastCell = handleOf(oracle.cells[11]!)!;
+    const planted = plantAfter(r2000Text(), 'ACDBDATATABLE', dataHandle,
+      [[0, 'XRECORD'], [5, '7F00'], [330, 'C'], [100, 'AcDbXrecord'], [280, '1'], [340, lastCell]]);
+    const written = writeDxf(shrinkLastRow(readDxf(planted)));
+    const chain = chainOf(written)!;
+    expect(chain).not.toBeNull();
+    expect(chain.cells).toHaveLength(9);
+    const recs = records(written);
+    const byHandle = new Map(recs.map((r) => [handleOf(r), r]));
+    // The referenced surplus record survives byte-verbatim (kept as-is)...
+    expect(byHandle.get(lastCell)).toEqual(oracle.cells[11]);
+    // ...detached: the regenerated datatable no longer lists it.
+    expect(chain.data.filter(([c]) => c === 360).map(([, v]) => v)).not.toContain(lastCell);
+    // The unreferenced surplus records are gone.
+    expect(byHandle.has(handleOf(oracle.cells[9]!)!)).toBe(false);
+    expect(byHandle.has(handleOf(oracle.cells[10]!)!)).toBe(false);
+    // The referencing object survives with its pointer intact, and the
+    // final reference set is closed.
+    expect(byHandle.get('7F00')).toBeDefined();
+    expect(group(byHandle.get('7F00')!, 340)).toBe(lastCell);
+    expect(danglingOf(written)).toEqual([]);
+  });
+
+  it('a surplus-to-surplus reference does not resurrect either record', () => {
+    const oracle = chainOf(r2000Text())!;
+    const cell10 = handleOf(oracle.cells[10]!)!;
+    const cell11 = handleOf(oracle.cells[11]!)!;
+    const planted = plantInto(r2000Text(), 'XRECORD', cell11, [[340, cell10]]);
+    const written = writeDxf(shrinkLastRow(readDxf(planted)));
+    const recs = records(written);
+    const handles = new Set(recs.map((r) => handleOf(r)));
+    expect(handles.has(cell10)).toBe(false);
+    expect(handles.has(cell11)).toBe(false);
+    expect(danglingOf(written)).toEqual([]);
+  });
+
+  it('a chain handle with no record cannot be kept: the save fails atomically, naming the handle, with no output', () => {
+    // Constructed shape: the datatable's retained handle column names a
+    // handle (2DF) for which NO CELL_VALUE record exists anywhere in the
+    // drawing, and a surviving object holds a 340 to the same handle.
+    // Keeping cannot repair this — there is no record to keep — so the
+    // save must fail atomically rather than emit a file whose reference
+    // set dangles. (In the current architecture this corrupt-chain shape
+    // is refused by the cad-graph layer's hard-reference check before
+    // regeneration; the post-regeneration final-set validation is the
+    // in-merge net for the same class. Either way the outcome pinned
+    // here is: a throw naming the handle, and no output produced.)
+    const oracle = chainOf(r2000Text())!;
+    const dataHandle = handleOf(oracle.data)!;
+    // Corrupt the LAST 360 of the datatable (the handle column's final
+    // entry) to name a handle with no record.
+    const pairs = flatPairs(r2000Text());
+    const starts: number[] = [];
+    pairs.forEach((p, i) => { if (p[0] === 0) starts.push(i); });
+    let span: { start: number; end: number } | undefined;
+    for (let s = 0; s < starts.length; s++) {
+      const start = starts[s]!, end = starts[s + 1] ?? pairs.length;
+      const slice = pairs.slice(start, end);
+      if (slice[0]?.[1] === 'ACDBDATATABLE' && slice.find(([c]) => c === 5)?.[1] === dataHandle) span = { start, end };
+    }
+    expect(span).toBeDefined();
+    let last360 = -1;
+    for (let i = span!.start; i < span!.end; i++) if (pairs[i]![0] === 360) last360 = i;
+    expect(pairs[last360]?.[1]).toBe(handleOf(oracle.cells[11]!)!);
+    pairs[last360] = [360, '2DF'];
+    let planted = emitText(pairs);
+    planted = plantAfter(planted, 'ACDBDATATABLE', dataHandle,
+      [[0, 'XRECORD'], [5, '7F00'], [330, 'C'], [100, 'AcDbXrecord'], [280, '1'], [340, '2DF']]);
+    const shrunk = shrinkLastRow(readDxf(planted));
+    expect(() => writeDxf(shrunk)).toThrowError(/Cannot save/);
+    expect(() => writeDxf(shrunk)).toThrowError(/2DF/);
+  });
+});
