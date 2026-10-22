@@ -15,11 +15,24 @@
  *   replaced with throwing stubs on the realm global object (threat T8), so a
  *   plugin cannot speak on the channel except through the validating proxy,
  *   and cannot forge messages: it has no nonce (threat T5);
+ * - `eval` and the `Function` constructor are likewise locked to throwing
+ *   stubs at handshake time (the lead's CSP ruling, 2026-10-21: eval and
+ *   new Function are refused in the plugin context). The bootstrap's own
+ *   single plugin-body call site uses the constructor reference captured
+ *   in this closure before hardening — plugin code cannot reach it;
  * - the plugin runs with `jcad` as its only parameter, the v1 convention.
  */
 
 export function realmBootstrapMain(): void {
   const g = globalThis as unknown as Record<string, unknown>;
+
+  // The realm's ONE string-evaluation capability, captured into this closure
+  // before the globals are hardened: hardenGlobals() locks the realm's
+  // `Function` and `eval` globals to throwing stubs, so the bootstrap's own
+  // plugin-body call site (CSP-CALL-SITE, in the handshake handler below)
+  // uses this captured reference. It never leaves the closure, so plugin
+  // code cannot reach it.
+  const FunctionCtor = g.Function as typeof Function | undefined;
 
   // ---- transport detection (browser/Electron worker, or Node worker_threads)
   let send: (msg: unknown) => void = () => {
@@ -321,6 +334,23 @@ export function realmBootstrapMain(): void {
     lock('exports', undefined);
     lock('__filename', undefined);
     lock('__dirname', undefined);
+    // CSP ruling (2026-10-21): eval and the Function constructor are refused
+    // in the plugin context. The stub is a plain function (not an arrow) so
+    // that `new Function(...)` throws this same named refusal instead of an
+    // incidental "not a constructor" TypeError. The bootstrap's own single
+    // use of the constructor goes through the closure-captured reference
+    // (FunctionCtor above), never through this global. Residue, stated
+    // plainly: a function object's own `.constructor` chain still reaches
+    // the intrinsic in a realm with no CSP — the packaged worker CSP
+    // (script-src 'self' 'wasm-unsafe-eval') is the platform-level refusal
+    // there, and in every realm the host's capability enforcement bounds
+    // what realm-local code can do: no channel, no nonce, no host globals.
+    const denyCall = (what: string) =>
+      function (): never {
+        throw new Error(`${what} is not available in the isolated plugin realm`);
+      };
+    lock('eval', denyCall('eval'));
+    lock('Function', denyCall('Function'));
   }
 
   // ---- message pump
@@ -339,11 +369,20 @@ export function realmBootstrapMain(): void {
       const code = String(msg.code ?? '');
       let result: unknown;
       try {
+        if (typeof FunctionCtor !== 'function') throw new Error('the isolated realm provides no Function constructor for the plugin body');
         // The plugin body runs inside an async scope so v2 plugins may use
         // top-level await (every jcad call is a promise); a top-level return
         // becomes the load report, and a synchronous throw becomes a load
         // failure — the same outcomes v1 produces for sync/async bodies.
-        const fn = new Function('jcad', `return (async () => {\n${code}\n})();\n//# sourceURL=jcad-isolated/${encodeURIComponent(String(msg.name ?? 'plugin'))}.js`) as (j: unknown) => unknown;
+        // CSP-CALL-SITE: the realm's single string evaluation — it compiles
+        // the plugin body, through the closure-captured constructor (the
+        // realm's `Function` global is locked before plugin code runs).
+        // The packaged worker CSP (script-src 'self' 'wasm-unsafe-eval',
+        // electron/renderer-origin.cjs WORKER_CSP) refuses this call, so a
+        // worker plugin fails closed at load in the packaged renderer until
+        // the CSP hosting amendment (reviews/DRAFT-AMENDMENT-P25-CSP-HOSTING.md)
+        // lands; no other code in this bootstrap evaluates strings.
+        const fn = new FunctionCtor('jcad', `return (async () => {\n${code}\n})();\n//# sourceURL=jcad-isolated/${encodeURIComponent(String(msg.name ?? 'plugin'))}.js`) as (j: unknown) => unknown;
         result = fn.call(undefined, jcad);
       } catch (err) {
         send({ kind: 'load-done', v: 2, session, nonce: realmNonce, ok: false, error: err instanceof Error ? err.message : String(err) });
