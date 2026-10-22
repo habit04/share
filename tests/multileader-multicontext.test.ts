@@ -568,4 +568,3 @@ describe('P18 slice 3 (AMENDMENT-P18-S3-C): entityGeometryWork charges mleader c
     expect(() => validateGeometryBudget(state)).not.toThrow();
   });
 });
-
