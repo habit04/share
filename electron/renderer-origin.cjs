@@ -65,7 +65,7 @@ function createPluginRealmRegistry() {
     /**
      * @param {string} sessionId
      * @param {{ files: Map<string, { bytes: Buffer, sha256: string }>, entrySha256: string, manifestSha256: string, totalBytes: number }} snapshot
-     * @param {unknown} [owner] the registering webContents (W-3): when
+     * @param {unknown} [owner] the registering contents (W-3): when
      * recorded, only this owner may unregister the session.
      */
     register(sessionId, snapshot, owner) {
