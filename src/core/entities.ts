@@ -1040,26 +1040,50 @@ function affineCompound(e: Compound, A: Affine): Entity {
         // scalars (each context's scaleFactor and landingGap) do not
         // transform — the same posture as the primary's landingGap, which
         // rides through the spread above untouched.
-        ...(e.mleader?.contexts ? {
+        // P18 FIX group 3 (Codex PR #40 P1): block placements transform
+        // WHOLE, the primary's and every context's alike — position by tf,
+        // scale by |kx|/|ky| (the insert convention in this same function),
+        // rotation by the direction map. A mirror therefore reflects the
+        // placement's angle and keeps its (unsigned) scale: the model has
+        // no mirror flag for mleader block placements (the AutoCAD 47/49
+        // transformation matrix is not modelled, the slices-1/2 posture).
+        ...(e.mleader && (e.mleader.block || e.mleader.contexts) ? {
           mleader: {
             ...e.mleader,
-            contexts: e.mleader.contexts.map((c) => {
-              const cr = c.textRotation ?? 0;
-              return {
-                ...c,
-                paths: c.paths.map((p) => p.map(A.tf)),
-                ...(c.dogleg ? { dogleg: A.vec(c.dogleg) } : {}),
-                ...(c.textPosition ? { textPosition: A.tf(c.textPosition) } : {}),
-                textHeight: c.textHeight * k,
-                arrowSize: c.arrowSize * k,
-                ...(c.textWidth !== undefined ? { textWidth: c.textWidth * k } : {}),
-                ...(c.textRotation !== undefined || A.rotation !== 0 || A.mirrored
-                  ? { textRotation: A.mirrored ? readableAngle(dirAngle(cr), cr + A.rotation) : normAngle(cr + A.rotation) }
-                  : {}),
-                ...(A.mirrored && c.textAttachment ? { textAttachment: flip(c.textAttachment as MTextAttachment) } : {}),
-                ...(c.block ? { block: { ...c.block, position: A.tf(c.block.position) } } : {}),
-              };
-            }),
+            ...(e.mleader.block ? {
+              block: {
+                ...e.mleader.block,
+                position: A.tf(e.mleader.block.position),
+                scale: { x: e.mleader.block.scale.x * Math.abs(A.kx), y: e.mleader.block.scale.y * Math.abs(A.ky) },
+                rotation: normAngle(dirAngle(e.mleader.block.rotation)),
+              },
+            } : {}),
+            ...(e.mleader.contexts ? {
+              contexts: e.mleader.contexts.map((c) => {
+                const cr = c.textRotation ?? 0;
+                return {
+                  ...c,
+                  paths: c.paths.map((p) => p.map(A.tf)),
+                  ...(c.dogleg ? { dogleg: A.vec(c.dogleg) } : {}),
+                  ...(c.textPosition ? { textPosition: A.tf(c.textPosition) } : {}),
+                  textHeight: c.textHeight * k,
+                  arrowSize: c.arrowSize * k,
+                  ...(c.textWidth !== undefined ? { textWidth: c.textWidth * k } : {}),
+                  ...(c.textRotation !== undefined || A.rotation !== 0 || A.mirrored
+                    ? { textRotation: A.mirrored ? readableAngle(dirAngle(cr), cr + A.rotation) : normAngle(cr + A.rotation) }
+                    : {}),
+                  ...(A.mirrored && c.textAttachment ? { textAttachment: flip(c.textAttachment as MTextAttachment) } : {}),
+                  ...(c.block ? {
+                    block: {
+                      ...c.block,
+                      position: A.tf(c.block.position),
+                      scale: { x: c.block.scale.x * Math.abs(A.kx), y: c.block.scale.y * Math.abs(A.ky) },
+                      rotation: normAngle(dirAngle(c.block.rotation)),
+                    },
+                  } : {}),
+                };
+              }),
+            } : {}),
           },
         } : {}),
       };
