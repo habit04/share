@@ -1043,10 +1043,15 @@ function affineCompound(e: Compound, A: Affine): Entity {
         // P18 FIX group 3 (Codex PR #40 P1): block placements transform
         // WHOLE, the primary's and every context's alike — position by tf,
         // scale by |kx|/|ky| (the insert convention in this same function),
-        // rotation by the direction map. A mirror therefore reflects the
-        // placement's angle and keeps its (unsigned) scale: the model has
-        // no mirror flag for mleader block placements (the AutoCAD 47/49
-        // transformation matrix is not modelled, the slices-1/2 posture).
+        // rotation by the direction map.
+        // P18 PR #43 fix (Codex PR #43 P1): a mirror must yield the EXACT
+        // affine of the reflection, and an unsigned scale cannot carry it
+        // (the placement map would be a rotation, the block un-reflected).
+        // The model accepts signed nonzero scales, so the reflection rides
+        // on scale Y: with the rotation at the direction-mapped (reflected)
+        // angle, Rot(θ') · diag(|kx|·sx, −|ky|·sy) is exactly the mirrored
+        // placement map. Applied identically to the primary's block and to
+        // every context's, below.
         ...(e.mleader && (e.mleader.block || e.mleader.contexts) ? {
           mleader: {
             ...e.mleader,
@@ -1054,7 +1059,7 @@ function affineCompound(e: Compound, A: Affine): Entity {
               block: {
                 ...e.mleader.block,
                 position: A.tf(e.mleader.block.position),
-                scale: { x: e.mleader.block.scale.x * Math.abs(A.kx), y: e.mleader.block.scale.y * Math.abs(A.ky) },
+                scale: { x: e.mleader.block.scale.x * Math.abs(A.kx), y: e.mleader.block.scale.y * Math.abs(A.ky) * (A.mirrored ? -1 : 1) },
                 rotation: normAngle(dirAngle(e.mleader.block.rotation)),
               },
             } : {}),
@@ -1077,7 +1082,7 @@ function affineCompound(e: Compound, A: Affine): Entity {
                     block: {
                       ...c.block,
                       position: A.tf(c.block.position),
-                      scale: { x: c.block.scale.x * Math.abs(A.kx), y: c.block.scale.y * Math.abs(A.ky) },
+                      scale: { x: c.block.scale.x * Math.abs(A.kx), y: c.block.scale.y * Math.abs(A.ky) * (A.mirrored ? -1 : 1) },
                       rotation: normAngle(dirAngle(c.block.rotation)),
                     },
                   } : {}),
