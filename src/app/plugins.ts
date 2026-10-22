@@ -13,10 +13,18 @@
  *
  * Before a plugin runs the first time, the user confirms it. The answer is remembered in
  * localStorage under `jcad.plugins.trusted`, keyed by where the plugin came from and the
- * SHA-256 of its code, so a changed plugin is asked about again.
+ * SHA-256 of its code, so a changed plugin is asked about again. For a folder plugin the
+ * desktop main process makes ONE admission read of the package and the remembered answer
+ * is compared against the admission's TRUST KEY instead (PR #38 structural fix): the key
+ * digests the exact plugin.json bytes plus the code (the snapshot manifest for the worker
+ * form, the entry bytes for the page form), so the policy the user approved, the policy
+ * the record remembers and the policy that runs are all the same bytes.
  *
  * Plugins run in the application page (see docs/PLUGIN-API.md, "Security"): they are isolated
- * from each other only as far as errors go. A plugin that throws while loading, whose load
+ * from each other only as far as errors go. The one exception is a plugin whose manifest opts
+ * into P25 isolation (`apiVersion: 2` + `isolation: "worker"` + `capabilities`, admitted as
+ * PROPOSAL-P25 / LEDGER L-011): it runs in the isolated realm in ./plugin-isolation with only
+ * its declared capabilities, and fails closed — never in the page — when no realm is available. A plugin that throws while loading, whose load
  * promise rejects, that does not finish loading within `loadTimeoutMs`, or whose trust check
  * fails is reported on the command line with its name and marked as failed; loading carries on
  * with the next plugin. Errors later on (commands, event listeners, rejected promises, timers
@@ -24,6 +32,9 @@
  */
 import type { Editor } from './editor';
 import { API_VERSION, createApi, pickTextFile, pluginErrorMessage, type ApiHandle, type JcadApi } from './api';
+import { parseCapabilitySet } from './plugin-isolation/capabilities';
+import { IsolatedPluginSession, type RealmTransport } from './plugin-isolation/host';
+import { browserWorkerTransport } from './plugin-isolation/browser-transport';
 import { modal, button } from '../ui/dialogkit';
 import { esc } from '../ui/dom';
 import { ensureFileLimit, MAX_PLUGIN_FILE_BYTES, MAX_PROJECT_FILE_BYTES } from '../io/file-limits';
@@ -38,16 +49,87 @@ export interface PluginManifest {
   main?: string;
   /** Plugin API version the plugin was written for (default 1). */
   apiVersion?: number;
+  /**
+   * P25 isolation opt-in (PROPOSAL-P25, admitted LEDGER L-011): 'worker' runs
+   * the plugin in the isolated realm (API v2) instead of the trusted page.
+   * Absent (or 'page') is exactly the legacy v1 behaviour.
+   */
+  isolation?: 'page' | 'worker';
+  /** Declared capabilities for an isolated ('worker') plugin: required there, forbidden on the page path. */
+  capabilities?: string[];
 }
+
+/**
+ * What the trust prompt is told about a plugin whose policy differs
+ * from a legacy v1 plugin's (L-011 C3): for an isolated ('worker')
+ * plugin, that it runs isolated and the capability set it declared;
+ * for a DOWNGRADE (PR #38 structural fix) — a package whose remembered
+ * approval was for the isolated form and whose admitted form is now
+ * the page — that it previously ran isolated and now asks to run in
+ * the page with full access. Legacy v1 plugins get no details object —
+ * their prompt is unchanged.
+ */
+export type PluginTrustDetails =
+  | { isolation: 'worker'; capabilities: string[] }
+  | { isolation: 'page'; downgradeFrom: 'worker' };
 
 export interface PluginSource {
   manifest: PluginManifest;
   code: string;
+  /**
+   * The entry's EXACT FILE BYTES when the source was read from disk
+   * (folder reads, R2). Hashing (trust + the snapshot's approved-entry
+   * verification) digests these bytes, never a decode/re-encode of
+   * `code`. `code` itself — the lossy UTF-8 decode — remains what v1
+   * evaluates, unchanged.
+   */
+  codeBytes?: Uint8Array;
   /** Where it came from: a folder path, or the picked file name. */
   path: string;
   origin: 'folder' | 'file' | 'script';
   /** Folder name under userData/plugins (origin 'folder'). */
   folder?: string;
+  /**
+   * The main-process ADMISSION of this folder source (PR #38 structural
+   * fix): the trust key + form main computed over its one read of the
+   * package, set by PluginHost.load from the admission result (whose
+   * manifest/code have already replaced this source's own read). Callers
+   * never set it; non-folder sources never carry it — their bytes are
+   * the renderer's only read by construction. For EVERY source kind the
+   * trust identity is the POLICY KEY (canonical policy + code identity,
+   * see pluginTrustPolicyKey); an admitted source's code identity is
+   * this admission key.
+   */
+  admission?: { trustKey: string; form: 'worker' | 'page' };
+  /**
+   * True when this source's manifest is the IMPLICIT one synthesised
+   * for a plain single-JS source (sourceFromFiles with no plugin.json
+   * picked): the source carries no policy document, so its canonical
+   * policy is the implicit default "page/1/legacy" — distinct from
+   * every policy-bearing source's policy, even an identical entry's.
+   * Set only by sourceFromFiles; absent everywhere else.
+   */
+  implicitManifest?: boolean;
+}
+
+/**
+ * The result of main's ONE admission read of a folder package
+ * (electron/main/ipc-stores.cjs 'plugins-admit-package'): the TRUST KEY
+ * over the exact plugin.json bytes + the form material (the snapshot
+ * manifest for the worker form, the entry-bytes SHA-256 for the page
+ * form), the form, and THE BYTES THEMSELVES — the manifest text the
+ * renderer parses its policy from and the entry code the page path
+ * executes — so the key, the policy and the code are one read.
+ */
+export interface PluginAdmission {
+  trustKey: string;
+  form: 'worker' | 'page';
+  manifest: string;
+  code: string;
+  codeBytes?: Uint8Array;
+  path: string;
+  entrySha256?: string;
+  manifestHash?: string;
 }
 
 export type PluginStatus = 'loaded' | 'error' | 'declined';
@@ -69,9 +151,46 @@ export interface LoadedPlugin {
 export interface PluginsBridge {
   pluginsDir(): Promise<string>;
   pluginsList(): Promise<Array<{ folder: string; manifest: string | null; error?: string }>>;
-  pluginsRead(folder: string): Promise<{ manifest: string; code: string; path: string } | null>;
+  pluginsRead(folder: string): Promise<{ manifest: string; code: string; codeBytes?: Uint8Array; path: string } | null>;
   /** Run a script in the page (used when CSP forbids `new Function`). */
   pluginsEval?(source: string): Promise<unknown>;
+  /**
+   * Admission (PR #38 structural fix): main's ONE read of the folder
+   * package, returning its TRUST KEY and the admitted bytes (see
+   * PluginAdmission). PluginHost.load asks for it before trust and
+   * before the page/worker path is chosen, and the load then runs on
+   * the admitted manifest/code — an earlier plugins-read is used for
+   * discovery only, never for policy. Null when the folder has no
+   * plugin.json: a bridge that HAS this method and returns null FAILS
+   * the load with an admission error (trust-policy ruling (4)) — the
+   * load never falls back to the earlier read. Absent in the plain
+   * browser (and on older mains): such loads keep the pre-admission
+   * flow unchanged.
+   */
+  pluginsAdmitPackage?(folder: string): Promise<PluginAdmission | null>;
+  /**
+   * CSP hosting (AMENDMENT-P25-CSP-HOSTING Part A2; Fable F1; W-1): ask
+   * the main process to serve this (already trusted) plugin folder's
+   * package to its isolated realm. Main vets the package from its own
+   * record — the renderer passes the folder NAME, never a path —
+   * snapshots it and returns the session's served URLs plus the
+   * snapshot's MANIFEST hash. `approvedEntryHash` is the SHA-256 of
+   * the entry code this host's trust flow approved (the codeHash of
+   * the loaded source); `approvedManifestHash`, when the trust record
+   * remembers one, is the manifest hash of the whole package that
+   * approval covered. Main verifies its snapshot against BOTH and
+   * refuses a changed entry OR a changed dependency with
+   * ERR_PLUGIN_CHANGED (W-1: approval binds the whole snapshot).
+   * `admittedTrustKey`, when the load was admitted, is the trust key
+   * of the admitted package: main recomputes the key from its serve
+   * reads and refuses a package that changed since admission, and
+   * reports the key it computed back as `trustKey` so the renderer
+   * can reject the session if it differs from the admitted key.
+   * Absent in the plain browser.
+   */
+  pluginsServeIsolatedPackage?(folder: string, approvedEntryHash?: string, approvedManifestHash?: string, admittedTrustKey?: string): Promise<{ sessionId: string; baseUrl: string; entryUrl: string; manifestHash?: string; trustKey?: string }>;
+  /** Drop a plugin-realm serving registration (the session was disposed). */
+  pluginsUnserveIsolatedPackage?(sessionId: string): Promise<unknown>;
 }
 
 export interface StorageLike {
@@ -81,8 +200,14 @@ export interface StorageLike {
 
 export interface PluginHostOptions {
   bridge?: PluginsBridge | null;
-  /** Ask the user (default: a modal dialog). */
-  confirm?(name: string, path: string): Promise<boolean>;
+  /** Ask the user (default: a modal dialog). `details` is set only for isolated ('worker') plugins. */
+  confirm?(name: string, path: string, details?: PluginTrustDetails): Promise<boolean>;
+  /**
+   * Create the transport for an isolated ('worker') plugin's realm (default:
+   * a platform Worker where one exists, else none — an isolated load then
+   * fails closed rather than running in the page, L-011 C2).
+   */
+  realmTransport?: () => RealmTransport | null;
   /** Where trust answers are kept (default localStorage). */
   storage?: StorageLike | null;
   /** Run plugin code (default: `new Function('jcad', code)`, falling back to the bridge). */
@@ -130,7 +255,60 @@ export const TRUST_KEY = 'jcad.plugins.trusted';
 const NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const MAX_CODE = 2 * 1024 * 1024;
 
+/**
+ * The jcad.js shim body — byte-identical to the one the main process
+ * serves for plugin-realm packages (electron/renderer-origin.cjs
+ * PLUGIN_REALM_JCAD_SHIM, byte-pinned in tests/plugin-realm-serving.test.ts).
+ * The blob: fallback in isolatedModuleUrl mints the same shim as a blob
+ * module so a module-authored entry's `import jcad from './jcad.js'`
+ * resolves in the plain browser exactly as it does in the packaged realm.
+ */
+const JCAD_SHIM_MODULE = 'export default globalThis[Symbol.for("jcad.isolated.jcad")];';
+
 // ------------------------------------------------------------------ helpers
+
+/**
+ * The admitted isolated-manifest semantics (PROPOSAL-P25, LEDGER L-011),
+ * shared by parseManifest and PluginHost.load — load also sees programmatic
+ * sources that never went through a parser, and their refusal must be just
+ * as atomic. Returns the refusal message, or null when valid. A manifest
+ * declaring neither field is a legacy v1 manifest and always valid here.
+ */
+function isolatedManifestError(m: { apiVersion?: number; isolation?: string; capabilities?: unknown }): string | null {
+  if (m.isolation !== undefined && m.isolation !== 'page' && m.isolation !== 'worker') {
+    return `"isolation" must be "page" or "worker", not ${JSON.stringify(m.isolation)}`;
+  }
+  try {
+    parseCapabilitySet(m.capabilities);
+  } catch (err) {
+    return (err as Error).message;
+  }
+  if (m.isolation === 'worker') {
+    if (m.apiVersion !== 2) return 'an isolated ("worker") plugin must declare "apiVersion": 2 (API v2 is the asynchronous realm API)';
+    if (m.capabilities === undefined) return 'an isolated ("worker") plugin must declare "capabilities" (use [] for a plugin that only loads)';
+  } else if (m.capabilities !== undefined) {
+    return '"capabilities" requires "isolation": "worker" (the trusted page path enforces no capabilities; declaring them there would be misleading)';
+  }
+  return null;
+}
+
+/**
+ * The default realm transport: a platform Worker where one exists, else
+ * none. There is deliberately no fallback — an isolated plugin whose realm
+ * cannot be created fails closed (load ERROR) rather than running in the
+ * page (L-011 C2). In the packaged renderer the realm loads the plugin's
+ * entry as a module served by the main process under the worker CSP
+ * (AMENDMENT-P25-CSP-HOSTING); a realm that never finishes loading still
+ * fails closed on the session's load timeout.
+ */
+function defaultRealmTransport(): RealmTransport | null {
+  if (typeof Worker === 'undefined') return null;
+  try {
+    return browserWorkerTransport();
+  } catch {
+    return null;
+  }
+}
 
 /** Parse and check a plugin.json. Throws with a readable message. */
 export function parseManifest(text: string, fallbackName?: string): PluginManifest {
@@ -148,10 +326,15 @@ export function parseManifest(text: string, fallbackName?: string): PluginManife
   if (!/^[A-Za-z0-9._-]+\.js$/.test(main)) throw new Error(`"main" must be a .js file name in the plugin folder, not "${main}"`);
   const apiVersion = o.apiVersion === undefined ? 1 : Number(o.apiVersion);
   if (!Number.isInteger(apiVersion) || apiVersion < 1) throw new Error('"apiVersion" must be a positive integer');
+  const isoError = isolatedManifestError({ apiVersion, isolation: o.isolation as string | undefined, capabilities: o.capabilities });
+  if (isoError) throw new Error(isoError);
+  const isolation = o.isolation as PluginManifest['isolation'];
   return {
     name,
     main,
     apiVersion,
+    ...(isolation !== undefined ? { isolation } : {}),
+    ...(o.capabilities !== undefined ? { capabilities: [...parseCapabilitySet(o.capabilities)] } : {}),
     ...(typeof o.version === 'string' ? { version: o.version } : {}),
     ...(typeof o.description === 'string' ? { description: o.description } : {}),
     ...(typeof o.author === 'string' ? { author: o.author } : {}),
@@ -173,9 +356,104 @@ export async function codeHash(code: string): Promise<string> {
   return `fnv-${h.toString(16)}`;
 }
 
+/**
+ * SHA-256 (hex) of EXACT BYTES; FNV-1a over the bytes when WebCrypto is
+ * unavailable, which never remembers trust. The R2 canonical form: for a
+ * source read from disk, both the trust/approval hash and the hash the
+ * snapshot verifies against are taken over the file's raw bytes — never
+ * over a decode/re-encode round trip, which is lossy for non-UTF-8
+ * bytes and made main's raw-byte hash unmatchable (ERR_PLUGIN_CHANGED
+ * on an unchanged file). For UTF-8-clean files the digest equals
+ * `codeHash` of the decoded text, so nothing else changes.
+ */
+export async function codeHashBytes(bytes: Uint8Array): Promise<string> {
+  const subtle = globalThis.crypto?.subtle;
+  if (subtle) {
+    const buf = await subtle.digest('SHA-256', bytes as BufferSource);
+    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  let h = 0x811c9dc5;
+  for (const b of bytes) {
+    h ^= b;
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `fnv-${h.toString(16)}`;
+}
+
+/** A source's approval hash: its raw file bytes when it has them (folder reads), else its text. */
+async function sourceHash(src: PluginSource): Promise<string> {
+  return src.codeBytes ? codeHashBytes(src.codeBytes) : codeHash(src.code);
+}
+
+/**
+ * The CANONICAL POLICY of a source (PR #38 trust-policy fix, lead
+ * ruling 2026-10-22: every source's trust identity includes its
+ * POLICY): the triple (isolation mode, API version, capabilities),
+ * serialised deterministically as "<isolation>/<apiVersion>/<caps>".
+ * The capabilities component is the declared set SORTED and
+ * comma-joined — reordering the manifest's array is therefore NOT a
+ * policy change, while adding or removing a capability is — "" for a
+ * policy-bearing manifest that declares no capabilities, and the
+ * literal "legacy" when the source's manifest is the implicit one
+ * synthesised for a plain single-JS source: that source's
+ * implicit-default policy is exactly "page/1/legacy", and it can never
+ * coincide with a policy-bearing source's policy.
+ */
+export function canonicalPluginPolicy(manifest: PluginManifest, implicitManifest = false): string {
+  const isolation = manifest.isolation ?? 'page';
+  const apiVersion = manifest.apiVersion ?? 1;
+  const capabilities = implicitManifest ? 'legacy' : [...(manifest.capabilities ?? [])].sort().join(',');
+  return `${isolation}/${apiVersion}/${capabilities}`;
+}
+
+/**
+ * The TRUST KEY of a source (PR #38 trust-policy fix): SHA-256 over
+ * "jcad-plugin-trust/2\n" + the canonical policy + "\n" + the CODE
+ * IDENTITY — for an admitted folder package, main's admitted trust key
+ * (which itself digests the exact plugin.json bytes + the form
+ * material); for every other source, its entry hash (sourceHash). One
+ * formula for all source kinds — admitted folder, picked files,
+ * legacy — so an approval minted under one policy can never be read
+ * as an approval under another.
+ */
+export async function pluginTrustPolicyKey(manifest: PluginManifest, codeIdentity: string, implicitManifest = false): Promise<string> {
+  return codeHash(`jcad-plugin-trust/2\n${canonicalPluginPolicy(manifest, implicitManifest)}\n${codeIdentity}`);
+}
+
 interface TrustEntry {
   answer: 'yes' | 'no';
   hash: string;
+  /**
+   * W-1: for a folder plugin served to the isolated realm, the MANIFEST
+   * hash of the whole package the remembered answer approved (over the
+   * sorted (path, sha256) list of every snapshotted file, entry
+   * included), as reported by main at the first served load under this
+   * approval. Absent until then — and absent for page plugins, whose
+   * approval binds the entry alone (they execute no served graph).
+   */
+  manifestHash?: string;
+  /**
+   * Structural fix: for an ADMITTED folder source, the TRUST KEY the
+   * remembered answer approved (over the exact plugin.json bytes +
+   * the form material — see PluginAdmission) and the form it was
+   * approved in. The serve verifies the snapshot against this key;
+   * `form` is what a later page-form load is recognised as a downgrade
+   * against. Absent on non-admitted sources.
+   */
+  trustKey?: string;
+  /**
+   * Trust-policy fix: the POLICY KEY the remembered answer approved —
+   * SHA-256 over the canonical policy + the code identity (see
+   * pluginTrustPolicyKey). This is the ONLY field trusted() decides
+   * on, for every source kind: the record's `hash` remains solely as
+   * the W-1 serve-binding datum (the entry hash the remembered
+   * manifest hash hangs off) and decides nothing. Records written
+   * before this fix (hash-only, or the structural form with a
+   * trustKey but no policyKey) carry no policyKey: they ask once and
+   * are rewritten in this form.
+   */
+  policyKey?: string;
+  form?: 'worker' | 'page';
   at: number;
 }
 
@@ -199,6 +477,19 @@ function writeTrust(storage: StorageLike | null, v: Record<string, TrustEntry>):
 }
 
 const trustKey = (src: PluginSource) => `${src.origin}:${src.path}`;
+
+/**
+ * The serve path's trust failure (main refusing a package that changed
+ * since approval): main raises it with the ERR_PLUGIN_CHANGED code, and
+ * its IPC handler also names the token in the message — the only part
+ * of an error that always survives ipcRenderer.invoke — so both forms
+ * are recognised here.
+ */
+function isPluginChangedError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { code?: unknown; message?: unknown };
+  return e.code === 'ERR_PLUGIN_CHANGED' || (typeof e.message === 'string' && e.message.includes('ERR_PLUGIN_CHANGED'));
+}
 
 declare global {
   interface Window {
@@ -242,9 +533,19 @@ export async function evaluatePlugin(code: string, api: JcadApi, name: string, b
   }
 }
 
-function defaultConfirm(editor: Editor): (name: string, path: string) => Promise<boolean> {
-  return (name, path) => {
-    const message = `Load plugin ${name} from ${path}? Plugins run with full access to your drawings.`;
+function defaultConfirm(editor: Editor): (name: string, path: string, details?: PluginTrustDetails) => Promise<boolean> {
+  return (name, path, details) => {
+    // L-011 C3: a worker plugin's prompt presents its isolated status and
+    // declared capability set instead of the full-access warning. With no
+    // details (every legacy v1 plugin) both texts are byte-identical to v1.
+    // Structural fix: a downgrade (previously approved isolated, now
+    // asking for the page) is named as one, explicitly.
+    const risk = !details
+      ? 'Plugins run with full access to your drawings.'
+      : details.isolation === 'worker'
+        ? `It runs isolated in a separate realm, limited to these declared capabilities: ${details.capabilities.length ? details.capabilities.join(', ') : '(none)'}.`
+        : 'It previously ran isolated in a separate realm; this version runs in the page with full access to your drawings (a downgrade from isolation).';
+    const message = `Load plugin ${name} from ${path}? ${risk}`;
     if (typeof document === 'undefined') return editor.ui?.confirm('Load plugin', message) ?? Promise.resolve(false);
     return new Promise((resolve) => {
       const m = modal('Load Plugin', 460, 'dark');
@@ -256,7 +557,12 @@ function defaultConfirm(editor: Editor): (name: string, path: string) => Promise
         resolve(v);
       };
       m.onClose(() => finish(false));
-      m.body.innerHTML = `<div style="font-size:12px;line-height:1.5">Load plugin <b>${esc(name)}</b> from<br><code style="word-break:break-all">${esc(path)}</code>?<br><br>Plugins run with full access to your drawings. Load only plugins you trust. Your answer is remembered until the plugin's code changes.</div>`;
+      const riskHtml = !details
+        ? 'Plugins run with full access to your drawings.'
+        : details.isolation === 'worker'
+          ? `This plugin runs <b>isolated</b> in a separate realm, limited to its declared capabilities:<br><code style="word-break:break-all">${esc(details.capabilities.join(', ') || '(none)')}</code>.`
+          : 'This plugin previously ran <b>isolated</b> in a separate realm. This version runs <b>in the page with full access</b> to your drawings — a <b>downgrade</b> from isolation.';
+      m.body.innerHTML = `<div style="font-size:12px;line-height:1.5">Load plugin <b>${esc(name)}</b> from<br><code style="word-break:break-all">${esc(path)}</code>?<br><br>${riskHtml} Load only plugins you trust. Your answer is remembered until the plugin's code changes.</div>`;
       const yes = button('Load', true);
       const no = button("Don't Load");
       yes.addEventListener('click', () => finish(true));
@@ -309,7 +615,7 @@ export function sourceFromFiles(files: ReadonlyArray<{ name: string; text: strin
   if (jsFiles.length !== 1) throw new Error('Select one .js file (or plugin.json with its main .js file).');
   const f = jsFiles[0]!;
   const base = f.name.split(/[\\/]/).pop()!.replace(/\.js$/i, '').replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 64) || 'plugin';
-  return { manifest: { name: base, main: f.name, apiVersion: 1 }, code: f.text, path: f.name, origin: 'file' };
+  return { manifest: { name: base, main: f.name, apiVersion: 1 }, code: f.text, path: f.name, origin: 'file', implicitManifest: true };
 }
 
 // ------------------------------------------------------------------ host
@@ -339,12 +645,28 @@ function watchUncaught(editor: Editor): void {
   });
 }
 
+/** One loaded (or loading) plugin. A worker plugin's `handle` is its session's API handle. */
+interface HostEntry {
+  info: LoadedPlugin;
+  handle: ApiHandle | null;
+  /** The isolated-realm session of a worker plugin; null on the page path. */
+  session: IsolatedPluginSession | null;
+  source: PluginSource;
+}
+
+/** Dispose an entry exactly once over its two resources: a session's dispose() also disposes its API handle. */
+function disposeEntry(entry: HostEntry): void {
+  if (entry.session) entry.session.dispose();
+  else entry.handle?.dispose();
+}
+
 export class PluginHost {
-  private readonly entries = new Map<string, { info: LoadedPlugin; handle: ApiHandle | null; source: PluginSource }>();
+  private readonly entries = new Map<string, HostEntry>();
   private readonly bridge: PluginsBridge | null;
-  private readonly confirmFn: (name: string, path: string) => Promise<boolean>;
+  private readonly confirmFn: (name: string, path: string, details?: PluginTrustDetails) => Promise<boolean>;
   private readonly storage: StorageLike | null;
   private readonly evaluateFn: (code: string, api: JcadApi, name: string) => Promise<unknown>;
+  private readonly realmTransportFactory: (() => RealmTransport | null) | null;
   private readonly loadTimeoutMs: number;
   readonly pickFiles: (accept: string, multiple: boolean) => Promise<Array<{ name: string; text: string }>>;
 
@@ -356,6 +678,7 @@ export class PluginHost {
     this.confirmFn = opts.confirm ?? defaultConfirm(editor);
     this.storage = opts.storage === undefined ? (typeof localStorage !== 'undefined' ? localStorage : null) : opts.storage;
     this.evaluateFn = opts.evaluate ?? ((code, api, name) => evaluatePlugin(code, api, name, this.bridge));
+    this.realmTransportFactory = opts.realmTransport ?? null;
     this.pickFiles = opts.pickFiles ?? defaultPick;
     this.loadTimeoutMs = opts.loadTimeoutMs ?? PLUGIN_LOAD_TIMEOUT_MS;
     const first = !currentHost.has(editor);
@@ -401,23 +724,86 @@ export class PluginHost {
     if (typeof console !== 'undefined') console.warn(`[jcad plugin ${name}]`, err);
   }
 
-  /** Is this code trusted? Asks when unknown or changed; `ask` = false never asks (declined stays declined). */
-  private async trusted(src: PluginSource, reask: boolean, current: () => boolean = () => true): Promise<boolean> {
-    const hash = await codeHash(src.code);
-    if (!current()) return false;
+  /**
+   * Is this source trusted? Asks when unknown or changed; `ask` = false
+   * never asks (declined stays declined). The decision compares the
+   * remembered record's POLICY KEY (canonical policy + code identity —
+   * see pluginTrustPolicyKey) and nothing else, for every source kind,
+   * before load() chooses the page or worker path: there is no
+   * entry-hash-only trust path. A record written without a policy key
+   * asks once and is rewritten in the policy-key form.
+   *
+   * `freshYes` reports that THIS call prompted and stored a fresh
+   * "yes" — load() drops exactly that consent when the load it
+   * approved is then refused, so a refused load's consent is never
+   * stored or reused.
+   */
+  private async trusted(src: PluginSource, reask: boolean, current: () => boolean = () => true): Promise<{ ok: boolean; freshYes: boolean }> {
+    const hash = await sourceHash(src);
+    if (!current()) return { ok: false, freshYes: false };
     const all = readTrust(this.storage);
     const key = trustKey(src);
     const hit = all[key];
-    // Only a SHA-256 digest remembers an answer (security review E-10): with the FNV-1a fallback
-    // (no WebCrypto) a changed plugin could keep a remembered "yes", so it is asked every run.
-    const strongHash = /^[0-9a-f]{64}$/.test(hash);
-    if (strongHash && hit && hit.hash === hash && (hit.answer === 'yes' || !reask)) return hit.answer === 'yes';
-    const yes = await this.confirmFn(src.manifest.name, src.path);
-    if (!current()) return false;
-    if (strongHash) all[key] = { answer: yes ? 'yes' : 'no', hash, at: Date.now() };
+    const admission = src.admission;
+    const form: 'worker' | 'page' = admission ? admission.form : src.manifest.isolation === 'worker' ? 'worker' : 'page';
+    const codeIdentity = admission ? admission.trustKey : hash;
+    const policyKey = await pluginTrustPolicyKey(src.manifest, codeIdentity, src.implicitManifest);
+    if (!current()) return { ok: false, freshYes: false };
+    // Only a SHA-256 identity remembers an answer (security review
+    // E-10): with the FNV-1a fallback (no WebCrypto) a changed plugin
+    // could keep a remembered "yes", so it is asked every run. The
+    // policy key and the code identity must both be real digests.
+    const strong = /^[0-9a-f]{64}$/.test(policyKey) && /^[0-9a-f]{64}$/.test(codeIdentity);
+    if (strong && hit && hit.policyKey === policyKey && (hit.answer === 'yes' || !reask)) return { ok: hit.answer === 'yes', freshYes: false };
+    // C3 + the downgrade rule, on every source kind: the trust decision
+    // for a worker source is told its declared capabilities + isolated
+    // status; a page source whose remembered approval was for the
+    // worker form (this record's `form`, or a pre-fix record whose
+    // served manifest proves the worker form) is a DOWNGRADE — always
+    // a fresh consent, and the prompt says so. A legacy source's call
+    // is unchanged (no details).
+    const wasWorker = !!hit && (hit.form === 'worker' || (hit.answer === 'yes' && typeof hit.manifestHash === 'string'));
+    const details: PluginTrustDetails | undefined =
+      form === 'worker'
+        ? { isolation: 'worker', capabilities: [...(src.manifest.capabilities ?? [])] }
+        : wasWorker
+          ? { isolation: 'page', downgradeFrom: 'worker' }
+          : undefined;
+    const yes = await this.confirmFn(src.manifest.name, src.path, details);
+    if (!current()) return { ok: false, freshYes: false };
+    if (strong) all[key] = { answer: yes ? 'yes' : 'no', hash, policyKey, form, ...(admission ? { trustKey: admission.trustKey } : {}), at: Date.now() };
     else delete all[key];
     writeTrust(this.storage, all);
-    return yes;
+    return { ok: yes, freshYes: yes && strong };
+  }
+
+  /** Drop the remembered trust answer for one source, so its next load asks again. */
+  private forgetSource(src: PluginSource): void {
+    const all = readTrust(this.storage);
+    const key = trustKey(src);
+    if (key in all) {
+      delete all[key];
+      writeTrust(this.storage, all);
+    }
+  }
+
+  /**
+   * W-1: remember the manifest hash main reported for a served package,
+   * bound to the approval that serve ran under. Only a remembered "yes"
+   * for THIS entry hash gains a manifest (the E-10 discipline: an
+   * unremembered approval — the FNV fallback, a declined answer — binds
+   * nothing beyond itself).
+   */
+  private rememberManifestHash(src: PluginSource, approvedEntryHash: string, manifestHash: string): void {
+    if (!/^[0-9a-f]{64}$/.test(manifestHash)) return;
+    const all = readTrust(this.storage);
+    const key = trustKey(src);
+    const hit = all[key];
+    if (!hit || hit.answer !== 'yes' || hit.hash !== approvedEntryHash) return;
+    if (hit.manifestHash !== manifestHash) {
+      all[key] = { ...hit, manifestHash };
+      writeTrust(this.storage, all);
+    }
   }
 
   /** Forget remembered answers (all, or one plugin's by name). Returns how many were removed. */
@@ -443,6 +829,75 @@ export class PluginHost {
     // Bind confirmation and execution to the same source, even if a caller
     // changes its input object while hashing/confirmation is outstanding.
     src = { ...src, manifest: { ...src.manifest } };
+    // Structural fix (PR #38): ONE ADMISSION READ for folder plugins.
+    // Main reads the package once and returns its trust key + the
+    // admitted bytes; the admitted manifest/code REPLACE this source's
+    // own earlier read (pluginsRead via readFolder), so the policy the
+    // prompt shows, the policy the trust record binds and the code
+    // that runs all come from the read the key digests — an earlier
+    // plugins-read manifest is never used for policy. Runs before the
+    // manifest vetting, the version ceiling, trust and the page/worker
+    // choice alike: every one of them sees the admitted source.
+    if (src.origin === 'folder' && src.folder && this.bridge?.pluginsAdmitPackage) {
+      const fail = (message: string): LoadedPlugin => {
+        this.editor.log(`Plugin ${src.manifest.name}: ${message}.`);
+        return {
+          name: src.manifest.name,
+          version: src.manifest.version ?? '',
+          description: src.manifest.description ?? '',
+          path: src.path,
+          origin: src.origin,
+          ...(src.folder ? { folder: src.folder } : {}),
+          status: 'error',
+          error: message,
+          commands: [],
+        };
+      };
+      let admission: PluginAdmission | null;
+      try {
+        admission = await this.bridge.pluginsAdmitPackage(src.folder);
+      } catch (err) {
+        return fail(`could not admit the plugin package (${pluginErrorMessage(err)})`);
+      }
+      if (!admission) {
+        // Trust-policy fix (ruling (4)): the bridge HAS the admission
+        // method and it returned no package — the load FAILS here with
+        // the admission failure named. It never falls back to the
+        // earlier plugins-read package: that read is a different read
+        // and may name a different (staler, weaker-policy) package
+        // version than the one trust would have bound. (A bridge
+        // WITHOUT the method never reaches this block — the plain
+        // browser and older mains keep the pre-admission flow.)
+        return fail('plugin admission failed: the desktop bridge returned no admitted package for this folder (it has no readable plugin.json); refusing to load it from an earlier read — reload the plugin once its package is complete');
+      }
+      if (admission) {
+        if (
+          typeof admission.trustKey !== 'string' ||
+          !/^[0-9a-f]{64}$/.test(admission.trustKey) ||
+          (admission.form !== 'worker' && admission.form !== 'page') ||
+          typeof admission.manifest !== 'string' ||
+          typeof admission.code !== 'string'
+        ) {
+          return fail('the desktop bridge returned a malformed plugin admission; refusing to load');
+        }
+        let admittedManifest: PluginManifest;
+        try {
+          admittedManifest = parseManifest(admission.manifest, src.folder);
+        } catch (err) {
+          return fail(err instanceof Error ? err.message : String(err));
+        }
+        if ((admission.form === 'worker') !== (admittedManifest.isolation === 'worker')) {
+          return fail('the admitted plugin policy disagrees with its manifest about isolation; refusing to load');
+        }
+        src = {
+          ...src,
+          manifest: admittedManifest,
+          code: admission.code,
+          ...(admission.codeBytes ? { codeBytes: admission.codeBytes } : {}),
+          admission: { trustKey: admission.trustKey, form: admission.form },
+        };
+      }
+    }
     const name = src.manifest.name;
     const info: LoadedPlugin = {
       name,
@@ -455,7 +910,7 @@ export class PluginHost {
       commands: [],
     };
     const key = name.toUpperCase();
-    const entry = { info, handle: null as ApiHandle | null, source: src };
+    const entry: HostEntry = { info, handle: null, session: null, source: src };
     this.replace(key, entry);
     const current = () => this.entries.get(key) === entry;
     const superseded = () => {
@@ -464,7 +919,23 @@ export class PluginHost {
       return info;
     };
     if (!current()) return superseded();
-    if ((src.manifest.apiVersion ?? 1) > API_VERSION) {
+    // Isolated-manifest semantics are enforced here too, not only in
+    // parseManifest: a programmatic source can carry fields no parser
+    // checked, and refusal must be atomic — before the version ceiling,
+    // trust, transport creation, or any execution (L-011 C2).
+    if (src.manifest.isolation !== undefined || src.manifest.capabilities !== undefined) {
+      const isoError = isolatedManifestError(src.manifest);
+      if (isoError) {
+        info.status = 'error';
+        info.error = isoError;
+        this.editor.log(`Plugin ${name}: ${isoError}.`);
+        return info;
+      }
+    }
+    const isolated = src.manifest.isolation === 'worker';
+    // A valid worker manifest declares apiVersion 2 by definition; the v1
+    // ceiling below applies to the page path only.
+    if (!isolated && (src.manifest.apiVersion ?? 1) > API_VERSION) {
       info.status = 'error';
       info.error = `needs plugin API version ${src.manifest.apiVersion}; this JCad Electrical provides version ${API_VERSION}`;
       this.editor.log(`Plugin ${name}: ${info.error}.`);
@@ -476,9 +947,9 @@ export class PluginHost {
       this.editor.log(`Plugin ${name}: ${info.error}.`);
       return info;
     }
-    let trusted: boolean;
+    let verdict: { ok: boolean; freshYes: boolean };
     try {
-      trusted = await this.trusted(src, reask, current);
+      verdict = await this.trusted(src, reask, current);
     } catch (err) {
       if (!current()) return superseded();
       info.status = 'error';
@@ -487,9 +958,25 @@ export class PluginHost {
       return info;
     }
     if (!current()) return superseded();
-    if (!trusted) {
+    if (!verdict.ok) {
       this.editor.log(`Plugin ${name} not loaded (not trusted). PLUGINLOAD${src.folder ? ` ${src.folder}` : ''} asks again.`);
       return info;
+    }
+    // Trust-policy fix (ruling (3)): a consent THIS load just stored is
+    // dropped again if the load is then refused — a cached consent
+    // from a refused load is never reused. (Refusals inside the serve
+    // already forget the approval at their site; this covers every
+    // other refusal after consent: no realm transport, a realm load
+    // failure, the plugin's own code throwing.) A superseded load
+    // (current() false) keeps the record: the superseding load makes
+    // its own trust decision against it.
+    const dropRefusedConsent = () => {
+      if (verdict.freshYes && info.status === 'error' && current()) this.forgetSource(src);
+    };
+    if (isolated) {
+      const r = await this.loadIsolated(src, entry, current, superseded);
+      dropRefusedConsent();
+      return r;
     }
     const handle = createApi(this.editor, name);
     entry.handle = handle;
@@ -511,13 +998,262 @@ export class PluginHost {
       this.editor.log(`[${name}] failed to load: ${info.error}`);
       if (typeof console !== 'undefined') console.error(`[jcad plugin ${name}]`, err);
     }
+    dropRefusedConsent();
     return info;
   }
 
-  private replace(key: string, entry: { info: LoadedPlugin; handle: ApiHandle | null; source: PluginSource }): void {
+  /**
+   * Load a trusted worker plugin into its isolated realm. Fail-closed
+   * throughout (L-011 C2): no realm transport, a realm that never finishes
+   * loading, or a realm-side failure is a load ERROR — the code never runs
+   * in the page as a fallback.
+   */
+  private async loadIsolated(
+    src: PluginSource,
+    entry: HostEntry,
+    current: () => boolean,
+    superseded: () => LoadedPlugin,
+  ): Promise<LoadedPlugin> {
+    const { info } = entry;
+    const name = src.manifest.name;
+    let transport: RealmTransport | null = null;
+    try {
+      transport = this.realmTransportFactory ? this.realmTransportFactory() : defaultRealmTransport();
+    } catch {
+      transport = null;
+    }
+    if (!transport) {
+      info.status = 'error';
+      info.error = 'plugin declares "isolation": "worker" but no isolated realm transport is available in this environment; refusing to run it in the page';
+      this.editor.log(`Plugin ${name}: ${info.error}.`);
+      return info;
+    }
+    // Part B3 (AMENDMENT-P25-CSP-HOSTING): the realm loads its entry as a
+    // module — the host obtains the module URL before the session exists,
+    // and no body string ever crosses the handshake. Nothing available
+    // means the load fails closed (L-011 C2), exactly like a missing
+    // transport.
+    let plan: { moduleUrl: string; servedSessionId?: string; revoke?: () => void } | null = null;
+    let refusal: string | null = null;
+    try {
+      const resolved = await this.isolatedModuleUrl(src, transport, current);
+      if (resolved && 'refusal' in resolved) refusal = resolved.refusal;
+      else plan = resolved;
+    } catch {
+      plan = null;
+    }
+    // PR #38 [P2]: an unload that landed during the module-URL await
+    // (the serve inside it already revoked the session) supersedes the
+    // load BEFORE any session is constructed.
+    if (!current()) {
+      transport.terminate();
+      return superseded();
+    }
+    if (!plan) {
+      transport.terminate();
+      info.status = 'error';
+      info.error = refusal ?? 'plugin declares "isolation": "worker" but its entry cannot be provided to the realm as a module in this environment; refusing to run it in the page';
+      this.editor.log(`Plugin ${name}: ${info.error}.`);
+      return info;
+    }
+    // Condition (c): a served registration lives exactly as long as the
+    // session — the session's single dispose choke point unserves it on
+    // unload, supersede, failed load and timeout alike.
+    const servedSessionId = plan.servedSessionId;
+    const unserve =
+      servedSessionId && this.bridge?.pluginsUnserveIsolatedPackage
+        ? () => {
+            void Promise.resolve(this.bridge!.pluginsUnserveIsolatedPackage!(servedSessionId)).catch(() => undefined);
+          }
+        : null;
+    let session: IsolatedPluginSession;
+    try {
+      session = new IsolatedPluginSession(this.editor, {
+        owner: name,
+        capabilities: src.manifest.capabilities ?? [],
+        transport,
+        // The host's own load budget (production default 30 s); the larger
+        // budgets in the test harnesses are harness-only and never wired in.
+        loadTimeoutMs: this.loadTimeoutMs,
+        ...(unserve ? { onDisposed: unserve } : {}),
+      });
+    } catch (err) {
+      plan.revoke?.();
+      unserve?.();
+      info.status = 'error';
+      info.error = pluginErrorMessage(err);
+      this.editor.log(`Plugin ${name}: ${info.error}.`);
+      return info;
+    }
+    entry.session = session;
+    entry.handle = session.apiHandle;
+    try {
+      await session.loadModule(plan.moduleUrl);
+      if (!current()) {
+        session.dispose();
+        return superseded();
+      }
+      info.status = 'loaded';
+      const cmds = this.commandsOf(name);
+      this.editor.log(`Plugin ${name}${info.version ? ` ${info.version}` : ''} loaded (isolated)${cmds.length ? `: ${cmds.join(', ')}` : ''}.`);
+    } catch (err) {
+      if (!current()) {
+        session.dispose();
+        return superseded();
+      }
+      info.status = 'error';
+      info.error = pluginErrorMessage(err);
+      // Revoke before diagnostics, exactly like the page path: no commands,
+      // listeners or realm survive a failed load.
+      entry.session = null;
+      entry.handle = null;
+      session.dispose();
+      this.editor.log(`[${name}] failed to load: ${info.error}`);
+      if (typeof console !== 'undefined') console.error(`[jcad plugin ${name}]`, err);
+    } finally {
+      // A blob: entry/shim pair is revoked once the load has settled — the
+      // realm has imported them by then (or never will).
+      plan.revoke?.();
+    }
+    return info;
+  }
+
+  /**
+   * Resolve how this isolated load's entry reaches the realm as a module
+   * (Part B3), in order:
+   *  1. PACKAGED: the bridge serves the plugin folder's main-vetted
+   *     package and the realm loads the served entryUrl — the only URL
+   *     the packaged transport ever selects (condition C-J1: it never
+   *     selects a string path, and no blob is minted here);
+   *  1b. PACKAGED, NOT FROM THE FOLDER (Fable F2): where a serving
+   *     bridge exists, the realm worker is served under the worker CSP,
+   *     whose `script-src 'self'` refuses blob: imports — a picked-file
+   *     or script plugin would fall through to the blob branch below
+   *     and fail opaquely at the load timeout. The served transport is
+   *     the designed packaged path and it serves installed folder
+   *     packages only, so the load is refused here, explicitly, at
+   *     selection time ({ refusal }).
+   *  2. a transport-provided module URL (the Node test harness's file://
+   *     modules, Part B4);
+   *  3. PLAIN BROWSER / DEV: blob: modules minted from the entry text —
+   *     valid there because no worker CSP is served; under the packaged
+   *     worker CSP `blob:` is refused by `script-src 'self'`, and the
+   *     packaged path above never selects it. The entry text is
+   *     module-authored, so its `./jcad.js` specifier is rewritten to a
+   *     shim blob carrying the identical one-line shim body.
+   * Returns null when none is available: the load then fails closed.
+   */
+  private async isolatedModuleUrl(
+    src: PluginSource,
+    transport: RealmTransport,
+    current?: () => boolean,
+  ): Promise<{ moduleUrl: string; servedSessionId?: string; revoke?: () => void } | { refusal: string } | null> {
+    if (src.origin === 'folder' && src.folder && this.bridge?.pluginsServeIsolatedPackage) {
+      // Fable F1: main snapshots the package at registration and verifies
+      // the snapshot's entry against the hash this load's trust flow
+      // approved — `sourceHash`, the same digest `trusted()` computed and
+      // the user confirmed for this source: the entry's raw file bytes
+      // when the source carries them (R2), else its text.
+      // W-1: the approval binds the WHOLE snapshot, not just the entry —
+      // when the trust record remembers a manifest hash under this very
+      // approval, it travels with the entry hash and main verifies the
+      // whole graph against it; the manifest main reports back from a
+      // successful serve is remembered for the next load.
+      // Structural fix: the load's ADMITTED trust key travels too (see
+      // the bridge type) — main recomputes it from the serve reads and
+      // refuses a package that changed since admission, so the manifest
+      // check above is no longer the only place the package is bound.
+      const approvedEntryHash = await sourceHash(src);
+      const remembered = readTrust(this.storage)[trustKey(src)];
+      const approvedManifestHash =
+        remembered && remembered.answer === 'yes' && remembered.hash === approvedEntryHash && typeof remembered.manifestHash === 'string'
+          ? remembered.manifestHash
+          : undefined;
+      let served: { sessionId: string; baseUrl: string; entryUrl: string; manifestHash?: string; trustKey?: string } | null;
+      try {
+        served = await this.bridge.pluginsServeIsolatedPackage(src.folder, approvedEntryHash, approvedManifestHash, src.admission?.trustKey);
+      } catch (err) {
+        if (!isPluginChangedError(err)) throw err;
+        // The package on disk no longer matches the approval — a changed
+        // entry, or (W-1) a changed dependency under an unchanged entry.
+        // Forget the remembered answer so the next load asks again, and
+        // refuse THIS load (fail-closed, L-011 C2).
+        this.forgetSource(src);
+        return {
+          refusal:
+            'plugin declares "isolation": "worker" but its package changed since it was approved (the entry or a file in its module graph differs from the approved package); refusing to run it — reload the plugin to approve the new package',
+        };
+      }
+      // PR #38 [P2] (Codex review, 2026-10-22): recheck the load
+      // generation after the serve await. If the plugin was unloaded
+      // (or superseded) while main snapshotted and registered the
+      // package, the served session is revoked here and the load
+      // abandons — the plugin is never constructed or started on a
+      // session whose owner has already gone.
+      if (current && !current()) {
+        if (typeof served?.sessionId === 'string' && served.sessionId && this.bridge?.pluginsUnserveIsolatedPackage) {
+          void Promise.resolve(this.bridge.pluginsUnserveIsolatedPackage(served.sessionId)).catch(() => undefined);
+        }
+        return null;
+      }
+      if (!served || typeof served.entryUrl !== 'string' || !served.entryUrl) return null;
+      // Ruling (3): the key main computed for the served snapshot must
+      // be the ADMITTED key — the key shown in the prompt and the key
+      // remembered. A different one means the package changed between
+      // the admission read and the serve: reject the session (unserve
+      // it, forget the approval) rather than run it. (Main refuses
+      // this itself when it is given the key; this is the renderer's
+      // own check on what main reports back.)
+      if (src.admission && typeof served.trustKey === 'string' && served.trustKey !== src.admission.trustKey) {
+        if (typeof served.sessionId === 'string' && served.sessionId && this.bridge?.pluginsUnserveIsolatedPackage) {
+          void Promise.resolve(this.bridge.pluginsUnserveIsolatedPackage(served.sessionId)).catch(() => undefined);
+        }
+        this.forgetSource(src);
+        return {
+          refusal:
+            'plugin declares "isolation": "worker" but its package changed between admission and serving (the served trust key differs from the admitted key); refusing to run it — reload the plugin to approve the current package',
+        };
+      }
+      if (typeof served.manifestHash === 'string') this.rememberManifestHash(src, approvedEntryHash, served.manifestHash);
+      return {
+        moduleUrl: served.entryUrl,
+        ...(typeof served.sessionId === 'string' && served.sessionId ? { servedSessionId: served.sessionId } : {}),
+      };
+    }
+    if (this.bridge?.pluginsServeIsolatedPackage && src.origin !== 'folder') {
+      return {
+        refusal:
+          'plugin declares "isolation": "worker" but it was not loaded from the plugins folder; in the desktop app an isolated plugin must be installed in the plugins folder so the app can serve its package to the isolated realm — a picked-file or script plugin cannot be served; refusing to run it in the page',
+      };
+    }
+    if (typeof transport.moduleUrlFor === 'function') {
+      const url = transport.moduleUrlFor(src.code);
+      return url ? { moduleUrl: url } : null;
+    }
+    if (typeof Blob !== 'undefined' && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+      const shimUrl = URL.createObjectURL(new Blob([JCAD_SHIM_MODULE], { type: 'text/javascript' }));
+      try {
+        const text = src.code.split("'./jcad.js'").join(`'${shimUrl}'`).split('"./jcad.js"').join(`"${shimUrl}"`);
+        const entryUrl = URL.createObjectURL(new Blob([text], { type: 'text/javascript' }));
+        return {
+          moduleUrl: entryUrl,
+          revoke: () => {
+            URL.revokeObjectURL(entryUrl);
+            URL.revokeObjectURL(shimUrl);
+          },
+        };
+      } catch {
+        URL.revokeObjectURL(shimUrl);
+        return null;
+      }
+    }
+    return null;
+  }
+
+  private replace(key: string, entry: HostEntry): void {
     const previous = this.entries.get(key);
     this.entries.set(key, entry);
-    previous?.handle?.dispose();
+    if (previous) disposeEntry(previous);
   }
 
   /** Unload a plugin (its commands, listeners and onUnload hooks). */
@@ -526,7 +1262,7 @@ export class PluginHost {
     const e = this.entries.get(key);
     if (!e) return false;
     this.entries.delete(key);
-    e.handle?.dispose();
+    disposeEntry(e);
     return true;
   }
 
@@ -535,7 +1271,7 @@ export class PluginHost {
     if (!this.bridge) throw new Error('No plugins folder in the browser edition; use PLUGINLOAD to pick the files.');
     const r = await this.bridge.pluginsRead(folder);
     if (!r) throw new Error(`No plugin folder "${folder}".`);
-    return { manifest: parseManifest(r.manifest, folder), code: r.code, path: r.path, origin: 'folder', folder };
+    return { manifest: parseManifest(r.manifest, folder), code: r.code, ...(r.codeBytes ? { codeBytes: r.codeBytes } : {}), path: r.path, origin: 'folder', folder };
   }
 
   /** Load every plugin in userData/plugins (start-up). */
@@ -607,7 +1343,7 @@ export class PluginHost {
    */
   async runScript(fileName: string, code: string): Promise<boolean> {
     const src: PluginSource = { manifest: { name: fileName, apiVersion: 1 }, code, path: fileName, origin: 'script' };
-    if (!(await this.trusted(src, true))) {
+    if (!(await this.trusted(src, true)).ok) {
       this.editor.log(`Script ${fileName} not run.`);
       return false;
     }

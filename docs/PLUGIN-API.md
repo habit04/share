@@ -82,6 +82,21 @@ Limits: `plugin.json` up to 64 KB, the main file up to 2 MB, one file per plugin
 your code into that one file if you use several modules (any bundler with an IIFE output
 works; the bundle may refer to the free variable `jcad`).
 
+**Isolated (`"isolation": "worker"`) packages** are the exception to "one file per
+plugin": in the desktop app the entry and its static ES-module graph are snapshotted
+and served to the worker realm (the whole graph capped at 32 MiB). A multi-file
+isolated package must observe the snapshot's authoring constraints — see
+`docs/PLUGIN-ISOLATION.md` §6 for the full list. In short: static imports/exports
+with string-literal specifiers only (spaceless/minified and comment-interposed
+forms are recognised; computed dynamic import specifiers are not), relative
+`./` / `../` specifiers that stay inside the package and name each file under its
+exact on-disk spelling with a `.js` / `.mjs` extension, no bare specifiers, and no
+`jcad.js` file of your own at the package root (that name is the host's shim).
+Anything outside those rules fails closed: the file is not served and the load
+fails rather than falling back to disk. Your approval covers the whole package:
+if any file in the graph changes after you approved the plugin — not just the
+entry — the next load is refused and you are asked again.
+
 To distribute a plugin, zip the folder; users unzip it into `<app data>/plugins/` and
 restart or type `PLUGINRELOAD`.
 
@@ -147,6 +162,19 @@ a JSON object keyed by `"<origin>:<path>"` (`folder:`, `file:` or `script:`) hol
 `{ answer: "yes" | "no", hash, at }`, where `hash` is the SHA-256 of the code. When the code
 changes the user is asked again. A "no" is kept at start-up (the plugin is listed as
 *declined*); `PLUGINLOAD <folder>` asks again. `PLUGINS Forget` clears answers.
+
+For a **folder** plugin on the desktop, the record also holds `trustKey` and `form`
+(PR #38 structural fix): before trust is decided, the main process makes ONE admission
+read of the package and computes a trust key over the exact `plugin.json` bytes plus the
+code (the snapshot manifest for an isolated plugin, the entry bytes for a page plugin).
+The remembered answer is compared against that whole key — before the page/worker path
+is chosen — so a change to `plugin.json` (isolation mode, API version, capabilities, or
+anything else) asks again exactly like a code change, and a plugin that was approved as
+isolated can never silently start running in the page: that downgrade is always a fresh
+question, and the prompt says it is a downgrade. Answers remembered before this change
+carry no key; such a plugin is asked once more on its next load and the new record is
+written. Picked-file and script plugins are unchanged: their bytes are the renderer's
+only read, and their answers stay keyed by the code hash above.
 
 Only a 64-hex SHA-256 digest can persist approval. If WebCrypto is unavailable, approval is
 requested for that run and is not saved. The desktop's secure `jcad://app` origin provides

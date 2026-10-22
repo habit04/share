@@ -176,6 +176,12 @@ async function startup(options: { directory: string; legacy: (options: { read: L
       await files.rename(from, aside); return aside;
     },
     installPermissionHandlers: vi.fn(), installAssetHandler: vi.fn(), loadPersistedPaths, handOverFiles,
+    // P25 CSP hosting: the ready callback passes the module-scope
+    // plugin-realm registry to installAssetHandler as a free binding.
+    // The asset handler is stubbed above, so an inert registry double
+    // stands in (its real behaviour is covered in
+    // tests/plugin-realm-serving.test.ts).
+    pluginRealm: { register: () => {}, unregister: () => false, clear: () => {}, lookup: () => undefined },
     drawingArgs: vi.fn(() => []), process: { argv: ['private-test-jcad'], cwd: () => repo }, createWindow,
     probePhase: null, testBuild: true, runShippingProbe: vi.fn(), updater: { scheduleStartupCheck: vi.fn() },
     ctx: { mainWindow: null, legacyMigrationFailed: false, checkpointUnreadable: false },

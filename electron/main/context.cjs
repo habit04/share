@@ -18,5 +18,6 @@
  * @property {boolean} checkpointUnreadable  the startup preference checkpoint could not be read (corrupt or over the size limit; PR23 ASAR round 2): the checkpoint file and the migration marker are protected from overwrite this launch - neither the migrated checkpoint nor a close-time checkpoint may replace the unreadable bytes - so the next launch retries the read
  * @property {ReturnType<typeof import('./save-order.cjs').registerSaveOrder>|null} [saveOrder] Windows drawing/export owner and ordering service, registered before plot handlers
  * @property {{ host: ReturnType<typeof import('../restricted-pdf/host.cjs').createRestrictedPdfHost>, registry: ReturnType<typeof import('../restricted-pdf/registry.cjs').createRestrictedPdfRegistry> } | null} restrictedPdf  Restricted PDF transform + registration (12.4); null off Windows
+ * @property {ReturnType<typeof import('../renderer-origin.cjs').createPluginRealmRegistry>} pluginRealm  plugin-realm served snapshots for isolated plugins (AMENDMENT-P25-CSP-HOSTING Part A; Fable F1): session-lived registration snapshots of main-vetted plugin packages, served by the jcad:// handler under the worker CSP
  */
 module.exports = {};
