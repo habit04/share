@@ -38,7 +38,7 @@ import { entityMTextBackground } from '../../core/mtext-background';
 import { materializePolylineWidthFrames } from './polyline-width-blocks';
 import { LAYER_TRANSPARENCY_APP, transparencyToDxf, validColorName } from '../../core/appearance';
 import { namedCameraDisplayCenter, planarNamedCamera } from '../../core/named-view';
-import { annotationScaleRatio, graphAnnotationCarrier, graphAnnotationScaleEntries, graphTableRoundtripCarriers, preserveDxfCadGraph } from '../cad-graph-dxf';
+import { annotationScaleRatio, graphAnnotationCarrier, graphAnnotationScaleEntries, graphMLeaderContextChainCarriers, graphTableRoundtripCarriers, preserveDxfCadGraph, type MLeaderContextChainCarrier } from '../cad-graph-dxf';
 import { canonicalCadHandle } from '../../core/cad-graph';
 
 /** Linetype names referenced anywhere in the drawing (layers, entities, block entities). */
@@ -94,42 +94,44 @@ function dimensionPictureKey(d: DimensionEntity): string {
 }
 
 /**
- * P18 S3-D: the graph copy handed to the cad-graph merge, with the source
- * annotative chains of MODELLED multi-context multileaders removed.
+ * P18 S3-D: the graph copy handed to the cad-graph merge for MODELLED
+ * multi-context multileaders.
  *
  * Why this exists: the merge retains every source OBJECTS record the writer
  * does not regenerate through an anchor or a root-dictionary path key — and
  * an entity's extension-dictionary chain is reachable by neither (it hangs
- * off the entity record, not the named-objects root), so without this the
- * writer's own chain (Amendment 2) and the retained source chain would BOTH
- * be written, growing by one chain per save and resurrecting stale contexts
- * after edits. The writer owns the chains of the entities it models (the
- * same principle by which modelled entities are regenerated, not retained);
- * everything else in the graph is passed through untouched, node for node.
- * The walk is all-or-nothing per entity and type-checked at every link: a
- * chain whose shape does not resolve exactly as RULING-P18-S3-D (1)(ii)
- * pins it is left fully retained. The state's graph is COPIED, never
- * mutated; with no modelled chain the input state is returned as-is.
+ * off the entity record, not the named-objects root). P18 FIX group 2 split
+ * the custody: a chain the graph carries (graphMLeaderContextChainCarriers)
+ * stays IN the graph and preserveDxfCadGraph regenerates its records in
+ * place — the writer emits only the entity (whose extension subgroup this
+ * function strips from the source node, Amendment 2 (v)) and any growth
+ * objects — while a WITHHELD chain (P18 FIX group 1: no SCALE can be
+ * referenced for one of its scales) is dropped whole, so nothing of it can
+ * be resurrected by retention. A chain whose shape does not resolve exactly
+ * as RULING-P18-S3-D (1)(ii) pins it has no carrier and is left fully
+ * retained beside the writer's fresh chain, as before. The state's graph
+ * is COPIED, never mutated; with no modelled chain the input state is
+ * returned as-is.
  */
 function graphWithoutModelledContextChains(state: DrawingState, w: Writer, entities: readonly Entity[]): DrawingState {
   const graph = state.cadGraph;
   if (!graph) return state;
   const chained = new Set(entities.filter((e) => w.mleaderContextChains.has(e) || w.mleaderChainsWithheld.has(e)).map((e) => e.id));
-  const byHandle = new Map(graph.nodes.flatMap((n) => (n.sourceHandle ? [[canonicalCadHandle(n.sourceHandle), n] as const] : [])));
-  const entryTarget = (node: CadNode, keyUpper: string): CadNode | undefined => {
-    for (let i = 0; i + 1 < node.groups.length; i += 1) {
-      const [code, name] = node.groups[i]!;
-      if (code === 3 && name.trim().toUpperCase() === keyUpper && [350, 360].includes(node.groups[i + 1]![0])) {
-        return byHandle.get(canonicalCadHandle(node.groups[i + 1]![1].trim()));
-      }
-    }
-    return undefined;
-  };
+  // P18 FIX group 2: the chain resolution is the ONE walk in cad-graph-dxf
+  // (graphMLeaderContextChainCarriers). A CARRIED chain's nodes are NOT
+  // dropped — preserveDxfCadGraph regenerates them in place, so XDATA,
+  // unrecognized groups and unrelated dictionary keys survive and references
+  // into the chain stay valid. Only a WITHHELD chain (group 1) still drops
+  // its nodes wholesale: nothing of it may reach the output.
+  const carriers = graphMLeaderContextChainCarriers(state);
+  const entityById = new Map(entities.map((e) => [e.id, e] as const));
   const drop = new Set<string>();
   const stripped = new Map<string, CadNode>();
   for (const node of graph.nodes) {
     // Only entities the writer itself emits a chain for (W-ALLOC-18 WeakMap).
     if (node.anchor?.kind !== 'entity' || !chained.has(node.anchor.id)) continue;
+    const carrier = carriers.get(node.anchor.id);
+    if (!carrier) continue;
     let at = -1;
     for (let i = 0; i + 1 < node.groups.length; i += 1) {
       if (node.groups[i]![0] === 102 && node.groups[i]![1].includes('ACAD_XDICTIONARY') && node.groups[i + 1]![0] === 360) {
@@ -138,25 +140,11 @@ function graphWithoutModelledContextChains(state: DrawingState, w: Writer, entit
       }
     }
     if (at < 0) continue;
-    const ext = byHandle.get(canonicalCadHandle(node.groups[at + 1]![1].trim()));
-    if (!ext || ext.type !== 'DICTIONARY') continue;
-    const manager = entryTarget(ext, 'ACDBCONTEXTDATAMANAGER');
-    if (!manager || manager.type !== 'DICTIONARY') continue;
-    const scales = entryTarget(manager, 'ACDB_ANNOTATIONSCALES');
-    if (!scales || scales.type !== 'DICTIONARY') continue;
-    const objects: CadNode[] = [];
-    let resolves = true;
-    for (let i = 0; i + 1 < scales.groups.length; i += 1) {
-      if (scales.groups[i]![0] !== 3 || scales.groups[i + 1]![0] !== 350) continue;
-      const target = byHandle.get(canonicalCadHandle(scales.groups[i + 1]![1].trim()));
-      if (!target || target.type !== 'ACDB_MLEADEROBJECTCONTEXTDATA_CLASS') {
-        resolves = false;
-        break;
-      }
-      objects.push(target);
+    const entity = entityById.get(node.anchor.id);
+    const carried = entity ? w.mleaderContextChains.get(entity)?.carried === true : false;
+    if (!carried) {
+      for (const n of [carrier.extension, carrier.manager, carrier.scales, ...carrier.objects]) drop.add(n.id);
     }
-    if (!resolves) continue;
-    for (const n of [ext, manager, scales, ...objects]) drop.add(n.id);
     // The entity node's own extension subgroup is writer-generated now too
     // (Amendment 2 (v)); strip the source copy (and reindex its references)
     // so the merge has no stale subgroup metadata to splice back in.
@@ -166,7 +154,7 @@ function graphWithoutModelledContextChains(state: DrawingState, w: Writer, entit
     );
     stripped.set(node.id, { ...node, groups, ...(node.references ? { references } : {}) });
   }
-  if (!drop.size) return state;
+  if (!drop.size && !stripped.size) return state;
   return { ...state, cadGraph: { ...graph, nodes: graph.nodes.filter((n) => !drop.has(n.id)).map((n) => stripped.get(n.id) ?? n) } };
 }
 
@@ -184,11 +172,22 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
   // writer's allocator must never hand out a retained SCALE handle — the
   // context objects' group 340 names those scales by their source handles,
   // and preserveDxfCadGraph's rewrite of generated records would remap the
-  // value if a generated record carried the same handle.
+  // value if a generated record carried the same handle. P18 FIX group 2
+  // adds the carried chains' own retained handles (P18 FIX group 2): a
+  // carried chain is referenced by retained handle from the entity's
+  // extension subgroup and from its growth objects alike.
+  let mleaderCarriers: ReadonlyMap<string, MLeaderContextChainCarrier> = new Map();
   if (state.cadGraph
     && [...state.entities, ...Object.values(state.blocks).flatMap((b) => b.entities)]
       .some((e) => e.type === 'leader' && e.kind === 'mleader' && e.mleader?.contexts?.length)) {
-    w.avoidHandles = new Set(graphAnnotationScaleEntries(state).values());
+    mleaderCarriers = graphMLeaderContextChainCarriers(state);
+    const avoid = new Set(graphAnnotationScaleEntries(state).values());
+    for (const carrier of mleaderCarriers.values()) {
+      for (const node of [carrier.extension, carrier.manager, carrier.scales, ...carrier.objects]) {
+        if (node.sourceHandle) avoid.add(canonicalCadHandle(node.sourceHandle));
+      }
+    }
+    w.avoidHandles = avoid;
   }
   // ACAD_PLOTSTYLENAME: the dictionary layers point at (390) and its "Normal" entry (AutoCAD's
   // AUDIT reports layers whose plot style handle names no object).
@@ -401,13 +400,31 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
     }
     mleaderScalePlans.set(e, plans);
     w.reserveEntityHandle(e);
-    const extension = w.nextHandle();
-    const manager = w.nextHandle();
-    const scales = w.nextHandle();
-    const objects: string[] = [];
-    for (let i = 0; i <= e.mleader.contexts.length; i += 1) objects.push(w.nextHandle());
-    w.mleaderContextChains.set(e, { extension, manager, scales, objects });
-    mleaderContextObjectCount += objects.length;
+    // P18 FIX group 2: a chain the retained graph carries is registered
+    // with its RETAINED handles and regenerated in place by
+    // preserveDxfCadGraph; only the model's growth beyond the retained
+    // object count allocates fresh handles (the writer emits those).
+    const carrier = mleaderCarriers.get(e.id);
+    if (carrier) {
+      const retainedHandles = (node: CadNode): string => canonicalCadHandle(node.sourceHandle!);
+      const objects = carrier.objects.map(retainedHandles);
+      while (objects.length <= e.mleader.contexts.length) objects.push(w.nextHandle());
+      w.mleaderContextChains.set(e, {
+        extension: retainedHandles(carrier.extension),
+        manager: retainedHandles(carrier.manager),
+        scales: retainedHandles(carrier.scales),
+        objects,
+        carried: true,
+      });
+    } else {
+      const extension = w.nextHandle();
+      const manager = w.nextHandle();
+      const scales = w.nextHandle();
+      const objects: string[] = [];
+      for (let i = 0; i <= e.mleader.contexts.length; i += 1) objects.push(w.nextHandle());
+      w.mleaderContextChains.set(e, { extension, manager, scales, objects });
+    }
+    mleaderContextObjectCount += e.mleader.contexts.length + 1;
   }
   // Creations are written by THIS write when it creates the scale list, or
   // when no retained graph exists for the merge to complete them beside;
@@ -1302,6 +1319,36 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
         if (plan.createName) return mleaderScaleHandles.get(plan.createName);
         return undefined;
       };
+      const emitObject = (v: (typeof views)[number], i: number): void => {
+        w.pair(0, 'ACDB_MLEADEROBJECTCONTEXTDATA_CLASS');
+        w.pair(5, chain.objects[i]!);
+        w.pair(102, '{ACAD_REACTORS');
+        w.pair(330, chain.scales);
+        w.pair(102, '}');
+        w.pair(330, chain.scales);
+        w.pair(100, 'AcDbObjectContextData');
+        w.pair(70, 4);
+        w.pair(290, i === 0 ? 1 : 0);
+        w.pair(100, 'AcDbAnnotScaleObjectContextData');
+        const scaleRef = scaleHandleFor(i);
+        if (scaleRef) w.pair(340, scaleRef);
+        // Group 40 is written ONCE, as the first group of the context body
+        // emitMLeaderContext produces (P18 FIX group 1(c) — the annotative
+        // header's 40; a second one here is what AutoCAD rejected).
+        emitMLeaderContext(w, v, blockRecordHandle, false);
+      };
+      if (chain.carried) {
+        // P18 FIX group 2: the retained dictionaries and the retained
+        // objects are regenerated in place by preserveDxfCadGraph — the
+        // writer emits only the model's growth objects beyond the retained
+        // count, owned by the retained scales dictionary (chain.scales is
+        // its retained handle; the merge lists them in it).
+        const retainedCount = mleaderCarriers.get(e.id)?.objects.length ?? 0;
+        views.forEach((v, i) => {
+          if (i >= retainedCount) emitObject(v, i);
+        });
+        continue;
+      }
       // Extension dictionary (owner: the entity itself).
       w.pair(0, 'DICTIONARY');
       w.pair(5, chain.extension);
@@ -1336,24 +1383,7 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
         w.pair(350, chain.objects[i]!);
       });
       // The context objects themselves, in the same (dictionary) order.
-      views.forEach((v, i) => {
-        w.pair(0, 'ACDB_MLEADEROBJECTCONTEXTDATA_CLASS');
-        w.pair(5, chain.objects[i]!);
-        w.pair(102, '{ACAD_REACTORS');
-        w.pair(330, chain.scales);
-        w.pair(102, '}');
-        w.pair(330, chain.scales);
-        w.pair(100, 'AcDbObjectContextData');
-        w.pair(70, 4);
-        w.pair(290, i === 0 ? 1 : 0);
-        w.pair(100, 'AcDbAnnotScaleObjectContextData');
-        const scaleRef = scaleHandleFor(i);
-        if (scaleRef) w.pair(340, scaleRef);
-        // Group 40 is written ONCE, as the first group of the context body
-        // emitMLeaderContext produces (P18 FIX group 1(c) — the annotative
-        // header's 40; a second one here is what AutoCAD rejected).
-        emitMLeaderContext(w, v, blockRecordHandle, false);
-      });
+      views.forEach((v, i) => emitObject(v, i));
     }
   }
   w.pair(0, 'ENDSEC');

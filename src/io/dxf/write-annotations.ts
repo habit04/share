@@ -390,6 +390,28 @@ export function emitMLeaderContext(w: Writer, v: MLeaderCtxView, blockRecordHand
   if (section) w.pair(301, '}');
 }
 
+/**
+ * P18 FIX group 2: one context object's CONTEXT_DATA body as a group list —
+ * the same emission emitMLeaderContext produces for the writer (single
+ * group 40 first), run on a scratch Writer so preserveDxfCadGraph's
+ * in-place chain regeneration writes byte-identical bodies. The scratch
+ * writer's text-style map is primed with the retained body's own style
+ * handle (the merge cannot recompute this file's name -> handle map; the
+ * retained body is the proof of which handle this context used).
+ */
+export function mleaderContextBodyGroups(v: MLeaderCtxView, blockRecordHandle: string | undefined, textStyleHandle: string | undefined): Array<readonly [number, string]> {
+  const scratch = new Writer();
+  if (textStyleHandle) {
+    scratch.textStyleHandles.set(v.textStyleName.toUpperCase(), textStyleHandle);
+    if (!scratch.textStyleHandles.has('STANDARD')) scratch.textStyleHandles.set('STANDARD', textStyleHandle);
+  }
+  emitMLeaderContext(scratch, v, blockRecordHandle, false);
+  const lines = scratch.toString().split('\r\n');
+  const groups: Array<readonly [number, string]> = [];
+  for (let i = 0; i + 1 < lines.length; i += 2) groups.push([Number(lines[i]), lines[i + 1]!]);
+  return groups;
+}
+
 export function mleaderContextViews(e: LeaderEntity): MLeaderCtxView[] {
   const native = e.mleader!;
   const block = native.contentType === 'block' ? native.block : undefined;

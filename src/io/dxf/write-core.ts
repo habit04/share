@@ -106,6 +106,11 @@ export interface MLeaderContextChainHandles {
   manager: string;
   scales: string;
   objects: string[];
+  /** P18 FIX group 2: the chain is CARRIED — its handles are the retained
+   *  source handles and preserveDxfCadGraph regenerates the retained
+   *  records in place; writer.ts's OBJECTS block emits only the objects
+   *  beyond the retained count (the model's growth). */
+  carried?: boolean;
 }
 
 /** Block-record handles of paper-space layouts while writeDxf runs: their entities get group 67 = 1 (Track E). */

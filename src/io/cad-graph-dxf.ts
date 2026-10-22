@@ -1,6 +1,6 @@
 /** File handles are resolved once at import and once at export; retained values stay opaque. */
 import { DEFAULT_HEADER, type DrawingState } from '../core/document';
-import type { Entity, TableEntity } from '../core/entities';
+import type { Entity, LeaderEntity, TableEntity } from '../core/entities';
 import { newId } from '../core/entities';
 import { canonicalCadHandle, cadReferences, cadAnchorKey, cadReferenceKind, cadEntityLists, mapCadEntities, CadGraphError, reconcileCadGraph, validateCadState, type CadAnchor, type CadGraph, type CadGroup, type CadNode } from '../core/cad-graph';
 import { evaluateFields, FIELD_UNAVAILABLE, type FieldContext } from '../core/fields';
@@ -12,7 +12,7 @@ import { headerVariableReemittable, retainNativeLayoutPaper } from './dxf-layout
 import { DIM_VARIABLES } from '../core/dimension';
 import { formatScale, isScaleName } from '../core/layouts';
 import { solidCarrierGroups } from './dxf/model3d-carriers';
-import { tableCellContentSum, tableRoundtripCells, tableRoundtripCellValueGroups } from './dxf/write-annotations';
+import { mleaderContextBodyGroups, mleaderContextViews, tableCellContentSum, tableRoundtripCells, tableRoundtripCellValueGroups } from './dxf/write-annotations';
 import { MODEL3D_APP } from './dxf/codes';
 import { payloadText, polyfaceStructureProblem, native3dObject } from './dxf/mesh3d-read';
 import { decodeDimensionPayload } from '../model3d/file-format';
@@ -356,6 +356,79 @@ export function graphTableRoundtripCarriers(state: DrawingState): ReadonlySet<st
     }
   }
   return carried;
+}
+/**
+ * P18 FIX group 2: the retained annotative context chain of each modelled
+ * multileader, resolved on the retained graph exactly as RULING-P18-S3-D
+ * (1)(ii) pins it (entity extension subgroup -> DICTIONARY ->
+ * 'AcDbContextDataManager' entry -> DICTIONARY -> 'ACDB_ANNOTATIONSCALES'
+ * entry -> DICTIONARY -> its 350 entries -> the context objects), keyed by
+ * entity id. All-or-nothing per entity and type-checked at every link: a
+ * chain whose shape does not resolve exactly has no carrier, and the
+ * writer's fresh-chain posture applies to it unchanged. A carried chain is
+ * REGENERATED IN PLACE by preserveDxfCadGraph (the P22 surgical rule) —
+ * its nodes are never dropped, so references into the chain from anywhere
+ * else in the graph stay valid.
+ */
+export interface MLeaderContextChainCarrier {
+  readonly extension: CadNode;
+  readonly manager: CadNode;
+  readonly scales: CadNode;
+  readonly objects: readonly CadNode[];
+}
+export function graphMLeaderContextChainCarriers(state: DrawingState): ReadonlyMap<string, MLeaderContextChainCarrier> {
+  const carriers = new Map<string, MLeaderContextChainCarrier>();
+  const graph = state.cadGraph;
+  if (!graph) return carriers;
+  const byHandle = new Map(graph.nodes.flatMap((n) => (n.sourceHandle ? [[canonicalCadHandle(n.sourceHandle), n] as const] : [])));
+  const entryTarget = (node: CadNode, keyUpper: string): CadNode | undefined => {
+    for (let i = 0; i + 1 < node.groups.length; i += 1) {
+      const [code, name] = node.groups[i]!;
+      if (code === 3 && name.trim().toUpperCase() === keyUpper && [350, 360].includes(node.groups[i + 1]![0])) {
+        return byHandle.get(canonicalCadHandle(node.groups[i + 1]![1].trim()));
+      }
+    }
+    return undefined;
+  };
+  for (const node of graph.nodes) {
+    if (node.anchor?.kind !== 'entity') continue;
+    let at = -1;
+    for (let i = 0; i + 1 < node.groups.length; i += 1) {
+      if (node.groups[i]![0] === 102 && node.groups[i]![1].includes('ACAD_XDICTIONARY') && node.groups[i + 1]![0] === 360) {
+        at = i;
+        break;
+      }
+    }
+    let extension = at >= 0 ? byHandle.get(canonicalCadHandle(node.groups[at + 1]![1].trim())) : undefined;
+    if (!extension && node.sourceHandle) {
+      // The writer strips the entity's extension subgroup from the graph
+      // copy handed to the merge, so inside preserveDxfCadGraph the chain
+      // is found from the extension dictionary's side: it owns a
+      // 'AcDbContextDataManager' entry and its 330 names this entity.
+      const entityHandle = canonicalCadHandle(node.sourceHandle);
+      extension = graph.nodes.find((candidate) => candidate.type === 'DICTIONARY'
+        && entryTarget(candidate, 'ACDBCONTEXTDATAMANAGER') !== undefined
+        && candidate.groups.some(([code, raw]) => code === 330 && canonicalCadHandle(raw.trim()) === entityHandle));
+    }
+    if (!extension || extension.type !== 'DICTIONARY') continue;
+    const manager = entryTarget(extension, 'ACDBCONTEXTDATAMANAGER');
+    if (!manager || manager.type !== 'DICTIONARY') continue;
+    const scales = entryTarget(manager, 'ACDB_ANNOTATIONSCALES');
+    if (!scales || scales.type !== 'DICTIONARY') continue;
+    const objects: CadNode[] = [];
+    let resolves = true;
+    for (let i = 0; i + 1 < scales.groups.length; i += 1) {
+      if (scales.groups[i]![0] !== 3 || scales.groups[i + 1]![0] !== 350) continue;
+      const target = byHandle.get(canonicalCadHandle(scales.groups[i + 1]![1].trim()));
+      if (!target || target.type !== 'ACDB_MLEADEROBJECTCONTEXTDATA_CLASS') {
+        resolves = false;
+        break;
+      }
+      objects.push(target);
+    }
+    if (resolves) carriers.set(node.anchor.id, { extension, manager, scales, objects });
+  }
+  return carriers;
 }
 interface FieldExpansion {
   work: number;
@@ -1206,6 +1279,184 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   // still referenced by a surviving record is KEPT, detached from the
   // chain, never deleted into a dangling pointer; after regeneration the
   // final reference set is validated before assembly (below).
+  // P18 FIX group 2 (Codex PR #40 P1): carried annotative context chains
+  // are regenerated IN PLACE from the current model — the P22 surgical
+  // rule applied to the context chain. The extension and manager
+  // dictionaries are not regenerated at all (their modelled content never
+  // changes, so unrelated keys and XDATA ride through byte-verbatim); the
+  // scales dictionary keeps every non-entry group and gains the current
+  // entry list; each retained context object keeps its identity head
+  // (reactors, owner, type markers — the 290 default flag follows its
+  // position) and its XDATA tail byte-verbatim, while the annotative
+  // header's group 340 and the CONTEXT_DATA body (which begins with the
+  // single group 40) are rewritten from the model. Surplus objects the
+  // model no longer carries are deleted only when no surviving record
+  // references them; a referenced surplus is kept, detached from the
+  // chain. The final reference set is validated below whenever a chain
+  // was regenerated, so a save that would dangle fails atomically.
+  let contextChainsRegenerated = false;
+  const contextRegenerated = new Set<RecordData>();
+  {
+    const carriers = graphMLeaderContextChainCarriers(state);
+    if (carriers.size) {
+      const leaders = new Map<string, LeaderEntity>();
+      for (const list of lists(state)) for (const entity of list) if (entity.type === 'leader') leaders.set(entity.id, entity);
+      const canon = (raw: string): string | undefined => /^[0-9A-Fa-f]{1,16}$/.test(raw.trim()) ? canonicalCadHandle(raw.trim()) : undefined;
+      const byHandle = new Map<string, RecordData>();
+      for (const record of generated) {
+        const handle = canon(value(record, 5));
+        if (handle && !byHandle.has(handle)) byHandle.set(handle, record);
+      }
+      const recordOf = (node: CadNode): RecordData | undefined => {
+        const handle = canon(nodeHandles.get(node.id) ?? '');
+        return handle ? byHandle.get(handle) : undefined;
+      };
+      const indexedAll = generated.map((record) => {
+        const handle = value(record, 5);
+        return handle && record.type !== 'HEADER' ? { ...record, handle: canonicalCadHandle(handle) } : record;
+      });
+      const listEntries = scaleListOf(indexedAll)?.entries ?? new Map<string, RecordData>();
+      const surplus = new Set<RecordData>();
+      for (const [id, carrier] of carriers) {
+        const leader = leaders.get(id);
+        if (!leader?.mleader?.contexts?.length) continue;
+        const views = mleaderContextViews(leader);
+        const scalesRecord = recordOf(carrier.scales);
+        if (!scalesRecord) continue;
+        const scalesHandle = canon(nodeHandles.get(carrier.scales.id) ?? '')!;
+        // The current object handles: retained positionally, then the
+        // writer-emitted growth objects (their 330 names this scales
+        // dictionary by its retained handle).
+        const growth = generated.filter((record) => writerGenerated.has(record)
+          && record.type === 'ACDB_MLEADEROBJECTCONTEXTDATA_CLASS'
+          && record.groups.some(([code, raw]) => code === 330 && canon(raw) === scalesHandle));
+        const objectHandles: string[] = [];
+        views.forEach((view, i) => {
+          if (i < carrier.objects.length) objectHandles.push(canon(nodeHandles.get(carrier.objects[i]!.id) ?? '')!);
+          else objectHandles.push(growth[i - carrier.objects.length] ? canon(value(growth[i - carrier.objects.length]!, 5))! : '');
+        });
+        // Scales dictionary: the entry pairs are replaced in place (at the
+        // first entry's position); every other group is verbatim.
+        {
+          const sourceKeys: string[] = [];
+          for (let i = 0; i + 1 < carrier.scales.groups.length; i += 1) if (carrier.scales.groups[i]![0] === 3) sourceKeys.push(carrier.scales.groups[i]![1]);
+          const entries: CadGroup[] = [];
+          objectHandles.forEach((handle, i) => entries.push([3, sourceKeys[i] ?? `*A${i + 1}`], [350, handle]));
+          const kept: CadGroup[] = [];
+          let insertAt = -1;
+          const groups = scalesRecord.groups;
+          for (let i = 0; i < groups.length; i += 1) {
+            if (groups[i]![0] === 3 && i + 1 < groups.length && (groups[i + 1]![0] === 350 || groups[i + 1]![0] === 360)) {
+              if (insertAt < 0) insertAt = kept.length;
+              i += 1;
+              continue;
+            }
+            kept.push(groups[i]!);
+          }
+          if (insertAt < 0) insertAt = kept.length;
+          kept.splice(insertAt, 0, ...entries);
+          scalesRecord.groups = kept;
+        }
+        // The retained context objects, regenerated positionally.
+        views.forEach((view, i) => {
+          if (i >= carrier.objects.length) return;
+          const record = recordOf(carrier.objects[i]!);
+          if (!record) return;
+          const groups = record.groups;
+          const annotAt = groups.findIndex(([code, raw]) => code === 100 && raw.trim() === 'AcDbAnnotScaleObjectContextData');
+          if (annotAt < 0) return;
+          let tailAt = groups.length;
+          for (let j = annotAt + 1; j < groups.length; j += 1) {
+            const [code, raw] = groups[j]!;
+            if (code === 1001 || (code === 102 && raw.includes('ACAD_XDATA'))) {
+              tailAt = j;
+              break;
+            }
+          }
+          const head = groups.slice(0, annotAt + 1).map((group, j): CadGroup => {
+            if (group[0] === 290 && j > 0 && groups[j - 1]![0] === 100 && groups[j - 1]![1].trim() === 'AcDbObjectContextData') {
+              const flag = i === 0 ? 1 : 0;
+              return Number(group[1]) === flag ? group : [290, String(flag)];
+            }
+            return group;
+          });
+          // The retained body's own text-style handle (the 340 after the
+          // first 304) primes the body builder — the merge cannot recompute
+          // the writer's name -> handle map.
+          let styleHandle: string | undefined;
+          const textAt = groups.findIndex(([code]) => code === 304);
+          if (textAt >= 0) {
+            for (let j = textAt + 1; j < tailAt; j += 1) {
+              if (groups[j]![0] === 340) {
+                styleHandle = canon(groups[j]![1]);
+                break;
+              }
+            }
+          }
+          let blockRecordHandle: string | undefined;
+          if (leader.mleader?.contentType === 'block' && leader.mleader.block) {
+            const name = leader.mleader.block.name.toUpperCase();
+            for (const candidate of generated) {
+              if (candidate.type === 'BLOCK_RECORD' && value(candidate, 2).toUpperCase() === name) {
+                blockRecordHandle = canon(value(candidate, 5));
+                break;
+              }
+            }
+            if (!blockRecordHandle) {
+              for (let j = annotAt + 1; j < tailAt; j += 1) {
+                if (groups[j]![0] === 341) {
+                  blockRecordHandle = canon(groups[j]![1]);
+                  break;
+                }
+              }
+            }
+          }
+          const body = mleaderContextBodyGroups(view, blockRecordHandle, styleHandle);
+          // Group 340: the view's scale name (the retained source name, or
+          // the canonical name of the factor) resolved against the final
+          // scale list; when it cannot resolve here, the group-1
+          // completion pass below creates the SCALE and inserts the 340.
+          const name = view.scaleName ?? formatScale(1 / view.scaleFactor);
+          const target = listEntries.get(name)?.handle;
+          record.groups = [...head, ...(target ? [[340, target] as CadGroup] : []), ...body, ...groups.slice(tailAt)];
+          contextRegenerated.add(record);
+          contextChainsRegenerated = true;
+        });
+        for (let i = views.length; i < carrier.objects.length; i += 1) {
+          const record = recordOf(carrier.objects[i]!);
+          if (record) surplus.add(record);
+        }
+      }
+      if (surplus.size) {
+        // A surplus object still referenced by a surviving record is kept,
+        // detached; an unreferenced one is dropped. Fixpoint, because a
+        // kept surplus may itself reference another surplus.
+        const referenceCodes = new Set([330, 340, 341, 342, 343, 344, 350, 360]);
+        const surplusHandles = new Set([...surplus].map((record) => canon(value(record, 5))!));
+        const kept = new Set<RecordData>();
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (const record of generated) {
+            if (surplus.has(record) && !kept.has(record)) continue;
+            for (const [code, raw] of record.groups) {
+              if (!referenceCodes.has(code)) continue;
+              const handle = canon(raw);
+              if (!handle || !surplusHandles.has(handle)) continue;
+              const target = byHandle.get(handle);
+              if (target && !kept.has(target)) {
+                kept.add(target);
+                changed = true;
+              }
+            }
+          }
+        }
+        for (const record of surplus) {
+          if (!kept.has(record)) generated.splice(generated.indexOf(record), 1);
+        }
+      }
+    }
+  }
   // P22 PR #39 re-review 2 (Codex residual P1 variants; lead ruling): the
   // reference scans (rehome, keep-scan, validation) share the ONE
   // cadReferenceKind-derived code set HANDLE_REFERENCE_CODES, and an
@@ -1429,7 +1680,8 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
             if (record && record.type === 'XRECORD') surplus.add(record);
           }
         }
-        if (surplus.size) {
+        console.error('DBG surplus size', surplus.size);
+      if (surplus.size) {
           // Re-review rule 2: a surplus record still referenced by any
           // surviving record is KEPT as-is — detached from the chain (the
           // regenerated datatable no longer lists its handle) so no
@@ -1553,10 +1805,11 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   // RETAINED scale list (or no list at all): create the SCALE in the final
   // list — the cannoscale pass's shapes and allocator — and insert the 340
   // ahead of the object's header group 40. Retained context objects of
-  // chains the writer does not model are kept verbatim and never touched.
+  // chains the writer does not model are kept verbatim and never touched;
+  // objects a carried chain regenerated (group 2) join the same completion.
   let contextScaleEnsured = false;
   {
-    const pending = generated.filter(record => record.type === 'ACDB_MLEADEROBJECTCONTEXTDATA_CLASS' && writerGenerated.has(record));
+    const pending = generated.filter(record => record.type === 'ACDB_MLEADEROBJECTCONTEXTDATA_CLASS' && (writerGenerated.has(record) || contextRegenerated.has(record)));
     const targets = pending.flatMap(record => {
       const annotAt = record.groups.findIndex(([code, raw]) => code === 100 && raw.trim() === 'AcDbAnnotScaleObjectContextData');
       if (annotAt < 0 || record.groups[annotAt + 1]?.[0] === 340) return [];
@@ -1647,7 +1900,7 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   // truth as the keep-scan above) in the merged output is defined by
   // some record's group 5 (or 105), the DXF null handle '0' excepted. A
   // dangle fails the save here, atomically: no output is produced.
-  if (roundtripRegenerated || contextScaleEnsured) {
+  if (roundtripRegenerated || contextScaleEnsured || contextChainsRegenerated) {
     const canonHandle = (raw: string): string | undefined => /^[0-9A-Fa-f]{1,16}$/.test(raw.trim()) ? canonicalCadHandle(raw.trim()) : undefined;
     const defined = new Set<string>();
     for (const record of generated) for (const [code, raw] of record.groups) if (code === 5 || code === 105) { const handle = canonHandle(raw); if (handle) defined.add(handle); }
