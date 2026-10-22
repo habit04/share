@@ -10,7 +10,7 @@ const { atomicWriteFile } = require('../atomic-write.cjs');
 const { createAutosaveStore, safeAutosaveName } = require('../autosave-store.cjs');
 const { stateDir, autosaveDir, enqueueWrite } = require('./app-data.cjs');
 const { readLimitedFile, validateTextSize } = require('../resource-limits.cjs');
-const { isPluginFolderName, MAIN_RE, readPluginManifest, readPluginSourceBytes } = require('../plugin-files.cjs');
+const { isPluginFolderName, MAIN_RE, computePluginTrustKey, readPluginManifest, readPluginManifestBytes, readPluginPackageBytes, readPluginSourceBytes, sha256Hex } = require('../plugin-files.cjs');
 const { buildPluginRealmSnapshot } = require('../renderer-origin.cjs');
 
 /** @typedef {import('./context.cjs').MainContext} MainContext */
@@ -94,6 +94,74 @@ function registerStoreIpc(ctx) {
     return source === null ? null : { manifest: source.manifest, code: source.codeBytes.toString('utf8'), codeBytes: source.codeBytes, path: source.path };
   });
 
+  // ------------------------------------------------------------------ plugin admission (PR #38 structural fix, lead ruling 2026-10-22)
+  // ONE admission read per folder-plugin load. Main reads plugin.json's
+  // exact bytes + the entry's exact bytes (the graph too, for the
+  // worker form, via the F1 snapshot) ONCE and computes the package's
+  // TRUST KEY (plugin-files.cjs computePluginTrustKey): SHA-256 over
+  // the exact plugin.json bytes and the form material — the snapshot
+  // manifest (worker) or the entry-bytes hash (page). The result
+  // carries the policy bytes themselves, so the renderer's parsed
+  // policy (isolation mode, API version, capabilities), its trust
+  // comparison and (on the page path) the executed code ALL come from
+  // this one read — never from an earlier plugins-read, which is a
+  // different read that may name a different package version. The
+  // worker form's snapshot is verified to have hashed the SAME
+  // plugin.json bytes this admission did; a package that changed
+  // mid-admission fails ERR_PLUGIN_CHANGED instead of admitting a
+  // mixture. Returns null when the folder has no plugin.json (not a
+  // folder package; the legacy read path reports it).
+  ipcMain.handle('plugins-admit-package', async (_ev, folder) => {
+    if (!isPluginFolderName(folder)) throw new Error('Invalid plugin folder name');
+    const root = pluginsDir();
+    const pkg = await readPluginPackageBytes(root, folder, { checkPath: (file) => pathPolicy.insideRoot(root, file, 'plugins-admit-package') });
+    if (pkg === null) return null;
+    const manifestText = pkg.manifestBytes.toString('utf8');
+    let record;
+    try {
+      record = JSON.parse(manifestText);
+    } catch {
+      throw new Error('plugin.json is not valid JSON');
+    }
+    if (!record || typeof record !== 'object' || Array.isArray(record)) throw new Error('plugin.json must be an object');
+    const main = record.main === undefined ? 'main.js' : String(record.main);
+    // Mirror the serve handler: the entry must exist under exactly the
+    // manifest's spelling (its read in readPluginPackageBytes already
+    // enforced MAIN_RE + the byte/size discipline).
+    const packageDir = path.join(root, folder);
+    const stored = await fs.readdir(packageDir);
+    if (!stored.includes(main)) throw new Error(`plugin entry "${main}" does not exist in the plugin folder`);
+    const entrySha256 = sha256Hex(pkg.codeBytes);
+    // The form is decided from these same bytes: only the exact string
+    // "worker" takes the worker form (the renderer's full parse of the
+    // same bytes vets everything else and refuses malformed manifests
+    // before trust, identically on both paths).
+    const form = record.isolation === 'worker' ? 'worker' : 'page';
+    let manifestSha256;
+    let material = entrySha256;
+    if (form === 'worker') {
+      await pathPolicy.insideRoot(root, path.join(packageDir, main), 'plugins-admit-package');
+      const realRoot = await fs.realpath(packageDir);
+      const snapshot = await buildPluginRealmSnapshot(realRoot, main, {});
+      if (snapshot.pluginJsonSha256 !== sha256Hex(pkg.manifestBytes)) {
+        throw Object.assign(new Error('Plugin source changed while it was being admitted; reload the plugin to retry.'), { code: 'ERR_PLUGIN_CHANGED' });
+      }
+      manifestSha256 = snapshot.manifestSha256;
+      material = manifestSha256;
+    }
+    const trustKey = computePluginTrustKey(pkg.manifestBytes, material);
+    return {
+      trustKey,
+      form,
+      manifest: manifestText,
+      code: pkg.codeBytes.toString('utf8'),
+      codeBytes: pkg.codeBytes,
+      path: pkg.path,
+      entrySha256,
+      ...(manifestSha256 !== undefined ? { manifestHash: manifestSha256 } : {}),
+    };
+  });
+
   // ------------------------------------------------------------------ plugin-realm serving (AMENDMENT-P25-CSP-HOSTING Part A2; Fable F1; W-1)
   // The renderer asks main to serve the package of a plugin it has ALREADY
   // trusted through the existing trust flow (plugins.ts), and passes the
@@ -117,7 +185,12 @@ function registerStoreIpc(ctx) {
   // re-read after registration, so the realm executes the approved bytes
   // (approved bytes = executed bytes, for the whole graph). Main never
   // evaluates, transforms or wraps the served bytes.
-  ipcMain.handle('plugins-serve-isolated', async (ev, folder, approvedEntryHash, approvedManifestHash) => {
+  // Structural fix (2026-10-22): when the renderer supplies the
+  // ADMITTED trust key (from plugins-admit-package), this handler
+  // recomputes the key from its own reads and refuses the serve with
+  // ERR_PLUGIN_CHANGED when it differs — the key shown at the prompt,
+  // the key remembered and the key served are one key from one read.
+  ipcMain.handle('plugins-serve-isolated', async (ev, folder, approvedEntryHash, approvedManifestHash, admittedTrustKey) => {
     const pluginRealm = ctx.pluginRealm;
     if (!pluginRealm) throw new Error('Plugin realm serving is unavailable in this build');
     if (!isPluginFolderName(folder)) throw new Error('Invalid plugin folder name');
@@ -126,6 +199,9 @@ function registerStoreIpc(ctx) {
     }
     if (approvedManifestHash !== undefined && (typeof approvedManifestHash !== 'string' || !/^[0-9a-f]{64}$/.test(approvedManifestHash))) {
       throw new Error('plugins-serve-isolated needs the SHA-256 manifest of the plugin package the user approved, when one is remembered');
+    }
+    if (admittedTrustKey !== undefined && (typeof admittedTrustKey !== 'string' || !/^[0-9a-f]{64}$/.test(admittedTrustKey))) {
+      throw new Error('plugins-serve-isolated needs the SHA-256 trust key of the admitted plugin package, when one is supplied');
     }
     // PR #38 [P2] (Codex review, 2026-10-22): capture the registry
     // generation BEFORE the async work below (manifest read + snapshot
@@ -136,7 +212,11 @@ function registerStoreIpc(ctx) {
     const generation = pluginRealm.generation();
     const root = pluginsDir();
     const packageDir = path.join(root, folder);
-    const manifestText = await readPluginManifest(root, folder, { checkPath: (file) => pathPolicy.insideRoot(root, file, 'plugins-serve-isolated') });
+    // The manifest is read as BYTES here: the trust key below digests
+    // the exact bytes, and the JSON parse runs on their decode — the
+    // same pairing the admission read used (structural fix).
+    const manifestBytes = await readPluginManifestBytes(root, folder, { checkPath: (file) => pathPolicy.insideRoot(root, file, 'plugins-serve-isolated') });
+    const manifestText = manifestBytes.toString('utf8');
     let record;
     try {
       record = JSON.parse(manifestText);
@@ -162,6 +242,22 @@ function registerStoreIpc(ctx) {
       if (err && err.code === 'ERR_PLUGIN_CHANGED') throw new Error(`ERR_PLUGIN_CHANGED: ${err.message}`);
       throw err;
     }
+    // PR #38 structural fix, ruling (3): the key this serve computes
+    // from ITS reads must be the key the load was admitted and approved
+    // under. The snapshot is first proven to have hashed the same
+    // plugin.json bytes this handler read (a package that changed
+    // between the two reads is a changed package), then — when the
+    // renderer supplied the admitted key — the keys are compared and
+    // any difference refuses the serve as ERR_PLUGIN_CHANGED, before
+    // anything is registered. The computed key travels back in the
+    // result so the renderer can reject the session itself as well.
+    const currentTrustKey = computePluginTrustKey(manifestBytes, snapshot.manifestSha256);
+    if (snapshot.pluginJsonSha256 !== undefined && snapshot.pluginJsonSha256 !== sha256Hex(manifestBytes)) {
+      throw new Error('ERR_PLUGIN_CHANGED: Plugin source changed while it was being served; reload the plugin to retry.');
+    }
+    if (admittedTrustKey !== undefined && admittedTrustKey !== currentTrustKey) {
+      throw new Error('ERR_PLUGIN_CHANGED: Plugin package changed since it was admitted; reload the plugin to approve the current package.');
+    }
     const sessionId = randomBytes(16).toString('hex');
     // W-3: the registration is bound to the requesting webContents;
     // only that sender may unserve it (see the unserve handler).
@@ -172,7 +268,7 @@ function registerStoreIpc(ctx) {
     if (!pluginRealm.register(sessionId, snapshot, ev.sender, generation)) {
       throw new Error('plugin realm registration discarded: the window went away while the package was being prepared');
     }
-    return { sessionId, baseUrl: `jcad://app/plugin-realm/${sessionId}/`, entryUrl: `jcad://app/plugin-realm/${sessionId}/${main}`, manifestHash: snapshot.manifestSha256 };
+    return { sessionId, baseUrl: `jcad://app/plugin-realm/${sessionId}/`, entryUrl: `jcad://app/plugin-realm/${sessionId}/${main}`, manifestHash: snapshot.manifestSha256, trustKey: currentTrustKey };
   });
   /**
    * Drop one plugin-realm registration (the renderer reports its session

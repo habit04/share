@@ -81,11 +81,17 @@ export interface IsolatedSessionOptions {
   onDisposed?: () => void;
 }
 
+/**
+ * A LIVE file grant: minted by files.requestRead, redeemable exactly
+ * once via files.readGrant until it expires. A redeemed grant does not
+ * stay in the live map — its id moves to the session's tombstone LRU
+ * (see grantTombstones), so the live map holds only grants that can
+ * still be redeemed, and only they count against the grant quota.
+ */
 interface Grant {
   name: string;
   text: string;
   expiresAt: number;
-  used: boolean;
 }
 
 interface PendingCall {
@@ -106,7 +112,25 @@ const GRANT_TTL_MS = 60_000;
  * below the 4096-id consumed window below.
  */
 const MAX_IN_FLIGHT_CALLS = 64;
+/**
+ * Cap on LIVE file grants — unredeemed and unexpired (PR #38 P2,
+ * Codex re-review 2026-10-22). Redeemed grants leave the live set the
+ * moment they are redeemed (their ids move to the tombstone LRU
+ * below), and expired grants are pruned when a new grant is minted,
+ * so neither eats the quota: a plugin that reads files one grant at a
+ * time can do so indefinitely, while 32 grants held open at once
+ * still refuse the 33rd.
+ */
 const MAX_GRANTS = 32;
+/**
+ * How many redeemed grant ids one session remembers as single-use
+ * TOMBSTONES, so a replayed grant is still refused as 'grant-used'
+ * after it leaves the live set — without tombstones eating the live
+ * quota. Bounded LRU (redemption order): past the bound the oldest
+ * tombstone is evicted and its id replays as 'unknown-grant' instead
+ * — refused either way; only the refusal's name changes.
+ */
+const MAX_GRANT_TOMBSTONES = 256;
 /**
  * How many authenticated envelope ids one session remembers as consumed
  * (X2 single-use). The realm mints RPC ids from a monotonic per-session
@@ -228,6 +252,8 @@ export class IsolatedPluginSession {
   /** Per-kind eviction watermark (X2-W): the highest envelope-id counter ever evicted from the consumed set, per envelope kind. */
   private readonly evictionWatermarks = new Map<string, number>();
   private readonly grants = new Map<string, Grant>();
+  /** Redeemed grant ids, in redemption order (the tombstone LRU; see MAX_GRANT_TOMBSTONES). */
+  private readonly grantTombstones = new Map<string, true>();
   private readonly eventSubscriptions = new Map<string, () => void>();
   private callSeq = 0;
   private grantSeq = 0;
@@ -319,6 +345,7 @@ export class IsolatedPluginSession {
       this.pendingCalls.delete(id);
     }
     this.grants.clear();
+    this.grantTombstones.clear();
     this.consumedEnvelopeIds.clear();
     this.evictionWatermarks.clear();
     this.eventSubscriptions.clear();
@@ -644,27 +671,50 @@ export class IsolatedPluginSession {
 
   /** Run the host picker (the user's grant act) and mint a single-use grant handle — content stays host-side. */
   private async executeRequestRead(acceptRaw: unknown): Promise<unknown> {
+    // The quota counts only LIVE grants (PR #38 P2): expired grants
+    // are pruned here and redeemed ones already left the map at
+    // redemption, so neither can block a new mint.
+    const now = Date.now();
+    for (const [id, grant] of this.grants) if (now > grant.expiresAt) this.grants.delete(id);
     if (this.grants.size >= MAX_GRANTS) throw new Error('too many outstanding file grants');
     const accept = typeof acceptRaw === 'string' && acceptRaw ? acceptRaw : '.txt,.csv,.json,.js,.scr,.dxf';
     const file = await this.picker(accept);
     if (!file) return null;
     const grant = `grant-${++this.grantSeq}-${nonce().slice(0, 12)}`;
-    this.grants.set(grant, { name: file.name, text: file.text, expiresAt: Date.now() + GRANT_TTL_MS, used: false });
+    this.grants.set(grant, { name: file.name, text: file.text, expiresAt: now + GRANT_TTL_MS });
     return { grant, name: file.name, size: file.text.length };
   }
 
   private executeReadGrant(grantRaw: unknown): unknown {
     const grantId = String(grantRaw ?? '');
     const grant = this.grants.get(grantId);
-    if (!grant) throw Object.assign(new Error('unknown file grant'), { code: 'unknown-grant' });
-    if (grant.used) throw Object.assign(new Error('file grant was already redeemed'), { code: 'grant-used' });
+    if (!grant) {
+      // Not live: a redeemed id still names its replay as a replay
+      // while its tombstone survives; anything else is unknown.
+      if (this.grantTombstones.has(grantId)) throw Object.assign(new Error('file grant was already redeemed'), { code: 'grant-used' });
+      throw Object.assign(new Error('unknown file grant'), { code: 'unknown-grant' });
+    }
     if (Date.now() > grant.expiresAt) {
       this.grants.delete(grantId);
       throw Object.assign(new Error('file grant expired'), { code: 'grant-expired' });
     }
-    grant.used = true;
-    this.grants.set(grantId, grant);
+    // Redeem: the grant leaves the live set (freeing its quota slot)
+    // and its id joins the tombstones, so a replay is refused as
+    // 'grant-used' without the content staying host-side.
+    this.grants.delete(grantId);
+    this.rememberGrantTombstone(grantId);
     return { name: grant.name, text: grant.text };
+  }
+
+  /** Record one redeemed grant id in the bounded tombstone LRU (evicting the oldest past the bound). */
+  private rememberGrantTombstone(grantId: string): void {
+    this.grantTombstones.delete(grantId);
+    this.grantTombstones.set(grantId, true);
+    while (this.grantTombstones.size > MAX_GRANT_TOMBSTONES) {
+      const oldest = this.grantTombstones.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.grantTombstones.delete(oldest);
+    }
   }
 
   // ------------------------------------------------------------------ host -> realm calls

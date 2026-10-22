@@ -13,7 +13,12 @@
  *
  * Before a plugin runs the first time, the user confirms it. The answer is remembered in
  * localStorage under `jcad.plugins.trusted`, keyed by where the plugin came from and the
- * SHA-256 of its code, so a changed plugin is asked about again.
+ * SHA-256 of its code, so a changed plugin is asked about again. For a folder plugin the
+ * desktop main process makes ONE admission read of the package and the remembered answer
+ * is compared against the admission's TRUST KEY instead (PR #38 structural fix): the key
+ * digests the exact plugin.json bytes plus the code (the snapshot manifest for the worker
+ * form, the entry bytes for the page form), so the policy the user approved, the policy
+ * the record remembers and the policy that runs are all the same bytes.
  *
  * Plugins run in the application page (see docs/PLUGIN-API.md, "Security"): they are isolated
  * from each other only as far as errors go. The one exception is a plugin whose manifest opts
@@ -55,14 +60,18 @@ export interface PluginManifest {
 }
 
 /**
- * What the trust prompt is told about an isolated ('worker') plugin
- * (L-011 C3): that it runs isolated, and the capability set it declared.
- * Legacy v1 plugins get no details object — their prompt is unchanged.
+ * What the trust prompt is told about a plugin whose policy differs
+ * from a legacy v1 plugin's (L-011 C3): for an isolated ('worker')
+ * plugin, that it runs isolated and the capability set it declared;
+ * for a DOWNGRADE (PR #38 structural fix) — a package whose remembered
+ * approval was for the isolated form and whose admitted form is now
+ * the page — that it previously ran isolated and now asks to run in
+ * the page with full access. Legacy v1 plugins get no details object —
+ * their prompt is unchanged.
  */
-export interface PluginTrustDetails {
-  isolation: 'worker';
-  capabilities: string[];
-}
+export type PluginTrustDetails =
+  | { isolation: 'worker'; capabilities: string[] }
+  | { isolation: 'page'; downgradeFrom: 'worker' };
 
 export interface PluginSource {
   manifest: PluginManifest;
@@ -80,6 +89,36 @@ export interface PluginSource {
   origin: 'folder' | 'file' | 'script';
   /** Folder name under userData/plugins (origin 'folder'). */
   folder?: string;
+  /**
+   * The main-process ADMISSION of this folder source (PR #38 structural
+   * fix): the trust key + form main computed over its one read of the
+   * package, set by PluginHost.load from the admission result (whose
+   * manifest/code have already replaced this source's own read). Callers
+   * never set it; non-folder sources never carry it — their bytes are
+   * the renderer's only read by construction, so their trust stays
+   * keyed on the entry hash exactly as before.
+   */
+  admission?: { trustKey: string; form: 'worker' | 'page' };
+}
+
+/**
+ * The result of main's ONE admission read of a folder package
+ * (electron/main/ipc-stores.cjs 'plugins-admit-package'): the TRUST KEY
+ * over the exact plugin.json bytes + the form material (the snapshot
+ * manifest for the worker form, the entry-bytes SHA-256 for the page
+ * form), the form, and THE BYTES THEMSELVES — the manifest text the
+ * renderer parses its policy from and the entry code the page path
+ * executes — so the key, the policy and the code are one read.
+ */
+export interface PluginAdmission {
+  trustKey: string;
+  form: 'worker' | 'page';
+  manifest: string;
+  code: string;
+  codeBytes?: Uint8Array;
+  path: string;
+  entrySha256?: string;
+  manifestHash?: string;
 }
 
 export type PluginStatus = 'loaded' | 'error' | 'declined';
@@ -105,6 +144,17 @@ export interface PluginsBridge {
   /** Run a script in the page (used when CSP forbids `new Function`). */
   pluginsEval?(source: string): Promise<unknown>;
   /**
+   * Admission (PR #38 structural fix): main's ONE read of the folder
+   * package, returning its TRUST KEY and the admitted bytes (see
+   * PluginAdmission). PluginHost.load asks for it before trust and
+   * before the page/worker path is chosen, and the load then runs on
+   * the admitted manifest/code — an earlier plugins-read is used for
+   * discovery only, never for policy. Null when the folder has no
+   * plugin.json. Absent in the plain browser (and on older mains):
+   * such loads keep the pre-admission flow unchanged.
+   */
+  pluginsAdmitPackage?(folder: string): Promise<PluginAdmission | null>;
+  /**
    * CSP hosting (AMENDMENT-P25-CSP-HOSTING Part A2; Fable F1; W-1): ask
    * the main process to serve this (already trusted) plugin folder's
    * package to its isolated realm. Main vets the package from its own
@@ -117,9 +167,14 @@ export interface PluginsBridge {
    * approval covered. Main verifies its snapshot against BOTH and
    * refuses a changed entry OR a changed dependency with
    * ERR_PLUGIN_CHANGED (W-1: approval binds the whole snapshot).
+   * `admittedTrustKey`, when the load was admitted, is the trust key
+   * of the admitted package: main recomputes the key from its serve
+   * reads and refuses a package that changed since admission, and
+   * reports the key it computed back as `trustKey` so the renderer
+   * can reject the session if it differs from the admitted key.
    * Absent in the plain browser.
    */
-  pluginsServeIsolatedPackage?(folder: string, approvedEntryHash?: string, approvedManifestHash?: string): Promise<{ sessionId: string; baseUrl: string; entryUrl: string; manifestHash?: string }>;
+  pluginsServeIsolatedPackage?(folder: string, approvedEntryHash?: string, approvedManifestHash?: string, admittedTrustKey?: string): Promise<{ sessionId: string; baseUrl: string; entryUrl: string; manifestHash?: string; trustKey?: string }>;
   /** Drop a plugin-realm serving registration (the session was disposed). */
   pluginsUnserveIsolatedPackage?(sessionId: string): Promise<unknown>;
 }
@@ -328,6 +383,20 @@ interface TrustEntry {
    * approval binds the entry alone (they execute no served graph).
    */
   manifestHash?: string;
+  /**
+   * Structural fix: for an ADMITTED folder source, the TRUST KEY the
+   * remembered answer approved (over the exact plugin.json bytes +
+   * the form material — see PluginAdmission) and the form it was
+   * approved in. trusted() compares this FULL key before the
+   * page/worker path is chosen, so a change in isolation mode, API
+   * version, capabilities or code re-asks; `form` is what a later
+   * page-form load is recognised as a downgrade against. Absent on
+   * records written before the fix (and on non-admitted sources):
+   * those are compared by entry hash as before, and an admitted load
+   * with no key on its record asks once and rewrites it.
+   */
+  trustKey?: string;
+  form?: 'worker' | 'page';
   at: number;
 }
 
@@ -412,9 +481,13 @@ function defaultConfirm(editor: Editor): (name: string, path: string, details?: 
     // L-011 C3: a worker plugin's prompt presents its isolated status and
     // declared capability set instead of the full-access warning. With no
     // details (every legacy v1 plugin) both texts are byte-identical to v1.
-    const risk = details
-      ? `It runs isolated in a separate realm, limited to these declared capabilities: ${details.capabilities.length ? details.capabilities.join(', ') : '(none)'}.`
-      : 'Plugins run with full access to your drawings.';
+    // Structural fix: a downgrade (previously approved isolated, now
+    // asking for the page) is named as one, explicitly.
+    const risk = !details
+      ? 'Plugins run with full access to your drawings.'
+      : details.isolation === 'worker'
+        ? `It runs isolated in a separate realm, limited to these declared capabilities: ${details.capabilities.length ? details.capabilities.join(', ') : '(none)'}.`
+        : 'It previously ran isolated in a separate realm; this version runs in the page with full access to your drawings (a downgrade from isolation).';
     const message = `Load plugin ${name} from ${path}? ${risk}`;
     if (typeof document === 'undefined') return editor.ui?.confirm('Load plugin', message) ?? Promise.resolve(false);
     return new Promise((resolve) => {
@@ -427,9 +500,11 @@ function defaultConfirm(editor: Editor): (name: string, path: string, details?: 
         resolve(v);
       };
       m.onClose(() => finish(false));
-      const riskHtml = details
-        ? `This plugin runs <b>isolated</b> in a separate realm, limited to its declared capabilities:<br><code style="word-break:break-all">${esc(details.capabilities.join(', ') || '(none)')}</code>.`
-        : 'Plugins run with full access to your drawings.';
+      const riskHtml = !details
+        ? 'Plugins run with full access to your drawings.'
+        : details.isolation === 'worker'
+          ? `This plugin runs <b>isolated</b> in a separate realm, limited to its declared capabilities:<br><code style="word-break:break-all">${esc(details.capabilities.join(', ') || '(none)')}</code>.`
+          : 'This plugin previously ran <b>isolated</b> in a separate realm. This version runs <b>in the page with full access</b> to your drawings — a <b>downgrade</b> from isolation.';
       m.body.innerHTML = `<div style="font-size:12px;line-height:1.5">Load plugin <b>${esc(name)}</b> from<br><code style="word-break:break-all">${esc(path)}</code>?<br><br>${riskHtml} Load only plugins you trust. Your answer is remembered until the plugin's code changes.</div>`;
       const yes = button('Load', true);
       const no = button("Don't Load");
@@ -599,6 +674,35 @@ export class PluginHost {
     const all = readTrust(this.storage);
     const key = trustKey(src);
     const hit = all[key];
+    const admission = src.admission;
+    if (admission) {
+      // Structural fix (Codex re-review of PR #38; lead ruling
+      // 2026-10-22): an admitted folder source is trusted against the
+      // FULL TRUST KEY of main's one admission read, compared here —
+      // before load() chooses the page or worker path — so ANY change
+      // in isolation mode, API version, capabilities or code re-asks,
+      // on either path. The key shown in the prompt is the key
+      // remembered and the key the serve verifies.
+      const strongKey = /^[0-9a-f]{64}$/.test(admission.trustKey);
+      if (strongKey && hit && hit.trustKey === admission.trustKey && (hit.answer === 'yes' || !reask)) return hit.answer === 'yes';
+      // A downgrade: the remembered approval (this record, or a pre-fix
+      // record whose served manifest proves the worker form) was for
+      // isolation and the admitted form is the page — always a fresh
+      // consent, and the prompt says so.
+      const wasWorker = !!hit && (hit.form === 'worker' || (hit.answer === 'yes' && typeof hit.manifestHash === 'string'));
+      const details: PluginTrustDetails | undefined =
+        admission.form === 'worker'
+          ? { isolation: 'worker', capabilities: [...(src.manifest.capabilities ?? [])] }
+          : wasWorker
+            ? { isolation: 'page', downgradeFrom: 'worker' }
+            : undefined;
+      const yes = await this.confirmFn(src.manifest.name, src.path, details);
+      if (!current()) return false;
+      if (strongKey) all[key] = { answer: yes ? 'yes' : 'no', hash, trustKey: admission.trustKey, form: admission.form, at: Date.now() };
+      else delete all[key];
+      writeTrust(this.storage, all);
+      return yes;
+    }
     // Only a SHA-256 digest remembers an answer (security review E-10): with the FNV-1a fallback
     // (no WebCrypto) a changed plugin could keep a remembered "yes", so it is asked every run.
     const strongHash = /^[0-9a-f]{64}$/.test(hash);
@@ -667,6 +771,64 @@ export class PluginHost {
     // Bind confirmation and execution to the same source, even if a caller
     // changes its input object while hashing/confirmation is outstanding.
     src = { ...src, manifest: { ...src.manifest } };
+    // Structural fix (PR #38): ONE ADMISSION READ for folder plugins.
+    // Main reads the package once and returns its trust key + the
+    // admitted bytes; the admitted manifest/code REPLACE this source's
+    // own earlier read (pluginsRead via readFolder), so the policy the
+    // prompt shows, the policy the trust record binds and the code
+    // that runs all come from the read the key digests — an earlier
+    // plugins-read manifest is never used for policy. Runs before the
+    // manifest vetting, the version ceiling, trust and the page/worker
+    // choice alike: every one of them sees the admitted source.
+    if (src.origin === 'folder' && src.folder && this.bridge?.pluginsAdmitPackage) {
+      const fail = (message: string): LoadedPlugin => {
+        this.editor.log(`Plugin ${src.manifest.name}: ${message}.`);
+        return {
+          name: src.manifest.name,
+          version: src.manifest.version ?? '',
+          description: src.manifest.description ?? '',
+          path: src.path,
+          origin: src.origin,
+          ...(src.folder ? { folder: src.folder } : {}),
+          status: 'error',
+          error: message,
+          commands: [],
+        };
+      };
+      let admission: PluginAdmission | null;
+      try {
+        admission = await this.bridge.pluginsAdmitPackage(src.folder);
+      } catch (err) {
+        return fail(`could not admit the plugin package (${pluginErrorMessage(err)})`);
+      }
+      if (admission) {
+        if (
+          typeof admission.trustKey !== 'string' ||
+          !/^[0-9a-f]{64}$/.test(admission.trustKey) ||
+          (admission.form !== 'worker' && admission.form !== 'page') ||
+          typeof admission.manifest !== 'string' ||
+          typeof admission.code !== 'string'
+        ) {
+          return fail('the desktop bridge returned a malformed plugin admission; refusing to load');
+        }
+        let admittedManifest: PluginManifest;
+        try {
+          admittedManifest = parseManifest(admission.manifest, src.folder);
+        } catch (err) {
+          return fail(err instanceof Error ? err.message : String(err));
+        }
+        if ((admission.form === 'worker') !== (admittedManifest.isolation === 'worker')) {
+          return fail('the admitted plugin policy disagrees with its manifest about isolation; refusing to load');
+        }
+        src = {
+          ...src,
+          manifest: admittedManifest,
+          code: admission.code,
+          ...(admission.codeBytes ? { codeBytes: admission.codeBytes } : {}),
+          admission: { trustKey: admission.trustKey, form: admission.form },
+        };
+      }
+    }
     const name = src.manifest.name;
     const info: LoadedPlugin = {
       name,
@@ -912,15 +1074,19 @@ export class PluginHost {
       // approval, it travels with the entry hash and main verifies the
       // whole graph against it; the manifest main reports back from a
       // successful serve is remembered for the next load.
+      // Structural fix: the load's ADMITTED trust key travels too (see
+      // the bridge type) — main recomputes it from the serve reads and
+      // refuses a package that changed since admission, so the manifest
+      // check above is no longer the only place the package is bound.
       const approvedEntryHash = await sourceHash(src);
       const remembered = readTrust(this.storage)[trustKey(src)];
       const approvedManifestHash =
         remembered && remembered.answer === 'yes' && remembered.hash === approvedEntryHash && typeof remembered.manifestHash === 'string'
           ? remembered.manifestHash
           : undefined;
-      let served: { sessionId: string; baseUrl: string; entryUrl: string; manifestHash?: string } | null;
+      let served: { sessionId: string; baseUrl: string; entryUrl: string; manifestHash?: string; trustKey?: string } | null;
       try {
-        served = await this.bridge.pluginsServeIsolatedPackage(src.folder, approvedEntryHash, approvedManifestHash);
+        served = await this.bridge.pluginsServeIsolatedPackage(src.folder, approvedEntryHash, approvedManifestHash, src.admission?.trustKey);
       } catch (err) {
         if (!isPluginChangedError(err)) throw err;
         // The package on disk no longer matches the approval — a changed
@@ -946,6 +1112,23 @@ export class PluginHost {
         return null;
       }
       if (!served || typeof served.entryUrl !== 'string' || !served.entryUrl) return null;
+      // Ruling (3): the key main computed for the served snapshot must
+      // be the ADMITTED key — the key shown in the prompt and the key
+      // remembered. A different one means the package changed between
+      // the admission read and the serve: reject the session (unserve
+      // it, forget the approval) rather than run it. (Main refuses
+      // this itself when it is given the key; this is the renderer's
+      // own check on what main reports back.)
+      if (src.admission && typeof served.trustKey === 'string' && served.trustKey !== src.admission.trustKey) {
+        if (typeof served.sessionId === 'string' && served.sessionId && this.bridge?.pluginsUnserveIsolatedPackage) {
+          void Promise.resolve(this.bridge.pluginsUnserveIsolatedPackage(served.sessionId)).catch(() => undefined);
+        }
+        this.forgetSource(src);
+        return {
+          refusal:
+            'plugin declares "isolation": "worker" but its package changed between admission and serving (the served trust key differs from the admitted key); refusing to run it — reload the plugin to approve the current package',
+        };
+      }
       if (typeof served.manifestHash === 'string') this.rememberManifestHash(src, approvedEntryHash, served.manifestHash);
       return {
         moduleUrl: served.entryUrl,

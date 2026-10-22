@@ -129,10 +129,17 @@ contextBridge.exposeInMainWorld('jcad', {
   pluginsDir: () => ipcRenderer.invoke('plugins-dir'),
   pluginsList: () => ipcRenderer.invoke('plugins-list'),
   pluginsRead: (folder) => ipcRenderer.invoke('plugins-read', folder),
+  // Plugin admission (PR #38 structural fix): main's ONE read of a folder package — plugin.json
+  // bytes + entry (+ graph for the worker form) — returning the TRUST KEY over those exact bytes
+  // together with the bytes themselves, so the renderer's policy, trust comparison and executed
+  // code all come from the read the key digests.
+  pluginsAdmitPackage: (folder) => ipcRenderer.invoke('plugins-admit-package', folder),
   // Plugin-realm serving (AMENDMENT-P25-CSP-HOSTING Part A2; Fable F1): main snapshots and serves a
   // trusted plugin's package to its isolated realm under jcad://app/plugin-realm/<session>/; the
   // renderer passes the SHA-256 of the entry it approved, and main verifies the snapshot against it.
-  pluginsServeIsolatedPackage: (folder, approvedEntryHash, approvedManifestHash) => ipcRenderer.invoke('plugins-serve-isolated', folder, approvedEntryHash, approvedManifestHash),
+  // The admitted trust key rides along when the load was admitted; main recomputes and refuses a
+  // package that changed since admission (ERR_PLUGIN_CHANGED).
+  pluginsServeIsolatedPackage: (folder, approvedEntryHash, approvedManifestHash, admittedTrustKey) => ipcRenderer.invoke('plugins-serve-isolated', folder, approvedEntryHash, approvedManifestHash, admittedTrustKey),
   pluginsUnserveIsolatedPackage: (sessionId) => ipcRenderer.invoke('plugins-unserve-isolated', sessionId),
   /** Runs plugin code in the page after the user confirmed it; the page CSP has no 'unsafe-eval' for new Function. */
   pluginsEval: (source) => webFrame.executeJavaScript(String(source)),

@@ -317,8 +317,13 @@ describe('[P2b] a registration whose snapshot build spans a clear() is discarded
 
   it('the serve handler wires the generation through (source pin)', () => {
     const ipc = readFileSync('electron/main/ipc-stores.cjs', 'utf8');
-    const capture = ipc.indexOf('const generation = pluginRealm.generation();');
-    const build = ipc.indexOf('buildPluginRealmSnapshot(realRoot, main,');
+    // Scoped to the serve handler: the admission handler (PR #38
+    // structural fix) also builds a snapshot, earlier in the file —
+    // the pin's claim is about the serve handler's own sequence.
+    const serveStart = ipc.indexOf("ipcMain.handle('plugins-serve-isolated'");
+    expect(serveStart).toBeGreaterThan(-1);
+    const capture = ipc.indexOf('const generation = pluginRealm.generation();', serveStart);
+    const build = ipc.indexOf('buildPluginRealmSnapshot(realRoot, main,', serveStart);
     expect(capture).toBeGreaterThan(-1);
     expect(build).toBeGreaterThan(capture);
     expect(ipc).toContain('pluginRealm.register(sessionId, snapshot, ev.sender, generation)');

@@ -269,7 +269,7 @@ describe('main-process wiring for teardown (condition (c)) is in the shipped mai
   });
   it('exposes the serve/unserve bridge through the preload', () => {
     const preload = readFileSync('electron/preload.cjs', 'utf8');
-    expect(preload).toContain("pluginsServeIsolatedPackage: (folder, approvedEntryHash, approvedManifestHash) => ipcRenderer.invoke('plugins-serve-isolated', folder, approvedEntryHash, approvedManifestHash)");
+    expect(preload).toContain("pluginsServeIsolatedPackage: (folder, approvedEntryHash, approvedManifestHash, admittedTrustKey) => ipcRenderer.invoke('plugins-serve-isolated', folder, approvedEntryHash, approvedManifestHash, admittedTrustKey)");
     expect(preload).toContain("pluginsUnserveIsolatedPackage: (sessionId) => ipcRenderer.invoke('plugins-unserve-isolated', sessionId)");
   });
   it('wires the W-1 manifest through the serve handler: verified in main, reported back, ERR_PLUGIN_CHANGED named in the IPC message', () => {
@@ -524,6 +524,6 @@ describe('W-3 (lead ruling, 2026-10-22): unserve is owner-checked; served respon
     const ipc = readFileSync('electron/main/ipc-stores.cjs', 'utf8');
     expect(ipc).toMatch(/pluginRealm\.register\(sessionId, snapshot, ev\.sender, generation\)/);
     expect(ipc).toMatch(/unregister\(sessionId, ev\.sender\)/);
-    expect(ipc).toContain("ipcMain.handle('plugins-serve-isolated', async (ev, folder, approvedEntryHash, approvedManifestHash) => {");
+    expect(ipc).toContain("ipcMain.handle('plugins-serve-isolated', async (ev, folder, approvedEntryHash, approvedManifestHash, admittedTrustKey) => {");
   });
 });

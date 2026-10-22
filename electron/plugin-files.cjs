@@ -2,6 +2,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { constants } = require('node:fs');
+const { createHash } = require('node:crypto');
 
 const MAX_PLUGIN_MANIFEST_BYTES = 64 * 1024;
 const MAX_PLUGIN_CODE_BYTES = 2 * 1024 * 1024;
@@ -102,6 +103,47 @@ async function readPluginManifest(root, folder, options = {}) {
 }
 
 /**
+ * The manifest as its EXACT FILE BYTES (the admission read, PR #38
+ * structural fix): the trust key digests these bytes, never a decode.
+ * @param {string} root @param {unknown} folder
+ * @param {{ checkPath?: (file: string) => Promise<unknown> }} [options]
+ * @returns {Promise<Buffer>}
+ */
+async function readPluginManifestBytes(root, folder, options = {}) {
+  return readStablePluginFileBytes(root, path.join(root, safePluginFolder(folder), 'plugin.json'), MAX_PLUGIN_MANIFEST_BYTES, options);
+}
+
+/** SHA-256 (lowercase hex) of exact bytes. */
+function sha256Hex(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+/**
+ * The TRUST KEY of one admitted plugin package (PR #38 structural fix,
+ * the lead's ruling 2026-10-22): SHA-256 over the exact byte layout
+ *   "jcad-plugin-trust/1\n" + <plugin.json byte length, decimal> + "\n"
+ *   + <the exact plugin.json bytes> + "\n" + <form material, hex>
+ * where the form material is the snapshot MANIFEST hash (worker form —
+ * the W-1 hash over the whole module graph, plugin.json's line
+ * included) or the ENTRY bytes' SHA-256 (page form). The length prefix
+ * keeps the layout unambiguous for any plugin.json content. One key
+ * binds the policy (isolation mode, API version, capabilities — all
+ * live in plugin.json) AND the code, so an approval remembered against
+ * this key is an approval of exactly those bytes and nothing else.
+ * @param {Buffer} manifestBytes the exact plugin.json bytes of the admission read
+ * @param {string} materialSha256 the form material (lowercase hex)
+ * @returns {string}
+ */
+function computePluginTrustKey(manifestBytes, materialSha256) {
+  return createHash('sha256')
+    .update(`jcad-plugin-trust/1\n${manifestBytes.length}\n`, 'utf8')
+    .update(manifestBytes)
+    .update('\n', 'utf8')
+    .update(materialSha256, 'utf8')
+    .digest('hex');
+}
+
+/**
  * Resolve a folder's manifest text and entry file (the same logical source
  * path as the legacy loader/trust key). Missing manifests return null;
  * missing code and malformed entry names remain errors.
@@ -145,4 +187,38 @@ async function readPluginSourceBytes(root, folder, options = {}) {
   return { manifest: entry.manifest, codeBytes: await readStablePluginFileBytes(root, entry.file, MAX_PLUGIN_CODE_BYTES, options), path: entry.file };
 }
 
-module.exports = { MAX_PLUGIN_MANIFEST_BYTES, MAX_PLUGIN_CODE_BYTES, MAIN_RE, isPluginFolderName, readPluginManifest, readPluginSource, readPluginSourceBytes };
+/**
+ * The ADMISSION read of one plugin package (PR #38 structural fix):
+ * plugin.json's exact bytes and the entry's exact bytes, the entry
+ * resolved from THAT SAME manifest read (the tolerant parse mirrors
+ * `readPluginEntry`: malformed JSON keeps the legacy default entry and
+ * the renderer reports the malformation from these same bytes). One
+ * read supplies the hashed bytes, the parsed policy and the executed
+ * code, so the three can never come from different versions of the
+ * package. A missing manifest returns null (not a folder package);
+ * a missing entry remains an error.
+ * @param {string} root
+ * @param {unknown} folder
+ * @param {{ checkPath?: (file: string) => Promise<unknown> }} [options]
+ * @returns {Promise<{ manifestBytes: Buffer, codeBytes: Buffer, path: string } | null>}
+ */
+async function readPluginPackageBytes(root, folder, options = {}) {
+  const directory = path.join(root, safePluginFolder(folder));
+  let manifestBytes;
+  try {
+    manifestBytes = await readPluginManifestBytes(root, folder, options);
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return null;
+    throw error;
+  }
+  let main = 'main.js';
+  try {
+    const record = JSON.parse(manifestBytes.toString('utf8'));
+    if (record && record.main !== undefined) main = String(record.main);
+  } catch { /* The renderer reports malformed JSON; the legacy default entry is retained. */ }
+  if (!MAIN_RE.test(main)) throw new Error('plugin.json "main" must be a .js file in the plugin folder');
+  const file = path.join(directory, main);
+  return { manifestBytes, codeBytes: await readStablePluginFileBytes(root, file, MAX_PLUGIN_CODE_BYTES, options), path: file };
+}
+
+module.exports = { MAX_PLUGIN_MANIFEST_BYTES, MAX_PLUGIN_CODE_BYTES, MAIN_RE, computePluginTrustKey, isPluginFolderName, readPluginManifest, readPluginManifestBytes, readPluginPackageBytes, readPluginSource, readPluginSourceBytes, sha256Hex };

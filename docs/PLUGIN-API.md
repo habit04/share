@@ -163,6 +163,19 @@ a JSON object keyed by `"<origin>:<path>"` (`folder:`, `file:` or `script:`) hol
 changes the user is asked again. A "no" is kept at start-up (the plugin is listed as
 *declined*); `PLUGINLOAD <folder>` asks again. `PLUGINS Forget` clears answers.
 
+For a **folder** plugin on the desktop, the record also holds `trustKey` and `form`
+(PR #38 structural fix): before trust is decided, the main process makes ONE admission
+read of the package and computes a trust key over the exact `plugin.json` bytes plus the
+code (the snapshot manifest for an isolated plugin, the entry bytes for a page plugin).
+The remembered answer is compared against that whole key — before the page/worker path
+is chosen — so a change to `plugin.json` (isolation mode, API version, capabilities, or
+anything else) asks again exactly like a code change, and a plugin that was approved as
+isolated can never silently start running in the page: that downgrade is always a fresh
+question, and the prompt says it is a downgrade. Answers remembered before this change
+carry no key; such a plugin is asked once more on its next load and the new record is
+written. Picked-file and script plugins are unchanged: their bytes are the renderer's
+only read, and their answers stay keyed by the code hash above.
+
 Only a 64-hex SHA-256 digest can persist approval. If WebCrypto is unavailable, approval is
 requested for that run and is not saved. The desktop's secure `jcad://app` origin provides
 WebCrypto without giving plugins Node integration. Plugins still have full renderer and bridge

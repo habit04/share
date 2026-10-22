@@ -230,7 +230,38 @@ return — which the acceptance tests exercise.
   registration with `ERR_PLUGIN_CHANGED`: the load is refused, the
   remembered approval is forgotten, and the next load asks the user
   again before the new package's manifest is bound. Approved bytes
-  are the executed bytes for the WHOLE graph. Two serving hardenings
+  are the executed bytes for the WHOLE graph. The binding is now
+  structural (PR #38 structural fix, lead ruling 2026-10-22): trust
+  was keyed on the entry hash alone and the applied policy came from
+  the renderer's own plugins-read — a different read than main's,
+  checked only on the worker path — so a plugin.json change could
+  ride an entry approval (silently granting new capabilities on a
+  later load, or downgrading an isolated approval into page
+  execution). Now main makes ONE admission read per folder-plugin
+  load (`plugins-admit-package`): plugin.json bytes + entry (+ the
+  graph, for the worker form) are read once; a single TRUST KEY —
+  SHA-256 over `jcad-plugin-trust/1\n` + the plugin.json byte length
+  + `\n` + the exact plugin.json bytes + `\n` + the form material
+  (this section's snapshot manifest for the worker form, the
+  entry-bytes SHA-256 for the page form) — is computed over those
+  bytes, and the policy (isolation mode, API version, capabilities)
+  is parsed from THE SAME BYTES and applied from nowhere else. The
+  renderer compares the remembered approval against the full key
+  BEFORE choosing the page or worker path; any change in isolation
+  mode, API version, capabilities or code re-asks; a worker→page
+  downgrade is always a fresh consent and the prompt names it as a
+  downgrade. At serve time main recomputes the key from its serve
+  reads and refuses with `ERR_PLUGIN_CHANGED` when it differs from
+  the admitted key, and the renderer likewise rejects a served
+  session whose reported key differs — the key shown in the prompt,
+  the key remembered and the key applied are one key from one read.
+  The same re-review's P2 rides here: the host's 32-grant quota for
+  `files.requestRead` counts only LIVE (unredeemed, unexpired)
+  grants — a redeemed grant leaves the live set at redemption and
+  its id moves to a bounded 256-entry tombstone LRU, so replay is
+  still refused as `grant-used` without redeemed grants exhausting
+  the quota (past the tombstone bound an evicted id replays as
+  `unknown-grant` — refused either way). Two serving hardenings
   ride with it (W-3): a registration is bound to the webContents
   that requested it — only that sender may unserve the session (a
   foreign unserve is refused as a no-op) — and every plugin-realm
