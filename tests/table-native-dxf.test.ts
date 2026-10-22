@@ -191,7 +191,7 @@ describe('P22: native ACAD_TABLE DXF export', () => {
     expect(back.cells[0]![0]!.span).toEqual({ rows: 1, cols: 3 });
   });
 
-  it('writes an imported table (synthetic r2018 fixture) natively and re-reads it whole', () => {
+  it('writes an imported table (genuine r2018 fixture) natively and re-reads it whole', () => {
     const source = decodeDxfBytes(readFileSync(join(import.meta.dirname, 'fixtures', 'interchange', 'r2018-table.dxf'))).text;
     const state = readDxf(source);
     const written = writeDxf(state);
@@ -201,11 +201,15 @@ describe('P22: native ACAD_TABLE DXF export', () => {
     const back = readDxf(written).entities[0] as TableEntity;
     const orig = state.entities[0] as TableEntity;
     expect(back.cells.map((r) => r.map((c) => c.text))).toEqual(orig.cells.map((r) => r.map((c) => c.text)));
-    expect(back.rowHeights).toEqual([9, 7, 7, 7]);
+    // Genuine row heights (swap checklist #8: 9.666666666666668, 12.33333333333333, 7, 7
+    // in the file), at the precision the native write stores them — group 141, 10 decimals.
+    expect(back.rowHeights).toEqual([9.6666666667, 12.3333333333, 7, 7]);
     expect(back.columnWidths).toEqual([40, 25, 25]);
     expect(back.margin).toBe(1.5);
     expect(back.cells[0]![0]!.span).toEqual({ rows: 1, cols: 3 });
-    expect(back.cells[2]![2]!.raw).toBe('{\\fArial|b1;16 A}');
+    // The genuine file's formatted raw (swap checklist #11), carried whole through the
+    // native round trip; the synthetic's raw normalised to '{\fArial|b1;16 A}' here.
+    expect(back.cells[2]![2]!.raw).toBe('{\\fArial|b1|i0|c0|p34;16 A}');
     expect(back.cells[3]![0]!.height).toBe(3);
     expect(back.cells[3]![1]!.attachment).toBe(6);
     expect(writeDxf(readDxf(written))).toBe(written);
