@@ -22,6 +22,8 @@ import type { AttributeDefExt } from '../../electrical/symbol-builder-core';
 import * as g from '../../core/geometry';
 import { attdefFlagProps } from '../../electrical/symbol-builder-core';
 import { readEntities } from './read-pass';
+import { parseUnderlayDefinition } from './underlay-codec';
+import type { UnderlayDefinition, UnderlayKind } from '../../core/underlay';
 import { ImportReportBuilder } from '../import-report';
 import type { Linetype, LinetypeShapeStyle } from '../../core/linetypes';
 import { linetypeStyleRecords, hasComplexLinetypeData, readComplexLinetype, complexLinetypeWarning } from './complex-linetypes';
@@ -243,13 +245,35 @@ export function readEntitiesSection(objs: Obj[], ctx: ReadContext, layoutReader:
   return entities;
 }
 
-export function readObjectsSection(objs: Obj[], imageDefs: Map<string, string>, layoutReader: LayoutReader, report: ImportReportBuilder): void {
+const UNDERLAY_DEFINITION_KINDS: Readonly<Record<string, UnderlayKind>> = { PDFDEFINITION: 'pdf', DWFDEFINITION: 'dwf', DGNDEFINITION: 'dgn' };
+
+export function readObjectsSection(objs: Obj[], imageDefs: Map<string, string>, layoutReader: LayoutReader, report: ImportReportBuilder, underlayDefs?: UnderlayDefinition[]): void {
   for (const o of objs) if (o.kind === 'IMAGEDEF' && has(o, 5)) imageDefs.set(str(o, 5).toUpperCase(), str(o, 1));
+  // RULING-P28 C2/C3: underlay *DEFINITION objects are modelled through the
+  // codec into the DrawingState `underlays` sibling (threaded out via
+  // underlayDefs). A codec refusal drops the record with the codec's reason;
+  // a handle-less definition cannot be joined and is dropped, like other
+  // identity-less object metadata. No referenced-file I/O at import.
+  for (const o of objs) {
+    const defKind = UNDERLAY_DEFINITION_KINDS[o.kind];
+    if (!defKind) continue;
+    if (!has(o, 5)) {
+      report.add({ type: o.kind, action: 'dropped', reason: 'underlay definition has no handle and cannot be referenced by a placement', ...(o.line ? { line: o.line } : {}) });
+      continue;
+    }
+    const parsed = parseUnderlayDefinition(defKind, o.groups.map((p) => [p.code, p.value] as const), `underlaydef:${str(o, 5).toUpperCase()}`);
+    if (!parsed.ok) {
+      report.add({ type: o.kind, action: 'dropped', reason: parsed.refusal, handle: str(o, 5), ...(o.line ? { line: o.line } : {}) });
+      continue;
+    }
+    underlayDefs?.push(parsed.value);
+    report.add({ type: o.kind, action: 'kept', reason: 'underlay definition modelled: stored path, page and unmodelled groups are kept verbatim; the referenced file is not read at import', handle: str(o, 5), ...(o.line ? { line: o.line } : {}) });
+  }
   layoutReader.scanObjects(objs);
   // Named object groups (GROUP command) are not modelled: the objects stay, the grouping goes.
   for (const o of objs) {
     if (o.kind !== 'GROUP') {
-      if (!['SECTION', 'DICTIONARY', 'ACDBDICTIONARYWDFLT', 'ACDBPLACEHOLDER', 'LAYOUT', 'IMAGEDEF', 'IMAGEDEF_REACTOR', 'TABLESTYLE'].includes(o.kind)) report.add({ type: o.kind, action: has(o, 5) ? 'kept' : 'dropped', reason: has(o, 5) ? 'exposed object metadata and typed references are retained; its application-specific behavior is not simulated' : 'object metadata has no source identity and cannot be retained', ...(has(o, 5) ? { handle: str(o, 5) } : {}), ...(o.line ? { line: o.line } : {}) });
+      if (!['SECTION', 'DICTIONARY', 'ACDBDICTIONARYWDFLT', 'ACDBPLACEHOLDER', 'LAYOUT', 'IMAGEDEF', 'IMAGEDEF_REACTOR', 'TABLESTYLE', 'PDFDEFINITION', 'DWFDEFINITION', 'DGNDEFINITION'].includes(o.kind)) report.add({ type: o.kind, action: has(o, 5) ? 'kept' : 'dropped', reason: has(o, 5) ? 'exposed object metadata and typed references are retained; its application-specific behavior is not simulated' : 'object metadata has no source identity and cannot be retained', ...(has(o, 5) ? { handle: str(o, 5) } : {}), ...(o.line ? { line: o.line } : {}) });
       continue;
     }
     const desc = str(o, 300);

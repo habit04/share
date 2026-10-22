@@ -7,6 +7,7 @@ import { metricTextPlacement, type TextGeometryContext } from './text-metrics';
 import { interpolateFitPoints, isValidNurbs, nurbsPoints, type NurbsCurve } from './spline';
 import { bulgeArcSteps, isHatchBulge, findPattern, loopPolygon, patternSegments, pointInLoops, worldPatternLines, type HatchLoop, type WorldPatternLine } from './hatch';
 import { tableGeometry, type TableEntity } from './table';
+import type { DxfGroup, UnderlayKind, UnderlayPlacement } from './underlay';
 import { isImmutableData } from './immutable-data';
 import { GeometryBudgetError } from './geometry-budget-error';
 import { placedText, scaledText, transformedTextAnchors, textAnchor, type TextPlacement } from './text-placement';
@@ -328,6 +329,38 @@ export interface ImageEntity extends EntityBase {
   readonly fade?: number;
 }
 
+/**
+ * Underlay reference (PDFUNDERLAY / DWFUNDERLAY / DGNUNDERLAY): a placement of a
+ * *DEFINITION object kept in the DrawingState `underlays` sibling (core/underlay.ts).
+ * The placement fields are the UnderlayPlacement fields (RULING-P28 C1): group 5 is
+ * EntityBase.cadIdentity and group 8 is EntityBase.layer — neither is stored twice.
+ * A placement is a reference, never content: the referenced file is never read,
+ * rewritten or flattened by this entity (CONTRACTS §7.4).
+ */
+export interface UnderlayEntity extends EntityBase {
+  readonly type: 'underlay';
+  readonly kind: UnderlayKind;
+  /** Group 340 hard-pointer target: the definition object's handle, upper-cased. */
+  readonly definitionHandle: string;
+  /** Insertion point (groups 10/20). */
+  readonly position: Point;
+  /** Groups 41/42. Negative = mirrored, as with INSERT scales. */
+  readonly scaleX: number;
+  readonly scaleY: number;
+  /** Radians (group 50 in degrees). */
+  readonly rotation: number;
+  /** Group 70 flag bits, raw (see UNDERLAY_FLAG_* in core/underlay.ts). */
+  readonly flags: number;
+  /** Group 280, 0..100. */
+  readonly contrast?: number;
+  /** Group 281, 0..100. */
+  readonly fade?: number;
+  /** Clip boundary in underlay coordinates (group 14/24 point pairs). */
+  readonly clipBoundary?: readonly Point[];
+  /** Groups of the record this model does not claim, verbatim and in order. */
+  readonly retainedGroups: readonly DxfGroup[];
+}
+
 export type Entity =
   | LineEntity
   | CircleEntity
@@ -345,7 +378,8 @@ export type Entity =
   | HatchEntity
   | LeaderEntity
   | TableEntity
-  | ImageEntity;
+  | ImageEntity
+  | UnderlayEntity;
 
 export interface AttributeAppearance {
   readonly layer?: string;
@@ -924,6 +958,75 @@ export function imageParts(e: ImageEntity): Entity[] {
   return out;
 }
 
+// ------------------------------------------------------------------ underlay
+
+/**
+ * The placed frame's world corners from the placement alone (lower-left,
+ * lower-right, upper-right, upper-left), in the unit frame: the page/sheet
+ * extent is definition data (DrawingState.underlays), and where no extent is
+ * known the model itself falls back to the unit frame (core/underlay.ts
+ * underlayCorners). Bounds / snap / selection / hit-testing consume these
+ * corners; the display path uses underlayDisplayList with the real
+ * definition when one is resolved.
+ */
+export function underlayFramePoints(e: UnderlayEntity): Point[] {
+  const toWorld = (q: Point): Point => {
+    const sx = q.x * e.scaleX;
+    const sy = q.y * e.scaleY;
+    const c = Math.cos(e.rotation);
+    const s = Math.sin(e.rotation);
+    return { x: e.position.x + sx * c - sy * s, y: e.position.y + sx * s + sy * c };
+  };
+  return [toWorld({ x: 0, y: 0 }), toWorld({ x: 1, y: 0 }), toWorld({ x: 1, y: 1 }), toWorld({ x: 0, y: 1 })];
+}
+
+/**
+ * The placement view of an entity, for the model functions in
+ * core/underlay.ts: EntityBase common props are lifted back out (id,
+ * cadIdentity as the record handle) and the placement fields pass through.
+ * This is the one bridge between the two representations — the model
+ * module never imports entities.
+ */
+export function underlayPlacementOf(e: UnderlayEntity): UnderlayPlacement {
+  return {
+    id: e.id,
+    ...(e.cadIdentity ? { handle: e.cadIdentity } : {}),
+    kind: e.kind,
+    definitionHandle: e.definitionHandle,
+    layer: e.layer,
+    position: e.position,
+    scaleX: e.scaleX,
+    scaleY: e.scaleY,
+    rotation: e.rotation,
+    flags: e.flags,
+    ...(e.contrast !== undefined ? { contrast: e.contrast } : {}),
+    ...(e.fade !== undefined ? { fade: e.fade } : {}),
+    ...(e.clipBoundary ? { clipBoundary: e.clipBoundary } : {}),
+    retainedGroups: e.retainedGroups,
+  };
+}
+
+const underlayPartsCache = new WeakMap<UnderlayEntity, Entity[]>();
+/**
+ * Frame primitives of an underlay: the frame outline and its cross (the
+ * IMAGE-without-a-bitmap display, as generated parts). No label: a label
+ * only ever comes from a real definition's stored path (RULING-P28 C2),
+ * which the entity does not carry. Cached per entity.
+ */
+export function underlayParts(e: UnderlayEntity): Entity[] {
+  const hit = underlayPartsCache.get(e);
+  if (hit) return hit;
+  const style = { layer: e.layer, color: e.color, ...appearanceProperties(e), linetype: e.linetype, lineWeight: e.lineWeight };
+  const frame = underlayFramePoints(e);
+  const out: Entity[] = [
+    { ...style, id: `${e.id}:f`, type: 'polyline', points: frame, closed: true },
+    { ...style, id: `${e.id}:x1`, type: 'line', a: frame[0]!, b: frame[2]! },
+    { ...style, id: `${e.id}:x2`, type: 'line', a: frame[1]!, b: frame[3]! },
+  ];
+  underlayPartsCache.set(e, out);
+  return out;
+}
+
 // ------------------------------------------------------------------ xref placeholder
 
 /** Frame and name drawn for an external reference whose contents are not loaded. */
@@ -959,7 +1062,7 @@ interface Affine {
   gradientInBlock?: boolean;
 }
 
-type Compound = SplineEntity | HatchEntity | LeaderEntity | TableEntity | ImageEntity;
+type Compound = SplineEntity | HatchEntity | LeaderEntity | TableEntity | ImageEntity | UnderlayEntity;
 
 /** Between a direction angle and its reverse, the one nearest `ref` (keeps text readable after a mirror). */
 function readableAngle(a: number, ref: number): number {
@@ -1054,6 +1157,25 @@ function affineCompound(e: Compound, A: Affine): Entity {
     }
     case 'image':
       return { ...e, position: A.tf(e.position), u: A.vec(e.u), v: A.vec(e.v) };
+    case 'underlay': {
+      // The frame rides the point map; the transformed local X axis gives the
+      // new rotation, and the directional magnitudes scale the placement
+      // scales — the corner sequence maps exactly, so quad-drawn content
+      // (including a mirror) comes out right. The clip boundary is in
+      // definition (page) coordinates, like an IMAGE's pixel clip: it is NOT
+      // remapped — it stays attached to the same page region while its world
+      // outline follows the frame. definitionHandle and retainedGroups are
+      // never touched by a transform (RULING-P28 C4).
+      const dirX = A.vec({ x: Math.cos(e.rotation), y: Math.sin(e.rotation) });
+      const dirY = A.vec({ x: -Math.sin(e.rotation), y: Math.cos(e.rotation) });
+      return {
+        ...e,
+        position: A.tf(e.position),
+        rotation: normAngle(Math.atan2(dirX.y, dirX.x)),
+        scaleX: e.scaleX * Math.hypot(dirX.x, dirX.y),
+        scaleY: e.scaleY * Math.hypot(dirY.x, dirY.y),
+      };
+    }
   }
 }
 
@@ -1197,6 +1319,7 @@ export function blockTransform(e: Entity, tf: (p: Point) => Point, rotation: num
     case 'leader':
     case 'table':
     case 'image':
+    case 'underlay':
       return affineCompound(e, { tf, vec, rotation, kx: sx, ky: sy, mirrored: mirror, gradientInBlock: true });
   }
 }
@@ -1270,6 +1393,12 @@ export function entityGeometryWork(entity: Entity): number {
       break;
     case 'image':
       work += (entity.clip?.length ?? 0) + entity.path.length;
+      break;
+    case 'underlay':
+      // RULING-P28 C5(i): the variant charges its actual stored size —
+      // clip-boundary points plus retained-group count — through the
+      // existing geometry budget, so a hostile record is never free.
+      work += (entity.clipBoundary?.length ?? 0) + entity.retainedGroups.length;
       break;
   }
   if (immutable) workCache.set(entity, work);
@@ -2380,6 +2509,7 @@ export function similarityTransform(e: Entity, tf: (p: Point) => Point, rotation
     case 'leader':
     case 'table':
     case 'image':
+    case 'underlay':
       return affineCompound(e, { tf, vec: (v) => g.rotate(g.scale(v, k), rotation), rotation, kx: k, ky: k, mirrored: false });
   }
 }
@@ -2554,7 +2684,8 @@ export function entityBounds(e: Entity, lookup: BlockLookup): Bounds | null {
     }
     case 'leader':
     case 'table':
-    case 'image': {
+    case 'image':
+    case 'underlay': {
       let b: Bounds | null = null;
       for (const p of compoundParts(e, lookup.textGeometry)) b = g.unionBounds(b, entityBounds(p, lookup));
       return b;
@@ -2562,9 +2693,9 @@ export function entityBounds(e: Entity, lookup: BlockLookup): Bounds | null {
   }
 }
 
-/** Primitive parts of a leader, table or image (for bounds, hit testing, snapping, drawing). */
-export function compoundParts(e: LeaderEntity | TableEntity | ImageEntity, context?: TextGeometryContext): Entity[] {
-  return e.type === 'leader' ? leaderParts(e, context) : e.type === 'table' ? tableParts(e, context) : imageParts(e);
+/** Primitive parts of a leader, table, image or underlay (for bounds, hit testing, snapping, drawing). */
+export function compoundParts(e: LeaderEntity | TableEntity | ImageEntity | UnderlayEntity, context?: TextGeometryContext): Entity[] {
+  return e.type === 'leader' ? leaderParts(e, context) : e.type === 'table' ? tableParts(e, context) : e.type === 'image' ? imageParts(e) : underlayParts(e);
 }
 
 /** Distance from point to entity outline (world units). */
@@ -2654,8 +2785,10 @@ export function distanceToEntity(p: Point, e: Entity, lookup: BlockLookup): numb
     }
     case 'leader':
     case 'table':
-    case 'image': {
+    case 'image':
+    case 'underlay': {
       if (e.type === 'image' && pointInPolygon(p, imageBoundary(e))) return 0;
+      if (e.type === 'underlay' && pointInPolygon(p, underlayFramePoints(e))) return 0;
       let best = Infinity;
       for (const part of compoundParts(e, lookup.textGeometry)) best = Math.min(best, distanceToEntity(p, part, lookup));
       return best;
@@ -2744,7 +2877,8 @@ export function mirrorEntityAcross(e: Entity, a: Point, b: Point): Entity {
     case 'hatch':
     case 'leader':
     case 'table':
-    case 'image': {
+    case 'image':
+    case 'underlay': {
       const rv = (v: Point): Point => g.sub(g.scale(d, 2 * g.dot(v, d)), v);
       return affineCompound(e, { tf: reflect, vec: rv, rotation: 0, kx: 1, ky: 1, mirrored: true });
     }
@@ -2818,6 +2952,8 @@ export function gripPoints(e: Entity, context?: TextGeometryContext, lookup?: Bl
       return [e.position];
     case 'image':
       return imageCorners(e);
+    case 'underlay':
+      return underlayFramePoints(e);
   }
 }
 
@@ -2904,7 +3040,8 @@ export function moveGrip(e: Entity, index: number, p: Point): Entity | null {
     }
     case 'hatch':
     case 'table':
-    case 'image': {
+    case 'image':
+    case 'underlay': {
       const from = gripPoints(e)[index];
       return from ? translateEntity(e, g.sub(p, from)) : e;
     }
@@ -3014,6 +3151,8 @@ export function snapCandidates(e: Entity, lookup: BlockLookup): SnapCandidate[] 
     }
     case 'image':
       return [{ point: e.position, kind: 'insertion' }, ...imageCorners(e).map((q) => ({ point: q, kind: 'endpoint' as const }))];
+    case 'underlay':
+      return [{ point: e.position, kind: 'insertion' }, ...underlayFramePoints(e).map((q) => ({ point: q, kind: 'endpoint' as const }))];
   }
 }
 
@@ -3064,7 +3203,8 @@ export function entitySegments(e: Entity, lookup: BlockLookup): Array<[Point, Po
     }
     case 'leader':
     case 'table':
-    case 'image': {
+    case 'image':
+    case 'underlay': {
       const out: Array<[Point, Point]> = [];
       for (const part of compoundParts(e, lookup.textGeometry)) out.push(...entitySegments(part, lookup));
       return out;
@@ -3115,5 +3255,7 @@ export function entityTypeName(e: Entity): string {
       return 'ACAD_TABLE';
     case 'image':
       return 'IMAGE';
+    case 'underlay':
+      return e.kind === 'pdf' ? 'PDFUNDERLAY' : e.kind === 'dwf' ? 'DWFUNDERLAY' : 'DGNUNDERLAY';
   }
 }

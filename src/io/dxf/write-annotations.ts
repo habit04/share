@@ -4,7 +4,9 @@
  * tables (an INSERT of an anonymous block with the cell data as XDATA).
  */
 import { Writer, writeEntityCommon } from './write-core';
-import type { MTextEntity, DimensionEntity, LeaderEntity, ImageEntity, TableEntity } from '../../core/entities';
+import type { MTextEntity, DimensionEntity, LeaderEntity, ImageEntity, TableEntity, UnderlayEntity } from '../../core/entities';
+import { underlayPlacementOf } from '../../core/entities';
+import { writeUnderlayEntity } from './underlay-codec';
 import { formattedSource, mtextToDxf } from '../../core/mtext';
 import { textStyleOf } from '../encoding';
 import { MTEXT_COLUMNS_APP, MTEXT_BACKGROUND_APP, DIM_TYPE, DIMSTYLE_APP, TABLE_APP } from './codes';
@@ -285,6 +287,41 @@ export function writeImage(w: Writer, e: ImageEntity, owner: string, extras: Wri
   for (const p of clip) {
     w.pair(14, p.x);
     w.pair(24, p.y);
+  }
+}
+
+/**
+ * Group codes the writer's common path owns from EntityBase (plus the
+ * structural codes): a retained copy of one of these in an underlay record
+ * is the same fact the common path emits from the model, so the retained
+ * copy is dropped on write — the modelled value wins, and an edit to it
+ * (colour, linetype, ...) is what the file carries.
+ */
+const UNDERLAY_COMMON_OWNED: ReadonlySet<number> = new Set([5, 8, 100, 330, 6, 48, 62, 67, 370, 420, 430, 440]);
+
+export function writeUnderlay(w: Writer, e: UnderlayEntity, owner: string, extras: WriteExtras): void {
+  const type = e.kind === 'pdf' ? 'PDFUNDERLAY' : e.kind === 'dwf' ? 'DWFUNDERLAY' : 'DGNUNDERLAY';
+  const subclass = e.kind === 'pdf' ? 'AcDbPdfUnderlay' : e.kind === 'dwf' ? 'AcDbDwfUnderlay' : 'AcDbDgnUnderlay';
+  writeEntityCommon(w, e, owner, type, subclass);
+  const handle = w.lastHandle().toString(16).toUpperCase();
+  // The definition named IN THIS FILE: the placement joins to the sibling
+  // by handle, and the pre-pass allocated that definition a handle before
+  // ENTITIES emission (RULING-P28 C8). A dangling placement (no definition
+  // in the sibling) emits its stored reference verbatim — a target is
+  // never fabricated (C2).
+  const defHandle = extras.underlayHandlesByDef.get(e.definitionHandle) ?? e.definitionHandle;
+  const canonical = writeUnderlayEntity({ ...underlayPlacementOf(e), handle, retainedGroups: [] });
+  for (const [code, value] of canonical) {
+    if (code === 5 || code === 100 || code === 8) continue; // writeEntityCommon emitted them
+    if (code === 340) {
+      w.pair(340, defHandle);
+      continue;
+    }
+    w.pair(code, value);
+  }
+  for (const [code, value] of e.retainedGroups) {
+    if (UNDERLAY_COMMON_OWNED.has(code)) continue;
+    w.pair(code, value);
   }
 }
 

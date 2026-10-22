@@ -233,7 +233,8 @@ function polygonSegments(e: Entity, lookup: BlockLookup, includeHatchPattern = f
     case 'dimension': return dimensionParts(e, lookup.textGeometry).flatMap((part) => polygonSegments(part, lookup, includeHatchPattern));
     case 'leader':
     case 'table':
-    case 'image': return compoundParts(e, lookup.textGeometry).flatMap((part) => polygonSegments(part, lookup, includeHatchPattern));
+    case 'image':
+    case 'underlay': return compoundParts(e, lookup.textGeometry).flatMap((part) => polygonSegments(part, lookup, includeHatchPattern));
     default: return entitySegments(e, lookup);
   }
 }
@@ -248,7 +249,8 @@ function selectionRegions(e: Entity, lookup: BlockLookup): readonly (readonly Po
     case 'dimension': return dimensionParts(e, lookup.textGeometry).flatMap((part) => selectionRegions(part, lookup));
     case 'leader':
     case 'table':
-    case 'image': return compoundParts(e, lookup.textGeometry).flatMap((part) => selectionRegions(part, lookup));
+    case 'image':
+    case 'underlay': return compoundParts(e, lookup.textGeometry).flatMap((part) => selectionRegions(part, lookup));
     default: return [];
   }
 }

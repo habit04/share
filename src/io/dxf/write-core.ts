@@ -132,10 +132,14 @@ export interface WriteExtras {
   tableBlocks: Map<TableEntity, string>;
   /** DIMASZ × DIMSCALE of the header style (leaders store their arrow size as an override when it differs). */
   arrowSize: number;
+  /** Underlay definition id -> handle allocated for it in this file (RULING-P28 C8 pre-pass). */
+  underlayDefHandles: Map<string, string>;
+  /** Underlay definition source handle (upper-case) -> handle allocated in this file. */
+  underlayHandlesByDef: Map<string, string>;
 }
 
 export function emptyExtras(): WriteExtras {
-  return { imageDefs: new Map(), imageReactors: new Map(), tableBlocks: new Map(), arrowSize: STANDARD_DIMSTYLE.arrowSize };
+  return { imageDefs: new Map(), imageReactors: new Map(), tableBlocks: new Map(), arrowSize: STANDARD_DIMSTYLE.arrowSize, underlayDefHandles: new Map(), underlayHandlesByDef: new Map() };
 }
 
 /** writeDxf names the paper-space owners before it writes any entity. */

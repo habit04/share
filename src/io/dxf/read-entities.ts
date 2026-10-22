@@ -16,6 +16,7 @@ import { LoopBuilder, edgeArc, fitPatternToLines, findPattern } from '../../core
 import type { ReadContext } from './read-core';
 import { hasFields, evaluateFields } from '../../core/fields';
 import { readMTextColumns, readDimension, readDimStyleFromEntity, readLeader, readMLeader, readImage, readTable, readJcadTable } from './read-annotations';
+import { parseUnderlayEntity } from './underlay-codec';
 import type { MTextAttachment, MTextBackground } from '../../core/mtext';
 import { mtextFromDxf, hasFormatting } from '../../core/mtext';
 import { readTextPlacement } from './read-text';
@@ -468,6 +469,37 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
       const im = readImage(o, base);
       ctx.pendingImages?.set(im.id, str(o, 340).toUpperCase());
       return im;
+    }
+    case 'PDFUNDERLAY':
+    case 'DWFUNDERLAY':
+    case 'DGNUNDERLAY': {
+      // RULING-P28 C1/C3: the placement is modelled through the underlay
+      // codec. A codec refusal drops THIS record with the codec's reason —
+      // never half-modelled, never aborting its siblings. The entity id is
+      // the reader's (base.id); the codec's isolated id is not used here.
+      // No referenced-file I/O happens at import (C3).
+      const kind = o.kind === 'PDFUNDERLAY' ? 'pdf' : o.kind === 'DWFUNDERLAY' ? 'dwf' : 'dgn';
+      const parsed = parseUnderlayEntity(kind, o.groups.map((p) => [p.code, p.value] as const), base.id);
+      if (!parsed.ok) {
+        reportObj(ctx, o, 'dropped', parsed.refusal);
+        return null;
+      }
+      const p = parsed.value;
+      return {
+        ...base,
+        type: 'underlay',
+        kind,
+        definitionHandle: p.definitionHandle,
+        position: p.position,
+        scaleX: p.scaleX,
+        scaleY: p.scaleY,
+        rotation: p.rotation,
+        flags: p.flags,
+        ...(p.contrast !== undefined ? { contrast: p.contrast } : {}),
+        ...(p.fade !== undefined ? { fade: p.fade } : {}),
+        ...(p.clipBoundary ? { clipBoundary: p.clipBoundary } : {}),
+        retainedGroups: p.retainedGroups,
+      };
     }
     case 'ACAD_TABLE': {
       // Cell data present: a native table. Otherwise it draws through its anonymous *T block (group 2).
