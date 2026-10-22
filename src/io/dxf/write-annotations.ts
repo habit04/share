@@ -600,9 +600,11 @@ const CELL_FLAG_ALIGNMENT = 0x1;
 /**
  * A table is written as a native ACAD_TABLE (P22 slice 1, text cells), referencing its
  * generated *T picture block (2 / 343) and the synthesized TABLESTYLE (342). The cell
- * form is version-conditional (P22 COMP-N / N-3): at AC1015..AC1027 the legacy per-cell
- * groups AutoCAD writes at AC1015 (171.. head, text in 1/3, 7 style, 140 height,
- * 170 alignment, 175/176 spans); at AC1032 the cell-value form AutoCAD's own R2018
+ * form is version-conditional (P22 COMP-N / N-3): at AC1015..AC1027
+ * AutoCAD's own R2000 per-cell form (P22 F-2: 171.. head with 177 override
+ * flags, text in 3-chunks + a group 1 every cell carries, 140/170 only where
+ * the cell departs from its row role, after the text, 175/176 spans with
+ * covered cells at 1); at AC1032 the cell-value form AutoCAD's own R2018
  * output uses (301 CELL_VALUE .. 304 ACVALUE_END per cell, overrides only where the
  * cell departs from its row role's style defaults, flagged in group 91) — AutoCAD
  * reads ONLY the cell-value form at AC1032 and silently discards legacy cell text
@@ -697,28 +699,40 @@ export function writeAcadTable(w: Writer, t: TableEntity, owner: string, picture
         w.pair(304, 'ACVALUE_END');
         continue;
       }
+      // AutoCAD's own R2000 form (P22 F-2), matched group-for-group against the
+      // genuine AC1015 control (fixtures/interchange/r2000-table-autocad.dxf):
+      // no per-cell 91/92, no group 7; group 177 carries the override flags
+      // (0x20 height, 0x1 alignment — the same bits the cell-value form's 91
+      // uses); merge-covered cells carry spans of 1 and an EMPTY group 1, as
+      // every cell carries its text group; 140/170 appear only where the cell
+      // departs from its row role's style defaults, after the text. The
+      // pre-F-2 JCad form (91/92/7, unconditional 140/170, no text group on
+      // covered cells) loaded in AutoCAD with every cell's text empty until a
+      // regen and the overrides never appearing at all.
       w.pair(171, 1);
       w.pair(172, 0);
       w.pair(173, covered ? 1 : 0);
       w.pair(174, 0);
-      w.pair(175, covered ? 0 : span.cols);
-      w.pair(176, covered ? 0 : span.rows);
-      w.pair(91, 0);
+      w.pair(175, covered ? 1 : span.cols);
+      w.pair(176, covered ? 1 : span.rows);
+      const legacyHeightOverride = !covered && cellHeight(t, cell) !== roleHeight(r);
+      const legacyAlignmentOverride = !covered && cellAttachment(cell) !== roleAttachment(r);
+      let legacyFlags = 0;
+      if (legacyHeightOverride) legacyFlags |= CELL_FLAG_HEIGHT;
+      if (legacyAlignmentOverride) legacyFlags |= CELL_FLAG_ALIGNMENT;
+      w.pair(177, legacyFlags);
       w.pair(178, 0);
       w.pair(145, 0);
-      w.pair(92, 0);
-      if (covered) continue;
-      const content = formattedSource(cell) ?? guardDxfEscapes(mtextPlainToDxf(cell.text));
+      const content = covered ? '' : formattedSource(cell) ?? guardDxfEscapes(mtextPlainToDxf(cell.text));
       let rest = content;
       while (rest.length > 250) {
         const end = dxfChunkEnd(rest);
         w.pair(3, rest.slice(0, end));
         rest = rest.slice(end);
       }
-      if (rest) w.pair(1, rest);
-      w.pair(7, 'Standard');
-      w.pair(140, cellHeight(t, cell));
-      w.pair(170, cellAttachment(cell));
+      w.pair(1, rest);
+      if (legacyHeightOverride) w.pair(140, cellHeight(t, cell));
+      if (legacyAlignmentOverride) w.pair(170, cellAttachment(cell));
     }
   }
   if (needsCarrier || !anyVisibleText) {

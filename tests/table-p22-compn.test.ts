@@ -251,7 +251,7 @@ describe('P22 COMP-N Series 2: the synthesized TABLESTYLE writes AutoCAD\u2019s 
   });
 });
 
-describe('P22 COMP-N N-3: the AC1015 output keeps the legacy per-cell form', () => {
+describe("P22 COMP-N N-3: the AC1015 output keeps the pre-AC1032 per-cell form (AutoCAD's R2000 form since P22 F-2)", () => {
   function authored(): TableEntity {
     let t = newTable({ id: 't', layer: '0', color: 'ByLayer' }, { position: { x: 0, y: 10 }, columns: 3, dataRows: 2, columnWidth: 2.5 });
     t = setCellText(t, 0, 0, 'P22 CONTROL TABLE');
@@ -268,7 +268,7 @@ describe('P22 COMP-N N-3: the AC1015 output keeps the legacy per-cell form', () 
     return { ...t, cells };
   }
 
-  it('no CELL_VALUE blocks, text in group 1, style name and per-cell 140/170 as today', () => {
+  it("no CELL_VALUE blocks; the R2000 form: text in group 1, 177 flags, 140/170 only on the override cells", () => {
     const d = new Drawing();
     d.addEntities([authored()]);
     const written = writeDxf(d.snapshot);
@@ -276,16 +276,18 @@ describe('P22 COMP-N N-3: the AC1015 output keeps the legacy per-cell form', () 
     const chunks = cellChunksOf(written);
     expect(chunks).toHaveLength(12);
     for (const chunk of chunks) {
-      expect(chunk.find(([c]) => c === 91)?.[1]).toBe('0');
+      // The pre-F-2 JCad form's per-cell 91/92 and style-name group 7 are gone.
+      expect(chunk.some(([c]) => c === 91 || c === 92 || c === 7)).toBe(false);
       expect(chunk.some(([c]) => c === 301)).toBe(false);
-    }
-    const visible = chunks.filter((chunk) => chunk.find(([c]) => c === 173)?.[1] === '0');
-    for (const chunk of visible) {
       expect(chunk.some(([c]) => c === 1)).toBe(true);
-      expect(chunk.some(([c]) => c === 7)).toBe(true);
-      expect(chunk.some(([c]) => c === 140)).toBe(true);
-      expect(chunk.some(([c]) => c === 170)).toBe(true);
     }
+    // Overrides only where authored: (2,2) height (177 = 0x20, 140 present),
+    // (3,0) attachment (177 = 0x1, 170 present); every other cell states neither.
+    chunks.forEach((chunk, idx) => {
+      expect(chunk.find(([c]) => c === 177)?.[1]).toBe(idx === 8 ? '32' : idx === 9 ? '1' : '0');
+      expect(chunk.some(([c]) => c === 140)).toBe(idx === 8);
+      expect(chunk.some(([c]) => c === 170)).toBe(idx === 9);
+    });
     expect(writeDxf(readDxf(written))).toBe(written);
   });
 });

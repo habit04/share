@@ -135,16 +135,23 @@ describe('P22: native ACAD_TABLE DXF export', () => {
     expect(group(title, 175)).toBe('3');
     expect(group(title, 176)).toBe('1');
     expect(group(title, 1)).toBe('PARTS LIST');
-    expect(group(title, 140)).toBe('0.25');
-    expect(group(title, 170)).toBe('5');
-    // Cells covered by the title merge are virtual and carry no text.
+    // AutoCAD's R2000 form (P22 F-2): 140/170 are stated only where a cell departs
+    // from its row role — the title's 0.25 height and 5 attachment ARE its role
+    // defaults (carried by the TABLESTYLE), so neither group appears; 177 = 0.
+    expect(group(title, 140)).toBeUndefined();
+    expect(group(title, 170)).toBeUndefined();
+    expect(group(title, 177)).toBe('0');
+    // Cells covered by the title merge are virtual; in the R2000 form they carry
+    // an EMPTY group 1 (and spans of 1), not no text group at all.
     for (const covered of [cells[1]!, cells[2]!]) {
       expect(group(covered, 173)).toBe('1');
-      expect(group(covered, 1)).toBeUndefined();
+      expect(group(covered, 175)).toBe('1');
+      expect(group(covered, 1)).toBe('');
     }
     const data = cells[7]!; // row 2, col 1: formatted raw content
     expect(group(data, 1)).toBe('{\\fArial|b1;Motor 5 HP}');
-    const override = cells[10]!; // row 3, col 1
+    const override = cells[10]!; // row 3, col 1: both overrides, flagged in 177
+    expect(group(override, 177)).toBe('33');
     expect(group(override, 140)).toBe('0.3');
     expect(group(override, 170)).toBe('6');
   });
@@ -185,7 +192,7 @@ describe('P22: native ACAD_TABLE DXF export', () => {
     expect(rec.some(([c, v]) => c === 1001 && v === 'JCAD_TABLE')).toBe(true);
     const { cells } = cellChunks(rec);
     expect(group(cells[1]!, 173)).toBe('1');
-    expect(group(cells[1]!, 1)).toBeUndefined();
+    expect(group(cells[1]!, 1)).toBe(''); // R2000 form (P22 F-2): covered cells carry an empty text group
     const back = readDxf(text).entities[0] as TableEntity;
     expect(back.cells[0]![1]!.text).toBe('HIDDEN');
     expect(back.cells[0]![0]!.span).toEqual({ rows: 1, cols: 3 });
@@ -222,8 +229,10 @@ describe('P22: native ACAD_TABLE DXF export', () => {
     expect(rec.some(([c, v]) => c === 1001 && v === 'JCAD_TABLE')).toBe(true);
     const back = readDxf(text).entities[0] as TableEntity;
     expect(back.type).toBe('table');
-    // The carrier is the exact JSON model, so heights come back at full precision.
-    expect(back.rowHeights).toEqual(t.rowHeights);
+    // The carrier serializes the table as written (P22 F-1): heights come back at
+    // the written form's 10-decimal precision — the same values the 141s in the
+    // same file carry (full-precision heights were never in any written group).
+    expect(back.rowHeights).toEqual(t.rowHeights.map((h) => Number(h.toFixed(10))));
     expect(back.columnWidths).toEqual([2.5, 2.5]);
   });
 

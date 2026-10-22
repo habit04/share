@@ -136,3 +136,13 @@ claims that need a native oracle use it, not `r2018-table.dxf`.
 Consumers: `tests/table-p22-compn.test.ts`,
 `tests/header-acadmaintver-guard.test.ts` (the genuine-pair and
 version-move legs).
+
+`r2000-table-autocad.dxf` (added by P22 F-2) is the same Recipe B table
+saved by AutoCAD at **AC1015 (R2000)** — SHA-256
+`17bb250ad21c68435ebcd4008645ee21d8e008ac6ce995aad679e7e6abddd256`,
+from the lead's intake package `native-fixtures-p22-p18-claude`
+(`fixtures/p22/p22-recipe-b-control-r2000.dxf`). It is the native oracle
+for the pre-AC1032 per-cell form: group 177 override flags, the text in
+a group 1 every cell carries (empty for merge-covered cells), the
+140/170 overrides stated only where a cell departs from its row role,
+after the text. Consumer: `tests/table-p22-f2.test.ts`.
