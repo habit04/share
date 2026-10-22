@@ -111,6 +111,9 @@ Series 3 guard's named input, after the genuine swap retired the pair
 from `r2018-table.dxf`. It is not AutoCAD output and must not be cited
 as such. Consumer: `tests/header-acadmaintver-guard.test.ts` (its first
 leg; the guard's genuine-pair controls stay on genuine files).
+**Moved out of this directory** to `tests/fixtures/synthetic/` (lead
+C-2 ruling on PR #39, 2026-10-22; content byte-identical) so this
+directory holds only genuine AutoCAD saves.
 
 ## Assertion dependence on the bogus header pair
 

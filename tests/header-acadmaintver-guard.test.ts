@@ -35,7 +35,7 @@ describe('P22 COMP-N Series 3: the $ACADMAINTVER guard', () => {
   it('a source header carrying 70/105 paired with AC1032 is NOT emitted on write', () => {
     // Its own purpose-built synthetic input (PROVENANCE.md): since the fixture
     // swap, r2018-table.dxf is a genuine 90/427 save and no longer carries the pair.
-    const source = fixture('fixtures/interchange/acadmaintver-malformed-pair.dxf');
+    const source = fixture('fixtures/synthetic/acadmaintver-malformed-pair.dxf');
     expect(maintVerOf(source)).toEqual([70, '105']);
     const written = writeDxf(readDxf(source));
     expect(written).toContain('AC1032');
