@@ -13,7 +13,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { Drawing, type DrawingState } from '../src/core/document';
-import type { TableCell, type TableEntity } from '../src/core/table';
+import type { TableCell, TableEntity } from '../src/core/table';
 import type { CadNode } from '../src/core/cad-graph';
 import type { Layer } from '../src/core/entities';
 import {
