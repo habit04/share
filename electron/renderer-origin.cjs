@@ -488,8 +488,12 @@ function installAssetHandler({ protocol, net, root, pluginRealm }) {
       if (request.method !== 'GET' && request.method !== 'HEAD') return new Response('Method not allowed', { status: 405 });
       const url = new URL(request.url);
       if (url.pathname.startsWith('/plugin-realm/')) {
-        if (!pluginRealm) return new Response('Not found', { status: 404 });
-        if (url.protocol !== 'jcad:' || url.hostname !== 'app' || url.port || url.username || url.password) return new Response('Not found', { status: 404 });
+        // W-3: the realm's pre-dispatch refusals (no realm registered, or a
+        // wrong-host request) carry nosniff too, like every response
+        // pluginRealmResponse produces — no plugin-realm response is
+        // MIME-sniffable, whichever branch answers it.
+        if (!pluginRealm) return new Response('Not found', { status: 404, headers: { 'X-Content-Type-Options': 'nosniff' } });
+        if (url.protocol !== 'jcad:' || url.hostname !== 'app' || url.port || url.username || url.password) return new Response('Not found', { status: 404, headers: { 'X-Content-Type-Options': 'nosniff' } });
         return await pluginRealmResponse(url, pluginRealm);
       }
       const file = assetPath(root, request.url);

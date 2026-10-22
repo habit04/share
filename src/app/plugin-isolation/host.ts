@@ -95,6 +95,16 @@ interface PendingCall {
 }
 
 const GRANT_TTL_MS = 60_000;
+/**
+ * Hard cap on simultaneously pending host->realm calls — the pendingCalls
+ * set the X2-W call-res exemption reads (LEAD RULING — X2-W condition 1,
+ * 2026-10-22). invokeRealm is the set's only writer and refuses a new
+ * callback-bearing call at the cap with a named rejection ('too many
+ * in-flight host->realm calls', code 'too-large'), so the set — and with
+ * it the exemption's surface — is bounded by construction. 64 concurrent
+ * callbacks is far beyond an interactive plugin's in-flight scale and far
+ * below the 4096-id consumed window below.
+ */
 const MAX_IN_FLIGHT_CALLS = 64;
 const MAX_GRANTS = 32;
 /**
@@ -375,7 +385,12 @@ export class IsolatedPluginSession {
    * it is exact rather than heuristic: a response whose host call is
    * still pending has never been answered — accepting an answer is what
    * removes the pending entry — so it is a first response however late it
-   * arrives, and it is consumed normally instead of refused.
+   * arrives, and it is consumed normally instead of refused. The
+   * exemption is bounded in time as well as in count (LEAD RULING — X2-W
+   * conditions, 2026-10-22): every pending entry carries the session's
+   * call timeout (callTimeoutMs), and when it fires the entry leaves the
+   * set and its id joins the consumed set, so the exemption cannot be
+   * held open indefinitely and a late response is refused as a replay.
    */
   private consumeEnvelopeId(raw: Record<string, unknown>): boolean {
     if (typeof raw.id !== 'string' || raw.id.length === 0) return false;
@@ -393,6 +408,19 @@ export class IsolatedPluginSession {
         return true;
       }
     }
+    this.rememberConsumedEnvelopeId(kind, raw.id);
+    return false;
+  }
+
+  /**
+   * Add one id to the consumed set, applying the FIFO eviction and the
+   * per-kind eviction-watermark bookkeeping when the window overflows.
+   * Used on envelope receipt (consumeEnvelopeId) and when a pending host
+   * call times out (invokeRealm): the timed-out id is consumed without an
+   * envelope ever arriving, so its late response is refused as a replay.
+   */
+  private rememberConsumedEnvelopeId(kind: string, id: string): void {
+    const key = `${kind}:${id}`;
     this.consumedEnvelopeIds.add(key);
     if (this.consumedEnvelopeIds.size > MAX_CONSUMED_ENVELOPE_IDS) {
       const oldest = this.consumedEnvelopeIds.values().next().value as string;
@@ -404,7 +432,6 @@ export class IsolatedPluginSession {
         this.evictionWatermarks.set(evictedKind, evictedCounter);
       }
     }
-    return false;
   }
 
   private onLoadDone(raw: Record<string, unknown>): void {
@@ -653,6 +680,10 @@ export class IsolatedPluginSession {
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingCalls.delete(id);
+        // X2-W condition 1: the timed-out id joins the consumed set, so a
+        // late response is refused as a replay instead of being silently
+        // absorbed — the pending exemption ends with the pending entry.
+        this.rememberConsumedEnvelopeId('call-res', id);
         reject(Object.assign(new Error(`realm callback "${callback}" did not answer within ${Math.round(this.callTimeoutMs / 1000)} s`), { code: 'timeout' }));
       }, this.callTimeoutMs);
       this.pendingCalls.set(id, { resolve, reject, timer });

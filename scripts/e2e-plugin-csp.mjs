@@ -86,8 +86,11 @@ function realmWorkerAsset() {
   const archive = asar || join(dirname(executable), process.platform === 'darwin' ? '../Resources/app.asar' : 'resources/app.asar');
   try {
     const asarApi = require('@electron/asar');
-    const hit = asarApi.listPackage(archive).map((p) => p.replace(/\\/g, '/')).find((p) => pattern.test(p.split('/').pop() ?? '') && p.includes('assets/worker/'));
-    return hit ? hit.replace(/^\//, '') : null;
+    const hit = asarApi.listPackage(archive, { isPack: false }).map((p) => p.replace(/\\/g, '/')).find((p) => pattern.test(p.split('/').pop() ?? '') && p.includes('assets/worker/'));
+    // The archive lists paths from its root (dist/…), but the packaged app
+    // serves from that dist/ root: strip both prefixes so the returned path
+    // is the served path, exactly as in the development branch above.
+    return hit ? hit.replace(/^\//, '').replace(/^dist\//, '') : null;
   } catch {
     return null;
   }

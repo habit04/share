@@ -325,3 +325,86 @@ describe('host dispatcher: X2-W eviction watermark', () => {
     s.dispose();
   }, 60_000);
 });
+
+describe('host dispatcher: X2-W ruling conditions — the pending set is bounded (2026-10-22)', () => {
+  // LEAD RULING — X2-W (2026-10-22): the call-res pending exemption is
+  // ACCEPTED with two conditions. (1) The pending set is bounded: a hard cap
+  // (MAX_IN_FLIGHT_CALLS in host.ts — a new callback-bearing call past the
+  // cap is refused with the named 'too-large' rejection) and a timeout on
+  // every entry (the session's callTimeoutMs): on timeout the entry leaves
+  // pendingCalls and its id JOINS THE CONSUMED SET, so a late response is
+  // refused as a replay and the exemption cannot be held open forever.
+  // (2) The four legs below pin the accepted behaviour.
+  const replayDenials = (s: IsolatedPluginSession) => s.denials.filter((d) => d.code === 'replay');
+
+  it('(a) an accepted call-res id replayed afterwards is refused', async () => {
+    const ed = makeEditor();
+    const { s, transport, hs } = await loadedSession(ed, ['ui.log']);
+    const callRes = (id: string, ok = true, value: unknown = null) =>
+      transport.emit({ kind: 'call-res', v: 2, session: hs.session, nonce: hs.realmNonce, id, ok, value });
+    const p = s.invokeRealm('cb-a', []);
+    const callMsg = transport.inbox.find((m) => (m as { kind?: string }).kind === 'call') as { id: string };
+    expect(callMsg.id).toBe('c1');
+    callRes('c1', true, 'answer-a');
+    await expect(p).resolves.toBe('answer-a');
+    const before = replayDenials(s).length;
+    callRes('c1', true, 'answer-a');
+    await tick();
+    expect(replayDenials(s).length).toBe(before + 1);
+    s.dispose();
+  }, 60_000);
+
+  it('(b) a pending id below the watermark is accepted exactly once; a second delivery is refused', async () => {
+    const ed = makeEditor();
+    const { s, transport, hs, rpc } = await loadedSession(ed, ['ui.log']);
+    const callRes = (id: string, ok = true, value: unknown = null) =>
+      transport.emit({ kind: 'call-res', v: 2, session: hs.session, nonce: hs.realmNonce, id, ok, value });
+    const p = s.invokeRealm('slow-cb', []); // c1 stays pending below
+    callRes('c2'); // consumed (not pending: dropped at dispatch)
+    for (let n = 1; n <= 4096; n++) rpc(`r${n}`, 'ui.log', ['x']); // evicts c2: call-res watermark 2
+    callRes('c1', true, 'only-answer'); // counter 1 <= watermark 2, still pending: accepted once
+    await expect(p).resolves.toBe('only-answer');
+    const before = replayDenials(s).length;
+    callRes('c1', true, 'only-answer'); // second delivery of the same id: refused
+    await tick();
+    expect(replayDenials(s).length).toBe(before + 1);
+    s.dispose();
+  }, 120_000);
+
+  it('(c) a timed-out call leaves the pending set, its id joins the consumed set, and a late response is refused as a replay', async () => {
+    const ed = makeEditor();
+    const transport = new LoopbackTransport();
+    const s = new IsolatedPluginSession(ed, { owner: 'proto-x2w', capabilities: ['ui.log'], transport, callTimeoutMs: 60 });
+    const loadP = s.loadModule('file:///p25-loopback-entry.mjs');
+    const hs = transport.handshake();
+    transport.emit({ kind: 'load-done', v: 2, session: hs.session, nonce: hs.realmNonce, ok: true, report: null });
+    await loadP;
+    const p = s.invokeRealm('never-answers', []);
+    await expect(p).rejects.toMatchObject({ code: 'timeout' });
+    // The timeout fired: c1 is no longer pending, and its id has joined the
+    // consumed set — the late response is refused as a replay, not absorbed.
+    const before = replayDenials(s).length;
+    transport.emit({ kind: 'call-res', v: 2, session: hs.session, nonce: hs.realmNonce, id: 'c1', ok: true, value: 'too-late' });
+    await tick();
+    expect(replayDenials(s).length).toBe(before + 1);
+    s.dispose();
+  }, 60_000);
+
+  it('(d) the pending cap refuses a new callback-bearing call cleanly and leaves existing entries unaffected', async () => {
+    const ed = makeEditor();
+    const { s, transport, hs } = await loadedSession(ed, ['ui.log']);
+    const ps: Promise<unknown>[] = [];
+    // MAX_IN_FLIGHT_CALLS (host.ts) = 64 pending host->realm calls.
+    for (let n = 1; n <= 64; n++) {
+      const pr = s.invokeRealm(`cb-${n}`, []);
+      pr.catch(() => undefined); // disposal settles the unanswered ones; this leg asserts the cap + c1 only
+      ps.push(pr);
+    }
+    await expect(s.invokeRealm('cb-overflow', [])).rejects.toMatchObject({ code: 'too-large' });
+    await expect(s.invokeRealm('cb-overflow', [])).rejects.toThrow(/too many in-flight host->realm calls/);
+    // Existing pending entries are unaffected: the first call still settles.
+    transport.emit({ kind: 'call-res', v: 2, session: hs.session, nonce: hs.realmNonce, id: 'c1', ok: true, value: 'first-answer' });
+    await expect(ps[0]).resolves.toBe('first-answer');
+    s.dispose();
+  }, 60_000);
+});
