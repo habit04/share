@@ -12,7 +12,7 @@ import { backgroundMetadataChunks } from './mtext-background-data';
 import * as g from '../../core/geometry';
 import { dimensionTextPoint, dimensionMeasurement, dimensionStyleOverrides, dimStyleOverrideCode, DIM_VARIABLES, ordinateDimensionProblem } from '../../core/dimension';
 import { textWidth, leaderParts, leaderPath } from '../../core/entities';
-import { cellOwners, TABLE_DEFAULTS } from '../../core/table';
+import { cellOwners, rowHeightFor, TABLE_DEFAULTS } from '../../core/table';
 import type { WriteExtras } from './write-core';
 
 export function writeMText(w: Writer, e: MTextEntity, owner: string): void {
@@ -434,7 +434,11 @@ function tableMeta(t: TableEntity): string {
       ...(cell.span && (cell.span.rows > 1 || cell.span.cols > 1) ? { span: cell.span } : {}),
     };
   }));
-  const json = JSON.stringify({ position: t.position, rotation: tableDxfRotation(t.rotation), rowHeights: t.rowHeights, columnWidths: t.columnWidths, cells, textHeight: t.textHeight, margin: t.margin ?? TABLE_DEFAULTS.margin });
+  // The carrier describes the table AS WRITTEN (P22 F-1): its row heights are the
+  // DXF form's (multi-line fit floor applied), matching the 141s the native record
+  // carries — a carrier serialized with the raw heights would change bytes on the
+  // second save of any table that has both a carrier and a multi-line cell.
+  const json = JSON.stringify({ position: t.position, rotation: tableDxfRotation(t.rotation), rowHeights: tableDxfForm(t).rowHeights, columnWidths: t.columnWidths, cells, textHeight: t.textHeight, margin: t.margin ?? TABLE_DEFAULTS.margin });
   // Keep the xdata strings 7-bit so the 255-byte group limit holds in any code page.
   // The DXF-escape guard keeps a cell text containing a literal \U+XXXX sequence
   // from corrupting the JSON at the string layer on re-read (P22 fix F1).
@@ -485,18 +489,68 @@ export function tableDxfRotation(rotation: number): number {
 }
 
 /**
+ * The line count of a cell's written content (P22 F-1): paragraph breaks in the
+ * string the writer emits for the cell — the formatted source while it still
+ * matches the text, else the plain text converted for DXF, which turns each
+ * '\n' into '\P'. Escaped characters are skipped in pairs, so a literal "\P"
+ * in the text (written '\\P') does not count as a break.
+ */
+function cellLineCount(cell: TableEntity['cells'][number][number]): number {
+  const content = formattedSource(cell) ?? mtextPlainToDxf(cell.text);
+  let lines = 1;
+  for (let i = 0; i < content.length; i += 1) {
+    if (content[i] === '\\') {
+      if (content[i + 1] === 'P') lines += 1;
+      i += 1;
+    }
+  }
+  return lines;
+}
+
+/**
+ * The least height row r may be written with (P22 F-1, the lead's native
+ * re-run item A15): the fit height — lines x text height x 4/3 + top and
+ * bottom margins (rowHeightFor, the model's own measure) — of the row's
+ * tallest MULTI-LINE owner cell, or 0 when the row has none. AutoCAD
+ * recomputes row heights to fit content when it saves: at the re-run it grew
+ * a 0.36 row to 0.6 for a two-line cell at text height 0.18 with 0.06
+ * margins — exactly rowHeightFor(2, 0.18, 0.06) — so a written row that is
+ * too small for its multi-line cells does not survive an AutoCAD save
+ * unchanged. Single-line rows are NOT floored: AutoCAD's own genuine
+ * controls carry authored single-line row heights below the fit height of
+ * a height-override cell (0.4304… under a 0.3 override, fit 0.52), and
+ * those heights are preserved verbatim.
+ */
+function rowHeightFloor(t: TableEntity, r: number, owners: ReturnType<typeof cellOwners>): number {
+  let floor = 0;
+  const margin = t.margin ?? TABLE_DEFAULTS.margin;
+  for (let c = 0; c < t.columnWidths.length; c += 1) {
+    if (owners[r]![c]![0] !== r || owners[r]![c]![1] !== c) continue;
+    const cell = t.cells[r]?.[c];
+    if (!cell) continue;
+    const lines = cellLineCount(cell);
+    if (lines >= 2) floor = Math.max(floor, rowHeightFor(lines, cellHeight(t, cell), margin));
+  }
+  return floor;
+}
+
+/**
  * A table in the exact form the DXF round trip reconstructs (P22 fix F2c):
  * position and row/column sizes at the writer's 10-decimal precision, rotation
  * at tableDxfRotation. Generating the *T picture from this form — instead of
  * the authored values, whose >10-decimal sizes (a 0.45333… row height) the
  * file cannot carry — makes the first write byte-identical to every re-save.
+ * Row heights additionally carry the multi-line fit floor (P22 F-1): a stored
+ * height below its row's floor is raised to the floor, at the same
+ * 10-decimal precision, so the raise is itself a fixed point.
  */
 export function tableDxfForm(t: TableEntity): TableEntity {
+  const owners = cellOwners(t);
   return {
     ...t,
     position: { x: dxfReal(t.position.x), y: dxfReal(t.position.y) },
     rotation: tableDxfRotation(t.rotation),
-    rowHeights: t.rowHeights.map(dxfReal),
+    rowHeights: t.rowHeights.map((h, r) => Math.max(dxfReal(h), dxfReal(rowHeightFloor(t, r, owners)))),
     columnWidths: t.columnWidths.map(dxfReal),
   };
 }
@@ -583,7 +637,10 @@ export function writeAcadTable(w: Writer, t: TableEntity, owner: string, picture
   w.pair(94, 0);
   w.pair(95, 0);
   w.pair(96, 0);
-  for (const h of t.rowHeights) w.pair(141, h);
+  // The written grid is the table's DXF form (P22 F-1): row heights raised to
+  // the multi-line fit floor, so the 141s agree with the *T picture the same
+  // form generates (writer.ts) and with what AutoCAD's own save computes.
+  for (const h of tableDxfForm(t).rowHeights) w.pair(141, h);
   for (const width of t.columnWidths) w.pair(142, width);
   const owners = cellOwners(t);
   const cellValueForm = w.acadVersion >= 'AC1032';

@@ -43,6 +43,7 @@ import { join } from 'node:path';
 import { newTable, setCellText } from '../src/core/table';
 import type { TableEntity } from '../src/core/entities';
 import { readDxf, writeDxf } from '../src/io/dxf';
+import { tableDxfForm } from '../src/io/dxf/write-annotations';
 import { decodeDxfBytes } from '../src/io/encoding';
 import { Drawing } from '../src/core/document';
 
@@ -128,8 +129,12 @@ function measurePicture(text: string): PictureMeasure {
 
 /** The AutoCAD invariant: stored extents are the local frame; the displayed picture lands on the cell grid. */
 function expectLocalFrame(t: TableEntity) {
-  const W = t.columnWidths.reduce((a, b) => a + b, 0);
-  const H = t.rowHeights.reduce((a, b) => a + b, 0);
+  // The grid of record is the written one (tableDxfForm): since P22 F-1 its row
+  // heights carry the multi-line fit floor, so the frame is measured against the
+  // form, not the raw model (whose row 2 is still the under-fit 0.36).
+  const form = tableDxfForm(t);
+  const W = form.columnWidths.reduce((a, b) => a + b, 0);
+  const H = form.rowHeights.reduce((a, b) => a + b, 0);
   const m = measurePicture(writeDxf(stateOf(t)));
   expect(m.base).toEqual({ x: 0, y: 0 });
   expect(m.minX).toBeCloseTo(0, 9);

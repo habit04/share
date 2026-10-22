@@ -125,8 +125,11 @@ describe('TABLE in DXF', () => {
     expect(tt.layer).toBe('TABLES');
     expect(tt.cells[0]![0]!.text).toBe('PARTS – ÄÖ');
     expect(tt.cells[2]![2]!.text).toBe('line1\nline2');
-    // Native 141 groups carry the writer's 10-decimal precision (the old xdata JSON was exact).
-    expect(tt.rowHeights).toEqual(t.rowHeights.map((h) => Number(h.toFixed(10))));
+    // Native 141 groups carry the writer's 10-decimal precision (the old xdata JSON was exact),
+    // and since P22 F-1 the multi-line fit floor: row 2 holds the two-line cell (2,2), so its
+    // written height is the fit 2 x 0.18 x 4/3 + 2 x 0.06 = 0.6 (the lead's A15 value), not the
+    // stored single-line 0.36; the single-line rows carry their stored heights.
+    expect(tt.rowHeights).toEqual([0.4533333333, 0.36, 0.6, 0.36]);
     // The picture block is not kept as a separate block definition.
     expect(Object.keys(back.blocks).filter((n) => n.startsWith('*T'))).toHaveLength(0);
     // Saving again gives the same table.
