@@ -1069,6 +1069,7 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     record.groups.splice(referenceBlockPosition(record.groups), 0, ...metadata.slice(0, application < 0 ? undefined : application));
     if (application >= 0) record.groups.push(...metadata.slice(application));
   }
+  const plainRecords = new Set(generated);
   for (let index = 0; index < graph.nodes.length; index++) {
     const node = graph.nodes[index]!;
     if (matched.has(node.id)) continue;
@@ -1093,6 +1094,57 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       groups.splice(referenceBlockPosition(groups), 0, [330, modelOwner]);
     }
     generated.push({ type: node.type, section: node.section, groups, ...(nodeHandles.has(node.id) ? { handle: nodeHandles.get(node.id) } : {}) });
+  }
+  // P22 F-2 final fix: a generated roundtrip chain belongs in the table's
+  // EXISTING extension dictionary when the retained graph carries one without
+  // the ACAD_XREC_ROUNDTRIP key. The merge above keeps the source 102 block,
+  // so the entity points at the retained dictionary while the model writer's
+  // chain hangs off a fresh one — orphaned, and AutoCAD loads the cells
+  // empty. Move the entry, in the Q11 insertion posture: append
+  // ACAD_XREC_ROUNDTRIP -> the generated chain's XRECORD to the retained
+  // dictionary record (its other keys untouched), re-own the XRECORD to that
+  // dictionary, drop the generated dictionary record, and repoint any
+  // lingering reference to it. A dictionary already carrying the key is a
+  // chain carrier — generation never ran for it — and is left as retained.
+  {
+    const byId = new Map(graph.nodes.map(node => [node.id, node]));
+    const canon = (raw: string): string | undefined => /^[0-9A-Fa-f]{1,16}$/.test(raw.trim()) ? canonicalCadHandle(raw.trim()) : undefined;
+    const finalByHandle = new Map<string, RecordData>();
+    for (const record of generated) {
+      const handle = canon(value(record, 5));
+      if (handle && !finalByHandle.has(handle)) finalByHandle.set(handle, record);
+    }
+    const referenceCodes = new Set([330, 340, 341, 342, 343, 344, 350, 360]);
+    const rehomed = new Set<string>();
+    for (const node of graph.nodes) {
+      if (node.type !== 'ACAD_TABLE' || node.anchor?.kind !== 'entity') continue;
+      const extension = node.references?.find(ref => ref.role === 'extension');
+      const dictionary = extension?.target ? byId.get(extension.target) : undefined;
+      if (!dictionary || !dictionaries.has(dictionary.type) || rehomed.has(dictionary.id)) continue;
+      if (dictionary.groups.some(([code, name]) => code === 3 && name.trim().toUpperCase() === 'ACAD_XREC_ROUNDTRIP')) continue;
+      const retainedHandle = canon(nodeHandles.get(dictionary.id) ?? '');
+      const retainedRecord = retainedHandle ? finalByHandle.get(retainedHandle) : undefined;
+      if (!retainedRecord || !dictionaries.has(retainedRecord.type)) continue;
+      if (retainedRecord.groups.some(([code, name]) => code === 3 && name.trim().toUpperCase() === 'ACAD_XREC_ROUNDTRIP')) continue;
+      const entityHandle = canon(nodeHandles.get(node.id) ?? '');
+      if (!entityHandle) continue;
+      const generatedDict = generated.find(record => plainRecords.has(record) && !match.has(record) && record.type === 'DICTIONARY'
+        && record.groups.some(([code, raw]) => code === 330 && canon(raw) === entityHandle)
+        && record.groups.some(([code, name]) => code === 3 && name.trim().toUpperCase() === 'ACAD_XREC_ROUNDTRIP'));
+      if (!generatedDict) continue;
+      const entryAt = generatedDict.groups.findIndex(([code, name]) => code === 3 && name.trim().toUpperCase() === 'ACAD_XREC_ROUNDTRIP');
+      const chainHandle = canon(generatedDict.groups[entryAt + 1]?.[1] ?? '');
+      const generatedHandle = canon(value(generatedDict, 5));
+      const chainRecord = chainHandle ? finalByHandle.get(chainHandle) : undefined;
+      if (!chainHandle || !generatedHandle || !chainRecord || chainRecord.type !== 'XRECORD') continue;
+      retainedRecord.groups.push([3, 'ACAD_XREC_ROUNDTRIP'], [360, chainHandle]);
+      chainRecord.groups = chainRecord.groups.map(([code, raw]) => (code === 330 && canon(raw) === generatedHandle ? [code, retainedHandle!] as CadGroup : [code, raw] as CadGroup));
+      generated.splice(generated.indexOf(generatedDict), 1);
+      for (const record of generated) {
+        record.groups = record.groups.map(([code, raw]) => (referenceCodes.has(code) && canon(raw) === generatedHandle ? [code, retainedHandle!] as CadGroup : [code, raw] as CadGroup));
+      }
+      rehomed.add(dictionary.id);
+    }
   }
   // Q11 F2 rework (design U4, insertion branch): a recognized variable the editor
   // set but the retained variable dictionary does not carry is inserted into that

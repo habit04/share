@@ -299,6 +299,106 @@ describe('P22 F-2 successor: the AC1015 roundtrip chain is generated when the so
     expect(records(rewritten).filter((r) => r[0]?.[1] === 'ACDBDATATABLE')).toHaveLength(1);
   });
 
+/**
+ * The control text reshaped into the lead's defect shape: the table KEEPS an
+ * extension dictionary (holding another application's entry, here a plain
+ * XRECORD under ACAD_APP_MARK) but the dictionary carries NO
+ * ACAD_XREC_ROUNDTRIP entry and the file carries no chain objects.
+ */
+function existingXdictText(): string {
+  const recs = records(r2000Text());
+  const byHandle = new Map(recs.filter((r) => r.find(([c]) => c === 5)).map((r) => [r.find(([c]) => c === 5)![1], r]));
+  const table = tableRecord(r2000Text());
+  const xAt = table.findIndex(([c, v]) => c === 102 && v === '{ACAD_XDICTIONARY');
+  const dict = byHandle.get(table[xAt + 1]![1])!;
+  const entryAt = dict.findIndex(([c, v]) => c === 3 && v === 'ACAD_XREC_ROUNDTRIP');
+  const chainRecord = byHandle.get(dict[entryAt + 1]![1])!;
+  const cellMarkAt = chainRecord.findIndex(([c, v]) => c === 102 && v === 'ACAD_ROUNDTRIP_PRE2007_TABLECELL');
+  const data = byHandle.get(chainRecord[cellMarkAt + 1]![1])!;
+  const drop = new Set<string>([
+    chainRecord.find(([c]) => c === 5)![1],
+    data.find(([c]) => c === 5)![1],
+    ...data.filter(([c]) => c === 360).map(([, v]) => v),
+  ]);
+  const probeHandle = '7FE';
+  const out: Pair[] = [];
+  for (const rec of recs) {
+    if (drop.has(rec.find(([c]) => c === 5)?.[1] ?? '')) continue;
+    if (rec === dict) {
+      for (let i = 0; i < rec.length; i++) {
+        if (i === entryAt) {
+          out.push([3, 'ACAD_APP_MARK'], [360, probeHandle]);
+          i++;
+          continue;
+        }
+        out.push(rec[i]!);
+      }
+      continue;
+    }
+    out.push(...rec);
+    if (rec[0]![1] === 'SECTION' && rec[1]?.[1] === 'OBJECTS') {
+      out.push([0, 'XRECORD'], [5, probeHandle], [330, dict.find(([c]) => c === 5)![1]], [100, 'AcDbXrecord'], [280, '1'], [1, 'kept']);
+    }
+  }
+  return out.map(([c, v]) => `${c}\n${v}`).join('\n') + '\n';
+}
+
+describe('P22 F-2 final fix: an existing extension dictionary gains the chain IN that dictionary', () => {
+  it('the ACAD_XREC_ROUNDTRIP entry joins the existing dictionary, reachable from the entity', () => {
+    const written = writeDxf(readDxf(existingXdictText()));
+    expect(written).toContain('AC1015');
+    const table = tableRecord(written);
+    const tableHandle = table.find(([c]) => c === 5)![1];
+    const recs = records(written);
+    const byHandle = new Map(recs.filter((r) => r.find(([c]) => c === 5)).map((r) => [r.find(([c]) => c === 5)![1], r]));
+    const xAt = table.findIndex(([c, v]) => c === 102 && v === '{ACAD_XDICTIONARY');
+    expect(xAt, "the entity's extension-dictionary block").toBeGreaterThanOrEqual(0);
+    const dict = byHandle.get(table[xAt + 1]![1])!;
+    const keys = dict.filter(([c]) => c === 3).map(([, v]) => v);
+    // The existing dictionary keeps its other key AND gains the roundtrip key.
+    expect(keys).toContain('ACAD_APP_MARK');
+    expect(keys).toContain('ACAD_XREC_ROUNDTRIP');
+    // The other key's object survives.
+    const markAt = dict.findIndex(([c, v]) => c === 3 && v === 'ACAD_APP_MARK');
+    expect(group(byHandle.get(dict[markAt + 1]![1])!, 1)).toBe('kept');
+    // No second, parallel dictionary is created for this table: exactly one
+    // DICTIONARY record is owned by the table entity.
+    const ownedDicts = recs.filter((r) => r[0]![1] === 'DICTIONARY' && group(r, 330) === tableHandle);
+    expect(ownedDicts).toHaveLength(1);
+    expect(ownedDicts[0]).toBe(dict);
+    // Reachability — the assertion that orphans at the parent head: the chain
+    // resolves from the entity through ITS dictionary.
+    const chain = chainOf(written);
+    expect(chain, 'the chain reachable from the entity').not.toBeNull();
+    expect(chain!.dict).toEqual(dict);
+    expect(recs.filter((r) => r[0]?.[1] === 'ACDBDATATABLE')).toHaveLength(1);
+    // The load census rides the chain: 4 rows x 3 cols, one CELL_VALUE per cell.
+    expect(group(chain!.record, 90)).toBe('4');
+    expect(group(chain!.record, 91)).toBe('3');
+    expect(chain!.cells).toHaveLength(12);
+    const chunks = cellChunksOf(written);
+    chain!.cells.forEach((cell, i) => {
+      const text = chunks[i]!.filter(([c]) => c === 3 || c === 1).map(([, v]) => v).join('');
+      expect(group(cell, 302)).toBe(text);
+    });
+  });
+
+  it('the fixed shape round-trips: still one dictionary, one chain, entry retained', () => {
+    const written = writeDxf(readDxf(existingXdictText()));
+    const rewritten = writeDxf(readDxf(written));
+    const chain = chainOf(rewritten);
+    expect(chain).not.toBeNull();
+    expect(chainOf(written)).not.toBeNull();
+    expect(canonChain(rewritten, chain!)).toEqual(canonChain(written, chainOf(written)!));
+    const recs = records(rewritten);
+    const table = tableRecord(rewritten);
+    const tableHandle = table.find(([c]) => c === 5)![1];
+    expect(recs.filter((r) => r[0]![1] === 'DICTIONARY' && group(r, 330) === tableHandle)).toHaveLength(1);
+    expect(recs.filter((r) => r[0]![1] === 'ACDBDATATABLE')).toHaveLength(1);
+  });
+});
+
+describe('P22 F-2 successor (continued)', () => {
   it('no chain is generated at AC1032 (the cell-value form is the load path there)', () => {
     // The graph-carrying state: its sourceVersion is what makes the write
     // AC1032. The R2018 model carries no chain, so any ACDBDATATABLE in the
@@ -308,4 +408,5 @@ describe('P22 F-2 successor: the AC1015 roundtrip chain is generated when the so
     expect(records(written).some((r) => r[0]?.[1] === 'ACDBDATATABLE')).toBe(false);
     expect(tableRecord(written).some(([c, v]) => c === 102 && v === '{ACAD_XDICTIONARY')).toBe(false);
   });
+});
 });
