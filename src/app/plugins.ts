@@ -789,11 +789,18 @@ export class PluginHost {
     let plan: { moduleUrl: string; servedSessionId?: string; revoke?: () => void } | null = null;
     let refusal: string | null = null;
     try {
-      const resolved = await this.isolatedModuleUrl(src, transport);
+      const resolved = await this.isolatedModuleUrl(src, transport, current);
       if (resolved && 'refusal' in resolved) refusal = resolved.refusal;
       else plan = resolved;
     } catch {
       plan = null;
+    }
+    // PR #38 [P2]: an unload that landed during the module-URL await
+    // (the serve inside it already revoked the session) supersedes the
+    // load BEFORE any session is constructed.
+    if (!current()) {
+      transport.terminate();
+      return superseded();
     }
     if (!plan) {
       transport.terminate();
@@ -892,6 +899,7 @@ export class PluginHost {
   private async isolatedModuleUrl(
     src: PluginSource,
     transport: RealmTransport,
+    current?: () => boolean,
   ): Promise<{ moduleUrl: string; servedSessionId?: string; revoke?: () => void } | { refusal: string } | null> {
     if (src.origin === 'folder' && src.folder && this.bridge?.pluginsServeIsolatedPackage) {
       // Fable F1: main snapshots the package at registration and verifies
@@ -924,6 +932,18 @@ export class PluginHost {
           refusal:
             'plugin declares "isolation": "worker" but its package changed since it was approved (the entry or a file in its module graph differs from the approved package); refusing to run it — reload the plugin to approve the new package',
         };
+      }
+      // PR #38 [P2] (Codex review, 2026-10-22): recheck the load
+      // generation after the serve await. If the plugin was unloaded
+      // (or superseded) while main snapshotted and registered the
+      // package, the served session is revoked here and the load
+      // abandons — the plugin is never constructed or started on a
+      // session whose owner has already gone.
+      if (current && !current()) {
+        if (typeof served?.sessionId === 'string' && served.sessionId && this.bridge?.pluginsUnserveIsolatedPackage) {
+          void Promise.resolve(this.bridge.pluginsUnserveIsolatedPackage(served.sessionId)).catch(() => undefined);
+        }
+        return null;
       }
       if (!served || typeof served.entryUrl !== 'string' || !served.entryUrl) return null;
       if (typeof served.manifestHash === 'string') this.rememberManifestHash(src, approvedEntryHash, served.manifestHash);

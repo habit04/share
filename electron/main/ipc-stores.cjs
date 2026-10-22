@@ -127,6 +127,13 @@ function registerStoreIpc(ctx) {
     if (approvedManifestHash !== undefined && (typeof approvedManifestHash !== 'string' || !/^[0-9a-f]{64}$/.test(approvedManifestHash))) {
       throw new Error('plugins-serve-isolated needs the SHA-256 manifest of the plugin package the user approved, when one is remembered');
     }
+    // PR #38 [P2] (Codex review, 2026-10-22): capture the registry
+    // generation BEFORE the async work below (manifest read + snapshot
+    // build). If the renderer goes away meanwhile — render-process-gone
+    // or destroyed, F4's teardown — clear() bumps the generation and
+    // the registration at the end is discarded instead of committing a
+    // session nobody owns into the cleared registry.
+    const generation = pluginRealm.generation();
     const root = pluginsDir();
     const packageDir = path.join(root, folder);
     const manifestText = await readPluginManifest(root, folder, { checkPath: (file) => pathPolicy.insideRoot(root, file, 'plugins-serve-isolated') });
@@ -158,7 +165,13 @@ function registerStoreIpc(ctx) {
     const sessionId = randomBytes(16).toString('hex');
     // W-3: the registration is bound to the requesting webContents;
     // only that sender may unserve it (see the unserve handler).
-    pluginRealm.register(sessionId, snapshot, ev.sender);
+    // PR #38 [P2]: it commits only under the generation captured
+    // before the build — a discarded registration never serves, and
+    // the load fails closed here rather than starting a plugin whose
+    // window is gone.
+    if (!pluginRealm.register(sessionId, snapshot, ev.sender, generation)) {
+      throw new Error('plugin realm registration discarded: the window went away while the package was being prepared');
+    }
     return { sessionId, baseUrl: `jcad://app/plugin-realm/${sessionId}/`, entryUrl: `jcad://app/plugin-realm/${sessionId}/${main}`, manifestHash: snapshot.manifestSha256 };
   });
   /**

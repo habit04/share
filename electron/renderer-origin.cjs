@@ -61,17 +61,33 @@ function pluginChangedError(message = 'Plugin source changed while it was read; 
 function createPluginRealmRegistry() {
   const snapshots = new Map();
   const owners = new Map();
+  // PR #38 [P2] (Codex review, 2026-10-22): a registration GENERATION.
+  // Registering is async on the handler side (the F1 snapshot build is
+  // awaited first), so a registration prepared for a renderer that has
+  // since gone away (render-process-gone / destroyed — F4's clear())
+  // must not commit into the cleared registry and serve. clear() bumps
+  // the generation; a register() carrying the generation captured
+  // before the build commits only if it is still current, and reports
+  // the discard (false) so the handler can fail the load closed.
+  let generation = 0;
   return {
+    /** The current registration generation (see register()). */
+    generation() { return generation; },
     /**
      * @param {string} sessionId
      * @param {{ files: Map<string, { bytes: Buffer, sha256: string }>, entrySha256: string, manifestSha256: string, totalBytes: number }} snapshot
      * @param {unknown} [owner] the registering contents (W-3): when
      * recorded, only this owner may unregister the session.
+     * @param {number} [expectedGeneration] when given, the registration
+     * commits only if it equals the current generation (PR #38 [P2]).
+     * @returns {boolean} whether the registration committed
      */
-    register(sessionId, snapshot, owner) {
+    register(sessionId, snapshot, owner, expectedGeneration) {
+      if (expectedGeneration !== undefined && expectedGeneration !== generation) return false;
       snapshots.set(sessionId, snapshot);
       if (owner !== undefined) owners.set(sessionId, owner);
       else owners.delete(sessionId);
+      return true;
     },
     /**
      * Drop one registration. W-3 sender/owner check: a registration
@@ -89,7 +105,7 @@ function createPluginRealmRegistry() {
       owners.delete(sessionId);
       return snapshots.delete(sessionId);
     },
-    clear() { snapshots.clear(); owners.clear(); },
+    clear() { generation += 1; snapshots.clear(); owners.clear(); },
     /** @param {string} sessionId */
     lookup(sessionId) { return snapshots.get(sessionId); },
   };
@@ -279,7 +295,7 @@ async function readSnapshotFile(info) {
  * @param {string} realRoot the package directory's real path
  * @param {string} entryRelPath the entry's package-relative path (the manifest's "main")
  * @param {{ approvedEntryHash?: string, approvedManifestHash?: string, maxBytes?: number }} [options]
- * @returns {Promise<{ files: Map<string, { bytes: Buffer, sha256: string }>, entrySha256: string, manifestSha256: string, totalBytes: number }>}
+ * @returns {Promise<{ files: Map<string, { bytes: Buffer, sha256: string }>, entrySha256: string, manifestSha256: string, pluginJsonSha256: string | undefined, totalBytes: number }>}
  */
 async function buildPluginRealmSnapshot(realRoot, entryRelPath, options = {}) {
   const maxBytes = options.maxBytes ?? PLUGIN_REALM_SNAPSHOT_MAX_BYTES;
@@ -310,6 +326,27 @@ async function buildPluginRealmSnapshot(realRoot, entryRelPath, options = {}) {
       if (!seen.has(resolved)) queue.push(resolved);
     }
   }
+  // PR #38 [P1] (Codex review, 2026-10-22): plugin.json joins the
+  // MANIFEST. Approval binds the POLICY (capabilities, the isolation
+  // flag), not just the code — W-1's manifest covered the module graph
+  // only, so a plugin.json-only change (the entry byte-identical) was
+  // silently granted under the old approval. The manifest file is read
+  // here with the same stability discipline as a graph file and its
+  // hash joins the manifest lines below under its package-relative
+  // path "plugin.json"; it is NOT retained in the served files map
+  // (the realm never serves it — its bytes are the vetted policy, not
+  // package content) and it is not charged to the snapshot cap (it is
+  // hashed and dropped, never held; the serve handler's own manifest
+  // read is size-capped before this build runs). A package without
+  // plugin.json snapshots exactly as before.
+  let pluginJson = null;
+  if (!files.has('plugin.json')) {
+    const info = await statSnapshotFile(realRoot, 'plugin.json');
+    if (info !== null) {
+      const bytes = await readSnapshotFile(info);
+      pluginJson = { sha256: createHash('sha256').update(bytes).digest('hex'), info };
+    }
+  }
   // R3(b): SECOND-PASS RE-VERIFICATION. The per-read handle checks above
   // prove each file was stable WHILE it was read; they cannot prove the
   // set is one version — an early file can change after its read while
@@ -327,6 +364,16 @@ async function buildPluginRealmSnapshot(realRoot, entryRelPath, options = {}) {
       throw pluginChangedError('Plugin source changed while it was being snapshotted; reload the plugin to retry.');
     }
   }
+  if (pluginJson) {
+    const now = await statSnapshotFile(realRoot, 'plugin.json');
+    if (now === null || !sameStatIdentity(now, pluginJson.info)) {
+      throw pluginChangedError('Plugin source changed while it was being snapshotted; reload the plugin to retry.');
+    }
+    const bytes = await readSnapshotFile(now);
+    if (createHash('sha256').update(bytes).digest('hex') !== pluginJson.sha256) {
+      throw pluginChangedError('Plugin source changed while it was being snapshotted; reload the plugin to retry.');
+    }
+  }
   const entry = files.get(entryRelPath);
   if (!entry) throw new Error(`plugin entry "${entryRelPath}" could not be read from the package`);
   if (options.approvedEntryHash !== undefined && options.approvedEntryHash !== entry.sha256) {
@@ -340,12 +387,14 @@ async function buildPluginRealmSnapshot(realRoot, entryRelPath, options = {}) {
   // binds the entry too; the separate entry check above remains as the
   // approval's fast path (and the only check for a first registration,
   // which has no remembered manifest yet).
-  const manifestText = [...files.keys()].sort().map((relPath) => `${files.get(relPath).sha256}\0${relPath}\n`).join('');
+  const manifestPaths = [...files.keys()];
+  if (pluginJson) manifestPaths.push('plugin.json');
+  const manifestText = manifestPaths.sort().map((relPath) => `${relPath === 'plugin.json' && pluginJson ? pluginJson.sha256 : files.get(relPath).sha256}\0${relPath}\n`).join('');
   const manifestSha256 = createHash('sha256').update(manifestText, 'utf8').digest('hex');
   if (options.approvedManifestHash !== undefined && options.approvedManifestHash !== manifestSha256) {
     throw pluginChangedError('Plugin package changed since it was approved; reload the plugin to approve the new package.');
   }
-  return { files, entrySha256: entry.sha256, manifestSha256, totalBytes };
+  return { files, entrySha256: entry.sha256, manifestSha256, pluginJsonSha256: pluginJson ? pluginJson.sha256 : undefined, totalBytes };
 }
 
 /**

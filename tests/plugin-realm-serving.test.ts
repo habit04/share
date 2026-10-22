@@ -43,6 +43,7 @@ interface PluginRealmSnapshot {
   files: Map<string, PluginRealmSnapshotFile>;
   entrySha256: string;
   manifestSha256: string;
+  pluginJsonSha256?: string;
   totalBytes: number;
 }
 interface PluginRealmRegistry {
@@ -380,9 +381,11 @@ describe('W-1 (lead ruling, 2026-10-22): approval binds the WHOLE snapshot — t
     rmSync(w1Tree, { recursive: true, force: true });
   });
 
-  /** The manifest hash, recomputed independently from a snapshot's file records. */
+  /** The manifest hash, recomputed independently from a snapshot's file records (PR #38 [P1]: the plugin.json line joins the list when the snapshot carries one). */
   const manifestOf = (snap: PluginRealmSnapshot): string => {
-    const lines = [...snap.files.keys()].sort().map((rel) => `${snap.files.get(rel)!.sha256}\0${rel}\n`);
+    const paths = [...snap.files.keys()];
+    if (snap.pluginJsonSha256) paths.push('plugin.json');
+    const lines = paths.sort().map((rel) => `${rel === 'plugin.json' && snap.pluginJsonSha256 ? snap.pluginJsonSha256 : snap.files.get(rel)!.sha256}\0${rel}\n`);
     return createHash('sha256').update(lines.join(''), 'utf8').digest('hex');
   };
 
@@ -519,7 +522,7 @@ describe('W-3 (lead ruling, 2026-10-22): unserve is owner-checked; served respon
 
   it('the IPC handlers pass the sender through: serve registers it, unserve is checked against it', () => {
     const ipc = readFileSync('electron/main/ipc-stores.cjs', 'utf8');
-    expect(ipc).toMatch(/pluginRealm\.register\(sessionId, snapshot, ev\.sender\)/);
+    expect(ipc).toMatch(/pluginRealm\.register\(sessionId, snapshot, ev\.sender, generation\)/);
     expect(ipc).toMatch(/unregister\(sessionId, ev\.sender\)/);
     expect(ipc).toContain("ipcMain.handle('plugins-serve-isolated', async (ev, folder, approvedEntryHash, approvedManifestHash) => {");
   });
