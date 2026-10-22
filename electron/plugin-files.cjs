@@ -111,4 +111,4 @@ async function readPluginSource(root, folder, options = {}) {
   return { manifest, code: await readStablePluginFile(root, file, MAX_PLUGIN_CODE_BYTES, options), path: file };
 }
 
-module.exports = { MAX_PLUGIN_MANIFEST_BYTES, MAX_PLUGIN_CODE_BYTES, isPluginFolderName, readPluginManifest, readPluginSource };
+module.exports = { MAX_PLUGIN_MANIFEST_BYTES, MAX_PLUGIN_CODE_BYTES, MAIN_RE, isPluginFolderName, readPluginManifest, readPluginSource };

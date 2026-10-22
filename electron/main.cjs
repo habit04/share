@@ -66,7 +66,7 @@ if (probePhase) setTimeout(() => { process.stdout.write('SHIPPING_PROBE_FAIL sta
 const { installPermissionHandlers, installWebContentsGuards } = require('./web-security.cjs');
 
 const { MAX_DRAWING_BYTES, readLimitedFile } = require('./resource-limits.cjs');
-const { installAssetHandler, legacyStorage, readLegacyStoreBeforeReady } = require('./renderer-origin.cjs');
+const { createPluginRealmRegistry, installAssetHandler, legacyStorage, readLegacyStoreBeforeReady } = require('./renderer-origin.cjs');
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'jcad', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
@@ -112,12 +112,20 @@ const fontMetricsHost = process.platform === 'win32' ? createFontMetricsHost() :
  */
 const restrictedPdf = fontMetricsHost ? { host: createRestrictedPdfHost(), registry: createRestrictedPdfRegistry({ fontHost: fontMetricsHost }) } : null;
 /**
+ * Plugin-realm served roots (AMENDMENT-P25-CSP-HOSTING Part A): main-vetted
+ * plugin packages registered per isolated session and served by the jcad://
+ * handler under the worker CSP. Registrations are session-lived: dropped
+ * when the renderer unserves a session, and cleared wholesale when the last
+ * window closes and on app quit (below).
+ */
+const pluginRealm = createPluginRealmRegistry();
+/**
  * What the modules under electron/main/ share (electron/main/context.cjs): the guarded ipcMain
  * and the path registry and policy above - the only way they register handlers and grant or
  * check paths - and the main window.
  * @type {import('./main/context.cjs').MainContext}
  */
-const ctx = { ipcMain, rejections, registry, pathPolicy, senderWindow, mainWindow: null, openFilesReady: false, handedOverProjects: new Set(), restrictedPdf,
+const ctx = { ipcMain, rejections, registry, pathPolicy, senderWindow, mainWindow: null, openFilesReady: false, handedOverProjects: new Set(), restrictedPdf, pluginRealm,
   // Set when the startup legacy-storage migration did not complete (P-MIG): the migration must
   // not be marked complete for this launch - neither by the migrated checkpoint below nor by a
   // close-time checkpoint (electron/main/window.cjs) - so the next launch retries the extraction.
@@ -242,7 +250,7 @@ app.whenReady().then(async () => {
   // (rounds 12/12b — see the legacyStorePresent and legacyRead
   // bindings above); the gate consumes them below.
   installPermissionHandlers(session.defaultSession, () => (ctx.mainWindow && !ctx.mainWindow.isDestroyed() ? ctx.mainWindow.webContents : null));
-  installAssetHandler({ protocol, net, root: path.join(__dirname, '..', 'dist') });
+  installAssetHandler({ protocol, net, root: path.join(__dirname, '..', 'dist'), pluginRealm });
   if (!DEV_URL) {
     // The startup legacy-storage migration gate (P-MIG) lives in
     // electron/main/startup-migration.cjs: it decides the startup storage and writes
@@ -314,8 +322,14 @@ ipcMain.handle('renderer-storage-migrated', async (event) => {
 
 app.on('will-quit', () => dwgHost.dispose());
 
+// Plugin-realm registrations end with the app and with the main window
+// (AMENDMENT-P25-CSP-HOSTING condition (c)); a session's own dispose also
+// unserves it from the renderer side.
+app.on('will-quit', () => pluginRealm.clear());
+
 app.on('window-all-closed', () => {
   if (startingMainWindow) return; // The temporary preference-migration window has just closed.
+  pluginRealm.clear();
   ctx.mainWindow = null;
   if (process.platform !== 'darwin') app.quit();
 });

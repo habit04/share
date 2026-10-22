@@ -18,18 +18,71 @@ const WORKER_CSP = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; co
 /** Worker bundles: Vite emits every worker entry and chunk as assets/worker/<name>-<hash>.js (vite.config.ts). */
 const WORKER_SCRIPT = /^\/assets\/worker\/[A-Za-z0-9._-]+\.m?js$/i;
 
+/** A plugin-realm session id: minted in the main process (128-bit random hex, or a test double of that shape). */
+const PLUGIN_REALM_SESSION = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * The one virtual plugin-realm file, served from main rather than from disk
+ * (AMENDMENT-P25-CSP-HOSTING Part A1/B2): a realm module's
+ * `import jcad from './jcad.js'` resolves to this body, which hands the module
+ * the session's own jcad proxy the realm bootstrap parked on the realm global
+ * under this well-known symbol for exactly the duration of the import.
+ */
+const PLUGIN_REALM_JCAD_SHIM = 'export default globalThis[Symbol.for("jcad.isolated.jcad")];';
+
+/**
+ * AMENDMENT-P25-CSP-HOSTING Part A1: the plugin-realm served roots,
+ * sessionId -> the realpath of one main-vetted plugin package directory.
+ * Registrations are minted and held ONLY in the main process, live exactly
+ * as long as the isolated session they serve, and are dropped when the
+ * renderer reports the session disposed (Part A2's unserve), when the main
+ * window closes and on app quit (main.cjs wires both). Nothing is persisted.
+ */
+function createPluginRealmRegistry() {
+  const roots = new Map();
+  return {
+    /** @param {string} sessionId @param {string} realRoot */
+    register(sessionId, realRoot) { roots.set(sessionId, realRoot); },
+    /** @param {string} sessionId */
+    unregister(sessionId) { roots.delete(sessionId); },
+    clear() { roots.clear(); },
+    /** @param {string} sessionId @returns {string | undefined} */
+    lookup(sessionId) { return roots.get(sessionId); },
+  };
+}
+
+/**
+ * A `/plugin-realm/<session>/<relpath>` URL-style path naming a script: the
+ * CSP-hosting amendment serves a registered plugin package's files under the
+ * same worker CSP as the bundled worker scripts. Only a .js/.mjs final
+ * segment under a session segment qualifies, and dot segments never do (the
+ * handler refuses them outright, and this decision is only ever consulted
+ * with the verified served path, never the raw request URL).
+ * @param {string} pathname
+ */
+function isPluginRealmScriptPath(pathname) {
+  const parts = pathname.split('/');
+  if (parts.length < 4 || parts[0] !== '' || parts[1] !== 'plugin-realm') return false;
+  if (!PLUGIN_REALM_SESSION.test(parts[2])) return false;
+  const rel = parts.slice(3);
+  if (rel.some((seg) => seg === '' || seg === '.' || seg === '..')) return false;
+  return /\.m?js$/.test(rel[rel.length - 1]);
+}
+
 /**
  * Extra response headers for the bundled file at `pathname`: WORKER_CSP for worker scripts,
  * nothing for anything else (the page, its scripts and styles, the wasm). The handler passes the
  * path of the file actually served (its real path relative to the real bundle root), never the
  * requested URL, so aliases that resolve to a worker file (a Windows 8.3 short name such as
  * `MANIFO~1.JS`, another letter case) still get the header. Case-insensitive as a second line of
- * defence for case-insensitive file systems.
+ * defence for case-insensitive file systems. A plugin-realm script served from a registered
+ * package (CSP-hosting amendment) carries the same header, under the same decide-from-the-
+ * served-file discipline.
  * @param {string} pathname
  * @returns {Record<string, string>}
  */
 function assetResponseHeaders(pathname) {
-  return WORKER_SCRIPT.test(pathname) ? { 'Content-Security-Policy': WORKER_CSP } : {};
+  return WORKER_SCRIPT.test(pathname) || isPluginRealmScriptPath(pathname) ? { 'Content-Security-Policy': WORKER_CSP } : {};
 }
 
 /**
@@ -86,10 +139,58 @@ function containedAssetRelative(realRoot, realFile) {
   return realFile.startsWith(prefix) ? realFile.slice(prefix.length) : null;
 }
 
-function installAssetHandler({ protocol, net, root }) {
+/**
+ * Serve one file of a registered plugin package (AMENDMENT-P25-CSP-HOSTING
+ * Part A1, admission condition (b)). The discipline mirrors the bundle's and
+ * is stricter in one place: the file actually served must sit under the
+ * registered real root under EXACTLY the requested relative spelling
+ * (segment for segment, letter case included), so symlink/junction escapes
+ * and case aliases that a case-insensitive filesystem would happily resolve
+ * are refused rather than served. Only `.js`/`.mjs` files are served at
+ * all, plus the virtual `jcad.js` shim, which is answered from main and
+ * shadows any package file of that name.
+ * @param {URL} url the parsed request URL (host already validated by the caller)
+ * @param {{ fetch(url: string): Promise<Response> }} net
+ * @param {ReturnType<typeof createPluginRealmRegistry>} pluginRealm
+ */
+async function pluginRealmResponse(url, net, pluginRealm) {
+  const parts = url.pathname.split('/').slice(2); // [sessionId, ...rel]
+  const sessionId = parts[0];
+  const rawRel = parts.slice(1);
+  if (!sessionId || !PLUGIN_REALM_SESSION.test(sessionId) || rawRel.length === 0) return new Response('Not found', { status: 404 });
+  let rel;
+  try {
+    rel = rawRel.map((seg) => decodeURIComponent(seg));
+  } catch { return new Response('Not found', { status: 404 }); }
+  if (rel.some((seg) => seg === '' || seg === '.' || seg === '..' || /[/\\\0:]/.test(seg))) return new Response('Forbidden', { status: 403 });
+  const root = pluginRealm.lookup(sessionId);
+  if (!root) return new Response('Not found', { status: 404 });
+  const relPath = rel.join('/');
+  const decideAs = `/plugin-realm/${sessionId}/${relPath}`;
+  if (relPath === 'jcad.js') {
+    return withAssetHeaders(new Response(PLUGIN_REALM_JCAD_SHIM, { headers: { 'content-type': 'text/javascript' } }), decideAs);
+  }
+  if (!/\.m?js$/.test(relPath)) return new Response('Not found', { status: 404 });
+  let realFile;
+  try {
+    realFile = await fs.realpath(path.join(root, ...rel));
+  } catch { return new Response('Not found', { status: 404 }); }
+  const contained = containedAssetRelative(root, realFile);
+  if (contained === null || servedPath(contained) !== `/${relPath}`) return new Response('Forbidden', { status: 403 });
+  // Decide headers from the file that is served (proven identical to the request above).
+  return withAssetHeaders(await net.fetch(pathToFileURL(realFile).href), decideAs);
+}
+
+function installAssetHandler({ protocol, net, root, pluginRealm }) {
   protocol.handle('jcad', async (request) => {
     try {
       if (request.method !== 'GET' && request.method !== 'HEAD') return new Response('Method not allowed', { status: 405 });
+      const url = new URL(request.url);
+      if (url.pathname.startsWith('/plugin-realm/')) {
+        if (!pluginRealm) return new Response('Not found', { status: 404 });
+        if (url.protocol !== 'jcad:' || url.hostname !== 'app' || url.port || url.username || url.password) return new Response('Not found', { status: 404 });
+        return await pluginRealmResponse(url, net, pluginRealm);
+      }
       const file = assetPath(root, request.url);
       const [realRoot, realFile] = await Promise.all([fs.realpath(root), fs.realpath(file)]);
       const relative = containedAssetRelative(realRoot, realFile);
@@ -240,4 +341,4 @@ function readLegacyStoreBeforeReady(leveldbDir, { logError, now }) {
   }
 }
 
-module.exports = { APP_URL, WORKER_CSP, assetPath, assetResponseHeaders, installAssetHandler, legacyStorage, legacyStoreDecodeFailure, preserveLegacyStore, readLegacyStoreBeforeReady, rendererStartUrl, servedPath, withAssetHeaders };
+module.exports = { APP_URL, WORKER_CSP, PLUGIN_REALM_JCAD_SHIM, assetPath, assetResponseHeaders, createPluginRealmRegistry, installAssetHandler, legacyStorage, legacyStoreDecodeFailure, preserveLegacyStore, readLegacyStoreBeforeReady, rendererStartUrl, servedPath, withAssetHeaders };

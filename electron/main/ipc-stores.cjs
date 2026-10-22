@@ -5,11 +5,12 @@
 const { dialog } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
+const { randomBytes } = require('node:crypto');
 const { atomicWriteFile } = require('../atomic-write.cjs');
 const { createAutosaveStore, safeAutosaveName } = require('../autosave-store.cjs');
 const { stateDir, autosaveDir, enqueueWrite } = require('./app-data.cjs');
 const { readLimitedFile, validateTextSize } = require('../resource-limits.cjs');
-const { isPluginFolderName, readPluginManifest, readPluginSource } = require('../plugin-files.cjs');
+const { isPluginFolderName, MAIN_RE, readPluginManifest, readPluginSource } = require('../plugin-files.cjs');
 
 /** @typedef {import('./context.cjs').MainContext} MainContext */
 
@@ -82,6 +83,50 @@ function registerStoreIpc(ctx) {
   });
   /** { manifest, code, path } of one plugin folder, or null when it does not exist. */
   ipcMain.handle('plugins-read', (_ev, folder) => readPluginSource(pluginsDir(), folder, { checkPath: (file) => pathPolicy.insideRoot(pluginsDir(), file, 'plugins-read') }));
+
+  // ------------------------------------------------------------------ plugin-realm serving (AMENDMENT-P25-CSP-HOSTING Part A2)
+  // The renderer asks main to serve the package of a plugin it has ALREADY
+  // trusted through the existing trust flow (plugins.ts). Main resolves the
+  // package from its OWN record — the folder name under the plugins dir,
+  // never a renderer-supplied path — vets it (plugin.json parses; its "main"
+  // names an entry file present in the package under that exact spelling),
+  // mints an unguessable session id and registers the package's realpath in
+  // the plugin-realm registry (electron/renderer-origin.cjs). The jcad://
+  // handler then serves the package's .js/.mjs files under
+  // jcad://app/plugin-realm/<sessionId>/ with the worker CSP until the
+  // renderer unserves the session or the app quits. Main never evaluates,
+  // transforms or wraps the served bytes.
+  ipcMain.handle('plugins-serve-isolated', async (_ev, folder) => {
+    const pluginRealm = ctx.pluginRealm;
+    if (!pluginRealm) throw new Error('Plugin realm serving is unavailable in this build');
+    if (!isPluginFolderName(folder)) throw new Error('Invalid plugin folder name');
+    const root = pluginsDir();
+    const packageDir = path.join(root, folder);
+    const manifestText = await readPluginManifest(root, folder, { checkPath: (file) => pathPolicy.insideRoot(root, file, 'plugins-serve-isolated') });
+    let record;
+    try {
+      record = JSON.parse(manifestText);
+    } catch {
+      throw new Error('plugin.json is not valid JSON');
+    }
+    if (!record || typeof record !== 'object' || Array.isArray(record)) throw new Error('plugin.json must be an object');
+    const main = record.main === undefined ? 'main.js' : String(record.main);
+    if (!MAIN_RE.test(main)) throw new Error('plugin.json "main" must be a .js file in the plugin folder');
+    // The entry must exist under exactly the manifest's spelling: the served
+    // URL carries that spelling, and the handler serves only exact spellings.
+    const stored = await fs.readdir(packageDir);
+    if (!stored.includes(main)) throw new Error(`plugin entry "${main}" does not exist in the plugin folder`);
+    await pathPolicy.insideRoot(root, path.join(packageDir, main), 'plugins-serve-isolated');
+    const realRoot = await fs.realpath(packageDir);
+    const sessionId = randomBytes(16).toString('hex');
+    pluginRealm.register(sessionId, realRoot);
+    return { sessionId, baseUrl: `jcad://app/plugin-realm/${sessionId}/`, entryUrl: `jcad://app/plugin-realm/${sessionId}/${main}` };
+  });
+  /** Drop one plugin-realm registration (the renderer reports its session disposed). */
+  ipcMain.handle('plugins-unserve-isolated', (_ev, sessionId) => {
+    if (typeof sessionId === 'string') ctx.pluginRealm?.unregister(sessionId);
+    return true;
+  });
 
   // ------------------------------------------------------------------ catalog packs (app data folder / packs)
   // Signed manufacturer catalogs (*.jcadpack.json, see docs/CATALOG-PACKS.md). The renderer verifies the
