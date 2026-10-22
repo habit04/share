@@ -269,6 +269,10 @@ export function writeLeader(w: Writer, e: LeaderEntity, owner: string, extras: W
 // section wrappers (RULING-P18-S3-D (1)(vi) + Amendment 2 (ii)).
 export interface MLeaderCtxView {
   scaleFactor: number;
+  /** P18 FIX group 1: the source SCALE name for this context, when the model
+   *  carries one (see MLeaderContext.scaleName); the writer resolves it to
+   *  the context object's group 340. */
+  scaleName?: string;
   basePoint: g.Point;
   textHeight: number;
   arrowSize: number;
@@ -393,6 +397,7 @@ export function mleaderContextViews(e: LeaderEntity): MLeaderCtxView[] {
   const lastMain = e.vertices[e.vertices.length - 1] ?? { x: 0, y: 0 };
   const primary: MLeaderCtxView = {
     scaleFactor: native.scaleFactor,
+    ...(native.scaleName ? { scaleName: native.scaleName } : {}),
     basePoint: block ? block.position : lastMain,
     textHeight: e.textHeight,
     arrowSize: e.arrowSize,
@@ -415,6 +420,7 @@ export function mleaderContextViews(e: LeaderEntity): MLeaderCtxView[] {
     const cLast = cMain && cMain.length ? cMain[cMain.length - 1]! : { x: 0, y: 0 };
     return {
       scaleFactor: c.scaleFactor,
+      ...(c.scaleName ? { scaleName: c.scaleName } : {}),
       basePoint: c.block ? c.block.position : cLast,
       textHeight: c.textHeight,
       arrowSize: c.arrowSize,

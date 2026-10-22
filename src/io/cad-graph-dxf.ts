@@ -10,7 +10,7 @@ import { isQuietXdataApp } from './dxf/codes';
 import { decodeUnicodeEscapes, shapeStylesOf } from './encoding';
 import { headerVariableReemittable, retainNativeLayoutPaper } from './dxf-layouts';
 import { DIM_VARIABLES } from '../core/dimension';
-import { isScaleName } from '../core/layouts';
+import { formatScale, isScaleName } from '../core/layouts';
 import { solidCarrierGroups } from './dxf/model3d-carriers';
 import { tableCellContentSum, tableRoundtripCells, tableRoundtripCellValueGroups } from './dxf/write-annotations';
 import { MODEL3D_APP } from './dxf/codes';
@@ -306,6 +306,26 @@ export function graphAnnotationCarrier(state: DrawingState): { variables: Readon
     && paths.get(record.handle)?.length === 1 && paths.get(record.handle)?.[0] === 'AcDbVariableDictionary');
   const scaleList = scaleListOf(records);
   return { variables, dictionary, scaleList: { dictionary: scaleList?.dictionary !== undefined, names: new Set(scaleList?.entries.keys() ?? []) } };
+}
+/**
+ * P18 FIX group 1: the retained ACAD_SCALELIST's SCALE entries as name ->
+ * handle (the same record mapping graphAnnotationCarrier consults). The DXF
+ * writer resolves a multileader context's source scale NAME through this map
+ * so a re-save writes group 340 at the RETAINED SCALE object; the merge pass
+ * below creates whatever the writer could not resolve.
+ */
+export function graphAnnotationScaleEntries(state: DrawingState): ReadonlyMap<string, string> {
+  const graph = state.cadGraph;
+  if (!graph) return new Map();
+  const records: RecordData[] = graph.nodes.map(node => {
+    const record: RecordData = { type: node.type, section: node.section, groups: [...node.groups] };
+    const raw = node.type === 'HEADER' || node.type === 'CLASS' ? '' : value(record, node.type === 'DIMSTYLE' ? 105 : 5);
+    if (raw) record.handle = canonicalCadHandle(raw);
+    return record;
+  });
+  const entries = new Map<string, string>();
+  for (const [name, record] of scaleListOf(records)?.entries ?? []) if (record.handle) entries.set(name, record.handle);
+  return entries;
 }
 /**
  * Which modelled tables already carry the AC1015 roundtrip chain in the
@@ -741,6 +761,10 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   for (const node of graph.nodes) if (node.anchor?.kind === 'solid3d' && node.type === 'POLYLINE') solidParts.set(node.anchor.id, (solidParts.get(node.anchor.id) ?? 0) + 1);
   for (const node of graph.nodes) if (node.anchor?.kind === 'solid3d' && node.type === 'POLYLINE') solidParents.set(JSON.stringify([node.anchor.id, node.anchor.part ?? 'polyface:0']), node);
   const generated = recordsOf(pairsOf(text)), sources = graph.nodes.map(node => ({ type: node.type, section: node.section, groups: [...node.groups], ...(node.sourceHandle ? { handle: canonicalCadHandle(node.sourceHandle) } : {}) }));
+  // P18 FIX group 1: the records the model writer itself emitted (retained
+  // records are pushed into `generated` later, as different objects) — the
+  // context-object 340 pass below completes only the writer's own objects.
+  const writerGenerated = new Set(generated);
   const sourceKeys = logicalKeys(sources), generatedKeys = logicalKeys(generated), byAnchor = new Map<string, CadNode>(), byKey = new Map<string, CadNode>();
   const viewportBoundaries = new Map((state.layouts ?? []).flatMap(layout => layout.viewports.flatMap(viewport => viewport.clipBoundary ? [[viewport.id, viewport.clipBoundary.id] as const] : [])));
   const overallSourceIds = new Set(graph.nodes.flatMap((node, index) => sourceKeys.get(sources[index]!)?.startsWith('["mainviewport",') ? [node.id] : []));
@@ -1522,6 +1546,89 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   }
   // Current semantic values replace only the corresponding recognized dictionary value.
   // Ownership, reactors, unknown variables and every other raw group remain intact.
+  // P18 FIX group 1 (native gate 340): every context object the model writer
+  // emitted must carry group 340 -> a SCALE object, or AutoCAD discards the
+  // drawing. The writer resolves retained scales and its own scale list
+  // itself; what remains unresolved here is an authored scale beside a
+  // RETAINED scale list (or no list at all): create the SCALE in the final
+  // list — the cannoscale pass's shapes and allocator — and insert the 340
+  // ahead of the object's header group 40. Retained context objects of
+  // chains the writer does not model are kept verbatim and never touched.
+  let contextScaleEnsured = false;
+  {
+    const pending = generated.filter(record => record.type === 'ACDB_MLEADEROBJECTCONTEXTDATA_CLASS' && writerGenerated.has(record));
+    const targets = pending.flatMap(record => {
+      const annotAt = record.groups.findIndex(([code, raw]) => code === 100 && raw.trim() === 'AcDbAnnotScaleObjectContextData');
+      if (annotAt < 0 || record.groups[annotAt + 1]?.[0] === 340) return [];
+      const at40 = record.groups.findIndex((group, index) => index > annotAt && group[0] === 40);
+      if (at40 < 0) return [];
+      const factor = Number(record.groups[at40]![1]);
+      if (!Number.isFinite(factor) || factor <= 0) return [];
+      return [{ record, at40, name: formatScale(1 / factor) }];
+    });
+    if (targets.length) {
+      const indexed = generated.map(record => {
+        const handle = value(record, 5);
+        return handle && record.type !== 'HEADER' ? { ...record, handle: canonicalCadHandle(handle) } : record;
+      });
+      const list = scaleListOf(indexed);
+      if (list) {
+        const created = new Map<string, string>();
+        const createdKeys: string[] = [];
+        // The generated-array element of the scale-list dictionary: the
+        // retained one when a list exists, the one created below otherwise
+        // (a created dictionary is not in `indexed`, so it is tracked by
+        // identity from here on).
+        let dictionaryRecord: RecordData | undefined = list.dictionary ? generated[indexed.indexOf(list.dictionary)] : undefined;
+        let dictionaryHandle: string | undefined = list.dictionary?.handle;
+        const handleFor = (name: string): string | undefined => {
+          const existing = list.entries.get(name)?.handle ?? created.get(name);
+          if (existing) return existing;
+          const ratio = annotationScaleRatio(name);
+          if (!ratio) return undefined;
+          const scaleRecord = (handle: string, ownerHandle: string): RecordData => ({
+            type: 'SCALE', section: 'OBJECTS', handle,
+            groups: [[5, handle], [102, '{ACAD_REACTORS'], [330, ownerHandle], [102, '}'], [330, ownerHandle], [100, 'AcDbScale'], [70, '0'], [300, name], [140, ratio.numerator], [141, ratio.denominator], [290, ratio.unit ? '1' : '0']],
+          });
+          let scaleHandle: string;
+          if (dictionaryRecord && dictionaryHandle) {
+            scaleHandle = allocate();
+            const used = new Set([...list.keys, ...createdKeys].map(key => key.toUpperCase()));
+            let key = '';
+            for (let index = 0; ; index++) {
+              const candidate = index < 260 ? `${String.fromCharCode(65 + Math.floor(index / 10))}${index % 10}` : `S${index}`;
+              if (!used.has(candidate.toUpperCase())) { key = candidate; break; }
+            }
+            createdKeys.push(key);
+            dictionaryRecord.groups.push([3, key], [350, scaleHandle]);
+            generated.push(scaleRecord(scaleHandle, dictionaryHandle));
+          } else {
+            dictionaryHandle = allocate();
+            scaleHandle = allocate();
+            generated[indexed.indexOf(list.root)]!.groups.push([3, 'ACAD_SCALELIST'], [350, dictionaryHandle]);
+            dictionaryRecord = { type: 'DICTIONARY', section: 'OBJECTS', handle: dictionaryHandle, groups: [[5, dictionaryHandle], [330, list.root.handle!], [100, 'AcDbDictionary'], [281, '1'], [3, 'A0'], [350, scaleHandle]] };
+            createdKeys.push('A0');
+            generated.push(dictionaryRecord);
+            generated.push(scaleRecord(scaleHandle, dictionaryHandle));
+          }
+          if (!generated.some(record => record.type === 'CLASS' && identifierValue(record, 1).toUpperCase() === 'SCALE')) {
+            const header = generated.find(record => record.type === 'HEADER');
+            const versionAt = header?.groups.findIndex(([code, varName]) => code === 9 && varName.trim() === '$ACADVER') ?? -1;
+            const version = versionAt >= 0 ? header!.groups[versionAt + 1]?.[1].trim() : undefined;
+            generated.push({ type: 'CLASS', section: 'CLASSES', groups: [[1, 'SCALE'], [2, 'AcDbScale'], [3, 'ObjectDBX Classes'], [90, '1153'], ...(version !== 'AC1015' ? [[91, '1'] as CadGroup] : []), [280, '0'], [281, '0']] });
+          }
+          created.set(name, scaleHandle);
+          return scaleHandle;
+        };
+        for (const target of targets) {
+          const handle = handleFor(target.name);
+          if (!handle) continue;
+          target.record.groups.splice(target.at40, 0, [340, handle]);
+          contextScaleEnsured = true;
+        }
+      }
+    }
+  }
   for (const [name, variable] of annotationVariables(generated)) {
     const current = name === 'CANNOSCALE' ? state.header?.cannoscale
       : state.header?.annoAllVisible !== undefined ? state.header.annoAllVisible ? '1' : '0' : undefined;
@@ -1540,7 +1647,7 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   // truth as the keep-scan above) in the merged output is defined by
   // some record's group 5 (or 105), the DXF null handle '0' excepted. A
   // dangle fails the save here, atomically: no output is produced.
-  if (roundtripRegenerated) {
+  if (roundtripRegenerated || contextScaleEnsured) {
     const canonHandle = (raw: string): string | undefined => /^[0-9A-Fa-f]{1,16}$/.test(raw.trim()) ? canonicalCadHandle(raw.trim()) : undefined;
     const defined = new Set<string>();
     for (const record of generated) for (const [code, raw] of record.groups) if (code === 5 || code === 105) { const handle = canonHandle(raw); if (handle) defined.add(handle); }
@@ -1550,7 +1657,7 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       const handle = canonHandle(raw);
       if (handle && handle !== '0' && !defined.has(handle)) dangling.set(handle, record.type);
     }
-    if (dangling.size) throw new CadGraphError('dependency', `Cannot save: the regenerated AC1015 roundtrip chain leaves dangling handle reference(s) ${[...dangling].map(([handle, type]) => `${handle} (referenced from a ${type} record)`).join(', ')}.`);
+    if (dangling.size) throw new CadGraphError('dependency', `Cannot save: a regenerated chain leaves dangling handle reference(s) ${[...dangling].map(([handle, type]) => `${handle} (referenced from a ${type} record)`).join(', ')}.`);
   }
   const out: string[] = [];
   for (const section of ['HEADER', 'CLASSES', 'TABLES', 'BLOCKS', 'ENTITIES', 'OBJECTS', ...new Set(generated.map(r => r.section).filter(s => !['HEADER', 'CLASSES', 'TABLES', 'BLOCKS', 'ENTITIES', 'OBJECTS'].includes(s)))]) {

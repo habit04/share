@@ -115,6 +115,16 @@ export interface MLeaderContext {
   readonly textAttachment?: number;
   /** Block placement for this context, present iff the content is a block. */
   readonly block?: MLeaderContextBlock;
+  /**
+   * The NAME of this context's annotation SCALE in the source drawing (the
+   * group-300 name of the SCALE object the context object's group 340
+   * referenced), captured by the reader (P18 FIX group 1). The writer
+   * resolves the name back to the retained SCALE on re-save; a name that
+   * resolves nowhere and cannot be recreated withholds the chain. Absent
+   * for authored contexts (their scale is created under the canonical
+   * name derived from scaleFactor).
+   */
+  readonly scaleName?: string;
 }
 
 export interface MLeaderNative {
@@ -138,6 +148,14 @@ export interface MLeaderNative {
    * holds at least one record.
    */
   readonly contexts?: readonly MLeaderContext[];
+  /**
+   * The NAME of the primary context's annotation SCALE in the source
+   * drawing (the group-300 name of the SCALE object the default context
+   * object's group 340 referenced) — the primary-scale counterpart of
+   * MLeaderContext.scaleName (P18 FIX group 1). Absent for authored
+   * primaries and for sources whose default object carries no 340.
+   */
+  readonly scaleName?: string;
   /**
    * MLEADERSTYLE values captured from the source style object that no
    * entity-level field supplies (slice-1 acceptance must-fix V-1): present

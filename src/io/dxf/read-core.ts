@@ -79,6 +79,8 @@ export interface ReadContext {
   mleaderContextData?: {
     dictionaries: ReadonlyMap<string, Obj>;
     contextObjects: ReadonlyMap<string, Obj>;
+    /** P18 FIX group 1(b): SCALE objects by upper-case handle -> group-300 name. */
+    scales: ReadonlyMap<string, string>;
   };
   /** Anonymous blocks replaced by native tables. */
   consumedBlocks?: Set<string>;

@@ -121,11 +121,57 @@ describe('P18 slice 3: two-context MTEXT multileader imports as modelled context
     expect(objectHeaders(out)).toEqual([['1', '1'], ['0', '0.5']]);
     const back = readDxf(out);
     const l = back.entities[0] as LeaderEntity;
-    expect(l.mleader).toEqual((s.entities[0] as LeaderEntity).mleader);
+    // P18 FIX group 1: this fixture is the inline dialect (no source SCALE
+    // objects), so the write CREATES one SCALE per context and the re-read
+    // model gains each context's canonical scale name — '1:1' for the
+    // primary, '2:1' for the 0.5 context. Every other field is the fixed
+    // point it was, and the second write below is byte-identical.
+    const first = (s.entities[0] as LeaderEntity).mleader!;
+    expect(l.mleader).toEqual({
+      ...first,
+      scaleName: '1:1',
+      contexts: first.contexts!.map((c) => ({ ...c, scaleName: '2:1' })),
+    });
     expect(l.text).toBe('PUMP P-101');
     expect(l.vertices).toEqual([{ x: 7, y: 3 }, { x: 10, y: 5 }]);
-    // And the fixed point is stable: a second write is byte-identical.
-    expect(writeDxf(back)).toBe(out);
+    // P18 FIX group 1 re-pin: the first write CREATES the scale list (this
+    // fixture's source has none), so the second write's retained-handle
+    // space includes the created dictionary and SCALEs and its merge seed
+    // (hence $HANDSEED and the chain handles) sits higher — a byte fixed
+    // point across the creation step is impossible for ANY implementation
+    // that creates the list. What must hold: the second write's objects
+    // carry their 340s, and from the second write on the output IS a byte
+    // fixed point.
+    const out2 = writeDxf(back);
+    const pairsOf = (dxf: string): Array<[string, string]> => {
+      const lines = dxf.split(/\r?\n/);
+      const pairs: Array<[string, string]> = [];
+      for (let i = 0; i + 1 < lines.length; i += 2) pairs.push([lines[i]!.trim(), lines[i + 1]!]);
+      return pairs;
+    };
+    const scaleHandles = new Set<string>();
+    const objectRefs: string[] = [];
+    {
+      const pairs = pairsOf(out2);
+      for (let i = 0; i < pairs.length; i += 1) {
+        if (pairs[i]![0] !== '0') continue;
+        const kind = pairs[i]![1].trim();
+        let handle: string | undefined;
+        let ref: string | undefined;
+        for (let j = i + 1; j < pairs.length && pairs[j]![0] !== '0'; j += 1) {
+          if (pairs[j]![0] === '5' && handle === undefined) handle = pairs[j]![1].trim().toUpperCase();
+          if (kind === 'ACDB_MLEADEROBJECTCONTEXTDATA_CLASS' && pairs[j]![0] === '100' && pairs[j]![1].trim() === 'AcDbAnnotScaleObjectContextData') {
+            expect(pairs[j + 1]?.[0]).toBe('340');
+            ref = pairs[j + 1]![1].trim().toUpperCase();
+          }
+        }
+        if (kind === 'SCALE' && handle) scaleHandles.add(handle);
+        if (ref) objectRefs.push(ref);
+      }
+    }
+    expect(objectRefs).toHaveLength(2);
+    for (const ref of objectRefs) expect(scaleHandles.has(ref)).toBe(true);
+    expect(writeDxf(readDxf(out2))).toBe(out2);
   });
 
   it('an authored multi-context entity writes every context with its own scale and text', () => {
@@ -359,7 +405,14 @@ describe('P18 slice 3: three-context block-content multileader', () => {
     expect((out.match(/GEAR-9/g) ?? []).length).toBe(1);
     const back = readDxf(out);
     const lb = back.entities.find((e): e is LeaderEntity => e.type === 'leader')!;
-    expect(lb.mleader).toEqual(l.mleader);
+    // P18 FIX group 1: as in the MTEXT case, the re-read model gains the
+    // canonical scale names of the SCALEs the write created ('1:1', '2:1',
+    // '4:1' for scale factors 1, 0.5, 0.25); all else is unchanged.
+    expect(lb.mleader).toEqual({
+      ...l.mleader,
+      scaleName: '1:1',
+      contexts: l.mleader!.contexts!.map((c, i) => ({ ...c, scaleName: ['2:1', '4:1'][i] })),
+    });
   });
 
   it('a hybrid second context (block signal + MTEXT text) withholds everything and reports', () => {
@@ -515,3 +568,4 @@ describe('P18 slice 3 (AMENDMENT-P18-S3-C): entityGeometryWork charges mleader c
     expect(() => validateGeometryBudget(state)).not.toThrow();
   });
 });
+

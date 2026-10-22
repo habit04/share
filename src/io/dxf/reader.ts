@@ -259,9 +259,12 @@ function blockRecordNamesOf(pairs: readonly Pair[]): Map<string, string> {
  * extension dictionary, so readMLeader joins through these maps. Of the exact
  * shape of the pre-scans above; OBJECTS comes last, read first.
  */
-function mleaderContextDataOf(pairs: readonly Pair[]): { dictionaries: Map<string, Obj>; contextObjects: Map<string, Obj> } {
+function mleaderContextDataOf(pairs: readonly Pair[]): { dictionaries: Map<string, Obj>; contextObjects: Map<string, Obj>; scales: Map<string, string> } {
   const dictionaries = new Map<string, Obj>();
   const contextObjects = new Map<string, Obj>();
+  // P18 FIX group 1(b): SCALE objects by handle -> their group-300 name, so
+  // readMLeader can name the scale each context object's group 340 names.
+  const scales = new Map<string, string>();
   for (let i = 0; i + 1 < pairs.length; i += 1) {
     if (pairs[i]!.code !== 0 || pairs[i]!.value !== 'SECTION' || pairs[i + 1]!.value !== 'OBJECTS') continue;
     let j = i + 2;
@@ -270,10 +273,11 @@ function mleaderContextDataOf(pairs: readonly Pair[]): { dictionaries: Map<strin
       if (!has(o, 5)) continue;
       if (o.kind === 'DICTIONARY') dictionaries.set(str(o, 5).toUpperCase(), o);
       else if (o.kind === 'ACDB_MLEADEROBJECTCONTEXTDATA_CLASS') contextObjects.set(str(o, 5).toUpperCase(), o);
+      else if (o.kind === 'SCALE' && has(o, 300)) scales.set(str(o, 5).toUpperCase(), str(o, 300));
     }
     i = j;
   }
-  return { dictionaries, contextObjects };
+  return { dictionaries, contextObjects, scales };
 }
 
 /** The reader proper; DIMSTYLE records are collected into `dimStyles`. */

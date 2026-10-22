@@ -48,6 +48,11 @@ export class Writer {
    *  writeEntityCommon's gated subgroup and writer.ts's W-OBJECTS
    *  context-objects block. */
   readonly mleaderContextChains = new WeakMap<Entity, MLeaderContextChainHandles>();
+  /** P18 FIX group 1: entities whose context chain is WITHHELD on this write
+   *  (a source scale name resolves to no SCALE and cannot be recreated) —
+   *  graphWithoutModelledContextChains drops their retained chains too, so
+   *  a withheld chain is absent from the output rather than resurrected. */
+  readonly mleaderChainsWithheld = new WeakSet<Entity>();
   readonly dimensionStyles = new Map<string, DimStyle>();
   readonly reservedEntityHandles = new WeakMap<Entity, string>();
   reserveEntityHandle(entity: Entity): string {
@@ -67,8 +72,15 @@ export class Writer {
   pair(code: number, value: string | number): void {
     this.out.push(String(code), typeof value === 'number' ? fmt(value) : value);
   }
+  /** Handles nextHandle must never hand out (P18 FIX group 1): a context
+   *  object's group 340 names a RETAINED scale by its source handle, a
+   *  cross-space reference the merge's generated-record rewrite would
+   *  mistake for a writer handle if the writer allocated the same value. */
+  avoidHandles: ReadonlySet<string> = new Set();
   nextHandle(): string {
-    this.handle += 1;
+    do {
+      this.handle += 1;
+    } while (this.avoidHandles.has(this.handle.toString(16).toUpperCase()));
     return this.handle.toString(16).toUpperCase();
   }
   lastHandle(): number {

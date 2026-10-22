@@ -276,6 +276,12 @@ export interface MLeaderContextChain {
    *  object's stored group 40 + its body groups + 301 close). Empty unless
    *  the chain resolves cleanly. */
   objectSections: Pair[][];
+  /** P18 FIX group 1(b): the group-340 SCALE reference of the excluded
+   *  default object (the primary's source scale), when it carries one. */
+  defaultScaleRef?: string;
+  /** P18 FIX group 1(b): the group-340 SCALE reference of each resolved
+   *  non-default object, aligned with objectSections. */
+  objectScaleRefs: (string | undefined)[];
 }
 
 /** One dictionary entry's target handle (the pair after its group-3 key). */
@@ -297,6 +303,10 @@ interface ResolvedContextObject {
   scaleText: string;
   /** The CONTEXT_DATA body groups (everything after the header's group 40). */
   body: Pair[];
+  /** P18 FIX group 1(b): the object's group-340 SCALE reference (upper-case
+   *  handle), when the header carries one — the reader used to skip it
+   *  positionally and discard it, which is why the writer could not keep it. */
+  scaleRef?: string;
 }
 
 /**
@@ -304,8 +314,10 @@ interface ResolvedContextObject {
  * facts F2/F4): the default flag is the group 290 between the
  * AcDbObjectContextData and AcDbAnnotScaleObjectContextData subclass markers;
  * the body's first group is the one after the header's group 40. The object's
- * group 340 (its SCALE reference) is header material, never body: it is not
- * consulted (the stored 40 is authoritative) and never reaches the capture.
+ * group 340 (its SCALE reference) is header material, never body: the stored
+ * 40 stays authoritative for the context's identity, and the 340 is CAPTURED
+ * (P18 FIX group 1(b)) — as the source scale's name on the model — without
+ * ever reaching the capture loop.
  */
 const parseContextObject = (o: Obj): ResolvedContextObject | null => {
   const gs = o.groups;
@@ -326,11 +338,15 @@ const parseContextObject = (o: Obj): ResolvedContextObject | null => {
   // 40 for the header's when the header's is missing, completing a corrupt
   // object by fallback: exactly the fabrication class S3-B closed inline.
   let at40 = annotAt + 1;
-  if (gs[at40]?.code === 340) at40 += 1;
+  let scaleRef: string | undefined;
+  if (gs[at40]?.code === 340) {
+    scaleRef = gs[at40]!.value.trim().toUpperCase();
+    at40 += 1;
+  }
   if (gs[at40]?.code !== 40) return null;
   const scaleText = gs[at40]!.value;
   if (!Number.isFinite(flt(scaleText))) return null;
-  return { isDefault, scaleText, body: gs.slice(at40 + 1) };
+  return { isDefault, scaleText, body: gs.slice(at40 + 1), ...(scaleRef ? { scaleRef } : {}) };
 };
 
 export function resolveMLeaderContextChain(o: Obj, ctx: ReadContext): MLeaderContextChain {
@@ -345,6 +361,7 @@ export function resolveMLeaderContextChain(o: Obj, ctx: ReadContext): MLeaderCon
     unparseable: false,
     conflict: false,
     objectSections: [],
+    objectScaleRefs: [],
   };
   // Scope edge (RULING-P18-S3-D (1)(ii)(zeta)): an objects-only primary (an
   // engaged chain on a record with NO inline section) is outside the S3-D
@@ -397,10 +414,12 @@ export function resolveMLeaderContextChain(o: Obj, ctx: ReadContext): MLeaderCon
   // is flagged, none is excluded. An empty scales dictionary adds nothing
   // and is not a leg.
   let defaultSeen = false;
+  let defaultScaleRef: string | undefined;
   const additionals: ResolvedContextObject[] = [];
   for (const r of resolved) {
     if (r.isDefault && !defaultSeen) {
       defaultSeen = true;
+      defaultScaleRef = r.scaleRef;
       continue;
     }
     additionals.push(r);
@@ -411,7 +430,13 @@ export function resolveMLeaderContextChain(o: Obj, ctx: ReadContext): MLeaderCon
     ...r.body,
     { code: 301, value: 'CONTEXT_DATA}' },
   ]);
-  return { ...engaged, additional: inlineAdditional + additionals.length, objectSections };
+  return {
+    ...engaged,
+    additional: inlineAdditional + additionals.length,
+    objectSections,
+    ...(defaultScaleRef ? { defaultScaleRef } : {}),
+    objectScaleRefs: additionals.map((r) => r.scaleRef),
+  };
 }
 
 /**
@@ -734,8 +759,12 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
     if (r.blockRotation !== undefined && r.blockRotation === block.rotation) delete r.blockRotation;
     effectiveRetained = Object.keys(r).length ? r : undefined;
   }
+  // P18 FIX group 1(b): the primary's source scale name, from the default
+  // context object's captured group 340 resolved through the SCALE map.
+  const primaryScaleName = chain.defaultScaleRef ? ctx.mleaderContextData?.scales.get(chain.defaultScaleRef) : undefined;
   const nativeCommon = {
     styleName: (styleHandle ? ctx.mleaderStyles?.get(styleHandle) : undefined) ?? 'Standard',
+    ...(primaryScaleName ? { scaleName: primaryScaleName } : {}),
     scaleFactor: primary.scaleFactor && primary.scaleFactor > 0 ? primary.scaleFactor : STANDARD_MLEADER_STYLE.scaleFactor,
     landingGap: primary.landingGap && primary.landingGap >= 0 ? primary.landingGap : STANDARD_MLEADER_STYLE.landingGap,
     leaderLineType: (lineType === 0 || lineType === 2 ? lineType : 1) as 0 | 1 | 2,
@@ -762,7 +791,15 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
     const built: MLeaderContext[] = [];
     let ok = true;
     if (sectionTerminated.slice(1).some((t) => !t)) ok = false;
-    for (const acc of accs.slice(1)) {
+    const additionalAccs = accs.slice(1);
+    for (let ai = 0; ai < additionalAccs.length; ai += 1) {
+      const acc = additionalAccs[ai]!;
+      // P18 FIX group 1(b): the object-derived accumulators are the LAST
+      // objectSections.length ones (the synthetic sections ride after the
+      // record's own groups), aligned with chain.objectScaleRefs.
+      const objIdx = ai + 1 - (accs.length - chain.objectSections.length);
+      const accScaleRef = objIdx >= 0 ? chain.objectScaleRefs[objIdx] : undefined;
+      const accScaleName = accScaleRef ? ctx.mleaderContextData?.scales.get(accScaleRef) : undefined;
       const accPlain = acc.text ? mtextFromDxf(acc.text) : '';
       if (!(acc.scaleFactor !== undefined && Number.isFinite(acc.scaleFactor) && acc.scaleFactor > 0)) ok = false;
       if (acc.paths.some((path) => path.some((pt) => !Number.isFinite(pt.x) || !Number.isFinite(pt.y)))) ok = false;
@@ -788,6 +825,7 @@ export function readMLeader(o: Obj, base: ReturnType<typeof commonProps>, ctx: R
         ...(Math.abs(accRot) > 1e-12 ? { textRotation: accRot } : {}),
         ...(acc.textWidth && acc.textWidth > 0 ? { textWidth: acc.textWidth } : {}),
         ...(acc.attachment && acc.attachment >= 1 && acc.attachment <= 9 ? { textAttachment: acc.attachment } : {}),
+        ...(accScaleName ? { scaleName: accScaleName } : {}),
         ...(block ? {
           block: {
             position: acc.blockPos ?? acc.ctxBasePos ?? lastPt ?? block.position,

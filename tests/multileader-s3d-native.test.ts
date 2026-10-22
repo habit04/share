@@ -260,13 +260,16 @@ describe('P18 S3-D: write-back emits the AutoCAD object layout', () => {
     expect(out).toContain('ACDB_ANNOTATIONSCALES');
     expect(out).toContain('*A1');
     expect(out).toContain('*A2');
-    // 340 disclosure for THIS file (RULING-P18-S3-D (5)(vi)): the writer
-    // creates no scale list for E (the source list is retained), so neither
-    // object carries a 340 — the (beta) branch, fabrication-free.
-    for (const o of objs) {
+    // 340 (P18 FIX group 1 — the native gate superseded RULING-P18-S3-D
+    // (5)(vi)(beta)): the writer creates no scale list for E (the source
+    // list is retained), and EVERY object carries its 340 to the RETAINED
+    // source SCALE — B7 ('1:1') for the primary's object, 124 ('1:2') for
+    // the additional's, exactly as the source file carries them.
+    const refs = objs.map((o) => {
       const at = o.groups.findIndex(([c, v]) => c === '100' && v.trim() === 'AcDbAnnotScaleObjectContextData');
-      expect(o.groups[at + 1]?.[0]).not.toBe('340');
-    }
+      return o.groups[at + 1]?.[0] === '340' ? o.groups[at + 1]![1].trim() : undefined;
+    });
+    expect(refs).toEqual(['B7', '124']);
     // Reimport resolves the same model; a second write is byte-identical.
     const back = readDxf(out);
     expect(rounded(leaderOf(back).mleader)).toEqual(rounded(leaderOf(s).mleader));
@@ -298,7 +301,10 @@ describe('P18 S3-D: write-back emits the AutoCAD object layout', () => {
     expect(out).not.toContain('AcDbContextDataManager');
     expect(ctxOpeners(out)).toBe(1);
     const back = readDxf(out);
-    expect(rounded(leaderOf(back).mleader)).toEqual(rounded(leaderOf(s).mleader));
+    // The graph-free normalisation also drops the primary's source scale
+    // NAME (P18 FIX group 1): it rode on the omitted default object's 340,
+    // and with no apparatus written there is nothing to capture it from.
+    expect(rounded(leaderOf(back).mleader)).toEqual(rounded({ ...leaderOf(s).mleader, scaleName: undefined }));
     // On the graph-carrying path the round trip is a fixed point too, and
     // the reimport stays single-context (whatever the retained-raw path
     // carries, the MODEL never gains a contexts field from it).
@@ -308,11 +314,11 @@ describe('P18 S3-D: write-back emits the AutoCAD object layout', () => {
     expect(writeDxf(backG)).toBe(gen1);
   });
 
-  it('authored drawing: the cannoscale-matching object carries its 340, the other does not', () => {
-    // No cadGraph, header CANNOSCALE 1:2: the writer creates the scale list
-    // holding only the current scale, so the 1:2 object MUST carry 340 =
-    // that SCALE object's handle ((5)(vi)(alpha)) and the 1:1 object MUST
-    // NOT fabricate one ((5)(vi)(beta)).
+  it('authored drawing: every object carries its 340 — the cannoscale one to the list SCALE, the other to a SCALE created for it', () => {
+    // No cadGraph, header CANNOSCALE 1:2 (P18 FIX group 1): the writer
+    // creates the scale list holding the current scale AND a SCALE for the
+    // other context's scale — an object without a 340 is what AutoCAD
+    // discards the drawing for, so neither object goes without one.
     const s = readDxf(E);
     const authored = {
       ...s,
@@ -323,16 +329,17 @@ describe('P18 S3-D: write-back emits the AutoCAD object layout', () => {
     const objs = objectRecords(out);
     expect(objs).toHaveLength(2);
     const scales = recordsOf(out).filter((r) => r.kind === 'SCALE');
-    expect(scales).toHaveLength(1);
-    const scaleHandle = scales[0]!.groups.find(([c]) => c === '5')?.[1].trim();
-    const scaleName = scales[0]!.groups.find(([c]) => c === '300')?.[1].trim();
-    expect(scaleName).toBe('1:2');
+    expect(scales).toHaveLength(2);
+    const handleOf = (name: string): string | undefined =>
+      scales.find((r) => r.groups.find(([c]) => c === '300')?.[1].trim() === name)?.groups.find(([c]) => c === '5')?.[1].trim();
+    expect(handleOf('1:2')).toBeDefined();
+    expect(handleOf('1:1')).toBeDefined();
     const refOf = (o: (typeof objs)[number]): string | undefined => {
       const at = o.groups.findIndex(([c, v]) => c === '100' && v.trim() === 'AcDbAnnotScaleObjectContextData');
       return o.groups[at + 1]?.[0] === '340' ? o.groups[at + 1]![1].trim() : undefined;
     };
-    expect(refOf(objs[0]!)).toBeUndefined();
-    expect(refOf(objs[1]!)).toBe(scaleHandle);
+    expect(refOf(objs[0]!)).toBe(handleOf('1:1'));
+    expect(refOf(objs[1]!)).toBe(handleOf('1:2'));
   });
 });
 

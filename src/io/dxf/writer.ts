@@ -9,7 +9,7 @@
 import type { DrawingState } from '../../core/document';
 import type { Linetype } from '../../core/linetypes';
 import type { Entity, DimensionEntity, Layer, AttributeAppearance } from '../../core/entities';
-import { rawEntitiesOf } from '../import-report';
+import { rawEntitiesOf, type ImportReportItem } from '../import-report';
 import { findLinetype, patternLength, STANDARD_LINETYPES, complexLinetypeProblem, linetypeShapeStyleProblem } from '../../core/linetypes';
 import { Writer, setPaperOwners, emptyExtras, writeTextLike, writeTextStyle, writeEntityCommon } from './write-core';
 import { DEFAULT_HEADER } from '../../core/document';
@@ -38,7 +38,7 @@ import { entityMTextBackground } from '../../core/mtext-background';
 import { materializePolylineWidthFrames } from './polyline-width-blocks';
 import { LAYER_TRANSPARENCY_APP, transparencyToDxf, validColorName } from '../../core/appearance';
 import { namedCameraDisplayCenter, planarNamedCamera } from '../../core/named-view';
-import { annotationScaleRatio, graphAnnotationCarrier, graphTableRoundtripCarriers, preserveDxfCadGraph } from '../cad-graph-dxf';
+import { annotationScaleRatio, graphAnnotationCarrier, graphAnnotationScaleEntries, graphTableRoundtripCarriers, preserveDxfCadGraph } from '../cad-graph-dxf';
 import { canonicalCadHandle } from '../../core/cad-graph';
 
 /** Linetype names referenced anywhere in the drawing (layers, entities, block entities). */
@@ -114,7 +114,7 @@ function dimensionPictureKey(d: DimensionEntity): string {
 function graphWithoutModelledContextChains(state: DrawingState, w: Writer, entities: readonly Entity[]): DrawingState {
   const graph = state.cadGraph;
   if (!graph) return state;
-  const chained = new Set(entities.filter((e) => w.mleaderContextChains.has(e)).map((e) => e.id));
+  const chained = new Set(entities.filter((e) => w.mleaderContextChains.has(e) || w.mleaderChainsWithheld.has(e)).map((e) => e.id));
   const byHandle = new Map(graph.nodes.flatMap((n) => (n.sourceHandle ? [[canonicalCadHandle(n.sourceHandle), n] as const] : [])));
   const entryTarget = (node: CadNode, keyUpper: string): CadNode | undefined => {
     for (let i = 0; i + 1 < node.groups.length; i += 1) {
@@ -170,9 +170,26 @@ function graphWithoutModelledContextChains(state: DrawingState, w: Writer, entit
   return { ...state, cadGraph: { ...graph, nodes: graph.nodes.filter((n) => !drop.has(n.id)).map((n) => stripped.get(n.id) ?? n) } };
 }
 
-export function writeDxf(state: DrawingState): string {
+/**
+ * Write the drawing as DXF text. The optional export-report sink receives
+ * the losses a save itself decides (P18 FIX group 1: an annotative context
+ * chain withheld because no SCALE object can be referenced for one of its
+ * source scales) in the import report's item shape; no caller is required
+ * to pass one, and the write is identical either way.
+ */
+export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportReportItem): void }): string {
   state = materializePolylineWidthFrames(state);
   const w = new Writer();
+  // P18 FIX group 1: when any multileader carries annotative contexts, the
+  // writer's allocator must never hand out a retained SCALE handle — the
+  // context objects' group 340 names those scales by their source handles,
+  // and preserveDxfCadGraph's rewrite of generated records would remap the
+  // value if a generated record carried the same handle.
+  if (state.cadGraph
+    && [...state.entities, ...Object.values(state.blocks).flatMap((b) => b.entities)]
+      .some((e) => e.type === 'leader' && e.kind === 'mleader' && e.mleader?.contexts?.length)) {
+    w.avoidHandles = new Set(graphAnnotationScaleEntries(state).values());
+  }
   // ACAD_PLOTSTYLENAME: the dictionary layers point at (390) and its "Normal" entry (AutoCAD's
   // AUDIT reports layers whose plot style handle names no object).
   const plotStyleDictionary = w.nextHandle();
@@ -325,8 +342,64 @@ export function writeDxf(state: DrawingState): string {
   // name it as the extension dictionary's owner (330) after ENTITIES is
   // written. No contexts => no allocation, no output: byte-identical.
   let mleaderContextObjectCount = 0;
+  // P18 FIX group 1 (native gate 340): every context object must carry group
+  // 340 -> a SCALE object, so each view's scale is resolved ONCE here. A view
+  // resolves to (i) a RETAINED scale-list entry by its source scale name (or
+  // the canonical name of its factor), (ii) the writer-created cannoscale
+  // SCALE object, or (iii) a CREATION: a SCALE to be added under a name — in
+  // this write's own scale list when this write creates one (or when the
+  // drawing has no retained graph at all), otherwise by
+  // preserveDxfCadGraph's completion pass beside the retained list. A view
+  // whose SOURCE scale name resolves nowhere and is not a plain ratio name
+  // cannot be recreated without falsifying it: its entity's whole chain is
+  // WITHHELD (never written without the 340 AutoCAD requires) and reported
+  // through the export-report sink. Creations are recorded by NAME only —
+  // their handles are allocated in the OBJECTS pass like every scale-list
+  // handle (the allocation-order invariant at scaleListDictionary above).
+  interface MLeaderScalePlan { handle?: string; cannoObject?: boolean; createName?: string }
+  const mleaderScalePlans = new Map<Entity, MLeaderScalePlan[]>();
+  const mleaderScaleCreations = new Map<string, { numerator: string; denominator: string; unit: boolean }>();
+  let mleaderChainsWithheldCount = 0;
+  const retainedScales = allEntities.some((e) => e.type === 'leader' && e.kind === 'mleader' && e.mleader?.contexts?.length)
+    ? graphAnnotationScaleEntries(state)
+    : new Map<string, string>();
   for (const e of allEntities) {
     if (e.type !== 'leader' || e.kind !== 'mleader' || !e.mleader?.contexts?.length) continue;
+    const views = mleaderContextViews(e);
+    const plans: MLeaderScalePlan[] = [];
+    let withhold: string | undefined;
+    for (const v of views) {
+      const canonical = formatScale(1 / v.scaleFactor);
+      if (v.scaleName) {
+        const retained = retainedScales.get(v.scaleName) ?? retainedScales.get(canonical);
+        if (retained) { plans.push({ handle: retained }); continue; }
+        if (createScaleList && state.header?.cannoscale === v.scaleName) { plans.push({ cannoObject: true }); continue; }
+        const ratio = annotationScaleRatio(v.scaleName);
+        if (!ratio) { withhold = v.scaleName; break; }
+        if (!mleaderScaleCreations.has(v.scaleName)) mleaderScaleCreations.set(v.scaleName, ratio);
+        plans.push({ createName: v.scaleName });
+        continue;
+      }
+      if (createScaleList && state.header?.cannoscale !== undefined && canonical === formatScale(cannoscaleValue(state.header.cannoscale))) { plans.push({ cannoObject: true }); continue; }
+      const retained = retainedScales.get(canonical);
+      if (retained) { plans.push({ handle: retained }); continue; }
+      const ratio = annotationScaleRatio(canonical);
+      if (!ratio) { withhold = canonical; break; }
+      if (!mleaderScaleCreations.has(canonical)) mleaderScaleCreations.set(canonical, ratio);
+      plans.push({ createName: canonical });
+    }
+    if (withhold !== undefined) {
+      w.mleaderChainsWithheld.add(e);
+      mleaderChainsWithheldCount += 1;
+      exportReport?.add({
+        type: 'MULTILEADER',
+        action: 'simplified',
+        reason: `Annotative contexts are not written: no SCALE object can be referenced for the source scale "${withhold}" (its name is not a plain scale ratio and no retained SCALE carries it), so the context chain is withheld instead of being written without the group 340 AutoCAD requires.`,
+        layer: e.layer,
+      });
+      continue;
+    }
+    mleaderScalePlans.set(e, plans);
     w.reserveEntityHandle(e);
     const extension = w.nextHandle();
     const manager = w.nextHandle();
@@ -336,6 +409,12 @@ export function writeDxf(state: DrawingState): string {
     w.mleaderContextChains.set(e, { extension, manager, scales, objects });
     mleaderContextObjectCount += objects.length;
   }
+  // Creations are written by THIS write when it creates the scale list, or
+  // when no retained graph exists for the merge to complete them beside;
+  // beside a retained list the merge pass creates them (under the canonical
+  // name of each object's group 40 — the same ratio).
+  const mleaderCreationsHere = createScaleList || !state.cadGraph;
+  const mleaderForceScaleList = !createScaleList && !state.cadGraph && mleaderScaleCreations.size > 0;
   // Choose the highest native format required anywhere, including associated text/attributes.
   const appearances = [...allEntities, ...state.layers, ...blockList.flatMap((b) => b.attributes),
     ...allEntities.flatMap<AttributeAppearance>((e) => e.type === 'insert' ? Object.values(e.attributePlacements ?? {}) : e.type === 'leader' && e.textAppearance ? [e.textAppearance] : [])];
@@ -518,16 +597,19 @@ export function writeDxf(state: DrawingState): string {
       w.pair(280, 0);
       w.pair(281, 0);
     }
-    if (createScaleList) {
+    if (createScaleList || mleaderForceScaleList) {
       // Specimen registration (N1/Q10/Q12 HANDBUILT fixtures): SCALE / AcDbScale,
       // app name 'ObjectDBX Classes', class version 1153, one created instance;
-      // group 91 omitted at AC1015, exactly like the registration above.
+      // group 91 omitted at AC1015, exactly like the registration above. The
+      // instance count covers every SCALE this write creates (the cannoscale
+      // object plus the P18 FIX group-1 mleader creations written here; with
+      // a retained graph the merge recounts class instances anyway).
       w.pair(0, 'CLASS');
       w.pair(1, 'SCALE');
       w.pair(2, 'AcDbScale');
       w.pair(3, 'ObjectDBX Classes');
       w.pair(90, 1153);
-      if (acadVersion !== 'AC1015') w.pair(91, 1);
+      if (acadVersion !== 'AC1015') w.pair(91, (createScaleList ? 1 : 0) + (mleaderCreationsHere ? mleaderScaleCreations.size : 0));
       w.pair(280, 0);
       w.pair(281, 0);
     }
@@ -849,6 +931,14 @@ export function writeDxf(state: DrawingState): string {
     scaleListDictionary = w.nextHandle();
     scaleObject = w.nextHandle();
   }
+  // P18 FIX group 1: the mleader scale creations this write owns get their
+  // handles here as well (and the dictionary handle when the write must
+  // force a scale list for them — no cannoscale list, no retained graph).
+  const mleaderScaleHandles = new Map<string, string>();
+  if (mleaderCreationsHere && mleaderScaleCreations.size) {
+    if (!scaleListDictionary) scaleListDictionary = w.nextHandle();
+    for (const name of mleaderScaleCreations.keys()) mleaderScaleHandles.set(name, w.nextHandle());
+  }
   w.pair(0, 'SECTION');
   w.pair(2, 'OBJECTS');
   w.pair(0, 'DICTIONARY');
@@ -924,32 +1014,50 @@ export function writeDxf(state: DrawingState): string {
     if (cannoVariable) dictionaryVariable(cannoVariable, state.header!.cannoscale!);
     if (annoVariable) dictionaryVariable(annoVariable, '0');
   }
-  if (scaleListDictionary && scaleObject && scaleRatio) {
+  if (scaleListDictionary && (scaleObject || mleaderScaleHandles.size)) {
     // Specimen shape (N1 AC1032 / Q10 AC1015 / Q12 AC1032 HANDBUILT fixtures): a
-    // plain DICTIONARY owned by the root named-objects dictionary, its single
-    // entry keyed 'A0' — the first key of AutoCAD's A0..D2 sequence — pointing at
-    // the SCALE object for the current annotation scale. Groups 140/141 carry
-    // the ratio parsed from the scale name (paper units / drawing units,
-    // formatted as AutoCAD writes them); group 290 marks the unit scale 1:1.
+    // plain DICTIONARY owned by the root named-objects dictionary, its entries
+    // keyed from 'A0' — the first key of AutoCAD's A0..D2 sequence. The first
+    // entry is the SCALE object for the current annotation scale when this
+    // write creates one; P18 FIX group 1's mleader creations follow in plan
+    // order. Groups 140/141 carry the ratio parsed from the scale name (paper
+    // units / drawing units, formatted as AutoCAD writes them); group 290
+    // marks the unit scale 1:1.
     w.pair(0, 'DICTIONARY');
     w.pair(5, scaleListDictionary);
     w.pair(330, 'C');
     w.pair(100, 'AcDbDictionary');
     w.pair(281, 1);
-    w.pair(3, 'A0');
-    w.pair(350, scaleObject);
-    w.pair(0, 'SCALE');
-    w.pair(5, scaleObject);
-    w.pair(102, '{ACAD_REACTORS');
-    w.pair(330, scaleListDictionary);
-    w.pair(102, '}');
-    w.pair(330, scaleListDictionary);
-    w.pair(100, 'AcDbScale');
-    w.pair(70, 0);
-    w.pair(300, state.header!.cannoscale!);
-    w.pair(140, scaleRatio.numerator);
-    w.pair(141, scaleRatio.denominator);
-    w.pair(290, scaleRatio.unit ? 1 : 0);
+    let keyIndex = 0;
+    const nextKey = (): string => {
+      const key = keyIndex < 260 ? `${String.fromCharCode(65 + Math.floor(keyIndex / 10))}${keyIndex % 10}` : `S${keyIndex}`;
+      keyIndex += 1;
+      return key;
+    };
+    if (scaleObject) {
+      w.pair(3, nextKey());
+      w.pair(350, scaleObject);
+    }
+    for (const handle of mleaderScaleHandles.values()) {
+      w.pair(3, nextKey());
+      w.pair(350, handle);
+    }
+    const scaleRecord = (handle: string, name: string, ratio: { numerator: string; denominator: string; unit: boolean }) => {
+      w.pair(0, 'SCALE');
+      w.pair(5, handle);
+      w.pair(102, '{ACAD_REACTORS');
+      w.pair(330, scaleListDictionary);
+      w.pair(102, '}');
+      w.pair(330, scaleListDictionary);
+      w.pair(100, 'AcDbScale');
+      w.pair(70, 0);
+      w.pair(300, name);
+      w.pair(140, ratio.numerator);
+      w.pair(141, ratio.denominator);
+      w.pair(290, ratio.unit ? 1 : 0);
+    };
+    if (scaleObject && scaleRatio) scaleRecord(scaleObject, state.header!.cannoscale!, scaleRatio);
+    for (const [name, handle] of mleaderScaleHandles) scaleRecord(handle, name, mleaderScaleCreations.get(name)!);
   }
   if (imageDict) {
     w.pair(0, 'DICTIONARY');
@@ -1164,14 +1272,13 @@ export function writeDxf(state: DrawingState): string {
     // AutoCAD 2027 fixtures group-for-group (facts F1/F3): the manager entry
     // is a 360 SOFT pointer, the scales entry and the scales dictionary's
     // '*A<n>' entries are 350 pointers, each object carries 70 = 4 and the
-    // 290 default flag on the primary's object only. An object's group 340
-    // (its SCALE reference) rides ONLY when this file's own scale-list
-    // emission includes that context's scale (RULING-P18-S3-D (5)(vi)(alpha)
-    // — in practice the writer-created SCALE object for the current
-    // cannoscale, matched by canonical scale NAME through layouts.ts's
-    // machinery); otherwise the object is emitted WITHOUT a 340 and nothing
-    // is fabricated ((5)(vi)(beta)) — no native annotative claim stands for
-    // out-of-list scales until the lead's native gate answers it.
+    // 290 default flag on the primary's object only. EVERY object's group
+    // 340 (its SCALE reference) is written from the plan (P18 FIX group 1 —
+    // the lead's native gate DISCARDED drawings whose objects lacked it,
+    // superseding RULING-P18-S3-D (5)(vi)(beta)): the retained source SCALE
+    // on re-save, the writer-created cannoscale SCALE, or a SCALE created
+    // for an authored scale; a creation the merge pass owns is the only
+    // case emitted without a 340 here, and preserveDxfCadGraph inserts it.
     for (const e of allEntities) {
       const chain = w.mleaderContextChains.get(e);
       if (!chain || e.type !== 'leader' || !e.mleader) continue;
@@ -1182,11 +1289,19 @@ export function writeDxf(state: DrawingState): string {
         blockRecordHandle = w.blockRecordHandles.get(e.mleader.block!.name.toUpperCase());
         if (!blockRecordHandle) throw new Error(`Cannot write native MULTILEADER contexts: content block "${e.mleader.block!.name}" has no block record in this file.`);
       }
-      const scaleHandleFor = (scaleFactor: number): string | undefined =>
-        scaleListDictionary && scaleObject && state.header?.cannoscale !== undefined &&
-        formatScale(1 / scaleFactor) === formatScale(cannoscaleValue(state.header.cannoscale))
-          ? scaleObject
-          : undefined;
+      // P18 FIX group 1: the group 340 for each object comes from the plan
+      // (retained entry / cannoscale object / a creation this write owns);
+      // a creation owned by the merge pass resolves to no handle here and
+      // preserveDxfCadGraph inserts the 340 after creating the SCALE.
+      const plans = mleaderScalePlans.get(e);
+      const scaleHandleFor = (viewIndex: number): string | undefined => {
+        const plan = plans?.[viewIndex];
+        if (!plan) return undefined;
+        if (plan.handle) return plan.handle;
+        if (plan.cannoObject) return scaleObject ?? undefined;
+        if (plan.createName) return mleaderScaleHandles.get(plan.createName);
+        return undefined;
+      };
       // Extension dictionary (owner: the entity itself).
       w.pair(0, 'DICTIONARY');
       w.pair(5, chain.extension);
@@ -1232,9 +1347,11 @@ export function writeDxf(state: DrawingState): string {
         w.pair(70, 4);
         w.pair(290, i === 0 ? 1 : 0);
         w.pair(100, 'AcDbAnnotScaleObjectContextData');
-        const scaleRef = scaleHandleFor(v.scaleFactor);
+        const scaleRef = scaleHandleFor(i);
         if (scaleRef) w.pair(340, scaleRef);
-        w.pair(40, v.scaleFactor);
+        // Group 40 is written ONCE, as the first group of the context body
+        // emitMLeaderContext produces (P18 FIX group 1(c) — the annotative
+        // header's 40; a second one here is what AutoCAD rejected).
         emitMLeaderContext(w, v, blockRecordHandle, false);
       });
     }
@@ -1243,6 +1360,6 @@ export function writeDxf(state: DrawingState): string {
   w.pair(0, 'EOF');
   // The handle seed must exceed every handle used in the file.
   // AC1015 is read in the $DWGCODEPAGE page: non-ASCII goes out as \U+XXXX escapes (see io/encoding.ts).
-  const plain = preserveDxfCadGraph(w.toString(), mleaderContextObjectCount ? graphWithoutModelledContextChains(state, w, allEntities) : state, w.cadAnchors);
+  const plain = preserveDxfCadGraph(w.toString(), mleaderContextObjectCount || mleaderChainsWithheldCount ? graphWithoutModelledContextChains(state, w, allEntities) : state, w.cadAnchors);
   return encodeDxfText(plain.replace('HANDSEED_PLACEHOLDER', (w.lastHandle() + 1).toString(16).toUpperCase()), acadVersion);
 }
