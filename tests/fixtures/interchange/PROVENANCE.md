@@ -67,16 +67,22 @@ not native-openable as a complete drawing: AutoCAD rejects its header at
 
 JCad's writer never emits `$ACADMAINTVER`; the pair reaches a written file
 only through the cad-graph header-retention path, which re-emits a read
-drawing's header variables verbatim. Fresh JCad writes carry no
-`$ACADMAINTVER` at any version. (The P22 lineage carries a version guard
-on that retention path and its own copy of this file; the two copies are
-reconciled at integration.)
+drawing's header variables verbatim. (P22 COMP-N Series 3 update: that path
+now omits the variable when the written `$ACADVER` differs from the
+source's or the (version, group code) pair is not the valid one — AC1015 →
+group 70, AC1018+ → group 90; the value itself is never judged — so a
+malformed pair no longer carries into a rewrite, while genuine pairs still
+pass through verbatim.) Fresh JCad writes carry no `$ACADMAINTVER` at any
+version. This file is the reconciliation of the two PROVENANCE copies the
+swap and the P22 lineage each carried; there is one copy now.
 
-## Consumers (as of the fixture swap, base c01de5d3)
+## Consumers (as of the P22 rebase onto edceeeb4, 2026-10-21)
 
 - `r2018-table.dxf`: `tests/interchange-fixtures.test.ts`,
-  `tests/helpers/autocad-export.ts`, `tests/fixtures/manifest.json` (the
-  fixed-point sweep).
+  `tests/table-native-dxf.test.ts`, `tests/helpers/autocad-export.ts`,
+  `tests/header-acadmaintver-guard.test.ts` (the Series 3 guard's named
+  70/105 leg — inventory corrected at the COMP-N re-composition),
+  `tests/fixtures/manifest.json` (the fixed-point sweep).
 - `r2018-dimensions.dxf`: `tests/interchange-fixtures.test.ts`,
   `tests/cad-graph-annotations.test.ts`,
   `tests/dimension-override-provenance.test.ts`,
@@ -100,10 +106,21 @@ reconciled at integration.)
 
 ## Assertion dependence on the bogus header pair
 
-No test names `$ACADMAINTVER` or asserts the value 105. Whole-file and
-fixed-point comparisons over the synthetic fixtures (the interchange
-fixed-point sweep, the table round trips) implicitly carried the retained
-`70 / 105` pair: each replacement moved those comparisons and landed as
-its own disclosed change — the five replacements above, the table last
-under the lead's census-predicate ruling (2026-10-21). No synthetic
-fixture of the five remains.
+Exactly one test asserts on the pair: the Series 3 guard's named leg in
+`tests/header-acadmaintver-guard.test.ts` (a source carrying `70 / 105`
+at AC1032 must not re-emit it). No other test names `$ACADMAINTVER` or
+asserts the value 105. Whole-file and fixed-point comparisons over the
+synthetic fixtures (the interchange fixed-point sweep, the table round
+trips) implicitly carried the retained `70 / 105` pair: each replacement
+moved those comparisons and landed as its own disclosed change — the five
+replacements above, the table last under the lead's census-predicate
+ruling (2026-10-21). No synthetic fixture of the five remains.
+
+## The genuine counterpart for tables
+
+`r2018-table-autocad.dxf` (added by P22 COMP-N Series 1) is a genuine
+AutoCAD 2027 R2018 table — the lead's Recipe B control, SHA-256
+`d03b4283dc90911597c1f26bef91327eb20a9a265b7a648660e0a872ba8c3bfd` —
+with a merged title, a text-height override at (2,2) and an alignment
+override at (3,0), written in AutoCAD's AC1032 cell-value form. Table
+claims that need a native oracle use it, not `r2018-table.dxf`.
