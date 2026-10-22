@@ -325,3 +325,72 @@ ETA (implementation only): slice 2 integration ≈ 2–3 working days once
 PROPOSAL-P28 is admitted (mostly exhaustive-switch and codec wiring);
 PDF raster display ≈ 3–5 days after a decoder is admitted. Review and
 Windows/native gates are external and excluded from these estimates.
+
+## Corpus execution + F/H fixes (2026-10-22)
+
+The 8-class corpus was executed at 7328a6c (pack
+`p28-corpus-7328a6c.zip`, report inside): 27/36 files passed. The lead's
+rulings on the failures produced this fix slice:
+
+- **Class F (was 0/4) — clipped/tile rendering.** The engine interface
+  gains `renderRegion(page, clip, scale)` and the pure planner
+  `planUnderlayTiles(region, scale, maxBytes)`
+  (`src/io/underlay-engine.ts`); the adapter renders a clip via pdfjs
+  viewport offsets and charges the C5 per-page cap on the REGION's
+  bytes. A 400%-zoom clip of an ARCH E / A0 title block now renders
+  (single tile 5,939,200 B ≤ the 8,388,608 B cap) where the whole page
+  at scale 4 needs 257–573 MB and still refuses `scan-limit`. The
+  display service requests only the tiles covering a caller-supplied
+  visible region and composites them into the page bitmap. Re-run at
+  the fix head: F 4/4 (delivery addendum).
+- **Class H — hard render deadline.** Every parse session owns a
+  dedicated worker; a real-time watchdog cancels the render task,
+  destroys the loading task and hard-terminates the worker at the
+  deadline, surfacing the typed `deadline` refusal; the document then
+  lazily re-opens a fresh session (fresh worker). Measured in real
+  Chromium (Electron, dedicated worker): the billion-laughs render is
+  refused at ≈5.01–5.07 s wall (deadline 5 s) and the engine renders a
+  control document immediately afterwards. Under the Node test harness
+  pdfjs renders in-process on a fake worker whose render loop never
+  yields to the event loop (measured: zero timer ticks across a 121 s
+  render), so there the refusal still arrives via the cooperative
+  check when the render settles — the wall bound is a property of the
+  real-worker deployment.
+
+### Known limitations (engine, recorded 2026-10-22)
+
+- **DEFECT — pdf.js axial shading inside a luminosity SMask form with
+  a non-zero-origin /BBox is misplaced/suppressed (corpus D3).** A
+  black rect masked by a white→black axial shading inside a form whose
+  /BBox is [100 300 500 500] renders as if the mask were black
+  everywhere: the rect is fully suppressed (registered samples
+  (255,255,255) at the white end, middle and black end alike; expected
+  ≈32 at the white end, ≈224 at the black end) — observed identically
+  under @napi-rs/canvas and in Chromium. Bisection in the corpus run
+  isolated the trigger to exactly this combination: solid white/black
+  masks behave, an 8-strip gradient in the SAME offset BBox works
+  (36 / 255), and the same axial shading in a full-page-BBox mask form
+  works (32 / 224). This is an
+  upstream pdf.js defect, NOT fixed by any available release:
+  pdfjs-dist 6.4.299 (2026-10-03) is the newest version published on
+  npm as of 2026-10-22 (registry-verified), and it is the pinned
+  version. A minimal standalone repro PDF + note ship in the F+H
+  delivery (`d-repro/`). No JCad-side workaround is attempted:
+  luminosity-SMask shading masks render incorrectly until upstream
+  fixes it.
+- **Overprint is not simulated (corpus G4).** pdf.js does not
+  implement overprint (/OP /OPM): an overprinting fill renders as a
+  KNOCKOUT — the corpus overlap samples exactly the top fill's own
+  colour-managed value (255,235,61), not the subtractive mix. Any
+  underlay whose appearance depends on overprint preview will differ
+  from Acrobat's overprint preview.
+- **Minimum stroke width ≈ 1 device pixel (corpus A1 attribution).**
+  pdf.js thickens sub-device-pixel strokes to ≈1 device px. At low
+  zoom, hairline bands closer than ~2 device px merge into uniform
+  halftone (ink mass stays smooth and monotonic; raw Chromium canvas
+  strokes of the same geometry are area-true, so this is pdf.js's
+  hairline preservation, not the platform rasterizer). At inspection
+  scale the same bands resolve (measured: the 1 pt-pitch band at
+  scale 4 resolves 81/81 lines at exactly its geometric darkness).
+  Underlay linework at fit-to-screen zoom will look heavier than
+  plotted output for sub-pixel strokes.
