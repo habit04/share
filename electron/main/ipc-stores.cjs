@@ -11,6 +11,7 @@ const { createAutosaveStore, safeAutosaveName } = require('../autosave-store.cjs
 const { stateDir, autosaveDir, enqueueWrite } = require('./app-data.cjs');
 const { readLimitedFile, validateTextSize } = require('../resource-limits.cjs');
 const { isPluginFolderName, MAIN_RE, readPluginManifest, readPluginSource } = require('../plugin-files.cjs');
+const { buildPluginRealmSnapshot } = require('../renderer-origin.cjs');
 
 /** @typedef {import('./context.cjs').MainContext} MainContext */
 
@@ -84,22 +85,31 @@ function registerStoreIpc(ctx) {
   /** { manifest, code, path } of one plugin folder, or null when it does not exist. */
   ipcMain.handle('plugins-read', (_ev, folder) => readPluginSource(pluginsDir(), folder, { checkPath: (file) => pathPolicy.insideRoot(pluginsDir(), file, 'plugins-read') }));
 
-  // ------------------------------------------------------------------ plugin-realm serving (AMENDMENT-P25-CSP-HOSTING Part A2)
+  // ------------------------------------------------------------------ plugin-realm serving (AMENDMENT-P25-CSP-HOSTING Part A2; Fable F1)
   // The renderer asks main to serve the package of a plugin it has ALREADY
-  // trusted through the existing trust flow (plugins.ts). Main resolves the
-  // package from its OWN record — the folder name under the plugins dir,
-  // never a renderer-supplied path — vets it (plugin.json parses; its "main"
+  // trusted through the existing trust flow (plugins.ts), and passes the
+  // SHA-256 of the entry it approved. Main resolves the package from its
+  // OWN record — the folder name under the plugins dir, never a
+  // renderer-supplied path — vets it (plugin.json parses; its "main"
   // names an entry file present in the package under that exact spelling),
-  // mints an unguessable session id and registers the package's realpath in
-  // the plugin-realm registry (electron/renderer-origin.cjs). The jcad://
-  // handler then serves the package's .js/.mjs files under
+  // then takes the F1 SNAPSHOT: the entry plus its static module graph is
+  // read once, each file realpath-confined under its exact spelling, the
+  // entry is verified against the approved hash (a changed entry fails
+  // the registration with ERR_PLUGIN_CHANGED) and a SHA-256 is recorded
+  // per file. The registry holds the snapshot's in-memory bytes; the
+  // jcad:// handler serves ONLY those bytes under
   // jcad://app/plugin-realm/<sessionId>/ with the worker CSP until the
-  // renderer unserves the session or the app quits. Main never evaluates,
-  // transforms or wraps the served bytes.
-  ipcMain.handle('plugins-serve-isolated', async (_ev, folder) => {
+  // renderer unserves the session or the app quits — disk is never
+  // re-read after registration, so the realm executes the approved bytes
+  // (approved bytes = executed bytes). Main never evaluates, transforms
+  // or wraps the served bytes.
+  ipcMain.handle('plugins-serve-isolated', async (_ev, folder, approvedEntryHash) => {
     const pluginRealm = ctx.pluginRealm;
     if (!pluginRealm) throw new Error('Plugin realm serving is unavailable in this build');
     if (!isPluginFolderName(folder)) throw new Error('Invalid plugin folder name');
+    if (typeof approvedEntryHash !== 'string' || !/^[0-9a-f]{64}$/.test(approvedEntryHash)) {
+      throw new Error('plugins-serve-isolated needs the SHA-256 of the plugin entry the user approved');
+    }
     const root = pluginsDir();
     const packageDir = path.join(root, folder);
     const manifestText = await readPluginManifest(root, folder, { checkPath: (file) => pathPolicy.insideRoot(root, file, 'plugins-serve-isolated') });
@@ -113,13 +123,14 @@ function registerStoreIpc(ctx) {
     const main = record.main === undefined ? 'main.js' : String(record.main);
     if (!MAIN_RE.test(main)) throw new Error('plugin.json "main" must be a .js file in the plugin folder');
     // The entry must exist under exactly the manifest's spelling: the served
-    // URL carries that spelling, and the handler serves only exact spellings.
+    // URL carries that spelling, and the snapshot keys files by it.
     const stored = await fs.readdir(packageDir);
     if (!stored.includes(main)) throw new Error(`plugin entry "${main}" does not exist in the plugin folder`);
     await pathPolicy.insideRoot(root, path.join(packageDir, main), 'plugins-serve-isolated');
     const realRoot = await fs.realpath(packageDir);
+    const snapshot = await buildPluginRealmSnapshot(realRoot, main, { approvedEntryHash });
     const sessionId = randomBytes(16).toString('hex');
-    pluginRealm.register(sessionId, realRoot);
+    pluginRealm.register(sessionId, snapshot);
     return { sessionId, baseUrl: `jcad://app/plugin-realm/${sessionId}/`, entryUrl: `jcad://app/plugin-realm/${sessionId}/${main}` };
   });
   /** Drop one plugin-realm registration (the renderer reports its session disposed). */

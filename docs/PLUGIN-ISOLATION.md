@@ -198,10 +198,21 @@ return — which the acceptance tests exercise.
   import and deleted when the import settles), its top level may use
   top-level await, and its default export is the load report. A serving
   registration lives exactly as long as its session (dropped on unload,
-  on window close and on app quit), and serving is realpath-confined to
-  the package under the exact requested spelling — `../`, encoded
-  traversal, symlink/junction escapes and case variants are refused, as
-  are unknown sessions and non-script files. Measured in the real
+  on window close and on app quit). Serving is a snapshot (Fable
+  finding F1, fixed): at registration main reads the entry plus its
+  static module graph exactly once — each file realpath-confined to
+  the package under its exact spelling, so symlink/junction escapes
+  and case aliases are refused at the door — verifies the entry
+  against the SHA-256 the user approved through the trust flow (a
+  changed entry fails the registration with `ERR_PLUGIN_CHANGED`),
+  records a SHA-256 per file, caps the snapshot at 32 MiB, and serves
+  only those in-memory bytes for the session's life. Disk is never
+  re-read after registration, so a package replaced on disk
+  mid-session changes nothing the realm executes, and any requested
+  path outside the snapshot — static or dynamic import alike — is
+  refused (404), as are `../`, encoded traversal, unknown sessions
+  and non-script files. Approved bytes are the executed bytes.
+  Measured in the real
   Electron runtime (`scripts/e2e-plugin-csp.mjs`, development build on
   the production `dist`, served through the production `jcad://`
   handler): the page refuses `eval` / `new Function` from real page code;

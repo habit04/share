@@ -40,6 +40,7 @@
 //
 // A private profile is used and deleted. JCAD_PLUGIN_CSP_OUT=<file> writes the results as JSON.
 import { _electron as electron } from 'playwright';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -191,7 +192,7 @@ try {
   const probeDir = join(profile, 'plugins', 'csp-probe');
   mkdirSync(probeDir, { recursive: true });
   writeFileSync(join(probeDir, 'plugin.json'), JSON.stringify({ name: 'csp-probe', version: '0', apiVersion: 2, isolation: 'worker', capabilities: ['commands.register', 'document.read'], main: 'main.js' }));
-  writeFileSync(join(probeDir, 'main.js'), [
+  const probeEntryBody = [
     "import jcad from './jcad.js';",
     "let evalOutcome = 'not-tried';",
     "try { eval('1'); evalOutcome = 'ran'; } catch (e) { evalOutcome = 'refused:' + e.name; }",
@@ -203,11 +204,17 @@ try {
     '} });',
     'export default { loaded: true, evalOutcome, fnOutcome };',
     '',
-  ].join('\n'));
+  ].join('\n');
+  writeFileSync(join(probeDir, 'main.js'), probeEntryBody);
+  // Fable F1: the serve bridge takes the approved entry hash (the trust
+  // flow's codeHash of the entry text) and main verifies its registration
+  // snapshot against it; this probe "approves" the body it just wrote.
+  const probeEntryHash = createHash('sha256').update(probeEntryBody, 'utf8').digest('hex');
   await page.waitForTimeout(1_000); // let the startup plugin scan (empty folder) settle first
-  const probe = await page.evaluate(async (/** @type {string} */ wurl) => {
+  const probe = await page.evaluate(async (/** @type {{ wurl: string, entryHash: string }} */ arg) => {
+    const wurl = arg.wurl;
     const bridge = /** @type {any} */ (window).jcad;
-    const served = await bridge.pluginsServeIsolatedPackage('csp-probe');
+    const served = await bridge.pluginsServeIsolatedPackage('csp-probe', arg.entryHash);
     const entryResp = await fetch(served.entryUrl);
     const entry = { status: entryResp.status, csp: entryResp.headers.get('content-security-policy'), body: await entryResp.text() };
     const travResp = await fetch(`${served.baseUrl}..%2fmain.js`);
@@ -253,7 +260,7 @@ try {
     await bridge.pluginsUnserveIsolatedPackage(served.sessionId);
     const afterResp = await fetch(served.entryUrl);
     return { served, entry, traversal, realm, afterUnserve: afterResp.status };
-  }, workerUrl);
+  }, { wurl: workerUrl, entryHash: probeEntryHash });
   check(probe.entry.status === 200 && probe.entry.csp === WORKER_CSP && probe.entry.body.includes('CSPPING'),
     '(2b) the plugin-realm entry is served from the vetted package under the worker CSP', probe.entry);
   check(probe.traversal.status !== 200 && !probe.traversal.body.includes('CSPPING'),

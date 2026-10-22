@@ -97,13 +97,17 @@ export interface PluginsBridge {
   /** Run a script in the page (used when CSP forbids `new Function`). */
   pluginsEval?(source: string): Promise<unknown>;
   /**
-   * CSP hosting (AMENDMENT-P25-CSP-HOSTING Part A2): ask the main process
-   * to serve this (already trusted) plugin folder's package to its
-   * isolated realm. Main vets the package from its own record — the
-   * renderer passes the folder NAME, never a path — and returns the
-   * session's served URLs. Absent in the plain browser.
+   * CSP hosting (AMENDMENT-P25-CSP-HOSTING Part A2; Fable F1): ask the
+   * main process to serve this (already trusted) plugin folder's package
+   * to its isolated realm. Main vets the package from its own record —
+   * the renderer passes the folder NAME, never a path — snapshots it and
+   * returns the session's served URLs. `approvedEntryHash` is the
+   * SHA-256 of the entry code this host's trust flow approved (the
+   * codeHash of the loaded source); main verifies its snapshot's entry
+   * against it and refuses a changed entry with ERR_PLUGIN_CHANGED.
+   * Absent in the plain browser.
    */
-  pluginsServeIsolatedPackage?(folder: string): Promise<{ sessionId: string; baseUrl: string; entryUrl: string }>;
+  pluginsServeIsolatedPackage?(folder: string, approvedEntryHash?: string): Promise<{ sessionId: string; baseUrl: string; entryUrl: string }>;
   /** Drop a plugin-realm serving registration (the session was disposed). */
   pluginsUnserveIsolatedPackage?(sessionId: string): Promise<unknown>;
 }
@@ -798,7 +802,12 @@ export class PluginHost {
     transport: RealmTransport,
   ): Promise<{ moduleUrl: string; servedSessionId?: string; revoke?: () => void } | { refusal: string } | null> {
     if (src.origin === 'folder' && src.folder && this.bridge?.pluginsServeIsolatedPackage) {
-      const served = await this.bridge.pluginsServeIsolatedPackage(src.folder);
+      // Fable F1: main snapshots the package at registration and verifies
+      // the snapshot's entry against the hash this load's trust flow
+      // approved — the codeHash of src.code, the exact text `trusted()`
+      // hashed and the user confirmed for this source.
+      const approvedEntryHash = await codeHash(src.code);
+      const served = await this.bridge.pluginsServeIsolatedPackage(src.folder, approvedEntryHash);
       if (!served || typeof served.entryUrl !== 'string' || !served.entryUrl) return null;
       return {
         moduleUrl: served.entryUrl,

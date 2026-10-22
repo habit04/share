@@ -1,6 +1,7 @@
 /** Serve only bundled renderer assets from a secure origin, with a one-time preference migration. */
 const path = require('node:path');
 const fs = require('node:fs/promises');
+const { createHash } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { preferenceDictionary } = require('./renderer-preferences.cjs');
 const APP_URL = 'jcad://app/index.html';
@@ -31,24 +32,172 @@ const PLUGIN_REALM_SESSION = /^[A-Za-z0-9_-]{1,128}$/;
 const PLUGIN_REALM_JCAD_SHIM = 'export default globalThis[Symbol.for("jcad.isolated.jcad")];';
 
 /**
- * AMENDMENT-P25-CSP-HOSTING Part A1: the plugin-realm served roots,
- * sessionId -> the realpath of one main-vetted plugin package directory.
- * Registrations are minted and held ONLY in the main process, live exactly
- * as long as the isolated session they serve, and are dropped when the
- * renderer reports the session disposed (Part A2's unserve), when the main
- * window closes and on app quit (main.cjs wires both). Nothing is persisted.
+ * Fable F1 (the lead's ruling, 2026-10-21): the total size cap of one
+ * session's snapshot. There is no package-total plugin limit elsewhere
+ * in the codebase (plugin-files.cjs caps individual reads), so the
+ * snapshot carries its own: 32 MiB of in-memory module bytes per
+ * session, refused over the cap with a clear error at registration.
+ */
+const PLUGIN_REALM_SNAPSHOT_MAX_BYTES = 32 * 1024 * 1024;
+
+/** The v1 plugin-changed failure (electron/plugin-files.cjs), reused by the snapshot's trust check. */
+function pluginChangedError(message = 'Plugin source changed while it was read; try again.') {
+  return Object.assign(new Error(message), { code: 'ERR_PLUGIN_CHANGED' });
+}
+
+/**
+ * AMENDMENT-P25-CSP-HOSTING Part A1, as amended by Fable F1: the
+ * plugin-realm served snapshots, sessionId -> the snapshot main took of
+ * one main-vetted plugin package at registration time. Registrations are
+ * minted and held ONLY in the main process, live exactly as long as the
+ * isolated session they serve, and are dropped when the renderer reports
+ * the session disposed (Part A2's unserve), when the main window closes
+ * and on app quit (main.cjs wires both). Nothing is persisted, and —
+ * the F1 property — the snapshot's bytes are read from disk exactly
+ * once, at registration; serving never re-reads disk, so the bytes the
+ * realm executes are the bytes that were vetted and hash-verified at
+ * registration (approved bytes = executed bytes).
  */
 function createPluginRealmRegistry() {
-  const roots = new Map();
+  const snapshots = new Map();
   return {
-    /** @param {string} sessionId @param {string} realRoot */
-    register(sessionId, realRoot) { roots.set(sessionId, realRoot); },
+    /** @param {string} sessionId @param {{ files: Map<string, { bytes: Buffer, sha256: string }>, entrySha256: string, totalBytes: number }} snapshot */
+    register(sessionId, snapshot) { snapshots.set(sessionId, snapshot); },
     /** @param {string} sessionId */
-    unregister(sessionId) { roots.delete(sessionId); },
-    clear() { roots.clear(); },
-    /** @param {string} sessionId @returns {string | undefined} */
-    lookup(sessionId) { return roots.get(sessionId); },
+    unregister(sessionId) { snapshots.delete(sessionId); },
+    clear() { snapshots.clear(); },
+    /** @param {string} sessionId */
+    lookup(sessionId) { return snapshots.get(sessionId); },
   };
+}
+
+/**
+ * Static module specifiers in one module's source: `import … from '…'`,
+ * `export … from '…'` and bare `import '…'`, with string literals only.
+ * Deliberately a recogniser, not a parser: an over-match (a specifier-
+ * shaped string in a comment) can only ADD a package file to the
+ * snapshot — hash-recorded, inside the package — never reach outside
+ * it, and an under-match (a computed specifier) is a dynamic import,
+ * governed by the serve-time snapshot lookup like any other request.
+ */
+const STATIC_MODULE_SPECIFIER = /\b(?:import|export)\s+(?:[A-Za-z0-9${},*\s]+?\s+from\s+)?['"]([^'"]+)['"]/g;
+
+/** @param {string} source @returns {string[]} */
+function staticModuleSpecifiers(source) {
+  const out = [];
+  for (const match of source.matchAll(STATIC_MODULE_SPECIFIER)) out.push(match[1]);
+  return out;
+}
+
+/**
+ * Resolve a relative specifier against the importing file's
+ * package-relative path, URL-style (`/` segments, dot segments folded).
+ * Returns the package-relative path, or null when the specifier climbs
+ * above the package root (such a module can never be served under this
+ * session, so it is no part of the snapshot).
+ * @param {string} fromRelPath
+ * @param {string} specifier
+ * @returns {string | null}
+ */
+function resolvePackageSpecifier(fromRelPath, specifier) {
+  const parts = fromRelPath.split('/').slice(0, -1);
+  for (const segment of specifier.split('/')) {
+    if (segment === '' || segment === '.') continue;
+    if (segment === '..') {
+      if (parts.length === 0) return null;
+      parts.pop();
+    } else parts.push(segment);
+  }
+  return parts.join('/');
+}
+
+/**
+ * Read one snapshot file under the serving discipline (Part A1, condition
+ * (b)) applied at registration: the file's real path must sit under the
+ * package's real root under EXACTLY the requested relative spelling, so
+ * symlink/junction escapes and case aliases are refused rather than
+ * snapshotted. Returns the file's bytes, or null when no file exists
+ * under that spelling (a specifier naming nothing is simply not part of
+ * the graph — if live code imports it, the load fails closed at the
+ * serve-time lookup). A file that changes while it is read fails with
+ * ERR_PLUGIN_CHANGED, v1's stable-read discipline.
+ * @param {string} realRoot
+ * @param {string} relPath
+ * @returns {Promise<Buffer | null>}
+ */
+async function readSnapshotFile(realRoot, relPath) {
+  let realFile;
+  try {
+    realFile = await fs.realpath(path.join(realRoot, ...relPath.split('/')));
+  } catch {
+    return null;
+  }
+  const contained = containedAssetRelative(realRoot, realFile);
+  if (contained === null || servedPath(contained) !== `/${relPath}`) {
+    throw new Error(`plugin module "${relPath}" resolves outside its package or under a different spelling; refusing to serve this package`);
+  }
+  const handle = await fs.open(realFile, 'r');
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile()) return null;
+    const bytes = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    if (before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs || BigInt(bytes.length) !== before.size) {
+      throw pluginChangedError();
+    }
+    return bytes;
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Take the F1 snapshot of one vetted plugin package: read the entry plus
+ * its static module graph (relative `import`/`export … from` specifiers,
+ * resolved inside the package) exactly once, record a SHA-256 per file,
+ * and — when the caller supplies the hash the user approved — verify the
+ * entry against it. A mismatch is the trust check failing: the error
+ * carries v1's ERR_PLUGIN_CHANGED code. Dynamic `import()` specifiers
+ * are not walked (they are computed at run time); they resolve at serve
+ * time against this same snapshot — a path in the snapshot serves, a
+ * path outside it is refused (404). The one virtual file, the root
+ * `jcad.js` shim, is main's own constant and never package content, so
+ * it is never snapshotted.
+ * @param {string} realRoot the package directory's real path
+ * @param {string} entryRelPath the entry's package-relative path (the manifest's "main")
+ * @param {{ approvedEntryHash?: string, maxBytes?: number }} [options]
+ * @returns {Promise<{ files: Map<string, { bytes: Buffer, sha256: string }>, entrySha256: string, totalBytes: number }>}
+ */
+async function buildPluginRealmSnapshot(realRoot, entryRelPath, options = {}) {
+  const maxBytes = options.maxBytes ?? PLUGIN_REALM_SNAPSHOT_MAX_BYTES;
+  const files = new Map();
+  let totalBytes = 0;
+  const seen = new Set();
+  const queue = [entryRelPath];
+  while (queue.length > 0) {
+    const relPath = /** @type {string} */ (queue.shift());
+    if (seen.has(relPath)) continue;
+    seen.add(relPath);
+    const bytes = await readSnapshotFile(realRoot, relPath);
+    if (bytes === null) continue;
+    totalBytes += bytes.length;
+    if (totalBytes > maxBytes) {
+      throw new Error(`plugin package snapshot exceeds the ${maxBytes}-byte snapshot limit at "${relPath}"; refusing to serve this package`);
+    }
+    files.set(relPath, { bytes, sha256: createHash('sha256').update(bytes).digest('hex') });
+    for (const specifier of staticModuleSpecifiers(bytes.toString('utf8'))) {
+      if (!specifier.startsWith('./') && !specifier.startsWith('../')) continue;
+      const resolved = resolvePackageSpecifier(relPath, specifier);
+      if (resolved === null || resolved === 'jcad.js' || !/\.m?js$/.test(resolved)) continue;
+      if (!seen.has(resolved)) queue.push(resolved);
+    }
+  }
+  const entry = files.get(entryRelPath);
+  if (!entry) throw new Error(`plugin entry "${entryRelPath}" could not be read from the package`);
+  if (options.approvedEntryHash !== undefined && options.approvedEntryHash !== entry.sha256) {
+    throw pluginChangedError('Plugin source changed since it was approved; reload the plugin to approve the new source.');
+  }
+  return { files, entrySha256: entry.sha256, totalBytes };
 }
 
 /**
@@ -140,20 +289,22 @@ function containedAssetRelative(realRoot, realFile) {
 }
 
 /**
- * Serve one file of a registered plugin package (AMENDMENT-P25-CSP-HOSTING
- * Part A1, admission condition (b)). The discipline mirrors the bundle's and
- * is stricter in one place: the file actually served must sit under the
- * registered real root under EXACTLY the requested relative spelling
- * (segment for segment, letter case included), so symlink/junction escapes
- * and case aliases that a case-insensitive filesystem would happily resolve
- * are refused rather than served. Only `.js`/`.mjs` files are served at
- * all, plus the virtual `jcad.js` shim, which is answered from main and
- * shadows any package file of that name.
+ * Serve one file of a registered plugin package from its registration
+ * snapshot (AMENDMENT-P25-CSP-HOSTING Part A1, as amended by Fable F1).
+ * Disk is never re-read here: the response body is the snapshot's
+ * in-memory bytes — the exact bytes main read, confined and hash-verified
+ * at registration — so a package replaced on disk mid-session changes
+ * nothing the realm executes. A requested path that is not in the
+ * snapshot is refused (404): under snapshot serving the snapshot IS the
+ * package, for static and dynamic imports alike. Malformed paths keep
+ * the confinement refusals of the disk-serving discipline (dot segments,
+ * backslashes and separators inside a segment are refused outright).
+ * The virtual `jcad.js` shim is answered from main and shadows any
+ * package file of that name, as before.
  * @param {URL} url the parsed request URL (host already validated by the caller)
- * @param {{ fetch(url: string): Promise<Response> }} net
  * @param {ReturnType<typeof createPluginRealmRegistry>} pluginRealm
  */
-async function pluginRealmResponse(url, net, pluginRealm) {
+async function pluginRealmResponse(url, pluginRealm) {
   const parts = url.pathname.split('/').slice(2); // [sessionId, ...rel]
   const sessionId = parts[0];
   const rawRel = parts.slice(1);
@@ -163,22 +314,16 @@ async function pluginRealmResponse(url, net, pluginRealm) {
     rel = rawRel.map((seg) => decodeURIComponent(seg));
   } catch { return new Response('Not found', { status: 404 }); }
   if (rel.some((seg) => seg === '' || seg === '.' || seg === '..' || /[/\\\0:]/.test(seg))) return new Response('Forbidden', { status: 403 });
-  const root = pluginRealm.lookup(sessionId);
-  if (!root) return new Response('Not found', { status: 404 });
+  const snapshot = pluginRealm.lookup(sessionId);
+  if (!snapshot) return new Response('Not found', { status: 404 });
   const relPath = rel.join('/');
   const decideAs = `/plugin-realm/${sessionId}/${relPath}`;
   if (relPath === 'jcad.js') {
     return withAssetHeaders(new Response(PLUGIN_REALM_JCAD_SHIM, { headers: { 'content-type': 'text/javascript' } }), decideAs);
   }
-  if (!/\.m?js$/.test(relPath)) return new Response('Not found', { status: 404 });
-  let realFile;
-  try {
-    realFile = await fs.realpath(path.join(root, ...rel));
-  } catch { return new Response('Not found', { status: 404 }); }
-  const contained = containedAssetRelative(root, realFile);
-  if (contained === null || servedPath(contained) !== `/${relPath}`) return new Response('Forbidden', { status: 403 });
-  // Decide headers from the file that is served (proven identical to the request above).
-  return withAssetHeaders(await net.fetch(pathToFileURL(realFile).href), decideAs);
+  const file = snapshot.files.get(relPath);
+  if (!file) return new Response('Not found', { status: 404 });
+  return withAssetHeaders(new Response(file.bytes, { headers: { 'content-type': 'text/javascript' } }), decideAs);
 }
 
 function installAssetHandler({ protocol, net, root, pluginRealm }) {
@@ -189,7 +334,7 @@ function installAssetHandler({ protocol, net, root, pluginRealm }) {
       if (url.pathname.startsWith('/plugin-realm/')) {
         if (!pluginRealm) return new Response('Not found', { status: 404 });
         if (url.protocol !== 'jcad:' || url.hostname !== 'app' || url.port || url.username || url.password) return new Response('Not found', { status: 404 });
-        return await pluginRealmResponse(url, net, pluginRealm);
+        return await pluginRealmResponse(url, pluginRealm);
       }
       const file = assetPath(root, request.url);
       const [realRoot, realFile] = await Promise.all([fs.realpath(root), fs.realpath(file)]);
@@ -341,4 +486,4 @@ function readLegacyStoreBeforeReady(leveldbDir, { logError, now }) {
   }
 }
 
-module.exports = { APP_URL, WORKER_CSP, PLUGIN_REALM_JCAD_SHIM, assetPath, assetResponseHeaders, createPluginRealmRegistry, installAssetHandler, legacyStorage, legacyStoreDecodeFailure, preserveLegacyStore, readLegacyStoreBeforeReady, rendererStartUrl, servedPath, withAssetHeaders };
+module.exports = { APP_URL, WORKER_CSP, PLUGIN_REALM_JCAD_SHIM, PLUGIN_REALM_SNAPSHOT_MAX_BYTES, assetPath, assetResponseHeaders, buildPluginRealmSnapshot, createPluginRealmRegistry, installAssetHandler, legacyStorage, legacyStoreDecodeFailure, preserveLegacyStore, readLegacyStoreBeforeReady, rendererStartUrl, servedPath, withAssetHeaders };
