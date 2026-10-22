@@ -195,7 +195,28 @@ export function parseDelimitedSource(bytes: Uint8Array, fileName: string): Delim
   let rowHasContent = false;
   let width = 0;
   let overCap = false;
+  // The bounding box at the moment the cap trips mid-row (PR #41
+  // round 2 (2)); -1 while the refusal, if any, is a whole-row one.
+  let capRows = -1;
+  let capCols = -1;
   const endField = (): void => {
+    // PR #41 round 2 (2): the bounding-box budget is checked at EVERY
+    // field boundary, BEFORE the field is pushed. The in-progress row
+    // counts as a row at its projected width, so a single enormous row
+    // is refused at the boundary that crosses the cap instead of
+    // materializing in full and being measured at row end. The
+    // projected box never exceeds the source's final box, so no
+    // in-cap source is refused early.
+    if (!overCap) {
+      const projectedRows = rows.length + 1;
+      const projectedCols = Math.max(width, row.length + 1);
+      if (projectedRows * projectedCols > DATA_LINK_PARSE_CELL_CAP) {
+        overCap = true;
+        capRows = projectedRows;
+        capCols = projectedCols;
+        return;
+      }
+    }
     row.push(field);
     field = '';
     fieldStart = true;
@@ -203,6 +224,7 @@ export function parseDelimitedSource(bytes: Uint8Array, fileName: string): Delim
   };
   const endRow = (): void => {
     endField();
+    if (overCap) return;
     rows.push(row);
     row = [];
     rowHasContent = false;
@@ -262,9 +284,11 @@ export function parseDelimitedSource(bytes: Uint8Array, fileName: string): Delim
     if (rowHasContent || row.length > 0 || field.length > 0) endRow();
   }
   if (overCap || rows.length * width > DATA_LINK_PARSE_CELL_CAP) {
+    const boundRows = capRows >= 0 ? capRows : rows.length;
+    const boundCols = capCols >= 0 ? capCols : width;
     return {
       kind: 'refuse',
-      reason: `source grid bounds ${rows.length} rows x ${width} columns = ${rows.length * width} cells, over the 1,000,000-cell parse cap`,
+      reason: `source grid bounds ${boundRows} rows x ${boundCols} columns = ${boundRows * boundCols} cells, over the 1,000,000-cell parse cap`,
     };
   }
   // Rows stay ragged (PR #41 (2)): no padding pass. The 32 KiB cell cap
@@ -386,6 +410,16 @@ export async function refreshDataLink(
   if (!link) return refused(`no data link with id "${linkId}" in this drawing`);
   // PR #41 (1): capture the link's generation BEFORE the async read.
   const startGeneration = linkGenerationOf(drawing, linkId);
+  // PR #41 round 2 (1): ALSO capture, before the read, the document
+  // anchors the generation + record-identity check cannot see: the
+  // load count (Drawing.load can reuse the very same frozen link
+  // record, so identity and generation still match afterwards), the
+  // resolved source path, and its resolution basis — the drawing
+  // filePath the path resolved against (Save As moves filePath
+  // without replacing the link).
+  const startLoadCount = drawing.loadCount;
+  const startBasis = drawing.filePath;
+  const startResolution = resolveDataLinkSourcePath(link, startBasis);
   const source = await readSourceSnapshot(drawing, seam, link);
   if (source.kind === 'refused') return source.outcome;
   // Re-validate before applying ANYTHING: the same drawing/session must
@@ -395,6 +429,20 @@ export async function refreshDataLink(
   // any of them discards the snapshot instead of writing stale data.
   const current = findDataLink(drawing.snapshot, linkId);
   if (!current || current !== link || linkGenerationOf(drawing, linkId) !== startGeneration) {
+    return refused(LINK_CHANGED_DURING_REFRESH);
+  }
+  // Round 2 (1): the document must still be the one the read started
+  // from — same load, same resolution basis, same resolved path. A
+  // load reusing the frozen record, or a Save As mid-read, discards
+  // the snapshot here, before any transact: state, history, dirty
+  // flag and revision are left exactly as they were.
+  const endResolution = resolveDataLinkSourcePath(current, drawing.filePath);
+  const documentMoved =
+    drawing.loadCount !== startLoadCount
+    || drawing.filePath !== startBasis
+    || startResolution.kind !== endResolution.kind
+    || (startResolution.kind === 'path' && endResolution.kind === 'path' && startResolution.path !== endResolution.path);
+  if (documentMoved) {
     return refused(LINK_CHANGED_DURING_REFRESH);
   }
   const evaluation = evaluateRefreshDataLink(

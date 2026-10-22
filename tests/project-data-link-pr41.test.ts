@@ -10,6 +10,19 @@
  * grid; rows stay ragged, missing cells are read as empty only when a
  * range is extracted, and a source whose bounding box (rows x widest
  * row) exceeds the 1,000,000-cell parse cap is refused.
+ *
+ * Round 2 (Codex re-review at e582369; lead rulings 2026-10-22):
+ * (1) [P1] CROSS-DOCUMENT REFRESH: the round-1 generation + record
+ * identity check can still pass against a DIFFERENT document —
+ * Drawing.load can reuse the same frozen link record, and Save As
+ * changes filePath without replacing the link. refreshDataLink must
+ * also capture drawing.loadCount, the resolved source path and its
+ * resolution basis (the drawing filePath) before the read, and
+ * revalidate all of them after it.
+ * (2) [P2] CAP GRANULARITY: the parse cap was checked only at row end,
+ * so one enormous row overran before the check fired. The in-progress
+ * row and the bounding-box budget must be checked at EVERY field
+ * boundary, before the field is pushed.
  */
 import { describe, expect, it } from 'vitest';
 import { Drawing, type DrawingState } from '../src/core/document';
@@ -160,5 +173,94 @@ describe('PR #41 (2) — bounded parse: no whole-grid padding, a bounding-box ca
     // Beyond the widest row the slice stays short — never padded into existence.
     expect(extractSourceRange(parsed.grid, { firstRow: 0, firstCol: 0, rowCount: 2, colCount: 5 }))
       .toEqual([['a', 'b', 'c'], ['x', '', '']]);
+  });
+});
+
+describe('PR #41 round 2 (1) — refresh revalidates load count and resolution basis', () => {
+  it('a load of the same snapshot at another path landing during the read writes NOTHING', async () => {
+    const doc = docWithLink();
+    const seam = new DeferredSeam();
+    const pending = refreshDataLink(doc, seam, 'L1');
+    // Codex's case: Drawing.load reuses the SAME frozen link record (the
+    // very snapshot is reloaded), so the round-1 record-identity and
+    // generation checks still pass after the load — only the load
+    // count and the drawing path reveal the document swap.
+    doc.load(doc.snapshot, '/proj/other.dxf');
+    const loaded = doc.snapshot;
+    seam.release(enc(CHANGED_CSV));
+    const out = await pending;
+    expect(out.kind).toBe('refused');
+    if (out.kind === 'refused') expect(out.reason).toBe('link changed during refresh; retry');
+    // The refresh wrote nothing into the loaded document.
+    expect(doc.snapshot).toBe(loaded);
+    expect(tableOf(doc.snapshot).cells.map((r) => r.map((c) => c.text))).toEqual([['a', 'b'], ['c', 'd'], ['e', 'f']]);
+  });
+
+  it('a Save As during the read (filePath changes, the link untouched) writes NOTHING', async () => {
+    const doc = docWithLink();
+    const seam = new DeferredSeam();
+    const pending = refreshDataLink(doc, seam, 'L1');
+    const before = doc.snapshot;
+    const dirtyBefore = doc.dirty;
+    const revisionBefore = doc.revision;
+    // Save As assigns doc.filePath directly (src/app/sessions.ts): no
+    // load, no new link record, no generation bump — the round-1 checks
+    // cannot see it, but the resolution basis moved mid-read.
+    doc.filePath = '/elsewhere/moved.dxf';
+    seam.release(enc(CHANGED_CSV));
+    const out = await pending;
+    expect(out.kind).toBe('refused');
+    if (out.kind === 'refused') expect(out.reason).toBe('link changed during refresh; retry');
+    // State, history, dirty flag and revision are exactly as the
+    // refresh found them; the Save As itself stands.
+    expect(doc.snapshot).toBe(before);
+    expect(doc.dirty).toBe(dirtyBefore);
+    expect(doc.revision).toBe(revisionBefore);
+    expect(doc.canUndo()).toBe(true);
+    expect(doc.filePath).toBe('/elsewhere/moved.dxf');
+    expect(tableOf(doc.snapshot).cells.map((r) => r.map((c) => c.text))).toEqual([['a', 'b'], ['c', 'd'], ['e', 'f']]);
+    // The read itself went to the path resolved against the OLD basis.
+    expect(seam.reads).toEqual(['/proj/data/parts.csv']);
+  });
+
+  it('a refresh STARTED after a Save As resolves against the new path and applies (control)', async () => {
+    const doc = docWithLink();
+    doc.filePath = '/elsewhere/moved.dxf';
+    const reads: string[] = [];
+    const seam: DataLinkFileSeam = {
+      readBytes: async (path: string) => { reads.push(path); return enc(CHANGED_CSV); },
+      modifiedAt: async () => undefined,
+    };
+    const out = await refreshDataLink(doc, seam, 'L1');
+    expect(out.kind).toBe('refreshed');
+    expect(reads).toEqual(['/elsewhere/data/parts.csv']);
+    expect(tableOf(doc.snapshot).cells.map((r) => r.map((c) => c.text))).toEqual([['a', 'B2'], ['c', 'D2'], ['E1', 'F2']]);
+  });
+});
+
+describe('PR #41 round 2 (2) — the parse cap is checked at every field boundary', () => {
+  it('a single row of 1,000,100 commas refuses having pushed no more than the cap', () => {
+    // Allocation-counting: count every Array.push the parser performs
+    // during the parse (the scan is synchronous, so nothing else runs
+    // under the patched prototype). At row end only (the old shape) the
+    // row materializes all 1,000,101 fields before any check fires.
+    const originalPush = Array.prototype.push as (this: unknown[], ...items: unknown[]) => number;
+    let pushes = 0;
+    (Array.prototype as { push: unknown }).push = function (this: unknown[], ...items: unknown[]): number {
+      pushes += items.length;
+      return originalPush.apply(this, items);
+    };
+    let out: ReturnType<typeof parseDelimitedSource>;
+    try {
+      out = parseDelimitedSource(enc(','.repeat(1_000_100)), 'f.csv');
+    } finally {
+      (Array.prototype as { push: unknown }).push = originalPush;
+    }
+    expect(out.kind).toBe('refuse');
+    if (out.kind === 'refuse') {
+      expect(out.reason).toBe('source grid bounds 1 rows x 1000001 columns = 1000001 cells, over the 1,000,000-cell parse cap');
+    }
+    expect(pushes).toBeGreaterThan(0);
+    expect(pushes).toBeLessThanOrEqual(1_000_000);
   });
 });
