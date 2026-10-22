@@ -39,6 +39,11 @@ export class Writer {
     this.reservedEntityHandles.set(entity, handle);
     return handle;
   }
+  /** The DXF version the current write targets, chosen by writeDxf from the drawing
+   * (max of the appearance-driven version and the retained source version). Entity
+   * writers whose file format changed between releases branch on it — today only
+   * the ACAD_TABLE cell form (legacy at AC1015..AC1027, cell-value at AC1032). */
+  acadVersion = 'AC1015';
   readonly cadAnchors = new Map<string, CadAnchor>();
   anchor(handle: string, anchor: CadAnchor): void { this.cadAnchors.set(handle, anchor); }
   pair(code: number, value: string | number): void {
@@ -128,8 +133,8 @@ export interface WriteExtras {
   imageDefs: Map<string, string>;
   /** IMAGEDEF_REACTOR handle per image entity, and the image's own handle once written. */
   imageReactors: Map<ImageEntity, { reactor: string; image?: string; def: string }>;
-  /** Anonymous block that draws each table. */
-  tableBlocks: Map<TableEntity, string>;
+  /** Native-table write data per table: its *T picture block (name + BLOCK_RECORD handle) and TABLESTYLE handle. */
+  tableBlocks: Map<TableEntity, { name: string; recordHandle: string; styleHandle: string }>;
   /** DIMASZ × DIMSCALE of the header style (leaders store their arrow size as an override when it differs). */
   arrowSize: number;
 }

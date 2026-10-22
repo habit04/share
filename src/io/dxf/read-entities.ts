@@ -15,7 +15,7 @@ import { splineWorkProblem, SplineWorkLimitError, isValidNurbs, nurbsPoints, int
 import { LoopBuilder, edgeArc, fitPatternToLines, findPattern } from '../../core/hatch';
 import type { ReadContext } from './read-core';
 import { hasFields, evaluateFields } from '../../core/fields';
-import { readMTextColumns, readDimension, readDimStyleFromEntity, readLeader, readMLeader, readImage, readTable, readJcadTable } from './read-annotations';
+import { readMTextColumns, readDimension, readDimStyleFromEntity, readLeader, readMLeader, readImage, readTable, readJcadTable, restoreCoveredCells } from './read-annotations';
 import type { MTextAttachment, MTextBackground } from '../../core/mtext';
 import { mtextFromDxf, hasFormatting } from '../../core/mtext';
 import { readTextPlacement } from './read-text';
@@ -472,16 +472,25 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
     case 'ACAD_TABLE': {
       // Cell data present: a native table. Otherwise it draws through its anonymous *T block (group 2).
       const block = str(o, 2);
-      const table = readTable(o, base, ctx.tableStyles?.get(str(o, 342).toUpperCase()));
+      const table = readTable(o, base, ctx.tableStyles?.get(str(o, 342).toUpperCase()), ctx.notes);
       if (table) {
         if (block) ctx.consumedBlocks?.add(block);
-        return table;
+        // A JCAD_TABLE carrier on the native record preserves merged-away cell contents.
+        const preserved = readJcadTable(o, base, ctx.notes);
+        return preserved ? restoreCoveredCells(table, preserved) : table;
+      }
+      // No readable native cell data (e.g. a textless table): a JCAD_TABLE carrier on the
+      // record still makes it an editable table; otherwise it draws through its *T block.
+      const carrierOnly = readJcadTable(o, base, ctx.notes);
+      if (carrierOnly) {
+        if (block) ctx.consumedBlocks?.add(block);
+        return carrierOnly;
       }
       if (!block) return null;
       return { ...base, type: 'insert', block, position: { x: num(o, 10), y: num(o, 20) }, rotation: 0, scale: 1, attributes: {} };
     }
     case 'INSERT': {
-      const jt = readJcadTable(o, base);
+      const jt = readJcadTable(o, base, ctx.notes);
       if (jt) {
         ctx.consumedBlocks?.add(str(o, 2));
         return jt;

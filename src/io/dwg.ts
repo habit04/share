@@ -1514,7 +1514,7 @@ export function convertDwg(payload: DwgImportPayload, sourcePath?: string | null
         const bad = geometryProblem(native);
         if (bad) { skip(e, 'model space', `invalid geometry: ${bad}`); continue; }
         entities.push(native);
-        report.add({ type: 'ACAD_TABLE', action: 'simplified', ...(e.handle ? { handle: String(e.handle) } : {}), layer: e.layer || '0', where: 'model space', reason: 'table cells and sizes are kept; native table editing, formulas and advanced cell/style formatting are not modeled, and export uses an INSERT picture with JCAD_TABLE data' });
+        report.add({ type: 'ACAD_TABLE', action: 'simplified', ...(e.handle ? { handle: String(e.handle) } : {}), layer: e.layer || '0', where: 'model space', reason: 'table cells and sizes are kept; formulas and advanced cell/style formatting are not modeled; DXF export writes a native ACAD_TABLE, DWG export of tables is not native' });
         // Its *T block is no longer drawn.
         const bh = (e as unknown as { blockRecordHandle?: string }).blockRecordHandle;
         const bname = bh ? tableBlocksByHandle.get(String(bh).toUpperCase()) : undefined;

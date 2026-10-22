@@ -17,6 +17,28 @@ import { payloadText, polyfaceStructureProblem, native3dObject } from './dxf/mes
 import { decodeDimensionPayload } from '../model3d/file-format';
 
 interface RecordData { type: string; section: string; groups: CadGroup[]; handle?: string; line?: number }
+/** The $ACADVER value inside a header group list (the group after its 9-group). */
+function headerVersionOf(groups: readonly CadGroup[]): string | undefined {
+  const at = groups.findIndex(([code, raw]) => code === 9 && raw.trim() === '$ACADVER');
+  return at >= 0 ? groups[at + 1]?.[1].trim() : undefined;
+}
+
+/**
+ * P22 COMP-N Series 3 (lead ruling): the retained $ACADMAINTVER is re-emitted only
+ * when the written $ACADVER equals the source's AND the variable's own group code
+ * is the valid one for that version — 70 at AC1015, 90 at AC1018 and later. The
+ * synthetic fixtures' 70/105 at AC1032 is a pair AutoCAD 2027 refuses outright,
+ * and a pair recorded against one version must not ride into a file whose version
+ * moved. The variable's VALUE is never judged.
+ */
+function acadMaintVerKept(writtenGroups: readonly CadGroup[], sourceGroups: readonly CadGroup[], pairCode: number | undefined): boolean {
+  const written = headerVersionOf(writtenGroups);
+  if (written === undefined || pairCode === undefined) return true;
+  const source = headerVersionOf(sourceGroups);
+  if (source !== undefined && source !== written) return false;
+  return pairCode === (written >= 'AC1018' ? 90 : 70);
+}
+
 const value = (record: { readonly groups: readonly CadGroup[] }, code: number) => record.groups.find(([c]) => c === code)?.[1].trim() ?? '';
 /** Decode a proven CAD identifier for matching only; stored metadata groups remain raw. */
 const identifierValue = (record: { readonly groups: readonly CadGroup[] }, code: number) => decodeUnicodeEscapes(value(record, code));
@@ -953,7 +975,14 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     let nesting = 0, selectedApp: string | undefined, keepHeader = false, layoutSubclass = false, retainedLayoutBlock = false;
     const existingVariables = new Set(record.groups.filter(([code]) => code === 9).map(([, name]) => name));
     node.groups.forEach(([code, raw], index) => {
-      if (node.type === 'HEADER') { if (code === 9) keepHeader = !existingVariables.has(raw) && headerVariableReemittable(raw.trim()); if (keepHeader) selected.add(index); return; }
+      if (node.type === 'HEADER') {
+        if (code === 9) {
+          keepHeader = !existingVariables.has(raw) && headerVariableReemittable(raw.trim());
+          if (keepHeader && raw.trim() === '$ACADMAINTVER') keepHeader = acadMaintVerKept(record.groups, node.groups, node.groups[index + 1]?.[0]);
+        }
+        if (keepHeader) selected.add(index);
+        return;
+      }
       if (code === 102) {
         if (!nesting) retainedLayoutBlock = node.type === 'LAYOUT' && layoutSubclass && !selectedApp;
         nesting += raw.startsWith('{') ? 1 : raw === '}' ? -1 : 0;
@@ -974,7 +1003,14 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     if (record.type === 'HEADER') {
       const existing = new Set(record.groups.filter(([code]) => code === 9).map(([, val]) => val));
       let keep = false;
-      for (const group of retained) { if (group[0] === 9) keep = !existing.has(group[1]) && headerVariableReemittable(group[1].trim()); if (keep) record.groups.push(group); }
+      for (let index = 0; index < retained.length; index++) {
+        const group = retained[index]!;
+        if (group[0] === 9) {
+          keep = !existing.has(group[1]) && headerVariableReemittable(group[1].trim());
+          if (keep && group[1].trim() === '$ACADMAINTVER') keep = acadMaintVerKept(record.groups, node.groups, retained[index + 1]?.[0]);
+        }
+        if (keep) record.groups.push(group);
+      }
       continue;
     }
     const metadata: CadGroup[] = [], apps = new Set<string>(); let brace = 0, app: string | undefined;
