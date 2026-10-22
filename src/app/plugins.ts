@@ -95,10 +95,21 @@ export interface PluginSource {
    * package, set by PluginHost.load from the admission result (whose
    * manifest/code have already replaced this source's own read). Callers
    * never set it; non-folder sources never carry it — their bytes are
-   * the renderer's only read by construction, so their trust stays
-   * keyed on the entry hash exactly as before.
+   * the renderer's only read by construction. For EVERY source kind the
+   * trust identity is the POLICY KEY (canonical policy + code identity,
+   * see pluginTrustPolicyKey); an admitted source's code identity is
+   * this admission key.
    */
   admission?: { trustKey: string; form: 'worker' | 'page' };
+  /**
+   * True when this source's manifest is the IMPLICIT one synthesised
+   * for a plain single-JS source (sourceFromFiles with no plugin.json
+   * picked): the source carries no policy document, so its canonical
+   * policy is the implicit default "page/1/legacy" — distinct from
+   * every policy-bearing source's policy, even an identical entry's.
+   * Set only by sourceFromFiles; absent everywhere else.
+   */
+  implicitManifest?: boolean;
 }
 
 /**
@@ -150,8 +161,11 @@ export interface PluginsBridge {
    * before the page/worker path is chosen, and the load then runs on
    * the admitted manifest/code — an earlier plugins-read is used for
    * discovery only, never for policy. Null when the folder has no
-   * plugin.json. Absent in the plain browser (and on older mains):
-   * such loads keep the pre-admission flow unchanged.
+   * plugin.json: a bridge that HAS this method and returns null FAILS
+   * the load with an admission error (trust-policy ruling (4)) — the
+   * load never falls back to the earlier read. Absent in the plain
+   * browser (and on older mains): such loads keep the pre-admission
+   * flow unchanged.
    */
   pluginsAdmitPackage?(folder: string): Promise<PluginAdmission | null>;
   /**
@@ -371,6 +385,41 @@ async function sourceHash(src: PluginSource): Promise<string> {
   return src.codeBytes ? codeHashBytes(src.codeBytes) : codeHash(src.code);
 }
 
+/**
+ * The CANONICAL POLICY of a source (PR #38 trust-policy fix, lead
+ * ruling 2026-10-22: every source's trust identity includes its
+ * POLICY): the triple (isolation mode, API version, capabilities),
+ * serialised deterministically as "<isolation>/<apiVersion>/<caps>".
+ * The capabilities component is the declared set SORTED and
+ * comma-joined — reordering the manifest's array is therefore NOT a
+ * policy change, while adding or removing a capability is — "" for a
+ * policy-bearing manifest that declares no capabilities, and the
+ * literal "legacy" when the source's manifest is the implicit one
+ * synthesised for a plain single-JS source: that source's
+ * implicit-default policy is exactly "page/1/legacy", and it can never
+ * coincide with a policy-bearing source's policy.
+ */
+export function canonicalPluginPolicy(manifest: PluginManifest, implicitManifest = false): string {
+  const isolation = manifest.isolation ?? 'page';
+  const apiVersion = manifest.apiVersion ?? 1;
+  const capabilities = implicitManifest ? 'legacy' : [...(manifest.capabilities ?? [])].sort().join(',');
+  return `${isolation}/${apiVersion}/${capabilities}`;
+}
+
+/**
+ * The TRUST KEY of a source (PR #38 trust-policy fix): SHA-256 over
+ * "jcad-plugin-trust/2\n" + the canonical policy + "\n" + the CODE
+ * IDENTITY — for an admitted folder package, main's admitted trust key
+ * (which itself digests the exact plugin.json bytes + the form
+ * material); for every other source, its entry hash (sourceHash). One
+ * formula for all source kinds — admitted folder, picked files,
+ * legacy — so an approval minted under one policy can never be read
+ * as an approval under another.
+ */
+export async function pluginTrustPolicyKey(manifest: PluginManifest, codeIdentity: string, implicitManifest = false): Promise<string> {
+  return codeHash(`jcad-plugin-trust/2\n${canonicalPluginPolicy(manifest, implicitManifest)}\n${codeIdentity}`);
+}
+
 interface TrustEntry {
   answer: 'yes' | 'no';
   hash: string;
@@ -387,15 +436,23 @@ interface TrustEntry {
    * Structural fix: for an ADMITTED folder source, the TRUST KEY the
    * remembered answer approved (over the exact plugin.json bytes +
    * the form material — see PluginAdmission) and the form it was
-   * approved in. trusted() compares this FULL key before the
-   * page/worker path is chosen, so a change in isolation mode, API
-   * version, capabilities or code re-asks; `form` is what a later
-   * page-form load is recognised as a downgrade against. Absent on
-   * records written before the fix (and on non-admitted sources):
-   * those are compared by entry hash as before, and an admitted load
-   * with no key on its record asks once and rewrites it.
+   * approved in. The serve verifies the snapshot against this key;
+   * `form` is what a later page-form load is recognised as a downgrade
+   * against. Absent on non-admitted sources.
    */
   trustKey?: string;
+  /**
+   * Trust-policy fix: the POLICY KEY the remembered answer approved —
+   * SHA-256 over the canonical policy + the code identity (see
+   * pluginTrustPolicyKey). This is the ONLY field trusted() decides
+   * on, for every source kind: the record's `hash` remains solely as
+   * the W-1 serve-binding datum (the entry hash the remembered
+   * manifest hash hangs off) and decides nothing. Records written
+   * before this fix (hash-only, or the structural form with a
+   * trustKey but no policyKey) carry no policyKey: they ask once and
+   * are rewritten in this form.
+   */
+  policyKey?: string;
   form?: 'worker' | 'page';
   at: number;
 }
@@ -558,7 +615,7 @@ export function sourceFromFiles(files: ReadonlyArray<{ name: string; text: strin
   if (jsFiles.length !== 1) throw new Error('Select one .js file (or plugin.json with its main .js file).');
   const f = jsFiles[0]!;
   const base = f.name.split(/[\\/]/).pop()!.replace(/\.js$/i, '').replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 64) || 'plugin';
-  return { manifest: { name: base, main: f.name, apiVersion: 1 }, code: f.text, path: f.name, origin: 'file' };
+  return { manifest: { name: base, main: f.name, apiVersion: 1 }, code: f.text, path: f.name, origin: 'file', implicitManifest: true };
 }
 
 // ------------------------------------------------------------------ host
@@ -667,56 +724,57 @@ export class PluginHost {
     if (typeof console !== 'undefined') console.warn(`[jcad plugin ${name}]`, err);
   }
 
-  /** Is this code trusted? Asks when unknown or changed; `ask` = false never asks (declined stays declined). */
-  private async trusted(src: PluginSource, reask: boolean, current: () => boolean = () => true): Promise<boolean> {
+  /**
+   * Is this source trusted? Asks when unknown or changed; `ask` = false
+   * never asks (declined stays declined). The decision compares the
+   * remembered record's POLICY KEY (canonical policy + code identity —
+   * see pluginTrustPolicyKey) and nothing else, for every source kind,
+   * before load() chooses the page or worker path: there is no
+   * entry-hash-only trust path. A record written without a policy key
+   * asks once and is rewritten in the policy-key form.
+   *
+   * `freshYes` reports that THIS call prompted and stored a fresh
+   * "yes" — load() drops exactly that consent when the load it
+   * approved is then refused, so a refused load's consent is never
+   * stored or reused.
+   */
+  private async trusted(src: PluginSource, reask: boolean, current: () => boolean = () => true): Promise<{ ok: boolean; freshYes: boolean }> {
     const hash = await sourceHash(src);
-    if (!current()) return false;
+    if (!current()) return { ok: false, freshYes: false };
     const all = readTrust(this.storage);
     const key = trustKey(src);
     const hit = all[key];
     const admission = src.admission;
-    if (admission) {
-      // Structural fix (Codex re-review of PR #38; lead ruling
-      // 2026-10-22): an admitted folder source is trusted against the
-      // FULL TRUST KEY of main's one admission read, compared here —
-      // before load() chooses the page or worker path — so ANY change
-      // in isolation mode, API version, capabilities or code re-asks,
-      // on either path. The key shown in the prompt is the key
-      // remembered and the key the serve verifies.
-      const strongKey = /^[0-9a-f]{64}$/.test(admission.trustKey);
-      if (strongKey && hit && hit.trustKey === admission.trustKey && (hit.answer === 'yes' || !reask)) return hit.answer === 'yes';
-      // A downgrade: the remembered approval (this record, or a pre-fix
-      // record whose served manifest proves the worker form) was for
-      // isolation and the admitted form is the page — always a fresh
-      // consent, and the prompt says so.
-      const wasWorker = !!hit && (hit.form === 'worker' || (hit.answer === 'yes' && typeof hit.manifestHash === 'string'));
-      const details: PluginTrustDetails | undefined =
-        admission.form === 'worker'
-          ? { isolation: 'worker', capabilities: [...(src.manifest.capabilities ?? [])] }
-          : wasWorker
-            ? { isolation: 'page', downgradeFrom: 'worker' }
-            : undefined;
-      const yes = await this.confirmFn(src.manifest.name, src.path, details);
-      if (!current()) return false;
-      if (strongKey) all[key] = { answer: yes ? 'yes' : 'no', hash, trustKey: admission.trustKey, form: admission.form, at: Date.now() };
-      else delete all[key];
-      writeTrust(this.storage, all);
-      return yes;
-    }
-    // Only a SHA-256 digest remembers an answer (security review E-10): with the FNV-1a fallback
-    // (no WebCrypto) a changed plugin could keep a remembered "yes", so it is asked every run.
-    const strongHash = /^[0-9a-f]{64}$/.test(hash);
-    if (strongHash && hit && hit.hash === hash && (hit.answer === 'yes' || !reask)) return hit.answer === 'yes';
-    // C3: the trust decision for a worker plugin is told its declared
-    // capabilities + isolated status; a legacy plugin's call is unchanged.
+    const form: 'worker' | 'page' = admission ? admission.form : src.manifest.isolation === 'worker' ? 'worker' : 'page';
+    const codeIdentity = admission ? admission.trustKey : hash;
+    const policyKey = await pluginTrustPolicyKey(src.manifest, codeIdentity, src.implicitManifest);
+    if (!current()) return { ok: false, freshYes: false };
+    // Only a SHA-256 identity remembers an answer (security review
+    // E-10): with the FNV-1a fallback (no WebCrypto) a changed plugin
+    // could keep a remembered "yes", so it is asked every run. The
+    // policy key and the code identity must both be real digests.
+    const strong = /^[0-9a-f]{64}$/.test(policyKey) && /^[0-9a-f]{64}$/.test(codeIdentity);
+    if (strong && hit && hit.policyKey === policyKey && (hit.answer === 'yes' || !reask)) return { ok: hit.answer === 'yes', freshYes: false };
+    // C3 + the downgrade rule, on every source kind: the trust decision
+    // for a worker source is told its declared capabilities + isolated
+    // status; a page source whose remembered approval was for the
+    // worker form (this record's `form`, or a pre-fix record whose
+    // served manifest proves the worker form) is a DOWNGRADE — always
+    // a fresh consent, and the prompt says so. A legacy source's call
+    // is unchanged (no details).
+    const wasWorker = !!hit && (hit.form === 'worker' || (hit.answer === 'yes' && typeof hit.manifestHash === 'string'));
     const details: PluginTrustDetails | undefined =
-      src.manifest.isolation === 'worker' ? { isolation: 'worker', capabilities: [...(src.manifest.capabilities ?? [])] } : undefined;
+      form === 'worker'
+        ? { isolation: 'worker', capabilities: [...(src.manifest.capabilities ?? [])] }
+        : wasWorker
+          ? { isolation: 'page', downgradeFrom: 'worker' }
+          : undefined;
     const yes = await this.confirmFn(src.manifest.name, src.path, details);
-    if (!current()) return false;
-    if (strongHash) all[key] = { answer: yes ? 'yes' : 'no', hash, at: Date.now() };
+    if (!current()) return { ok: false, freshYes: false };
+    if (strong) all[key] = { answer: yes ? 'yes' : 'no', hash, policyKey, form, ...(admission ? { trustKey: admission.trustKey } : {}), at: Date.now() };
     else delete all[key];
     writeTrust(this.storage, all);
-    return yes;
+    return { ok: yes, freshYes: yes && strong };
   }
 
   /** Drop the remembered trust answer for one source, so its next load asks again. */
@@ -801,6 +859,17 @@ export class PluginHost {
       } catch (err) {
         return fail(`could not admit the plugin package (${pluginErrorMessage(err)})`);
       }
+      if (!admission) {
+        // Trust-policy fix (ruling (4)): the bridge HAS the admission
+        // method and it returned no package — the load FAILS here with
+        // the admission failure named. It never falls back to the
+        // earlier plugins-read package: that read is a different read
+        // and may name a different (staler, weaker-policy) package
+        // version than the one trust would have bound. (A bridge
+        // WITHOUT the method never reaches this block — the plain
+        // browser and older mains keep the pre-admission flow.)
+        return fail('plugin admission failed: the desktop bridge returned no admitted package for this folder (it has no readable plugin.json); refusing to load it from an earlier read — reload the plugin once its package is complete');
+      }
       if (admission) {
         if (
           typeof admission.trustKey !== 'string' ||
@@ -878,9 +947,9 @@ export class PluginHost {
       this.editor.log(`Plugin ${name}: ${info.error}.`);
       return info;
     }
-    let trusted: boolean;
+    let verdict: { ok: boolean; freshYes: boolean };
     try {
-      trusted = await this.trusted(src, reask, current);
+      verdict = await this.trusted(src, reask, current);
     } catch (err) {
       if (!current()) return superseded();
       info.status = 'error';
@@ -889,11 +958,26 @@ export class PluginHost {
       return info;
     }
     if (!current()) return superseded();
-    if (!trusted) {
+    if (!verdict.ok) {
       this.editor.log(`Plugin ${name} not loaded (not trusted). PLUGINLOAD${src.folder ? ` ${src.folder}` : ''} asks again.`);
       return info;
     }
-    if (isolated) return this.loadIsolated(src, entry, current, superseded);
+    // Trust-policy fix (ruling (3)): a consent THIS load just stored is
+    // dropped again if the load is then refused — a cached consent
+    // from a refused load is never reused. (Refusals inside the serve
+    // already forget the approval at their site; this covers every
+    // other refusal after consent: no realm transport, a realm load
+    // failure, the plugin's own code throwing.) A superseded load
+    // (current() false) keeps the record: the superseding load makes
+    // its own trust decision against it.
+    const dropRefusedConsent = () => {
+      if (verdict.freshYes && info.status === 'error' && current()) this.forgetSource(src);
+    };
+    if (isolated) {
+      const r = await this.loadIsolated(src, entry, current, superseded);
+      dropRefusedConsent();
+      return r;
+    }
     const handle = createApi(this.editor, name);
     entry.handle = handle;
     try {
@@ -914,6 +998,7 @@ export class PluginHost {
       this.editor.log(`[${name}] failed to load: ${info.error}`);
       if (typeof console !== 'undefined') console.error(`[jcad plugin ${name}]`, err);
     }
+    dropRefusedConsent();
     return info;
   }
 
@@ -1258,7 +1343,7 @@ export class PluginHost {
    */
   async runScript(fileName: string, code: string): Promise<boolean> {
     const src: PluginSource = { manifest: { name: fileName, apiVersion: 1 }, code, path: fileName, origin: 'script' };
-    if (!(await this.trusted(src, true))) {
+    if (!(await this.trusted(src, true)).ok) {
       this.editor.log(`Script ${fileName} not run.`);
       return false;
     }

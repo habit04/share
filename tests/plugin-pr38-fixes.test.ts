@@ -9,7 +9,11 @@
  *       trust record — any plugin.json change (capabilities, the
  *       isolation flag, anything) fails the next registration as
  *       ERR_PLUGIN_CHANGED and the next load re-asks, exactly like a
- *       graph change. plugin.json is hashed and second-pass-verified
+ *       graph change. (Trust-policy addendum, 2026-10-22: the host-level
+ *       test below now meets the change at trusted() — the approval's
+ *       identity includes the policy, so it re-asks BEFORE the serve;
+ *       the builder-level refusal against a stale approved manifest,
+ *       pinned above it, is unchanged.) plugin.json is hashed and second-pass-verified
  *       like a graph file, but it is NOT retained in the served files
  *       map: the realm never serves it (its 404 is pinned in
  *       tests/plugin-realm-serving.test.ts). A package without
@@ -32,7 +36,7 @@ import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { Editor as EditorType } from '../src/app/editor';
-import { PluginHost, TRUST_KEY, type PluginsBridge, type StorageLike } from '../src/app/plugins';
+import { PluginHost, TRUST_KEY, type PluginTrustDetails, type PluginsBridge, type StorageLike } from '../src/app/plugins';
 import { LoopbackTransport } from './plugin-isolation-harness';
 
 const require = createRequire(import.meta.url);
@@ -134,7 +138,7 @@ describe('[P1] plugin.json is bound by the approval', () => {
     expect(snap.manifestSha256).toBe(only);
   });
 
-  it('host: approved with capabilities [], plugin.json gains document.write, entry unchanged -> refused, forgotten, re-asked', async () => {
+  it('host: approved with capabilities [], plugin.json gains document.write, entry unchanged -> re-asked with the new policy shown, never silently granted', async () => {
     writeFileSync(join(pkgDir, 'plugin.json'), manifestText([]));
     const serveCalls: Array<{ manifest: string | undefined }> = [];
     const bridge: PluginsBridge = {
@@ -165,6 +169,7 @@ describe('[P1] plugin.json is bound by the approval', () => {
       setItem: (k, v) => void storage.data.set(k, v),
     };
     let confirms = 0;
+    const seenDetails: Array<PluginTrustDetails | undefined> = [];
     const trustRecord = () => {
       const raw = storage.data.get(TRUST_KEY);
       if (!raw) return null;
@@ -174,7 +179,7 @@ describe('[P1] plugin.json is bound by the approval', () => {
     const loadOnce = async () => {
       const ed = new Editor(canvas());
       const loop = new LoopbackTransport();
-      const host = new PluginHost(ed, { bridge, storage, confirm: async () => { confirms += 1; return true; }, realmTransport: () => loop });
+      const host = new PluginHost(ed, { bridge, storage, confirm: async (_n: string, _p: string, details?: PluginTrustDetails) => { confirms += 1; seenDetails.push(details); return true; }, realmTransport: () => loop });
       hosts.push(host);
       let settled = false;
       const loading = host.loadAll().then((r) => { settled = true; return r; });
@@ -195,21 +200,33 @@ describe('[P1] plugin.json is bound by the approval', () => {
     expect(bound?.manifestHash).toBe((await origin.buildPluginRealmSnapshot(pkgRoot, 'main.js')).manifestSha256);
 
     // 2. Change ONLY plugin.json — it now grants document.write; the
-    // entry is byte-identical. The load must be REFUSED as a changed
-    // package (never silently granted the new capability), and the
-    // remembered approval forgotten.
+    // entry is byte-identical. The new capability must never be
+    // silently granted. At 0134eca trusted() compared the entry hash
+    // alone, so this load reached the serve and was REFUSED there
+    // (ERR_PLUGIN_CHANGED against the remembered manifest) — the
+    // shape this phase originally pinned. Under the trust-policy
+    // ruling the approval's identity includes the policy, so
+    // trusted() itself re-asks BEFORE the path is chosen — the same
+    // re-ask-then-load the structural control sequence pins for
+    // admitted packages — and the prompt carries the NEW capability.
+    // The substance is unchanged (no silent grant); the serve-side
+    // refusal remains as the second line, for a package that changes
+    // after its prompt.
     writeFileSync(join(pkgDir, 'plugin.json'), manifestText(['document.write']));
     const second = await loadOnce();
-    expect(second.map((p) => `${p.name}:${p.status}`)).toEqual(['pol:error']);
-    expect(second[0]!.error).toMatch(/changed/i);
-    expect(serveCalls.at(-1)).toEqual({ manifest: bound!.manifestHash });
-    expect(trustRecord()).toBeNull();
+    expect(second.map((p) => `${p.name}:${p.status}`)).toEqual(['pol:loaded']);
+    expect(confirms).toBe(2);
+    expect(seenDetails.at(-1)).toEqual({ isolation: 'worker', capabilities: ['document.write'] });
+    // The fresh consent re-binds the approval: the remembered manifest
+    // is the NEW package's (the old binding is displaced, not kept).
+    expect(trustRecord()?.manifestHash).toBe((await origin.buildPluginRealmSnapshot(pkgRoot, 'main.js')).manifestSha256);
+    expect(trustRecord()?.manifestHash).not.toBe(bound!.manifestHash);
+    expect(serveCalls.at(-1)).toEqual({ manifest: undefined }); // no stale manifest was offered to the serve
 
-    // 3. The next load RE-ASKS; on approval the new policy is bound.
+    // 3. The next load is silent under the re-bound approval.
     const third = await loadOnce();
     expect(third.map((p) => `${p.name}:${p.status}`)).toEqual(['pol:loaded']);
     expect(confirms).toBe(2);
-    expect(trustRecord()?.manifestHash).toBe((await origin.buildPluginRealmSnapshot(pkgRoot, 'main.js')).manifestSha256);
   }, 120_000);
 });
 
