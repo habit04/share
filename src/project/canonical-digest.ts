@@ -16,6 +16,11 @@
  * - `meta` — EXCLUDED WHOLESALE (G3; the proposal's earlier "volatile
  *   fields" wording is retired — there is no field-level meta carve-out);
  * - `model3d`, `constraints`, `constraintsRetained` — outside this slice.
+ * - `dataLinks` — EXCLUDED (Q1, lead ruling 2026-10-21 on PROPOSAL-P31-B).
+ *   The exclusion attests NOTHING about the link records: a tampered,
+ *   re-targeted or deleted link record does not change the digest. The
+ *   linked cell CONTENT is digested as ordinary table content, so a
+ *   data-link refresh changes the digest exactly as any table edit does.
  * Any other own key on `DrawingState` is a spec violation: the canonicalizer
  * THROWS rather than silently dropping it.
  *
@@ -791,7 +796,7 @@ const SPACE_REF: TableSpec = {
 
 /** G1: keys excluded wholesale — never digested, never an error. */
 const STATE_EXCLUDED: ReadonlySet<string> = new Set([
-  'signatureRecord', 'cadGraph', 'meta', 'model3d', 'constraints', 'constraintsRetained',
+  'signatureRecord', 'cadGraph', 'meta', 'model3d', 'constraints', 'constraintsRetained', 'dataLinks',
 ]);
 /** G1: keys digested, in this fixed order. */
 const STATE_TABLE: Table = [

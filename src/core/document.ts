@@ -20,6 +20,7 @@ import { reconcileCadGraph, validateCadState, type CadGraph, type CadGraphEditIn
 import type { ConstraintSet } from './constraints/model';
 import { enforceConstraintPolicy } from './constraints/policy';
 import { noteSignatureEdit, type PreservedSignatureRecord } from '../project/drawing-signature';
+import { validateDataLinks, type DataLink } from '../project/data-links';
 
 import type { Model3D } from '../model3d/types';
 import { model3dOf, withModel3D } from '../model3d/model';
@@ -28,6 +29,7 @@ import { validateModel3DState } from '../model3d/state-validation';
 function validateDrawingProperties(state: DrawingState, previous?: DrawingState): void {
   validateModel3DState(state);
   validateCadState(state);
+  validateDataLinks(state);
   const unchanged = previous ? new Set([previous.entities, ...Object.values(previous.blocks).map((b) => b.entities), ...(previous.layouts ?? []).map((l) => l.entities)]) : undefined;
   for (const list of [state.entities, ...Object.values(state.blocks).map((b) => b.entities), ...(state.layouts ?? []).map((l) => l.entities)]) {
     if (unchanged?.has(list)) continue;
@@ -186,6 +188,20 @@ export interface DrawingState {
    * integrity posture is the documented (f2) one — unauthenticated, API discipline.
    */
   readonly signatureRecord?: PreservedSignatureRecord;
+  /**
+   * P31-B: data links (src/project/data-links.ts) — bindings from table
+   * rectangles to ranges of external delimited-text sources, refreshed
+   * in-session through src/app/data-link-refresh.ts. Plain serializable
+   * data only, validated totally by validateDataLinks on every state
+   * preparation — NO seal-exemption posture (contrast signatureRecord
+   * above): link records are seal-certified like all other plain data.
+   * IN-SESSION ONLY: no codec serializes this field, so links are lost
+   * on save/reopen while refreshed cell content persists as ordinary
+   * table content. EXCLUDED from the canonical content digest (Q1, lead
+   * ruling 2026-10-21): the digest attests nothing about link records;
+   * the linked cell CONTENT is digested as table content.
+   */
+  readonly dataLinks?: readonly DataLink[];
 }
 
 export type DocListener = (doc: Drawing) => void;
