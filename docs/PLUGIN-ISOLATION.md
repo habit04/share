@@ -170,18 +170,36 @@ return — which the acceptance tests exercise.
 
 - Wired into `PluginHost` behind the manifest opt-in (slice 2, L-011 conditions
   C1–C7). In an environment with no realm transport — including a packaged
-  renderer whose CSP refuses the bootstrap — a worker plugin fails closed at
-  load; it never runs in the page as a fallback.
-- Linux/Node `worker_threads` evidence proves the realm, protocol and host logic; it does
-  **not** prove the Electron packaged worker path. Concrete blocker, verified at base:
-  `electron/renderer-origin.cjs` serves worker scripts (`assets/worker/*`) with
-  `WORKER_CSP = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src
-  'self'; base-uri 'none'"` — there is no `'unsafe-eval'`, so the bootstrap's
-  `new Function('jcad', code)` would be refused in the packaged renderer. Executing
-  user-supplied plugin code in a packaged worker therefore needs a lead-owned decision
-  (e.g. main-process-vetted plugin script resources under `jcad://`, analogous to
-  `pluginsEval` for the page) — Electron containment is frozen for P25 and this slice
-  does not touch it. The Windows/packaged gate owns this item.
+  renderer whose worker CSP refuses the plugin body (next bullet) — a worker
+  plugin fails closed at load; it never runs in the page as a fallback.
+- The Electron packaged worker path is now RULED and measured (the lead's CSP
+  ruling, 2026-10-21; the CSP-ruling delivery). The ruling: no `'unsafe-eval'`
+  anywhere in the packaged renderer and no widening of the page CSP; the realm
+  lives in the dedicated worker under the path-scoped worker CSP
+  (`electron/renderer-origin.cjs`: `WORKER_CSP = "default-src 'none';
+  script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; base-uri 'none'"`
+  on `assets/worker/*`). Measured in the real Electron runtime
+  (`scripts/e2e-plugin-csp.mjs`, development build on the production `dist`,
+  served through the production `jcad://` handler): the page refuses `eval` /
+  `new Function` from real page code; the realm worker asset
+  (`assets/worker/realm-worker-<hash>.js`) is served with `WORKER_CSP`; and
+  the realm refuses the plugin body itself — the bootstrap compiles the body
+  string through the Function constructor (`realm-bootstrap.ts`,
+  CSP-CALL-SITE), which `script-src 'self' 'wasm-unsafe-eval'` refuses, so a
+  worker plugin fails closed at load in this runtime (the realm's load-done
+  error is Chromium's "Evaluating a string as JavaScript violates the
+  following Content Security Policy directive because 'unsafe-eval' is not an
+  allowed source of script"). The realm additionally locks its own
+  `eval`/`Function` globals to throwing stubs at handshake time, so the
+  plugin-context refusal is a property of the realm, not only of the serving
+  context. What remains open is exactly leg (b) of the ruling — a working
+  plugin in the packaged runtime — blocked on ONE design change, drafted as
+  `reviews/DRAFT-AMENDMENT-P25-CSP-HOSTING.md`: main-process-vetted plugin
+  package files served under `jcad://app/plugin-realm/<session>/` with the
+  worker CSP and loaded by the realm as module scripts (no string
+  evaluation). Until that amendment is admitted and lands, worker isolation
+  is NOT claimed for the packaged renderer; the Windows gate re-runs the e2e
+  script against the packaged executable.
 - A realm plugin with `document.read` can still *exfiltrate what it read* through any
   output channel it also holds (e.g. `ui.log`, `files.save`); capabilities reduce the
   surface, they do not make a granted-read plugin trustworthy. Network stubs (T8) are
