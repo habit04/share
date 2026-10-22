@@ -6,4 +6,5 @@
 // — the same scoped posture as the manifold kernel worker. The page CSP is
 // never widened, and no eval is enabled anywhere in the page; pdfjs runs
 // with isEvalSupported:false regardless (see underlay-pdfjs.ts).
+import './pdfjs-runtime-shims';
 import 'pdfjs-dist/build/pdf.worker.min.mjs';

@@ -33,7 +33,20 @@
  *   real thread. A terminated session is gone for good; the document
  *   keeps its source bytes and lazily opens a FRESH session (fresh
  *   worker) for the next operation, so the engine stays usable.
+ *
+ * PR #42 fixes (2026-10-22):
+ * - Fix 1: the deadline/abort supervisor (OpGuard) now covers the WHOLE
+ *   operation — module load, session open, session re-open, getPage and
+ *   render are all raced against ONE real-time deadline armed before
+ *   createSession; on expiry the worker is hard-terminated, the call
+ *   settles with the typed refusal, and the next call recovers on a
+ *   fresh worker. (Before, only the render await was watched and a
+ *   stalled open/pageSize/getPage hung forever.)
+ * - Node 22: pdfjs-runtime-shims installs Promise.try where the runtime
+ *   lacks it (Node 22.23.3 has none; without it pdfjs's worker message
+ *   dispatch throws and every operation hangs — see that module).
  */
+import './pdfjs-runtime-shims';
 import { DEFAULT_UNDERLAY_CAPS } from './underlay-adapter';
 import {
   underlayRefusal,
@@ -63,6 +76,24 @@ export interface PdfjsEngineDeps {
 class DeadlineHit extends Error {}
 class CancelledHit extends Error {}
 
+/**
+ * One operation's supervisor (PR #42 fix 1): the cooperative injected
+ * clock (`check`, unchanged — the corpus tests drive it) PLUS a
+ * real-time race arm. Before the fix only the final render await had a
+ * watchdog; an open, pageSize or getPage that never settled hung the
+ * operation forever. Now every await that crosses the worker boundary
+ * goes through `race`: ONE real-time deadline (caps.deadlineMs from
+ * the operation's start) and the caller's abort signal share a single
+ * expiry; when it fires, the race rejects with the typed hit and the
+ * caller's onExpire runs (cancel + teardown + hard-terminate), so the
+ * refusal lands at the cap on any machine, at any CPU speed.
+ */
+interface OpGuard {
+  check(): void;
+  race<T>(promise: Promise<T>, onExpire: () => void): Promise<T>;
+  dispose(): void;
+}
+
 const BYTES_PER_PIXEL = 4; // RGBA
 
 export function createPdfjsEngine(deps: PdfjsEngineDeps = {}): UnderlayRasterEngine {
@@ -70,13 +101,45 @@ export function createPdfjsEngine(deps: PdfjsEngineDeps = {}): UnderlayRasterEng
   const now = deps.now ?? (() => Date.now());
   const canvasFactory = deps.canvasFactory ?? domCanvasFactory;
 
-  /** One operation's budget checkpoints: deadline + cancellation, checked around every await. */
-  const op = (signal?: AbortSignal) => {
+  /** One operation's supervisor: cooperative checkpoints + the real-time race arm (see OpGuard). */
+  const op = (signal?: AbortSignal): OpGuard => {
     const start = now();
+    const realStart = Date.now();
+    let fire: (hit: Error) => void = () => undefined;
+    const expiry = new Promise<never>((_resolve, reject) => { fire = reject; });
+    void expiry.catch(() => undefined); // an expiry nobody races is not an error
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let armed = false;
+    const onAbort = (): void => fire(new CancelledHit());
+    const arm = (): void => {
+      if (armed) return;
+      armed = true;
+      if (signal?.aborted) {
+        fire(new CancelledHit());
+        return;
+      }
+      signal?.addEventListener('abort', onAbort, { once: true });
+      const remaining = caps.deadlineMs - (Date.now() - realStart);
+      timer = setTimeout(() => fire(new DeadlineHit()), Math.max(0, remaining));
+      (timer as { unref?: () => void }).unref?.();
+    };
     return {
       check(): void {
         if (signal?.aborted) throw new CancelledHit();
         if (now() - start > caps.deadlineMs) throw new DeadlineHit();
+      },
+      async race<T>(promise: Promise<T>, onExpire: () => void): Promise<T> {
+        arm();
+        try {
+          return await Promise.race([promise, expiry]);
+        } catch (err) {
+          if (err instanceof DeadlineHit || err instanceof CancelledHit) onExpire();
+          throw err;
+        }
+      },
+      dispose(): void {
+        if (timer !== undefined) clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
       },
     };
   };
@@ -106,7 +169,7 @@ export function createPdfjsEngine(deps: PdfjsEngineDeps = {}): UnderlayRasterEng
    * document. In workerSrc mode pdfjs creates and owns the worker per
    * loading task, and loadingTask.destroy() terminates it.
    */
-  const createSession = async (pdfjs: PdfjsModule, bytes: Uint8Array): Promise<PdfjsSessionParts> => {
+  const createSession = async (pdfjs: PdfjsModule, bytes: Uint8Array, guard?: OpGuard): Promise<PdfjsSessionParts> => {
     let worker: Worker | undefined;
     if (deps.workerSrc) {
       pdfjs.GlobalWorkerOptions.workerSrc = deps.workerSrc;
@@ -129,32 +192,44 @@ export function createPdfjsEngine(deps: PdfjsEngineDeps = {}): UnderlayRasterEng
       canvasFactory: pdfjsCanvasFactory,
     } as PdfjsInit;
     const loadingTask = pdfjs.getDocument(init);
-    try {
-      const doc = await loadingTask.promise;
-      return { loadingTask, doc, ...(worker ? { worker } : {}) };
-    } catch (err) {
+    // One destroy path for every failure of this attempt — a parse
+    // error, or the operation supervisor expiring mid-open (fix 1: a
+    // worker that never answers GetDocRequest is terminated exactly
+    // once and the open settles with the typed refusal).
+    let attemptDestroyed = false;
+    const destroyAttempt = (): void => {
+      if (attemptDestroyed) return;
+      attemptDestroyed = true;
       void loadingTask.destroy().catch(() => undefined);
       if (worker) {
         try { worker.terminate(); } catch { /* already gone */ }
       }
+    };
+    try {
+      const doc = guard ? await guard.race(loadingTask.promise, destroyAttempt) : await loadingTask.promise;
+      return { loadingTask, doc, ...(worker ? { worker } : {}) };
+    } catch (err) {
+      destroyAttempt();
       throw err;
     }
   };
 
   const open: UnderlayRasterEngine['open'] = async (bytes, opts) => {
-    const clock = op(opts?.signal);
+    // The supervisor is armed BEFORE any session exists (fix 1), so a
+    // stalled module load or first open is bounded like every phase.
+    const guard = op(opts?.signal);
     try {
-      clock.check();
+      guard.check();
       if (bytes.byteLength > caps.maxBytes) {
         return underlayRefusal('too-large', `input is ${bytes.byteLength} bytes, over the ${caps.maxBytes}-byte cap`);
       }
-      const pdfjs = await loadPdfjs();
-      clock.check();
+      const pdfjs = await guard.race(loadPdfjs(), () => undefined);
+      guard.check();
       // The document retains its own copy of the bytes: after a
       // hard-terminated session it re-parses from them in a fresh one.
       const stored = bytes.slice();
-      const first = await createSession(pdfjs, stored);
-      clock.check();
+      const first = await createSession(pdfjs, stored, guard);
+      guard.check();
       if (first.doc.numPages === 0) {
         await first.loadingTask.destroy();
         if (first.worker) { try { first.worker.terminate(); } catch { /* already gone */ } }
@@ -169,11 +244,13 @@ export function createPdfjsEngine(deps: PdfjsEngineDeps = {}): UnderlayRasterEng
         ok: true,
         value: new PdfjsDocument(first, {
           caps, now, canvasFactory, op,
-          createSession: () => createSession(pdfjs, stored),
+          createSession: (sessionGuard) => createSession(pdfjs, stored, sessionGuard),
         }),
       };
     } catch (err) {
       return mapError(err);
+    } finally {
+      guard.dispose();
     }
   };
 
@@ -192,21 +269,15 @@ interface DocDeps {
   readonly caps: UnderlayCaps;
   readonly now: () => number;
   readonly canvasFactory: UnderlayCanvasFactory;
-  readonly op: (signal?: AbortSignal) => { check(): void };
+  readonly op: (signal?: AbortSignal) => OpGuard;
   /** Open a fresh session (fresh dedicated worker) — the recovery path after a hard termination. */
-  readonly createSession: () => Promise<PdfjsSessionParts>;
+  readonly createSession: (guard?: OpGuard) => Promise<PdfjsSessionParts>;
 }
 
 /** A live parse session plus its lifecycle flag (dead = terminated/torn down). */
 interface PdfjsSession extends PdfjsSessionParts {
   dead: boolean;
 }
-
-type RenderOutcome =
-  | { readonly kind: 'done' }
-  | { readonly kind: 'error'; readonly err: unknown }
-  | { readonly kind: 'deadline' }
-  | { readonly kind: 'cancelled' };
 
 class PdfjsDocument implements UnderlayDocument {
   readonly pageCount: number;
@@ -221,11 +292,11 @@ class PdfjsDocument implements UnderlayDocument {
   }
 
   /** The live session, lazily re-created (fresh worker) after a hard termination. */
-  private async ensureSession(): Promise<PdfjsSession> {
+  private async ensureSession(guard: OpGuard): Promise<PdfjsSession> {
     if (this.session && !this.session.dead) return this.session;
     if (!this.sessionLoading) {
       const loading = (async (): Promise<PdfjsSession> => {
-        const parts = await this.deps.createSession();
+        const parts = await this.deps.createSession(guard);
         const session: PdfjsSession = { ...parts, dead: false };
         if (this.closed) {
           this.teardown(session);
@@ -239,7 +310,12 @@ class PdfjsDocument implements UnderlayDocument {
         if (this.sessionLoading === loading) this.sessionLoading = null;
       });
     }
-    return this.sessionLoading;
+    const loading = this.sessionLoading;
+    return guard.race(loading, () => {
+      // The supervisor gave up on this load: if the session still
+      // lands afterwards, tear it down on arrival — nobody owns it.
+      void loading.then((session) => this.teardown(session), () => undefined);
+    });
   }
 
   /** Destroy a session's loading task and hard-terminate its dedicated worker. Idempotent. */
@@ -254,25 +330,32 @@ class PdfjsDocument implements UnderlayDocument {
   }
 
   async pageSize(page: number, opts?: { signal?: AbortSignal }): Promise<UnderlayResult<UnderlayPageSize>> {
-    const clock = this.deps.op(opts?.signal);
+    const guard = this.deps.op(opts?.signal);
     try {
-      clock.check();
-      if (this.closed) return underlayRefusal('corrupt', 'the document is closed');
-      if (!Number.isInteger(page) || page < 1 || page > this.pageCount) {
-        return underlayRefusal('corrupt', `page ${page} is out of range (1..${this.pageCount})`);
-      }
-      const hit = this.sizes.get(page);
-      if (hit) return { ok: true, value: hit };
-      const session = await this.ensureSession();
-      const pdfPage = await session.doc.getPage(page);
-      clock.check();
-      const viewport = pdfPage.getViewport({ scale: 1 });
-      const size = { width: viewport.width, height: viewport.height };
-      this.sizes.set(page, size);
-      return { ok: true, value: size };
+      return await this.pageSizeUnder(page, guard);
     } catch (err) {
       return mapError(err);
+    } finally {
+      guard.dispose();
     }
+  }
+
+  /** pageSize under a caller-owned supervisor, so a render's internal size lookup shares the render's ONE deadline. */
+  private async pageSizeUnder(page: number, guard: OpGuard): Promise<UnderlayResult<UnderlayPageSize>> {
+    guard.check();
+    if (this.closed) return underlayRefusal('corrupt', 'the document is closed');
+    if (!Number.isInteger(page) || page < 1 || page > this.pageCount) {
+      return underlayRefusal('corrupt', `page ${page} is out of range (1..${this.pageCount})`);
+    }
+    const hit = this.sizes.get(page);
+    if (hit) return { ok: true, value: hit };
+    const session = await this.ensureSession(guard);
+    const pdfPage = await guard.race(session.doc.getPage(page), () => this.teardown(session));
+    guard.check();
+    const viewport = pdfPage.getViewport({ scale: 1 });
+    const size = { width: viewport.width, height: viewport.height };
+    this.sizes.set(page, size);
+    return { ok: true, value: size };
   }
 
   async renderPage(page: number, scale: number, opts?: { signal?: AbortSignal }): Promise<UnderlayResult<UnderlayRaster>> {
@@ -289,16 +372,15 @@ class PdfjsDocument implements UnderlayDocument {
     scale: number,
     opts?: { signal?: AbortSignal },
   ): Promise<UnderlayResult<UnderlayRegionRaster>> {
-    const clock = this.deps.op(opts?.signal);
-    const realStart = Date.now();
+    const guard = this.deps.op(opts?.signal);
     try {
-      clock.check();
+      guard.check();
       if (this.closed) return underlayRefusal('corrupt', 'the document is closed');
       if (!Number.isFinite(scale) || scale <= 0) return underlayRefusal('corrupt', `render scale ${scale} is not a positive finite number`);
       if (clip && (![clip.x, clip.y, clip.width, clip.height].every(Number.isFinite) || clip.width <= 0 || clip.height <= 0)) {
         return underlayRefusal('corrupt', 'the clip region is not a positive finite rectangle');
       }
-      const sized = await this.pageSize(page, opts);
+      const sized = await this.pageSizeUnder(page, guard);
       if (!sized.ok) return sized;
       const size = sized.value;
       // Intersect the clip with the page (clip space: the page's
@@ -329,14 +411,14 @@ class PdfjsDocument implements UnderlayDocument {
             : `rendering page ${page} at scale ${scale} needs ${bytesNeeded} bytes, over the ${this.deps.caps.maxScanBytes}-byte per-page cap`,
         );
       }
-      clock.check();
-      const session = await this.ensureSession();
-      clock.check();
-      const pdfPage = await session.doc.getPage(page);
-      clock.check();
+      guard.check();
+      const session = await this.ensureSession(guard);
+      guard.check();
+      const pdfPage = await guard.race(session.doc.getPage(page), () => this.teardown(session));
+      guard.check();
       const factory = this.deps.canvasFactory;
       const slot = factory.create(width, height);
-      clock.check(); // a factory may consume the operation's clock (tests do); the deadline rules
+      guard.check(); // a factory may consume the operation's clock (tests do); the deadline rules
       const viewport = pdfPage.getViewport({
         scale,
         ...(clip ? { offsetX: -region.x * scale, offsetY: -region.y * scale } : {}),
@@ -346,66 +428,27 @@ class PdfjsDocument implements UnderlayDocument {
         canvasContext: slot.context as CanvasRenderingContext2D,
         viewport,
       });
-      const outcome = await this.awaitRender(task, session, realStart, opts?.signal);
-      if (outcome.kind === 'deadline') return underlayRefusal('deadline', 'the operation exceeded its deadline');
-      if (outcome.kind === 'cancelled') return underlayRefusal('cancelled', 'the operation was cancelled');
-      if (outcome.kind === 'error') throw outcome.err;
-      clock.check();
+      // The render itself is raced under the SAME supervisor (fix 1
+      // subsumes the H fix's render-only watchdog): on expiry the task
+      // is cancelled, the session torn down and its worker
+      // hard-terminated — a killed render may never settle, so it is
+      // raced, never awaited unguarded.
+      try {
+        await guard.race(task.promise, () => {
+          try { task.cancel(); } catch { /* task already gone */ }
+          this.teardown(session);
+        });
+      } catch (err) {
+        if (opts?.signal?.aborted) return underlayRefusal('cancelled', 'the operation was cancelled');
+        throw err;
+      }
+      guard.check();
       return { ok: true, value: { image: slot.canvas, width: slot.width, height: slot.height, pageSize: size, region } };
     } catch (err) {
       return mapError(err);
+    } finally {
+      guard.dispose();
     }
-  }
-
-  /**
-   * Await one pdfjs render under the HARD deadline (H fix). A real-time
-   * watchdog is armed for the operation's remaining budget — real time,
-   * not the injectable op clock, because bounding wall clock is its
-   * whole point. On expiry it cancels the render task, tears the
-   * session down and hard-terminates the session's dedicated worker, so
-   * a render stuck inside the worker is bounded wherever the worker is
-   * a real thread. The render promise is RACED, never awaited
-   * unguarded: a killed render may never settle. The cooperative op
-   * clock still applies around this await (it governs the test clock).
-   */
-  private awaitRender(
-    task: PdfjsRenderTask,
-    session: PdfjsSession,
-    realStart: number,
-    signal?: AbortSignal,
-  ): Promise<RenderOutcome> {
-    return new Promise<RenderOutcome>((resolve) => {
-      let settled = false;
-      let watchdog: ReturnType<typeof setTimeout> | undefined;
-      const finish = (outcome: RenderOutcome): void => {
-        if (settled) return;
-        settled = true;
-        if (watchdog !== undefined) clearTimeout(watchdog);
-        signal?.removeEventListener('abort', onAbort);
-        resolve(outcome);
-      };
-      const onAbort = (): void => {
-        try { task.cancel(); } catch { /* task already gone */ }
-        finish({ kind: 'cancelled' });
-      };
-      const remaining = this.deps.caps.deadlineMs - (Date.now() - realStart);
-      watchdog = setTimeout(() => {
-        try { task.cancel(); } catch { /* task already gone */ }
-        this.teardown(session);
-        finish({ kind: 'deadline' });
-      }, Math.max(0, remaining));
-      if (signal) {
-        if (signal.aborted) {
-          onAbort();
-          return;
-        }
-        signal.addEventListener('abort', onAbort, { once: true });
-      }
-      task.promise.then(
-        () => finish({ kind: 'done' }),
-        (err: unknown) => finish(signal?.aborted ? { kind: 'cancelled' } : { kind: 'error', err }),
-      );
-    });
   }
 
   close(): void {
@@ -449,7 +492,6 @@ function mapError(err: unknown): UnderlayResult<never> {
 type PdfjsModule = typeof import('pdfjs-dist');
 type PdfjsDocumentProxy = import('pdfjs-dist').PDFDocumentProxy;
 type PdfjsLoadingTask = ReturnType<PdfjsModule['getDocument']>;
-type PdfjsRenderTask = ReturnType<import('pdfjs-dist').PDFPageProxy['render']>;
 type PdfjsInit = NonNullable<Parameters<PdfjsModule['getDocument']>[0]> & {
   isEvalSupported: boolean;
   enableScripting: boolean;
