@@ -135,6 +135,185 @@ function mergeAcadDstyle(retained: readonly CadGroup[], generated: readonly CadG
   const body = original ? [...source.body.slice(0, original.start), ...block, ...source.body.slice(original.end + 1)] : [...source.body, ...block];
   return [...retained.slice(0, source.start), ...(body.length ? [retained[source.start]!, ...body] : []), ...retained.slice(source.end)];
 }
+/**
+ * P18 PR #43 fix (Codex PR #43 P1; lead ruling): a retained MLEADER context
+ * object's CONTEXT_DATA body is regenerated SURGICALLY — the same rule as
+ * the P22 table regeneration. Only the recognized derived fields (the
+ * groups mleaderContextBodyGroups emits, walked here in the emitter's own
+ * grammar order) are replaced, in place, by the regenerated values; every
+ * other group — a 309 marker, a 999 comment, fixture E's whole unmodelled
+ * property segment after group 172, the 271 before a cluster's 303, the
+ * 272/273 tail — stays byte-verbatim in position. The one place a foreign
+ * group cannot be placed safely is INSIDE the point run of a LEADER_LINE
+ * (between its first and last point value, or mid-triple): its anchor
+ * points regenerate from the model, so the save refuses atomically with
+ * 'unsupported multileader context layout' rather than dropping or
+ * misplacing it. Scalar fields a genuine body omits (fixture F's block
+ * contexts carry no 170/90) are inserted from the model at their grammar
+ * position; the structural anchors — the first 40, the block 296/341, the
+ * text 304, the cluster/line markers — must be locatable, and a body
+ * whose anchors cannot be found refuses the same way. There is no
+ * wholesale replacement fallback.
+ */
+function surgicalMLeaderContextBody(
+  retained: readonly CadGroup[],
+  scaleHandle: string | undefined,
+  regenerated: readonly CadGroup[],
+  recordHandle: string,
+): CadGroup[] {
+  const unsupported = (): CadGraphError => new CadGraphError('dependency',
+    `Cannot save: unsupported multileader context layout — the retained MLEADER context ${recordHandle} does not carry its CONTEXT_DATA body in a recognizable shape, so it cannot be regenerated in place.`);
+  // Every code the CONTEXT_DATA body grammar can emit (emitMLeaderContext).
+  const DERIVED = new Set([40, 10, 20, 30, 41, 140, 145, 174, 175, 176, 177, 290, 296, 341, 15, 25, 35, 16, 26, 36, 46, 304, 11, 21, 31, 340, 12, 22, 32, 13, 23, 33, 42, 43, 44, 45, 170, 90, 171, 172, 302, 291, 91, 305, 303]);
+  const out: CadGroup[] = [];
+  let r = 0;
+  let n = 0;
+  // Prefix: preserved groups ahead of the body (before the first 40) ride
+  // through; at most one 340 among them is the derived scale slot, whose
+  // regenerated value takes the canonical slot position (immediately
+  // after the annotative subclass marker, ahead of the preserved prefix).
+  const prefix: CadGroup[] = [];
+  let slotSeen = false;
+  while (r < retained.length && retained[r]![0] !== 40) {
+    const group = retained[r]!;
+    if (group[0] === 340) {
+      if (slotSeen) throw unsupported();
+      slotSeen = true;
+      r += 1;
+      continue;
+    }
+    if (DERIVED.has(group[0])) throw unsupported();
+    prefix.push(group);
+    r += 1;
+  }
+  if (scaleHandle) out.push([340, scaleHandle]);
+  out.push(...prefix);
+  /** Emit the regenerated group for `code`, preserving foreign groups that
+   *  sit ahead of its retained position. A scalar field the retained body
+   *  omits is inserted from the model (genuine block bodies, fixture F,
+   *  carry no 170/90 at all — the emitter's values take their grammar
+   *  position); a STRUCTURAL anchor (an argument of true) must be located
+   *  in the retained body or the layout is unrecognizable. */
+  const single = (code: number, anchor = false): void => {
+    while (r < retained.length && retained[r]![0] !== code && !DERIVED.has(retained[r]![0])) {
+      out.push(retained[r]!);
+      r += 1;
+    }
+    if (r < retained.length && retained[r]![0] === code) {
+      if (regenerated[n]?.[0] !== code) throw unsupported();
+      out.push(regenerated[n]!);
+      r += 1;
+      n += 1;
+      return;
+    }
+    if (anchor || regenerated[n]?.[0] !== code) throw unsupported();
+    out.push(regenerated[n]!);
+    n += 1;
+  };
+  const triple = (a: number, b: number, c: number): void => { single(a); single(b); single(c); };
+  const peek = (): number | undefined => regenerated[n]?.[0];
+  /** The point run of one LEADER_LINE: the regenerated triples replace the
+   *  retained ones wholesale (the model owns the count); foreign groups
+   *  before the first triple or after the last are preserved in place, and
+   *  one strictly inside the run refuses (the P22 run-boundary rule). */
+  const pointRun = (): void => {
+    let regenTriples = 0;
+    while (regenerated[n + regenTriples * 3]?.[0] === 10
+      && regenerated[n + regenTriples * 3 + 1]?.[0] === 20
+      && regenerated[n + regenTriples * 3 + 2]?.[0] === 30) regenTriples += 1;
+    const noted: Array<{ at: number; group: CadGroup }> = [];
+    let triples = 0;
+    let phase = 0; // 0 expects a 10, 1 a 20, 2 a 30
+    let scan = r;
+    while (scan < retained.length) {
+      const group = retained[scan]!;
+      const code = group[0];
+      if (phase === 0 && code === 10) { phase = 1; scan += 1; } else if (phase === 1 && code === 20) { phase = 2; scan += 1; } else if (phase === 2 && code === 30) { phase = 0; triples += 1; scan += 1; } else if (!DERIVED.has(code)) {
+        // Mid-triple the group sits between two values of the run itself.
+        if (phase !== 0) throw unsupported();
+        noted.push({ at: triples, group });
+        scan += 1;
+      } else break; // a derived code ends the scan (the 91 is the caller's)
+    }
+    for (const note of noted) if (note.at > 0 && note.at < triples) throw unsupported();
+    out.push(...noted.filter((note) => note.at === 0).map((note) => note.group));
+    for (let t = 0; t < regenTriples * 3; t += 1) out.push(regenerated[n + t]!);
+    out.push(...noted.filter((note) => note.at === triples && triples > 0).map((note) => note.group));
+    r = scan;
+    n += regenTriples * 3;
+  };
+  // The fixed preamble (emitter order), the optional block section, the
+  // optional text section, then the fixed tail singles.
+  single(40, true);
+  triple(10, 20, 30);
+  single(41);
+  single(140);
+  single(145);
+  single(174);
+  single(175);
+  single(176);
+  single(177);
+  single(290);
+  if (peek() === 296) {
+    single(296, true);
+    single(341, true);
+    triple(15, 25, 35);
+    triple(16, 26, 36);
+    single(46);
+  }
+  if (peek() === 304) {
+    single(304, true);
+    triple(11, 21, 31);
+    if (peek() === 340) single(340);
+    triple(12, 22, 32);
+    triple(13, 23, 33);
+    single(42);
+    single(43);
+    single(44);
+    single(45);
+  }
+  single(170);
+  single(90);
+  if (peek() === 171) {
+    single(171);
+    single(172);
+  }
+  // The unmodelled segment zone (fixture E's property block lives here):
+  // everything up to the first cluster marker is preserved verbatim.
+  while (r < retained.length && retained[r]![0] !== 302) {
+    out.push(retained[r]!);
+    r += 1;
+  }
+  while (peek() === 302) {
+    single(302, true);
+    single(290);
+    single(291);
+    triple(10, 20, 30);
+    if (peek() === 11) triple(11, 21, 31);
+    single(90);
+    if (peek() === 40) single(40);
+    while (peek() === 304) {
+      single(304, true);
+      pointRun();
+      single(91, true);
+      single(305, true);
+    }
+    // Cluster tail (a 271 rides here in fixture E): preserved to the 303.
+    while (r < retained.length && retained[r]![0] !== 303) {
+      out.push(retained[r]!);
+      r += 1;
+    }
+    single(303, true);
+  }
+  // Trailing groups after the last cluster (fixture E's 272/273).
+  while (r < retained.length) {
+    out.push(retained[r]!);
+    r += 1;
+  }
+  if (n !== regenerated.length) throw unsupported();
+  return out;
+}
+
 const layoutName = (record: { readonly groups: readonly CadGroup[] }) => {
   const names = scopedValues(record, 1, 'AcDbLayout');
   if (names.length > 1) throw new CadGraphError('invalid', 'A retained layout has ambiguous native names.');
@@ -1288,8 +1467,11 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   // entry list; each retained context object keeps its identity head
   // (reactors, owner, type markers — the 290 default flag follows its
   // position) and its XDATA tail byte-verbatim, while the annotative
-  // header's group 340 and the CONTEXT_DATA body (which begins with the
-  // single group 40) are rewritten from the model. Surplus objects the
+  // header's group 340 and the CONTEXT_DATA body's recognized derived
+  // fields are rewritten from the model — since the PR #43 fix, IN PLACE
+  // (surgicalMLeaderContextBody): unmodelled groups inside the body stay
+  // byte-verbatim in position, and one inside a LEADER_LINE point run
+  // refuses the save atomically. Surplus objects the
   // model no longer carries are deleted only when no surviving record
   // references them; a referenced surplus is kept, detached from the
   // chain. The final reference set is validated below whenever a chain
@@ -1416,9 +1598,14 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
           // the canonical name of the factor) resolved against the final
           // scale list; when it cannot resolve here, the group-1
           // completion pass below creates the SCALE and inserts the 340.
+          // PR #43 fix (Codex PR #43 P1): the regenerated body is merged
+          // SURGICALLY into the retained one (surgicalMLeaderContextBody)
+          // — derived fields replaced in place, every other group kept
+          // byte-verbatim in position, a foreign group inside a LEADER_LINE
+          // point run refusing the save atomically.
           const name = view.scaleName ?? formatScale(1 / view.scaleFactor);
           const target = listEntries.get(name)?.handle;
-          record.groups = [...head, ...(target ? [[340, target] as CadGroup] : []), ...body, ...groups.slice(tailAt)];
+          record.groups = [...head, ...surgicalMLeaderContextBody(groups.slice(annotAt + 1, tailAt), target, body, canon(value(record, 5)) ?? ''), ...groups.slice(tailAt)];
           contextRegenerated.add(record);
           contextChainsRegenerated = true;
         });
