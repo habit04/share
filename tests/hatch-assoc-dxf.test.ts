@@ -23,7 +23,7 @@ import { importReportOf } from '../src/io/import-report';
 type Pair = readonly [number, string | number];
 
 /** A closed square LWPOLYLINE (handle 50) + a SOLID hatch (handle 51) over it. */
-function assocDxf(opts: { associative?: boolean; refHandle?: string } = {}): string {
+function assocDxf(opts: { associative?: boolean; refHandle?: string; duplicateBoundary?: boolean } = {}): string {
   const associative = opts.associative ?? true;
   const ref = opts.refHandle ?? '50';
   const fields: Pair[] = [
@@ -32,6 +32,14 @@ function assocDxf(opts: { associative?: boolean; refHandle?: string } = {}): str
     [0, 'LWPOLYLINE'], [5, '50'], [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbPolyline'],
     [90, 4], [70, 1],
     [10, 0], [20, 0], [10, 10], [20, 0], [10, 10], [20, 10], [10, 0], [20, 10],
+    // The acceptance 4B specimen: a SECOND LWPOLYLINE carrying the SAME
+    // handle 50 (an invalid file), shifted +100 in x so the two same-handle
+    // records are distinguishable by their geometry.
+    ...(opts.duplicateBoundary ? [
+      [0, 'LWPOLYLINE'], [5, '50'], [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbPolyline'],
+      [90, 4], [70, 1],
+      [10, 100], [20, 0], [10, 110], [20, 0], [10, 110], [20, 10], [10, 100], [20, 10],
+    ] as Pair[] : []),
     [0, 'HATCH'], [5, '51'], [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbHatch'],
     [10, 0], [20, 0], [30, 0], [210, 0], [220, 0], [230, 1],
     [2, 'SOLID'], [70, 1], [71, associative ? 1 : 0], [91, 1],
@@ -139,6 +147,30 @@ describe('associative HATCH: DXF retention round-trip', () => {
     const poly = def.entities.find((e): e is PolylineEntity => e.type === 'polyline')!;
     expect(hatch.associative).toBe(true);
     expect(hatch.loops[0]!.boundaryRefs).toEqual([poly.id]);
+  });
+
+  it('duplicate boundary handle (acceptance 4B): the link resolves to the LAST same-handle entity and the import report says so', () => {
+    // AMENDMENT-P17-HANDLES O4, as accepted: on an invalid file whose records
+    // reuse a handle, references to that handle resolve to the last object
+    // with the handle in the file, deterministically — and the import report
+    // states that behaviour plainly, not only that the CAD metadata could
+    // not be imported safely.
+    for (let read = 0; read < 2; read++) {
+      const state = readDxf(assocDxf({ duplicateBoundary: true }));
+      const polys = state.entities.filter((e): e is PolylineEntity => e.type === 'polyline');
+      expect(polys).toHaveLength(2);
+      const last = polys.find((p) => p.points[0]!.x === 100)!;
+      expect(last).toBeDefined();
+      const hatch = state.entities.find((e): e is HatchEntity => e.type === 'hatch')!;
+      expect(hatch.associative).toBe(true);
+      expect(hatch.loops[0]!.boundaryRefs).toEqual([last.id]);
+      const report = importReportOf(state);
+      const dup = report?.items.find((item) => /Duplicate CAD object handle 50/.test(item.reason));
+      expect(dup).toBeDefined();
+      expect(dup!.type).toBe('CAD_METADATA');
+      expect(dup!.reason).toMatch(/could not be imported safely/);
+      expect(dup!.reason).toMatch(/resolve to the last object with that handle in the file/);
+    }
   });
 
   it('the hand-written fixture hatch (handle 51 -> LWPOLYLINE 50) retains and re-emits its link', () => {
