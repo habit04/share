@@ -781,34 +781,75 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       matched.add(nodesForPage[0]!.id);
     }
   }
-  // PR #42 cleanup (4), second half: whatever the two binding passes
-  // could not pair stays unmatched — an unmatched generated record is
-  // emitted fresh and an unmatched retained node is emitted verbatim,
-  // so a same-(kind, page) remainder on BOTH sides is exactly the
-  // silent-duplication shape (a stale record beside its edited
-  // successor). Refuse the save atomically instead. The scope is the
-  // MODELLED definitions (the ones the model carries in its underlays
-  // sibling and is authoritative for, RULING-P28 C6): retained records
-  // the model never claimed stay outside the pairing entirely and are
-  // emitted verbatim as before.
+  // PR #42 stable-binding fix (supersedes the cleanup-(4) leftover
+  // check, which keyed unbound definitions by (type, page)): the page
+  // is EDITABLE, so a modelled definition whose page — or path and
+  // page — moved fell out of every content key above and was emitted
+  // beside its stale predecessor (one unplaced dictionary-owned
+  // definition duplicated on a page-only edit; two became four on
+  // path+page edits). Bind each modelled definition to its source
+  // record by the identity editable fields cannot move: the model
+  // definition carries its source record handle
+  // (UnderlayDefinition.handle), the retained node carries the same
+  // handle as its sourceHandle, and a generated definition record
+  // corresponds to the model definition the writer emitted it from
+  // (the writer emits the sibling in order, one record per
+  // definition, so the correspondence replays deterministically per
+  // type). The binding is authoritative: a content-based pairing that
+  // contradicts it (two definitions of one file swapping pages pair
+  // crosswise on the (kind, path, page) key) is re-paired. A modelled
+  // definition that cannot be bound to its source record — its handle
+  // names no retained definition record, two definitions claim one
+  // record, or the generated records do not correspond to the
+  // modelled definitions — refuses the save atomically, whatever page
+  // it has. The scope is the MODELLED definitions (the ones the model
+  // carries in its underlays sibling and is authoritative for,
+  // RULING-P28 C6): retained records the model never claimed stay
+  // outside the pairing entirely and are emitted verbatim as before.
   const modelledDefHandles = new Set(Object.values(state.underlays ?? {}).flatMap(def => def.handle ? [canonicalCadHandle(def.handle)] : []));
-  const leftoverModelled = new Map<string, { type: string; page: string; count: number }>(), leftoverGenerated = new Map<string, number>();
-  graph.nodes.forEach((node, index) => {
-    if (matched.has(node.id) || !isUnderlayDefinition(node.type)) return;
-    if (!node.sourceHandle || !modelledDefHandles.has(canonicalCadHandle(node.sourceHandle))) return;
-    const page = identifierValue(sources[index]!, 2), key = JSON.stringify([node.type, page]);
-    const entry = leftoverModelled.get(key) ?? { type: node.type, page, count: 0 };
-    entry.count += 1; leftoverModelled.set(key, entry);
-  });
-  for (const record of generated) {
-    if (match.has(record) || !isUnderlayDefinition(record.type)) continue;
-    const key = JSON.stringify([record.type, identifierValue(record, 2)]);
-    leftoverGenerated.set(key, (leftoverGenerated.get(key) ?? 0) + 1);
+  const defTypeOfKind: Readonly<Record<string, string>> = { pdf: 'PDFDEFINITION', dwf: 'DWFDEFINITION', dgn: 'DGNDEFINITION' };
+  const generatedDefsByType = new Map<string, RecordData[]>();
+  for (const record of generated) if (isUnderlayDefinition(record.type)) generatedDefsByType.set(record.type, [...(generatedDefsByType.get(record.type) ?? []), record]);
+  const modelDefsByType = new Map<string, { readonly handle?: string; readonly sourcePath: string }[]>();
+  for (const def of Object.values(state.underlays ?? {})) {
+    const type = defTypeOfKind[def.kind];
+    if (type) modelDefsByType.set(type, [...(modelDefsByType.get(type) ?? []), def]);
   }
-  for (const [key, count] of leftoverGenerated) {
-    const retained = leftoverModelled.get(key);
-    if (retained) throw new CadGraphError('dependency', `Cannot save: ${count} generated and ${retained.count} retained ${retained.type} definition(s) for page/model "${retained.page}" cannot be paired unambiguously — their identity survives neither in placement references nor in a unique kind/page match, and writing both would duplicate a definition. The original records are retained.`);
+  const defNodeByHandle = new Map(graph.nodes.flatMap(node => node.sourceHandle && isUnderlayDefinition(node.type) ? [[canonicalCadHandle(node.sourceHandle), node] as const] : []));
+  const stablePairs = new Map<RecordData, CadNode>();
+  for (const [type, defsForType] of modelDefsByType) {
+    const recordsForType = generatedDefsByType.get(type) ?? [];
+    if (recordsForType.length !== defsForType.length) {
+      if (defsForType.some(def => def.handle) || recordsForType.length) throw new CadGraphError('dependency', `Cannot save: the model carries ${defsForType.length} ${type} definition(s) but the generated drawing carries ${recordsForType.length}, so a modelled definition cannot be bound to its source record. The original records are retained.`);
+      continue;
+    }
+    defsForType.forEach((def, index) => {
+      if (!def.handle) return; // Created in the model: it claims no source record.
+      const node = defNodeByHandle.get(canonicalCadHandle(def.handle));
+      if (!node || node.type !== type) throw new CadGraphError('dependency', `Cannot save: the modelled ${type} definition "${def.sourcePath}" carries source handle ${canonicalCadHandle(def.handle)}, which no retained ${type} record carries, so it cannot be bound to its source record. The original records are retained.`);
+      if ([...stablePairs.values()].includes(node)) throw new CadGraphError('dependency', `Cannot save: two modelled ${type} definitions claim source record ${canonicalCadHandle(def.handle)}, so neither can be bound to its source record unambiguously. The original records are retained.`);
+      stablePairs.set(recordsForType[index]!, node);
+    });
   }
+  if (stablePairs.size) {
+    const stableNodes = new Set([...stablePairs.values()].map(node => node.id));
+    for (const [record, node] of [...match]) {
+      if (!isUnderlayDefinition(record.type) || stablePairs.get(record) === node) continue;
+      if (stablePairs.has(record) || stableNodes.has(node.id)) { match.delete(record); matched.delete(node.id); }
+    }
+    for (const [record, node] of stablePairs) { match.set(record, node); matched.add(node.id); }
+  }
+  // Residual fail-closed, now page-independent: whatever still leaves
+  // a modelled retained definition unmatched beside an unmatched
+  // generated record of the same type is the silent-duplication shape
+  // in its general form — refuse rather than emit both.
+  const leftoverModelledTypes = new Set<string>(), leftoverGeneratedTypes = new Set<string>();
+  for (const node of graph.nodes) {
+    if (matched.has(node.id) || !isUnderlayDefinition(node.type)) continue;
+    if (node.sourceHandle && modelledDefHandles.has(canonicalCadHandle(node.sourceHandle))) leftoverModelledTypes.add(node.type);
+  }
+  for (const record of generated) if (!match.has(record) && isUnderlayDefinition(record.type)) leftoverGeneratedTypes.add(record.type);
+  for (const type of leftoverGeneratedTypes) if (leftoverModelledTypes.has(type)) throw new CadGraphError('dependency', `Cannot save: a retained ${type} definition the model carries could not be paired with its generated record, and writing both would duplicate a definition. The original records are retained.`);
   const hintHandles = new Map(graph.generatedHandles?.map(hint => [hint.key, canonicalCadHandle(hint.handle)]));
   const generatedSlots = structuralKeys(generated);
   const reserved = new Set([...graph.nodes.flatMap(n => n.sourceHandle ? [canonicalCadHandle(n.sourceHandle)] : []), ...hintHandles.values()]);

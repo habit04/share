@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readDxf, writeDxf } from '../src/io/dxf';
 import type { DrawingState } from '../src/core/document';
+import type { UnderlayDefinition } from '../src/core/underlay';
 
 // P28 PR #42 fix (2) — Codex P1: underlay definition identity in the
 // cad-graph merge. Before the fix the dedupe key was (kind + stored
@@ -170,11 +171,17 @@ describe('underlay definition binding by reference identity (PR #42 cleanup 4)',
     expect(countDefs(writeDxf(again))).toBe(2);
   }, TEST_TIMEOUT);
 
-  it('two unreferenced page-1 definitions with both paths edited cannot be paired: the save refuses atomically', () => {
-    // No placements -> no reference chain -> nothing proves which
-    // generated record succeeds which retained one (same kind, same
-    // page, both paths moved). Refusing is the ruled outcome; writing
-    // both pairs (4 definitions) is the bug.
+  it('two unreferenced page-1 definitions with both paths edited bind by source handle: exactly 2 definitions with the new paths', () => {
+    // SUPERSEDED EXPECTATION (PR #42 stable-binding fix): this shape
+    // previously refused, because the reference chain is absent (no
+    // placements) and the (kind, page) fallback cannot pair a 2-and-2
+    // remainder. The lead's stable-binding ruling supersedes that
+    // outcome: each modelled definition binds to its source record by
+    // the source handle the model carries, which does not depend on
+    // the edited path — so this remainder CAN be bound and must be,
+    // giving exactly the original count with the new values. A
+    // remainder that genuinely cannot be bound (its handle names no
+    // retained record) still refuses — see the stable-binding suite.
     const lines: string[] = ['0', 'SECTION', '2', 'ENTITIES', '0', 'ENDSEC', '0', 'SECTION', '2', 'OBJECTS'];
     const defs: readonly DefSpec[] = [
       { path: 'plans\\a.pdf', page: 'Page 1', extra: [['90', '7']] },
@@ -192,6 +199,149 @@ describe('underlay definition binding by reference identity (PR #42 cleanup 4)',
       ['plans\\a.pdf', 'plans\\a-v2.pdf'],
       ['plans\\b.pdf', 'plans\\b-v2.pdf'],
     ]));
-    expect(() => writeDxf(edited)).toThrow(/cannot be paired unambiguously/);
+    const text = writeDxf(edited);
+    expect(countDefs(text)).toBe(2);
+    expect(countOccurrences(text, 'plans\\a-v2.pdf')).toBe(1);
+    expect(countOccurrences(text, 'plans\\b-v2.pdf')).toBe(1);
+    expect(countOccurrences(text, 'plans\\a.pdf')).toBe(0);
+    expect(countOccurrences(text, 'plans\\b.pdf')).toBe(0);
+    expect(countOccurrences(text, '\r\n90\r\n7\r\n')).toBe(1);
+    expect(countOccurrences(text, '\r\n90\r\n9\r\n')).toBe(1);
+    const again = readDxf(text);
+    expect(Object.values(again.underlays ?? {})).toHaveLength(2);
+    expect(countDefs(writeDxf(again))).toBe(2);
+  }, TEST_TIMEOUT);
+});
+
+// PR #42 stable-binding fix — Codex P2 on the cleanup head: the
+// fail-closed check matched unmatched definitions by (type, page),
+// but the page is EDITABLE. An imported, dictionary-owned
+// PDFDEFINITION with NO placement, its page alone changed, left the
+// stale page-1 record beside the new page-2 one (1 -> 2 definitions);
+// path+page edits did the same (2 -> 4). Ruled fix: each modelled
+// definition binds to its source record by a STABLE identity that
+// editable fields cannot move — the source record handle the model
+// carries (UnderlayDefinition.handle, mirrored by the retained node's
+// sourceHandle), with the generated record corresponding to the model
+// definition the writer emitted it from. A modelled definition that
+// cannot be bound to its source record refuses the save atomically,
+// whatever page it has; a definition is never emitted beside a stale
+// predecessor.
+
+function buildUnplacedDxf(defs: readonly DefSpec[], opts: { dictionaryOwned?: boolean } = {}): string {
+  const lines: string[] = ['0', 'SECTION', '2', 'ENTITIES', '0', 'ENDSEC', '0', 'SECTION', '2', 'OBJECTS'];
+  if (opts.dictionaryOwned) {
+    lines.push('0', 'DICTIONARY', '5', 'C', '330', '0', '100', 'AcDbDictionary', '281', '1',
+      '3', 'ACAD_PDFDEFINITIONS', '350', 'D',
+      '3', 'JCAD_UNRELATED', '350', 'E');
+    lines.push('0', 'DICTIONARY', '5', 'D', '330', 'C', '100', 'AcDbDictionary', '281', '1',
+      ...defs.flatMap((def, i) => ['3', `floor ${def.page}`, '350', `${41 + i * 3}`]));
+    lines.push('0', 'XRECORD', '5', 'E', '330', 'C', '100', 'AcDbXrecord', '1', 'unrelated metadata - keep me', '90', '4242');
+  }
+  defs.forEach((def, i) => {
+    lines.push('0', 'PDFDEFINITION', '5', `${41 + i * 3}`, '330', opts.dictionaryOwned ? 'D' : 'C',
+      '100', 'AcDbObject', '100', 'AcDbPdfDefinition', '1', def.path, '2', def.page,
+      ...(def.extra ?? []).flatMap(([code, value]) => [code, value]));
+  });
+  lines.push('0', 'ENDSEC', '0', 'EOF');
+  return lines.join('\n');
+}
+
+const editDefs = (state: DrawingState, edit: (def: UnderlayDefinition) => UnderlayDefinition): DrawingState => ({
+  ...state,
+  underlays: Object.fromEntries(Object.entries(state.underlays ?? {}).map(([id, def]) => [id, edit(def)])),
+});
+const extraOf = (state: DrawingState, sourcePath: string): string | undefined =>
+  Object.values(state.underlays ?? {}).find((d) => d.sourcePath === sourcePath)?.retainedGroups.find(([code]) => code === 90)?.[1];
+
+describe('underlay definition stable binding (PR #42 stable-binding fix)', () => {
+  it('(a) page-only edit of an unplaced dictionary-owned definition: exactly 1 definition with the new page, no stale record', () => {
+    const defs: readonly DefSpec[] = [{ path: 'plans\\floor.pdf', page: 'Page 1', extra: [['90', '7']] }];
+    const state = readDxf(buildUnplacedDxf(defs, { dictionaryOwned: true }));
+    expect(Object.values(state.underlays ?? {})).toHaveLength(1);
+    const edited = editDefs(state, (def) => ({ ...def, page: 'Page 2' }));
+    const text = writeDxf(edited);
+    expect(countDefs(text)).toBe(1);
+    expect(countOccurrences(text, '\r\n90\r\n7\r\n')).toBe(1);
+    const again = readDxf(text);
+    const reopened = Object.values(again.underlays ?? {});
+    expect(reopened).toHaveLength(1);
+    expect(reopened[0]!.sourcePath).toBe('plans\\floor.pdf');
+    expect(reopened[0]!.page).toBe('Page 2');
+    expect(countDefs(writeDxf(again))).toBe(1); // stable on the next pass too
+  }, TEST_TIMEOUT);
+
+  it('(b) path+page edit of an unplaced dictionary-owned definition: exactly 1 definition with the new values, no stale record', () => {
+    const defs: readonly DefSpec[] = [{ path: 'plans\\floor.pdf', page: 'Page 1', extra: [['90', '7']] }];
+    const state = readDxf(buildUnplacedDxf(defs, { dictionaryOwned: true }));
+    const edited = editDefs(state, (def) => ({ ...def, sourcePath: 'plans\\floor-v2.pdf', page: 'Page 2' }));
+    const text = writeDxf(edited);
+    expect(countDefs(text)).toBe(1);
+    expect(countOccurrences(text, 'plans\\floor-v2.pdf')).toBe(1);
+    expect(countOccurrences(text, 'plans\\floor.pdf')).toBe(0);
+    const again = readDxf(text);
+    const reopened = Object.values(again.underlays ?? {});
+    expect(reopened).toHaveLength(1);
+    expect(reopened[0]!.page).toBe('Page 2');
+    expect(countDefs(writeDxf(again))).toBe(1);
+  }, TEST_TIMEOUT);
+
+  it('(c) two unplaced dictionary-owned definitions with path+page edits: exactly 2 definitions with the new values and no stale record', () => {
+    const defs: readonly DefSpec[] = [
+      { path: 'plans\\a.pdf', page: 'Page 1', extra: [['90', '7']] },
+      { path: 'plans\\b.pdf', page: 'Page 2', extra: [['90', '9']] },
+    ];
+    const state = readDxf(buildUnplacedDxf(defs, { dictionaryOwned: true }));
+    expect(Object.values(state.underlays ?? {})).toHaveLength(2);
+    const edited = editDefs(state, (def) => def.sourcePath === 'plans\\a.pdf'
+      ? { ...def, sourcePath: 'plans\\a-v2.pdf', page: 'Page 3' }
+      : { ...def, sourcePath: 'plans\\b-v2.pdf', page: 'Page 4' });
+    const text = writeDxf(edited);
+    expect(countDefs(text)).toBe(2);
+    expect(countOccurrences(text, 'plans\\a-v2.pdf')).toBe(1);
+    expect(countOccurrences(text, 'plans\\b-v2.pdf')).toBe(1);
+    expect(countOccurrences(text, 'plans\\a.pdf')).toBe(0);
+    expect(countOccurrences(text, 'plans\\b.pdf')).toBe(0);
+    // Each definition keeps its OWN retained extras (no cross-merge).
+    const again = readDxf(text);
+    expect(Object.values(again.underlays ?? {})).toHaveLength(2);
+    expect(extraOf(again, 'plans\\a-v2.pdf')).toBe('7');
+    expect(extraOf(again, 'plans\\b-v2.pdf')).toBe('9');
+    expect(Object.values(again.underlays ?? {}).map((d) => d.page).sort()).toEqual(['Page 3', 'Page 4']);
+    expect(countDefs(writeDxf(again))).toBe(2);
+  }, TEST_TIMEOUT);
+
+  it('page swap between two unplaced definitions of one file: stable identity beats the content key, extras stay with their own definition', () => {
+    // Same path, pages exchanged. The (kind, path, page) content key
+    // pairs each generated record with the OTHER definition's retained
+    // record and would swap their extras; the source-handle binding
+    // keeps each definition's extras with its own record.
+    const defs: readonly DefSpec[] = [
+      { path: 'plans\\floor.pdf', page: 'Page 1', extra: [['90', '7']] },
+      { path: 'plans\\floor.pdf', page: 'Page 2', extra: [['90', '9']] },
+    ];
+    const state = readDxf(buildUnplacedDxf(defs));
+    const before = Object.values(state.underlays ?? {});
+    const edited = editDefs(state, (def) => ({ ...def, page: def.page === 'Page 1' ? 'Page 2' : 'Page 1' }));
+    expect(before.map((d) => d.page).sort()).toEqual(['Page 1', 'Page 2']);
+    const text = writeDxf(edited);
+    expect(countDefs(text)).toBe(2);
+    const again = readDxf(text);
+    const reopened = Object.values(again.underlays ?? {});
+    expect(reopened).toHaveLength(2);
+    const byExtra = new Map(reopened.map((d) => [d.retainedGroups.find(([code]) => code === 90)?.[1], d.page]));
+    expect(byExtra.get('7')).toBe('Page 2'); // the Page-1 definition (extra 7) moved to Page 2
+    expect(byExtra.get('9')).toBe('Page 1'); // the Page-2 definition (extra 9) moved to Page 1
+  }, TEST_TIMEOUT);
+
+  it('a modelled definition whose source handle names no retained record cannot be bound: the save refuses atomically', () => {
+    const defs: readonly DefSpec[] = [{ path: 'plans\\floor.pdf', page: 'Page 1', extra: [['90', '7']] }];
+    const state = readDxf(buildUnplacedDxf(defs));
+    expect(Object.values(state.underlays ?? {})).toHaveLength(1);
+    // The model claims a source record (handle FF) the retained graph
+    // does not carry: there is nothing to bind this definition to, so
+    // emitting it beside the retained original would duplicate it.
+    const edited = editDefs(state, (def) => ({ ...def, handle: 'FF' }));
+    expect(() => writeDxf(edited)).toThrow(/cannot be bound to its source record/);
   }, TEST_TIMEOUT);
 });
