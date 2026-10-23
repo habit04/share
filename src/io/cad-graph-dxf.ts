@@ -162,6 +162,27 @@ function mergeAcadDstyle(retained: readonly CadGroup[], generated: readonly CadG
  * nearest surviving position in order. The final invariant asserts the
  * output's modeled groups equal the regenerated body exactly, and that
  * every retained unmodeled group was emitted exactly once.
+ *
+ * Round 3 (lead native gate at b6cdd69; findings R1 + R2 — everything
+ * else at that gate was GREEN): (R1) groups interior to a LEADER cluster
+ * belong to the cluster for ALL merge purposes. The genuine 271 just
+ * before a cluster's 303 is the cluster's tail; when the model removes
+ * the cluster, its whole interior is DROPPED with it, never re-anchored
+ * outside the cluster — round 2 collapsed that tail to the end of the
+ * body ('... 297=0 271=0 272=9 273=9') and AutoCAD 2027 discarded the
+ * whole drawing ('Premature end of object'), because 271 is grammatical
+ * only inside a cluster. The final invariant additionally asserts that
+ * no LEADER-interior code (271, 305) is emitted outside a 302...303
+ * cluster. A KEPT cluster retains its interior groups in place. (The
+ * round-2 sentence above about a removed section's trailing edge
+ * collapsing survives only for the inter-section gaps.)
+ * (R2) the tail walk no longer needs the 171/172 scalars to close it:
+ * those are emitted only with text content, so JCad's own cleared-text
+ * output carries tail 170/90 followed directly by the kept property
+ * segment — and a no-edit re-save of that output refused. The property
+ * segment now anchors on its own leading codes (91/291/296) whether or
+ * not 171/172 precede it; every refusal for genuinely unrecognized
+ * layouts is unchanged.
  */
 function surgicalMLeaderContextBody(
   retained: readonly CadGroup[],
@@ -357,7 +378,12 @@ function surgicalMLeaderContextBody(
         new Set([...TAIL_CODES, 302])) });
       gap = collectGap(new Set([...TAIL_CODES, 302]));
     }
-    push(gap, { kind: 'flat', key: 'tail', ...walkFlat(cur, TAIL_CODES, new Set(), new Set([302])) });
+    // Round 3 (R2): the property segment after the tail anchors on its
+    // own leading codes (91/291/296) — the tail walk ends there whether
+    // or not the 171/172 scalars (emitted only with text content) close
+    // the tail first. Without this, a body whose tail is 170/90 followed
+    // directly by the segment (JCad's own cleared-text output) refuses.
+    push(gap, { kind: 'flat', key: 'tail', ...walkFlat(cur, TAIL_CODES, new Set(), new Set([91, 291, 296, 302])) });
     gap = collectGap(new Set([302]));
     let clusterOrdinal = 0;
     while (cur.groups[cur.r]?.[0] === 302) {
@@ -408,6 +434,7 @@ function surgicalMLeaderContextBody(
   const out: CadGroup[] = [];
   const emittedModeled: CadGroup[] = [];
   let foreignEmitted = 0;
+  let foreignDropped = 0;
   const emitForeign = (groups: readonly CadGroup[]): void => {
     out.push(...groups);
     foreignEmitted += groups.length;
@@ -516,17 +543,21 @@ function surgicalMLeaderContextBody(
     out.push(...close.groups);
     emittedModeled.push(...close.groups);
   };
-  /** A retained section the model no longer carries: its interior
-   *  unmodeled groups cannot be placed unambiguously (refuse); its
-   *  trailing-edge groups collapse into the pending stream in order. */
-  const collapsibleOf = (section: Section): CadGroup[] => {
+  /** A retained section the model no longer carries. A FLAT section's
+   *  interior unmodeled groups cannot be placed unambiguously (refuse).
+   *  A CLUSTER's interior groups belong to the cluster (round 3, R1):
+   *  they are dropped with it and counted as dropped — never emitted
+   *  outside the cluster, where LEADER-interior codes are ungrammatical
+   *  (the pre-303 271 re-anchored at the body end made AutoCAD discard
+   *  the whole drawing). */
+  const collapsibleOf = (section: Section): { emit: CadGroup[]; dropped: number } => {
     if (section.kind === 'flat') {
       if (section.interior.length) throw unsupported();
-      return [];
+      return { emit: [], dropped: 0 };
     }
-    if (section.headerInterior.length || section.interior.length) throw unsupported();
-    for (const line of section.lines) if (line.interior.length || line.tail.length) throw unsupported();
-    return section.tail;
+    let dropped = section.headerInterior.length + section.interior.length + section.tail.length;
+    for (const line of section.lines) dropped += line.interior.length + line.tail.length;
+    return { emit: [], dropped };
   };
   const rank = (key: string): number => (key === 'preamble' ? 0
     : key === 'block' ? 1
@@ -544,7 +575,9 @@ function surgicalMLeaderContextBody(
     while (removedPtr < removed.length && rank(removed[removedPtr]!.section.key) < rankLimit) {
       const { section, index } = removed[removedPtr]!;
       emitForeign(retainedBody.gapBefore[index]!);
-      emitForeign(collapsibleOf(section));
+      const collapsed = collapsibleOf(section);
+      emitForeign(collapsed.emit);
+      foreignDropped += collapsed.dropped;
       removedPtr += 1;
     }
   };
@@ -561,11 +594,22 @@ function surgicalMLeaderContextBody(
   flushRemovedBefore(Number.POSITIVE_INFINITY);
   emitForeign(retainedBody.trail);
   // Final invariant (lead ruling): the output's modeled sections equal
-  // the regenerated modeled sections exactly, and no retained unmodeled
-  // group was dropped or duplicated.
+  // the regenerated modeled sections exactly, and every retained
+  // unmodeled group was emitted exactly once or — a removed cluster's
+  // interior, round 3 — counted as dropped with its cluster.
   if (emittedModeled.length !== regenerated.length
     || emittedModeled.some((group, i) => group[0] !== regenerated[i]![0] || group[1] !== regenerated[i]![1])) throw unsupported();
-  if (foreignEmitted !== retainedForeignTotal) throw unsupported();
+  if (foreignEmitted + foreignDropped !== retainedForeignTotal) throw unsupported();
+  // Round 3 (R1): no LEADER-interior code (271, 305 — codes the body
+  // grammar admits only inside a LEADER cluster) is ever emitted outside
+  // a 302...303 cluster.
+  const LEADER_INTERIOR_CODES: ReadonlySet<number> = new Set([271, 305]);
+  let clusterDepth = 0;
+  for (const group of out) {
+    if (group[0] === 302) clusterDepth += 1;
+    else if (group[0] === 303) clusterDepth = Math.max(0, clusterDepth - 1);
+    else if (clusterDepth === 0 && LEADER_INTERIOR_CODES.has(group[0])) throw unsupported();
+  }
   return out;
 }
 
