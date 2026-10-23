@@ -459,15 +459,24 @@ export class Drawing {
 
   /** Apply an active-space state transition as one undoable step. */
   transact(fn: (s: DrawingState) => DrawingState, intent?: CadGraphEditIntent): void {
-    // P17: hatch-association maintenance runs on the PROJECTED pair, so in
-    // paper space it maintains the layout's entity list — the same list
-    // the caller's fn saw — before the result is folded back.
-    this.commitTransition(this.project((s) => maintainHatchAssociations(s, fn(s), intent)), intent);
+    // P17: in paper space, hatch-association maintenance runs on the
+    // PROJECTED pair, so it maintains the layout's entity list — the
+    // same list the caller's fn saw — before the result is folded back.
+    // The constraint policy never touches layout lists (constraints
+    // reference model-space entities only), so this ordering is safe
+    // there. In model space the maintenance is deferred to
+    // commitTransition, AFTER the constraint policy settles geometry
+    // (round-2 P1: a policy-driven boundary move must refresh its hatch).
+    if (paperSpaceLayout(this.state)) {
+      this.commitTransition(this.project((s) => maintainHatchAssociations(s, fn(s), intent)), intent);
+      return;
+    }
+    this.commitTransition(fn(this.state), intent);
   }
 
   /** Apply a document-wide transition without projecting the active paper layout. */
   transactDrawing(fn: (s: DrawingState) => DrawingState, intent?: CadGraphEditIntent): void {
-    this.commitTransition(maintainHatchAssociations(this.state, fn(this.state), intent), intent);
+    this.commitTransition(fn(this.state), intent);
   }
 
   /** Shared preparation, bounded undo history and dirty notification for both transaction scopes. */
@@ -478,6 +487,17 @@ export class Drawing {
     // on refusal — before anything is assigned — so a refused edit leaves
     // no history entry, no dirty flag and no revision change.
     const enforced = enforceConstraintPolicy(this.state, state);
+    // P17 round-2 P1: hatch-association maintenance runs on the ENFORCED
+    // pair (pre-transaction state, post-policy state), so the refresh
+    // step's changed-id set is the FINAL one — the policy's own moves
+    // included. Before this ordering, maintenance ran on the transaction
+    // function's output and a boundary the POLICY moved (a concentric
+    // partner pulled along by a driver edit) left its hatch stale. In
+    // paper space this call is free: a projected transaction leaves the
+    // model entity list identity-unchanged, the first guard returns at
+    // once, and the projected pair was already maintained in transact —
+    // so no transaction is ever maintained twice.
+    const maintained = maintainHatchAssociations(this.state, enforced, intent);
     // RULING-P31 C2/C3: a transition that actually replaces the state invalidates any
     // present signature record, folded into the prepared next state BEFORE the history
     // push — same transition, exactly one history entry, undo restores record and
@@ -485,7 +505,7 @@ export class Drawing {
     // prepareDrawingTransition returns unchanged below) invalidates nothing; a refused
     // transition throws out of prepare and leaves the record untouched, because the
     // fold below only ever touched the discarded candidate.
-    const candidate = enforced === this.state ? enforced : invalidateSignatureRecord(enforced);
+    const candidate = maintained === this.state ? maintained : invalidateSignatureRecord(maintained);
     const next = prepareDrawingTransition(this.state, candidate, intent);
     if (next === this.state) return;
     this.undoStack.push(this.state);

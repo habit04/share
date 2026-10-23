@@ -10,6 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import { Drawing } from '../src/core/document';
 import type { Entity, HatchEntity, PolylineEntity, CircleEntity } from '../src/core/entities';
+import type { ConstraintSet } from '../src/core/constraints/model';
 import { blockTransform, mirrorEntityAcross, rotateEntity, scaleEntityBy, translateEntity } from '../src/core/entities';
 import {
   MAX_HATCH_ASSOC_REFS_PER_LOOP,
@@ -282,5 +283,42 @@ describe('hatch-assoc adapter: derivation, validation, bounded work', () => {
     const hatch = assocHatch('h1', [{ points: square(0, 0, 10), boundaryRefs: ['b1', 'bx'] }]);
     const out = remapHatchBoundaryRefs([hatch], new Map([['b1', 'b9']]))[0] as HatchEntity;
     expect(out.loops[0]!.boundaryRefs).toEqual(['b9', 'bx']);
+  });
+});
+
+describe('P17 round 2 (Codex P1): hatch refresh runs AFTER the constraint policy settles', () => {
+  // Codex PR #44 round 2, P1 (document.ts): association maintenance ran
+  // on the transaction function's output BEFORE enforceConstraintPolicy
+  // re-solved it, so when the POLICY moved a boundary (here: the driver
+  // circle's centre edit pulls the concentric boundary circle along), the
+  // hatch refreshed from the pre-policy geometry and stayed stale. The
+  // boundary circle (centre x = 10, radius 2) gives the hatch loop points
+  // at x = 12 / 8; moving the driver to x = 20 must take the loop to
+  // x = 22 / 18 in the SAME undo step.
+  const circle = (id: string, x: number, y: number, r: number): CircleEntity => ({
+    id, ...props, type: 'circle', center: { x, y }, radius: r,
+  });
+
+  it('a constraint-driven boundary move refreshes the hatch in the same undo step', () => {
+    const driver = circle('D', 10, 0, 3);
+    const bound = circle('B', 10, 0, 2);
+    const hatch = assocHatch('h1', [
+      { points: [{ x: 12, y: 0 }, { x: 8, y: 0 }], bulges: [1, 1], boundaryRefs: ['B'] },
+    ]);
+    const constraints: ConstraintSet = {
+      constraints: [
+        { id: 'con', kind: 'concentric', role: 'driving', refs: [{ entityId: 'D', anchor: 'whole' }, { entityId: 'B', anchor: 'whole' }] },
+      ],
+    };
+    const doc = new Drawing({ entities: [driver, bound, hatch], constraints, currentLayer: '0' });
+    doc.replaceEntities([{ ...driver, center: { x: 20, y: 0 } }]);
+    // The policy moved the boundary (the edit itself never touched it)…
+    expect((entityOf(doc, 'B') as CircleEntity).center).toEqual({ x: 20, y: 0 });
+    // …and the hatch followed it in the same step.
+    expect(hatchOf(doc, 'h1').loops[0]!.points).toEqual([{ x: 22, y: 0 }, { x: 18, y: 0 }]);
+    // One undo restores boundary and fill together.
+    expect(doc.undo()).toBe(true);
+    expect((entityOf(doc, 'B') as CircleEntity).center).toEqual({ x: 10, y: 0 });
+    expect(hatchOf(doc, 'h1').loops[0]!.points).toEqual([{ x: 12, y: 0 }, { x: 8, y: 0 }]);
   });
 });
