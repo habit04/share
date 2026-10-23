@@ -2435,3 +2435,130 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   out.push('0', 'EOF');
   return (out.join('\r\n') + '\r\n').replace('HANDSEED_PLACEHOLDER', (seed + 1n).toString(16).toUpperCase());
 }
+
+/**
+ * P17 R1: complete the boundary-side back-pointer of every associative
+ * hatch in a finished DXF text. An associative hatch (group 71 = 1) names
+ * its boundary objects (97 count + one 330 each), but AutoCAD keeps the
+ * link live only when each boundary object ALSO names the hatch in its
+ * {ACAD_REACTORS} group — without it AUDIT reports 'Boundary Missing a
+ * Reactor — Remove Associativity' and the hatch stops following boundary
+ * edits (the PR #44 native-gate finding; AutoCAD's own -HATCH writes
+ * exactly that back-pointer). This pass runs on the writer's final text
+ * (after preserveDxfCadGraph, so every handle is final and retained
+ * records are already spliced in) and unions the missing 330 entries
+ * into each same-owner boundary's reactors: existing entries are
+ * preserved, a hatch is never listed twice, a boundary shared by several
+ * hatches gains each hatch once, and a text that is already correct is
+ * returned byte-identical. Cross-owner boundary handles are skipped (O5:
+ * writeHatch saves those hatches non-associative, so they never carry
+ * 71 = 1 here; the owner comparison guards retained records as well).
+ * Edits are line-level splices, so every untouched line stays
+ * byte-identical.
+ */
+export function ensureAssociativeHatchReactors(text: string): string {
+  const sep = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(sep);
+  const pairCount = Math.floor(lines.length / 2);
+  const codeAt = (p: number): string => (lines[2 * p] ?? '').trim();
+  const valueAt = (p: number): string => lines[2 * p + 1] ?? '';
+  // canonicalCadHandle throws on non-handle values (e.g. the $HANDSEED
+  // placeholder a graph-less write still carries at this point); a value
+  // that is not a handle simply never matches.
+  const canon = (v: string): string | undefined => {
+    try { return canonicalCadHandle(v); } catch { return undefined; }
+  };
+  // Segment into records at each code-0 pair.
+  const starts: number[] = [];
+  for (let p = 0; p < pairCount; p++) if (codeAt(p) === '0') starts.push(p);
+  starts.push(pairCount);
+  interface Rec {
+    from: number; to: number; kind: string;
+    handlePair: number; handle?: string; owner?: string; entity: boolean;
+  }
+  const recs: Rec[] = [];
+  const byHandle = new Map<string, Rec>();
+  for (let s = 0; s + 1 < starts.length; s++) {
+    const from = starts[s]!, to = starts[s + 1]!;
+    const rec: Rec = { from, to, kind: valueAt(from).trim(), handlePair: -1, entity: false };
+    let depth = 0;
+    for (let p = from; p < to; p++) {
+      const code = codeAt(p), value = valueAt(p);
+      if ((code === '5' || code === '105') && rec.handlePair < 0) {
+        rec.handlePair = p;
+        rec.handle = canon(value);
+      } else if (code === '100' && value.trim() === 'AcDbEntity') rec.entity = true;
+      else if (code === '330' && depth === 0 && rec.owner === undefined) rec.owner = canon(value);
+      if (code === '102') {
+        const v = value.trim();
+        if (v.startsWith('{')) depth++;
+        else if (v === '}') depth = Math.max(0, depth - 1);
+      }
+    }
+    recs.push(rec);
+    if (rec.entity && rec.handle && !byHandle.has(rec.handle)) byHandle.set(rec.handle, rec);
+  }
+  // Boundary handle -> the associative hatches naming it, in file order.
+  const links = new Map<string, Array<{ hatch: Rec; raw: string }>>();
+  for (const hatch of recs) {
+    if (hatch.kind !== 'HATCH' || !hatch.handle) continue;
+    let associative = false;
+    const boundaries: string[] = [];
+    for (let p = hatch.from; p < hatch.to; p++) {
+      const code = codeAt(p);
+      if (code === '71' && !associative) associative = valueAt(p).trim() === '1';
+      else if (code === '97') {
+        const count = Number.parseInt(valueAt(p), 10);
+        if (!Number.isFinite(count)) continue;
+        for (let j = p + 1, got = 0; j < hatch.to && got < count; j++) {
+          if (codeAt(j) !== '330') break;
+          const b = canon(valueAt(j));
+          if (b !== undefined) boundaries.push(b);
+          got++;
+        }
+      }
+    }
+    if (!associative) continue;
+    const raw = valueAt(hatch.handlePair).trim();
+    for (const b of boundaries) {
+      if (b === hatch.handle) continue;
+      const list = links.get(b);
+      if (list) { if (!list.some((l) => l.hatch === hatch)) list.push({ hatch, raw }); }
+      else links.set(b, [{ hatch, raw }]);
+    }
+  }
+  if (links.size === 0) return text;
+  const edits: Array<{ atLine: number; lines: string[] }> = [];
+  for (const [boundary, hatches] of links) {
+    const rec = byHandle.get(boundary);
+    if (!rec || rec.handlePair < 0) continue;
+    const sameOwner = hatches.filter(({ hatch }) => hatch.owner !== undefined && hatch.owner === rec.owner);
+    if (sameOwner.length === 0) continue;
+    // Locate an existing {ACAD_REACTORS} block at brace depth 0.
+    let depth = 0, open = -1, close = -1;
+    const existing = new Set<string>();
+    for (let p = rec.from; p < rec.to; p++) {
+      const code = codeAt(p), value = valueAt(p);
+      if (code === '102') {
+        const v = value.trim();
+        if (v.startsWith('{')) { if (depth === 0 && v === '{ACAD_REACTORS') open = p; depth++; continue; }
+        if (v === '}') { depth = Math.max(0, depth - 1); if (open >= 0 && depth === 0) { close = p; break; } continue; }
+      }
+      if (open >= 0 && code === '330') { const v = canon(value); if (v !== undefined) existing.add(v); }
+    }
+    const add = sameOwner.filter(({ hatch }) => hatch.handle !== undefined && !existing.has(hatch.handle));
+    if (add.length === 0) continue;
+    if (open >= 0 && close >= 0) {
+      // Merge: append the missing hatch handles just before the closing 102.
+      edits.push({ atLine: 2 * close, lines: add.flatMap(({ raw }) => ['330', raw]) });
+    } else {
+      // No reactors block yet: create one immediately after the handle
+      // pair, the position the rest of the writer and the graph splice use.
+      edits.push({ atLine: 2 * (rec.handlePair + 1), lines: ['102', '{ACAD_REACTORS', ...add.flatMap(({ raw }) => ['330', raw]), '102', '}'] });
+    }
+  }
+  if (edits.length === 0) return text;
+  edits.sort((a, b) => b.atLine - a.atLine);
+  for (const edit of edits) lines.splice(edit.atLine, 0, ...edit.lines);
+  return lines.join(sep);
+}
