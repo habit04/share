@@ -222,6 +222,9 @@ export interface WriteExtras {
   tableBlocks: Map<TableEntity, { name: string; recordHandle: string; styleHandle: string; roundtrip?: TableRoundtripPlan }>;
   /** DIMASZ × DIMSCALE of the header style (leaders store their arrow size as an override when it differs). */
   arrowSize: number;
+  /** The drawing's preserved $MEASUREMENT (0 imperial / 1 metric); a hatch's group 41 is
+   *  expressed in this system, the model scale in imperial-table space (fitPatternToLines). */
+  measurement?: number;
 }
 
 export function emptyExtras(): WriteExtras {

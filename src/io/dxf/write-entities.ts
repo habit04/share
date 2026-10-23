@@ -106,7 +106,7 @@ function writeSpline(w: Writer, e: SplineEntity, owner: string): void {
   }
 }
 
-function writeHatch(w: Writer, e: HatchEntity, owner: string): void {
+function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtras): void {
   if (e.gradient) {
     const problem = hatchGradientDataProblem(e.gradient);
     if (problem) throw new Error(`Cannot preserve hatch gradient in DXF: ${problem}`);
@@ -145,7 +145,16 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string): void {
   if (!e.solid) {
     const lines = hatchPatternLines(e);
     w.pair(52, g.deg(e.angle));
-    w.pair(41, e.scale);
+    // Group 41 is expressed in the drawing's measurement system. A hatch whose lines are
+    // regenerated from the imperial pattern table (folded by fitPatternToLines, so no raw
+    // patternLines) carries its scale in table space: in a metric drawing
+    // ($MEASUREMENT = 1), whose definitions are the ISO ones at 25.4x, the authored scale
+    // is the model scale / 25.4 — writing the model scale verbatim (25.4 for a metric
+    // hatch authored at 1) makes AutoCAD's HATCHEDIT regenerate it 25.4x too coarse.
+    // A hatch keeping its raw file lines was never table-normalized: its scale is already
+    // the declared file-space value and is written verbatim.
+    const fromTable = !e.patternLines?.length && lines.length > 0;
+    w.pair(41, extras?.measurement === 1 && fromTable ? e.scale / 25.4 : e.scale);
     w.pair(77, e.double ? 1 : 0);
     w.pair(78, lines.length);
     for (const l of lines) {
@@ -234,7 +243,7 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
       writeSpline(w, e, owner);
       break;
     case 'hatch':
-      writeHatch(w, e, owner);
+      writeHatch(w, e, owner, extras);
       break;
     case 'leader':
       // P18: only a mleader carrying modeled native data writes natively;

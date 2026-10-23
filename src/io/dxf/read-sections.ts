@@ -60,6 +60,7 @@ export function readHeaderSection(pairs: Pair[], from: number, to: number, heade
     return Number.isFinite(n) ? n : dflt;
   };
   ctx.dimStyle = dimStyleFromHeader(headerVars, STANDARD_DIMSTYLE);
+  ctx.measurement = Math.trunc(hnum('$MEASUREMENT', 0));
   const created = julianToDate(hnum('$TDCREATE', NaN));
   const saved = julianToDate(hnum('$TDUPDATE', NaN));
   ctx.fields = { ...(created ? { createDate: created } : {}), ...(saved ? { saveDate: saved } : {}), ...ctx.fields };
@@ -283,6 +284,7 @@ export function drawingHeader(headerVars: ReadonlyMap<string, Pair[]>, dimStyle:
     },
     ltscale: hnum('$LTSCALE', 1) || 1,
     ...(headerVars.has('$CELTSCALE') ? { celtscale: hnum('$CELTSCALE', 1) } : {}),
+    ...(headerVars.has('$MEASUREMENT') ? { measurement: Math.trunc(hnum('$MEASUREMENT', 0)) } : {}),
     ...(headerVars.has('$TEXTSTYLE') ? { textStyle: headerVars.get('$TEXTSTYLE')?.[0]?.value || 'Standard' } : {}),
     limits: { min: hpt('$LIMMIN', DEFAULT_HEADER.limits.min), max: hpt('$LIMMAX', DEFAULT_HEADER.limits.max) },
     pdmode: Math.trunc(hnum('$PDMODE', 0)),

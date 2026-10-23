@@ -102,6 +102,10 @@ export interface ReadContext {
    *  ordinals into the model-space entity list, which only exists after the
    *  ENTITIES section has been read. */
   constraintsRaw?: string;
+  /** Source $MEASUREMENT (0 = imperial, 1 = metric), set by the HEADER section reader.
+   *  In a metric file the stored pattern definitions are the ISO ones, at 25.4x the
+   *  imperial table JCad fits against (see fitPatternToLines' unit factor). */
+  measurement?: number;
 }
 
 /**

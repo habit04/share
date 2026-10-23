@@ -191,7 +191,7 @@ function readHatchGradient(o: Obj): HatchGradient | undefined {
   };
 }
 
-function readHatch(o: Obj, base: ReturnType<typeof commonProps>): HatchEntity | null {
+function readHatch(o: Obj, base: ReturnType<typeof commonProps>, ctx: ReadContext): HatchEntity | null {
   const gradient = readHatchGradient(o);
   const c = new Cursor(afterSubclass(o, 'AcDbHatch'));
   let pattern = 'SOLID';
@@ -265,7 +265,9 @@ function readHatch(o: Obj, base: ReturnType<typeof commonProps>): HatchEntity | 
   if (loops.length === 0) return null;
   const isSolid = solid || /^SOLID$/i.test(pattern);
   // The definition lines in the file are authoritative (ISO scale, double hatches, custom patterns).
-  const fit = isSolid ? { angle, scale } : fitPatternToLines(findPattern(pattern), angle, scale, lines, dbl);
+  // In a metric drawing ($MEASUREMENT = 1) the stored definitions are the ISO ones, at 25.4x
+  // the imperial table: the fit judges the declared scale in the file's own system.
+  const fit = isSolid ? { angle, scale } : fitPatternToLines(findPattern(pattern), angle, scale, lines, dbl, ctx.measurement === 1 ? 25.4 : 1);
   return {
     ...base,
     type: 'hatch',
@@ -452,7 +454,7 @@ export function readEntityObj(o: Obj, ctx: ReadContext): Entity | null {
     case 'SPLINE':
       return readSpline(o, base);
     case 'HATCH':
-      return readHatch(o, base);
+      return readHatch(o, base, ctx);
     case 'LEADER':
       return readLeader(o, base, ctx);
     case 'MULTILEADER':
