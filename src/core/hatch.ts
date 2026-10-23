@@ -309,7 +309,15 @@ export function fitPatternToLines(
   if (!pattern || !pattern.lines.length || double || lines.length !== pattern.lines.length) return { angle, scale, patternLines: [...lines] };
   const t0 = pattern.lines[0]!;
   const unit = g.len(t0.offset);
-  const eff = unit > 1e-12 ? g.len(lines[0]!.offset) / unit : scale;
+  const derived = unit > 1e-12 ? g.len(lines[0]!.offset) / unit : scale;
+  // The declared scale (DXF group 41 / the DWG pattern scale) is the exact authored value;
+  // the derived ratio comes from definition-line geometry that has passed through the
+  // writer's 10-decimal text format, which costs ~5e-10 relative on small offset components.
+  // When the two agree within the fit tolerance used below, keep the declared value so the
+  // scale round-trips exactly (74757b90: 1 came back as 0.9999999995). A genuine disagreement
+  // — an ISO file whose lines run 25.4x the table at declared scale 1 — is far outside the
+  // tolerance and still derives.
+  const eff = Number.isFinite(scale) && scale > 0 && Math.abs(derived - scale) <= 1e-6 * Math.max(1, Math.abs(scale)) ? scale : derived;
   const effAngle = g.normAngle(lines[0]!.angle - g.rad(t0.angle));
   const origin = g.sub(lines[0]!.base, g.rotate(g.scale(t0.origin, eff), effAngle));
   const expect = worldPatternLines(pattern, effAngle, eff, origin);
