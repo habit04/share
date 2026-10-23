@@ -1433,9 +1433,16 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   const retainedModelGeometry = (node: CadNode) => node.section === 'ENTITIES' && (!node.anchor || node.anchor.kind === 'raw') && Number(value(node, 67)) !== 1 && ['3DFACE', '3DSOLID', 'REGION', 'BODY'].includes(node.type);
   const sourceGroups = (node: CadNode, selected?: ReadonlySet<number>): CadGroup[] => {
     const references = new Map((node.references ?? []).map(ref => [ref.groupIndex, ref]));
+    // recordsOf takes a record's handle from its FIRST group 5 (first 105
+    // for DIMSTYLE); only that group is the record's identity. Any later
+    // 5/105 is payload data — a SORTENTSTABLE's per-entry sort handles are
+    // group 5s — and passes through verbatim: rewriting them onto the
+    // record's own handle collapsed every sort handle onto the table handle
+    // (duplicate keys in AutoCAD AUDIT; Hub task 1ca25d02).
+    const identityIndex = node.type === 'HEADER' ? -1 : node.groups.findIndex(([code]) => code === (node.type === 'DIMSTYLE' ? 105 : 5));
     return node.groups.flatMap(([code, raw], index): CadGroup[] => {
       if (selected && !selected.has(index)) return [];
-      if (node.type !== 'HEADER' && (code === 5 || code === 105)) return [[code, nodeHandles.get(node.id)!]];
+      if (index === identityIndex) return [[code, nodeHandles.get(node.id)!]];
       if (polyfaceOwnerIndices.get(node.id) === index) {
         const parent = polyfaceOwners.get(node.id), owner = parent ? nodeHandles.get(parent) : modelOwner;
         if (!owner) throw new CadGraphError('dependency', 'Retained polyface has no exported owner.');
