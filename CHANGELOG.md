@@ -11,6 +11,73 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-10-23
+
+### Upgrade notes
+
+- Windows x64 feature update from v0.6.2, adding opt-in plugin isolation, native
+  DXF tables and multileaders, and sheet-set/data-link foundations. Review the
+  scope limits below before using native interchange or linked data.
+
+### Added
+
+- Plugins can opt into an isolated worker and declare the capabilities they
+  need. The host checks every operation, bounds pending calls and file grants,
+  and revokes access when the plugin unloads. Approval binds the plugin's
+  manifest, code and policy; changed files or permissions require a new trust
+  decision. Legacy plugins remain trusted page code unless they opt in.
+- DXF export writes editable native `ACAD_TABLE` entities instead of an INSERT
+  picture carrying JCad-only cell data. Supported R2000 and newer cell storage
+  retains long text and accounts for multiline row heights. Existing table
+  extension dictionaries and unrelated retained data are preserved; ambiguous
+  layouts refuse saving instead of replaying stale cell data.
+- Supported native `MULTILEADER` entities retain MTEXT or resolved block content,
+  block-attribute values, styles and additional annotation-scale contexts on DXF
+  export. Move, rotate, scale and mirror update every context placement. Cleared
+  text and removed leader paths stay removed across repeated saves. Removing a
+  complete leader section also removes data belonging to it. Unmodeled data in
+  retained sections is preserved where its placement remains unambiguous;
+  otherwise the save refuses.
+- Sheet-set models and host APIs keep drawing/layout links, report missing or
+  ambiguous targets, support JCad JSON and a bounded DST XML subset, and supply
+  sheet values to fields. These are foundations rather than a complete Sheet Set
+  Manager or a claim of full native DST compatibility.
+- Data-link host APIs can refresh table cells from local CSV/TSV text as one
+  undoable edit, with bounded parsing and refusal of stale asynchronous reads.
+  Links are in-session only; refreshed cell contents remain ordinary table data.
+- Drawing-signature foundations preserve supplied signature records in memory,
+  compare a defined drawing-content digest and invalidate the record on an edit.
+  This does not create or authenticate a native drawing signature.
+
+### Validation
+
+- Replace five synthetic interchange fixtures with genuine AutoCAD R2018-format
+  saves for dimensions, images, MTEXT, linetypes and tables, with provenance and
+  regression assertions tied to the native files.
+
+### Known limitations
+
+- Existing DWG import limitations are unchanged: one validation drawing still
+  reports 99 dropped/simplified entries and 42 unsupported property groups.
+  These counts describe that drawing, not every DWG. Incomplete hatch boundaries
+  remain unfilled and identified in the import report. This update does not add
+  support for those records or claim complete DWG preservation.
+- A partial import cannot overwrite its source. Use Save As for a separate copy
+  and review the import report before continuing.
+- Plugin isolation is opt-in. Legacy trusted plugins retain their existing
+  authority; this update does not make arbitrary legacy plugins safe to trust.
+- Table formulas, advanced borders and fills remain unmodeled. Multileaders
+  without supported native data retain the reported legacy LEADER/MTEXT fallback;
+  this is not universal DWG multileader or table compatibility.
+- Data-link records are not saved in DXF or DWG and do not support Excel workbook
+  links. The DST subset does not preserve sheet IDs or cross-subset interleaving;
+  retained XML fragments may move to set level. Native DST acceptance remains
+  separate from the JSON/XML subset tests.
+- Signature records are not persisted to DXF or DWG. Digest matching covers a
+  defined subset of drawing content, not the signature payload or every retained
+  record; it is not certificate-based authenticity verification. Drawing
+  signatures are separate from Windows installer signing.
+
 ## [0.6.2] - 2026-10-21
 
 ### Upgrade notes
@@ -1466,7 +1533,8 @@ First release.
 
 - Renamed the application to JCad Electrical.
 
-[Unreleased]: https://github.com/habit04/share/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/habit04/share/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/habit04/share/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/habit04/share/compare/v0.6.1...v0.6.2
 [0.6.0]: https://github.com/habit04/share/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/habit04/share/compare/v0.5.1...v0.5.2
