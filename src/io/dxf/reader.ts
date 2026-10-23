@@ -253,6 +253,32 @@ function blockRecordNamesOf(pairs: readonly Pair[]): Map<string, string> {
 }
 
 /**
+ * The canonical handles of every HATCH record in the file (P17 round 6):
+ * scanned from the BLOCKS and ENTITIES sections up front, like the other
+ * pre-scans, so the set covers hatches in any space or block definition
+ * and HATCH records no entity list models (retained raw records). A
+ * boundary handle in this set names a hatch wherever the hatch lives;
+ * keys are canonical (canonicalCadHandle), so a spelling like 00050
+ * matches the hatch whose handle is 50.
+ */
+function hatchHandlesOf(pairs: readonly Pair[]): Set<string> {
+  const out = new Set<string>();
+  for (let i = 0; i + 1 < pairs.length; i += 1) {
+    if (pairs[i]!.code !== 0 || pairs[i]!.value !== 'SECTION') continue;
+    const name = pairs[i + 1]!.value;
+    if (name !== 'BLOCKS' && name !== 'ENTITIES') continue;
+    let j = i + 2;
+    while (j < pairs.length && !(pairs[j]!.code === 0 && pairs[j]!.value === 'ENDSEC')) j += 1;
+    for (const o of objects(pairs as Pair[], i + 2, j)) {
+      if (o.kind !== 'HATCH' || !has(o, 5)) continue;
+      try { out.add(canonicalCadHandle(str(o, 5).trim())); } catch { /* not a handle spelling: never a key */ }
+    }
+    i = j;
+  }
+  return out;
+}
+
+/**
  * The OBJECTS DICTIONARY records and ACDB_MLEADEROBJECTCONTEXTDATA_CLASS records,
  * by upper-case handle (P18 S3-D, RULING-P18-S3-D (1)(i)): AutoCAD stores a
  * multileader's additional annotative contexts as objects behind the entity's
@@ -308,6 +334,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     mleaderStyles: mleaderStyleNamesOf(pairs),
     mleaderStyleValues: mleaderStyleValuesOf(pairs),
     blockRecordNames: blockRecordNamesOf(pairs),
+    hatchHandles: hatchHandlesOf(pairs),
     mleaderContextData: mleaderContextDataOf(pairs),
     consumedBlocks: new Set(),
     notes: opts.notes ?? [],

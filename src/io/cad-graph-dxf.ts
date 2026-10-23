@@ -2455,6 +2455,21 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
  * 71 = 1 here; the owner comparison guards retained records as well).
  * Edits are line-level splices, so every untouched line stays
  * byte-identical.
+ *
+ * Round 6: the same pass also removes STALE reactor pointers. When a
+ * hatch is demoted in the written file (71 = 0 — the O5 rule, round-4
+ * disassociation, or the round-5/6 hatch-boundary demotion), reactor
+ * entries other records carry toward it (preserved from the input by
+ * the graph merge, or written by an earlier save) are never completed
+ * by the union above, but they are also not harmless: they claim a
+ * live association the file itself denies. Any 330 inside a depth-0
+ * {ACAD_REACTORS} block whose canonical handle names a HATCH record
+ * written 71 = 0 is spliced out; survivors keep their order, entries
+ * naming still-active (71 = 1) hatches and all unrelated entries are
+ * untouched, and a block left with no entries at all is removed whole
+ * (unless this same pass is adding entries to it). Because the pass
+ * runs on the final text, every handle it compares is already the
+ * remapped output handle.
  */
 export function ensureAssociativeHatchReactors(text: string): string {
   const sep = text.includes('\r\n') ? '\r\n' : '\n';
@@ -2500,6 +2515,10 @@ export function ensureAssociativeHatchReactors(text: string): string {
   }
   // Boundary handle -> the associative hatches naming it, in file order.
   const links = new Map<string, Array<{ hatch: Rec; raw: string }>>();
+  // Round 6: canonical handles of the HATCH records this text writes
+  // 71 = 0 (demoted or never associative) — reactor pointers naming
+  // them are stale and are spliced out below.
+  const demotedHatches = new Set<string>();
   for (const hatch of recs) {
     if (hatch.kind !== 'HATCH' || !hatch.handle) continue;
     let associative = false;
@@ -2518,7 +2537,10 @@ export function ensureAssociativeHatchReactors(text: string): string {
         }
       }
     }
-    if (!associative) continue;
+    if (!associative) {
+      demotedHatches.add(hatch.handle);
+      continue;
+    }
     const raw = valueAt(hatch.handlePair).trim();
     for (const b of boundaries) {
       if (b === hatch.handle) continue;
@@ -2527,16 +2549,15 @@ export function ensureAssociativeHatchReactors(text: string): string {
       else links.set(b, [{ hatch, raw }]);
     }
   }
-  if (links.size === 0) return text;
-  const edits: Array<{ atLine: number; lines: string[] }> = [];
-  for (const [boundary, hatches] of links) {
-    const rec = byHandle.get(boundary);
-    if (!rec || rec.handlePair < 0) continue;
-    const sameOwner = hatches.filter(({ hatch }) => hatch.owner !== undefined && hatch.owner === rec.owner);
-    if (sameOwner.length === 0) continue;
-    // Locate an existing {ACAD_REACTORS} block at brace depth 0.
+  /** A record's {ACAD_REACTORS} block at brace depth 0: its opener and
+   *  closer pair indices and its 330 entries, in file order. */
+  interface ReactorBlock {
+    open: number; close: number;
+    entries: Array<{ pair: number; canon?: string }>;
+  }
+  const reactorBlockOf = (rec: Rec): ReactorBlock | null => {
     let depth = 0, open = -1, close = -1;
-    const existing = new Set<string>();
+    const entries: Array<{ pair: number; canon?: string }> = [];
     for (let p = rec.from; p < rec.to; p++) {
       const code = codeAt(p), value = valueAt(p);
       if (code === '102') {
@@ -2544,21 +2565,63 @@ export function ensureAssociativeHatchReactors(text: string): string {
         if (v.startsWith('{')) { if (depth === 0 && v === '{ACAD_REACTORS') open = p; depth++; continue; }
         if (v === '}') { depth = Math.max(0, depth - 1); if (open >= 0 && depth === 0) { close = p; break; } continue; }
       }
-      if (open >= 0 && code === '330') { const v = canon(value); if (v !== undefined) existing.add(v); }
+      if (open >= 0 && code === '330') entries.push({ pair: p, canon: canon(value) });
     }
+    return open >= 0 && close >= 0 ? { open, close, entries } : null;
+  };
+  const edits: Array<{ atLine: number; lines: string[] }> = [];
+  // Records whose EXISTING reactor block gains entries in this pass:
+  // their block shell must survive the cleanup below even if every
+  // pre-existing entry in it is stale.
+  const mergeTargets = new Set<Rec>();
+  for (const [boundary, hatches] of links) {
+    const rec = byHandle.get(boundary);
+    if (!rec || rec.handlePair < 0) continue;
+    const sameOwner = hatches.filter(({ hatch }) => hatch.owner !== undefined && hatch.owner === rec.owner);
+    if (sameOwner.length === 0) continue;
+    const block = reactorBlockOf(rec);
+    const existing = new Set(block?.entries.flatMap((e) => (e.canon !== undefined ? [e.canon] : [])) ?? []);
     const add = sameOwner.filter(({ hatch }) => hatch.handle !== undefined && !existing.has(hatch.handle));
     if (add.length === 0) continue;
-    if (open >= 0 && close >= 0) {
+    if (block) {
       // Merge: append the missing hatch handles just before the closing 102.
-      edits.push({ atLine: 2 * close, lines: add.flatMap(({ raw }) => ['330', raw]) });
+      mergeTargets.add(rec);
+      edits.push({ atLine: 2 * block.close, lines: add.flatMap(({ raw }) => ['330', raw]) });
     } else {
       // No reactors block yet: create one immediately after the handle
       // pair, the position the rest of the writer and the graph splice use.
       edits.push({ atLine: 2 * (rec.handlePair + 1), lines: ['102', '{ACAD_REACTORS', ...add.flatMap(({ raw }) => ['330', raw]), '102', '}'] });
     }
   }
-  if (edits.length === 0) return text;
-  edits.sort((a, b) => b.atLine - a.atLine);
-  for (const edit of edits) lines.splice(edit.atLine, 0, ...edit.lines);
+  // Round 6: splice out the stale entries — 330s inside a depth-0
+  // {ACAD_REACTORS} block whose canonical handle names a demoted
+  // (71 = 0) hatch. A block whose entries are ALL stale is removed
+  // whole, unless the union above is adding live entries to it.
+  const deletions: Array<{ atLine: number; count: number }> = [];
+  if (demotedHatches.size > 0) {
+    for (const rec of recs) {
+      const block = reactorBlockOf(rec);
+      if (!block) continue;
+      const stale = block.entries.filter((e) => e.canon !== undefined && demotedHatches.has(e.canon));
+      if (stale.length === 0) continue;
+      if (stale.length === block.entries.length && !mergeTargets.has(rec)) {
+        deletions.push({ atLine: 2 * block.open, count: 2 * (block.close - block.open + 1) });
+      } else {
+        for (const e of stale) deletions.push({ atLine: 2 * e.pair, count: 2 });
+      }
+    }
+  }
+  if (edits.length === 0 && deletions.length === 0) return text;
+  // Insertions and deletions share one descending pass: every anchor
+  // refers to the ORIGINAL line numbering, and no two operations can
+  // anchor on the same line (an insertion targets a block's closing
+  // 102 or a handle pair; deletions target entry pairs strictly inside
+  // a block, or a whole block this pass adds nothing to).
+  const ops: Array<{ atLine: number; count: number; lines: string[] }> = [
+    ...deletions.map((d) => ({ atLine: d.atLine, count: d.count, lines: [] as string[] })),
+    ...edits.map((e) => ({ atLine: e.atLine, count: 0, lines: e.lines })),
+  ];
+  ops.sort((a, b) => b.atLine - a.atLine || b.count - a.count);
+  for (const op of ops) lines.splice(op.atLine, op.count, ...op.lines);
   return lines.join(sep);
 }

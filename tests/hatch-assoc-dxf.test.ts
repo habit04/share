@@ -1086,3 +1086,280 @@ describe('P17 round 5 (lead ruling): a HATCH is never an active boundary — DEM
     expect(reopened.loops[0]!.boundaryRefs).toBeUndefined();
   });
 });
+
+describe('P17 round 6 (lead ruling, final): cross-space demotion, stale-reactor cleanup, canonical handles', () => {
+  // Codex closed round 5's same-list cases at 7227319 but found the
+  // cross-space / cleanup gaps. (1) Round 5's read check resolves
+  // 97/330 only against hatches in the SAME entity list: a model-space
+  // hatch naming a HATCH that lives in a block definition — or a
+  // retained raw HATCH record — still imports LIVE through its local
+  // links. The fix is a drawing-wide canonical lookup of hatch handles
+  // (every HATCH record in the file), consulted alongside the same-list
+  // check. (2) When a hatch demotes, reactor pointers OTHER records
+  // carry to it (preserved from the input by the graph merge) are never
+  // removed: the shared boundary keeps naming the demoted hatch. The
+  // final-text reactor pass must drop pointers to 71 = 0 hatches while
+  // keeping active and unrelated reactors, order intact. (3) The new
+  // lookup keys handles canonically: 00050 matches 50. At 7227319 cases
+  // (a)-(d) fail; the controls (e) hold.
+  const props = { layer: '0', color: 'ByLayer' as const };
+  const sq = (x: number, y: number, s: number) => [
+    { x, y }, { x: x + s, y }, { x: x + s, y: y + s }, { x, y: y + s },
+  ];
+  const boundaryRefListsOf = (rec: { groups: Array<[number, string]> }): string[][] => {
+    const out: string[][] = [];
+    rec.groups.forEach(([c, v], i) => {
+      if (c !== 97) return;
+      const count = Number(v);
+      out.push(rec.groups.slice(i + 1, i + 1 + count).filter(([cc]) => cc === 330).map(([, vv]) => vv));
+    });
+    return out;
+  };
+  const reactorsOf = (rec: { groups: Array<[number, string]> }): string[] => {
+    const out: string[] = [];
+    let inside = false;
+    for (const [c, v] of rec.groups) {
+      if (c === 102 && v === '{ACAD_REACTORS') inside = true;
+      else if (c === 102 && v === '}' && inside) inside = false;
+      else if (inside && c === 330) out.push(v);
+    }
+    return out;
+  };
+  const squarePairs = (x: number, y = 0, s = 10): Pair[] => [
+    [10, x], [20, y], [10, x + s], [20, y], [10, x + s], [20, y + s], [10, x], [20, y + s],
+  ];
+  const polyRecord = (handle: string, x = 0, reactors: string[] = []): Pair[] => [
+    [0, 'LWPOLYLINE'], [5, handle],
+    ...(reactors.length ? [[102, '{ACAD_REACTORS'], ...reactors.map((r): Pair => [330, r]), [102, '}']] as Pair[] : []),
+    [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbPolyline'],
+    [90, 4], [70, 1], ...squarePairs(x),
+  ];
+  const hatchRecord = (handle: string, refs: string[], x = 0, associative = true): Pair[] => [
+    [0, 'HATCH'], [5, handle], [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbHatch'],
+    [10, 0], [20, 0], [30, 0], [210, 0], [220, 0], [230, 1],
+    [2, 'SOLID'], [70, 1], [71, associative ? 1 : 0], [91, 1],
+    [92, 3], [72, 0], [73, 1], [93, 4], ...squarePairs(x),
+    [97, refs.length], ...refs.map((r): Pair => [330, r]),
+    [75, 0], [76, 1], [98, 0],
+  ];
+  const dxfFile = (entities: Pair[], blocks: Pair[] = []): string => [
+    [0, 'SECTION'], [2, 'HEADER'], [9, '$ACADVER'], [1, 'AC1015'], [0, 'ENDSEC'],
+    ...(blocks.length ? [[0, 'SECTION'], [2, 'BLOCKS'], ...blocks, [0, 'ENDSEC']] as Pair[] : []),
+    [0, 'SECTION'], [2, 'ENTITIES'], ...entities,
+    [0, 'ENDSEC'], [0, 'EOF'],
+  ].flat().join('\n');
+  const blockDef = (name: string, inner: Pair[]): Pair[] => [
+    [0, 'BLOCK'], [5, '40'], [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbBlockBegin'],
+    [2, name], [70, 0], [10, 0], [20, 0], [3, name], [1, ''],
+    ...inner,
+    [0, 'ENDBLK'], [5, '41'], [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbBlockEnd'],
+  ];
+  const modelHatchOf = (state: DrawingState): HatchEntity =>
+    state.entities.find((e): e is HatchEntity => e.type === 'hatch')!;
+  const namesHatchReport = (state: DrawingState): boolean =>
+    importReportOf(state)?.items.some((item) => /names a hatch as a boundary/.test(item.reason)) ?? false;
+
+  it('(a) CROSS-SPACE: a model hatch naming a HATCH inside a block definition imports inert; moving the local boundary leaves the fill unchanged; re-save stays inert', () => {
+    const text = dxfFile(
+      [...polyRecord('50'), ...hatchRecord('51', ['50', '60'])],
+      blockDef('BLK', hatchRecord('60', [], 100, false)),
+    );
+    const state = readDxf(text);
+    // The target hatch IS modelled — in its own list (the block def).
+    const blockHatch = state.blocks['BLK']!.entities.find((e) => e.type === 'hatch');
+    expect(blockHatch).toBeDefined();
+    const a = modelHatchOf(state);
+    expect(a.associative).toBe(false);
+    expect(a.loops[0]!.boundaryRefs).toBeUndefined();
+    expect(a.loops[0]!.boundaryHandles).toEqual(['50', '60']);
+    expect(namesHatchReport(state)).toBe(true);
+    // Moving the local boundary must not change the fill.
+    const doc = new Drawing(state);
+    const fillBefore = modelHatchOf(doc.snapshot).loops.map((l) => l.points.map((p) => ({ ...p })));
+    const polyEnt = doc.snapshot.entities.find((e): e is PolylineEntity => e.type === 'polyline')!;
+    doc.replaceEntities([{ ...polyEnt, points: sq(100, 100, 10) }]);
+    expect(modelHatchOf(doc.snapshot).loops.map((l) => l.points)).toEqual(fillBefore);
+    // Re-save stays inert, and the block hatch's written handle never
+    // enters A's list (the local link stays, inert).
+    const recs = records(writeDxf(state));
+    const hatchRecs = recs.filter((r) => r.kind === 'HATCH');
+    const recA = hatchRecs.find((r) => group(r, 71) === '0' && boundaryRefListsOf(r).flat().length > 0)!;
+    const recBlock = hatchRecs.find((r) => r !== recA && !boundaryRefListsOf(r).flat().length)!;
+    const polyRec = recs.find((r) => r.kind === 'LWPOLYLINE')!;
+    expect(recA).toBeDefined();
+    expect(recBlock).toBeDefined();
+    expect(boundaryRefListsOf(recA)).toEqual([[group(polyRec, 5)]]);
+    expect(boundaryRefListsOf(recA).flat()).not.toContain(group(recBlock, 5));
+    const reopened = modelHatchOf(readDxf(writeDxf(state)));
+    expect(reopened.associative).toBe(false);
+    expect(reopened.loops[0]!.boundaryRefs).toBeUndefined();
+  });
+
+  it('(b) UNMODELLED RECORD: a model hatch naming a HATCH no entity list models (inside a *D dimension-picture block) imports inert and re-saves inert', () => {
+    // A HATCH inside a *D block is converted NOWHERE: not into model
+    // space, not into a stored block definition, not into a layout.
+    // (In this build its picture record does not enter the CAD graph
+    // either — *D pictures are regenerated from their dimensions — so
+    // nothing of it is written back; that is precisely why the read
+    // lookup is built from the source records: retention status must
+    // not change the verdict. The graph-retained variant of the shape
+    // is the writer-side hatchAnchorHandles case, round 5.) A hatch
+    // naming it still names a HATCH in the file.
+    const dimBlock: Pair[] = [
+      [0, 'BLOCK'], [5, '40'], [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbBlockBegin'],
+      [2, '*D1'], [70, 0], [10, 0], [20, 0], [3, '*D1'], [1, ''],
+      ...hatchRecord('62', [], 100, false),
+      [0, 'ENDBLK'], [5, '41'], [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbBlockEnd'],
+    ];
+    const text = dxfFile([...polyRecord('50'), ...hatchRecord('51', ['50', '62'])], dimBlock);
+    const state = readDxf(text);
+    // The named hatch is modelled NOWHERE.
+    const allHatches = [...state.entities, ...Object.values(state.blocks).flatMap((b) => b.entities)]
+      .filter((e) => e.type === 'hatch');
+    expect(allHatches).toHaveLength(1);
+    const a = modelHatchOf(state);
+    expect(a.associative).toBe(false);
+    expect(a.loops[0]!.boundaryRefs).toBeUndefined();
+    // The raw link itself is retained on the loop (not lost, not live).
+    expect(a.loops[0]!.boundaryHandles).toEqual(['50', '62']);
+    expect(namesHatchReport(state)).toBe(true);
+    // Re-save: A stays 71 = 0 with only the local link emitted inert;
+    // the named handle enters no list (it names no emitted object).
+    const saved = writeDxf(state);
+    const recs = records(saved);
+    const hatchRecs = recs.filter((r) => r.kind === 'HATCH');
+    expect(hatchRecs).toHaveLength(1);
+    const recA = hatchRecs[0]!;
+    const polyRec = recs.find((r) => r.kind === 'LWPOLYLINE')!;
+    expect(group(recA, 71)).toBe('0');
+    expect(boundaryRefListsOf(recA)).toEqual([[group(polyRec, 5)]]);
+    const reopened = modelHatchOf(readDxf(saved));
+    expect(reopened.associative).toBe(false);
+    expect(reopened.loops[0]!.boundaryRefs).toBeUndefined();
+  });
+
+  it('(c) STALE REACTORS: the shared boundary [113, 114] -> [114] once 113 demotes; unrelated reactors naming the active hatch survive; an emptied reactor block is removed whole', () => {
+    // Polyline 50 is shared by hatches 113 and 114 and its input
+    // reactors name both. 113 also names hatch 115, so 113 demotes on
+    // save; 114 stays active. Polyline 52 is nobody's boundary but
+    // carries the same input reactor pair (the unrelated-keep pin).
+    // LINE 64 reacts ONLY to 113: its block must disappear entirely.
+    // Polyline 53 belongs to 115 alone and gains its reactor from the
+    // completion pass — cleanup and completion compose in one save.
+    const lineRecord: Pair[] = [
+      [0, 'LINE'], [5, '64'],
+      [102, '{ACAD_REACTORS'], [330, '113'], [102, '}'],
+      [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbLine'],
+      [10, 0], [20, 20], [11, 5], [21, 20],
+    ];
+    const text = dxfFile([
+      ...polyRecord('50', 0, ['113', '114']),
+      ...polyRecord('52', 30, ['113', '114']),
+      ...lineRecord,
+      ...hatchRecord('113', ['50', '115']),
+      ...hatchRecord('114', ['50']),
+      ...polyRecord('53', 60),
+      ...hatchRecord('115', ['53'], 60),
+    ]);
+    const saved = writeDxf(readDxf(text));
+    const recs = records(saved);
+    const hatchRecs = recs.filter((r) => r.kind === 'HATCH');
+    const demoted = hatchRecs.find((r) => group(r, 71) === '0')!;
+    const active = hatchRecs.filter((r) => group(r, 71) === '1');
+    expect(demoted).toBeDefined();
+    expect(active).toHaveLength(2);
+    // Identify written handles by role, not by source spelling.
+    const poly50 = recs.find((r) => r.kind === 'LWPOLYLINE' && boundaryRefListsOf(demoted).flat().includes(group(r, 5)!))!;
+    const h114 = active.find((r) => boundaryRefListsOf(r).flat().includes(group(poly50, 5)!))!;
+    const h115 = active.find((r) => r !== h114)!;
+    const poly53 = recs.find((r) => r.kind === 'LWPOLYLINE' && boundaryRefListsOf(h115).flat().includes(group(r, 5)!))!;
+    const poly52 = recs.filter((r) => r.kind === 'LWPOLYLINE').find((r) => r !== poly50 && r !== poly53)!;
+    const line = recs.find((r) => r.kind === 'LINE')!;
+    // The Codex pin: [113, 114] -> exactly [114], on both carriers.
+    expect(reactorsOf(poly50)).toEqual([group(h114, 5)]);
+    expect(reactorsOf(poly52)).toEqual([group(h114, 5)]);
+    // The demoted hatch's own list: the hatch handle is gone, the
+    // local link stays inert.
+    expect(boundaryRefListsOf(demoted)).toEqual([[group(poly50, 5)]]);
+    // Completion still lands for the other active hatch.
+    expect(reactorsOf(poly53)).toEqual([group(h115, 5)]);
+    // LINE 64's block named only the demoted hatch: removed whole.
+    expect(reactorsOf(line)).toEqual([]);
+    expect(line.groups.some(([c, v]) => c === 102 && v === '{ACAD_REACTORS')).toBe(false);
+    // A second generation keeps the cleaned state exactly: no record
+    // names the demoted hatch, the three single-reactor carriers
+    // remain, and LINE's block stays gone.
+    const recs2 = records(writeDxf(readDxf(saved)));
+    const demoted2 = recs2.find((r) => r.kind === 'HATCH' && group(r, 71) === '0')!;
+    expect(demoted2).toBeDefined();
+    for (const r of recs2) expect(reactorsOf(r)).not.toContain(group(demoted2, 5));
+    expect(recs2.filter((r) => r.kind === 'LWPOLYLINE' && reactorsOf(r).length === 1)).toHaveLength(3);
+    expect(recs2.find((r) => r.kind === 'LINE')!.groups.some(([c, v]) => c === 102 && v === '{ACAD_REACTORS')).toBe(false);
+  });
+
+  it('(d) CANONICALIZATION: naming another hatch by a zero-padded spelling (00050 vs 50) demotes exactly like the canonical spelling', () => {
+    const text = dxfFile([
+      ...polyRecord('4F'),
+      ...hatchRecord('50', ['4F'], 30),
+      ...hatchRecord('51', ['4F', '00050']),
+    ]);
+    const state = readDxf(text);
+    const hatches = state.entities.filter((e): e is HatchEntity => e.type === 'hatch');
+    expect(hatches).toHaveLength(2);
+    // B is the hatch that stays live with no raw handles; A is the other.
+    const b = hatches.find((h) => h.associative === true && h.loops[0]!.boundaryHandles === undefined)!;
+    const a = hatches.find((h) => h !== b)!;
+    expect(b).toBeDefined();
+    // A named B ('50') as '00050': demoted, whole list raw, reported.
+    expect(a.associative).toBe(false);
+    expect(a.loops[0]!.boundaryRefs).toBeUndefined();
+    expect(a.loops[0]!.boundaryHandles).toEqual(['4F', '00050']);
+    expect(namesHatchReport(state)).toBe(true);
+    // Write side: the retained padded handle canonicalizes to B, a
+    // hatch, so it is governed — never emitted; A stays 71 = 0, B
+    // stays live with its back-reactor.
+    const recs = records(writeDxf(state));
+    const hatchRecs = recs.filter((r) => r.kind === 'HATCH');
+    const recA = hatchRecs.find((r) => group(r, 71) === '0')!;
+    const recB = hatchRecs.find((r) => group(r, 71) === '1')!;
+    const polyRec = recs.find((r) => r.kind === 'LWPOLYLINE')!;
+    expect(recA).toBeDefined();
+    expect(recB).toBeDefined();
+    expect(boundaryRefListsOf(recA)).toEqual([[group(polyRec, 5)]]);
+    expect(boundaryRefListsOf(recA).flat()).not.toContain(group(recB, 5));
+    expect(reactorsOf(polyRec)).toEqual([group(recB, 5)]);
+  });
+
+  it('(e1) CONTROL: a model hatch naming a cross-space POLYLINE (not a hatch) is NOT demoted by the new lookup — the local link stays live, the foreign handle stays raw', () => {
+    const text = dxfFile(
+      [...polyRecord('50'), ...hatchRecord('51', ['50', '63'])],
+      blockDef('BLK', polyRecord('63', 100)),
+    );
+    const state = readDxf(text);
+    const a = modelHatchOf(state);
+    expect(a.associative).toBe(true);
+    const polyEnt = state.entities.find((e): e is PolylineEntity => e.type === 'polyline')!;
+    expect(a.loops[0]!.boundaryRefs).toEqual([polyEnt.id]);
+    expect(a.loops[0]!.boundaryHandles).toEqual(['63']);
+    expect(namesHatchReport(state)).toBe(false);
+  });
+
+  it('(e2) CONTROL: an ordinary cross-owner link keeps the round-2 O5 write posture — 71 = 0 with BOTH links emitted inert (unlike a hatch link, which is dropped)', () => {
+    const polyEnt = (id: string, x = 0): PolylineEntity => ({
+      id, ...props, type: 'polyline', points: sq(x, 0, 10), closed: true,
+    });
+    const hatch: HatchEntity = {
+      id: 'h1', ...props, type: 'hatch', pattern: 'SOLID', solid: true, angle: 0, scale: 1, associative: true,
+      loops: [{ points: sq(0, 0, 10), boundaryRefs: ['m1', 'bp1'] }],
+    };
+    const state: DrawingState = {
+      entities: [polyEnt('m1'), hatch], layers: [], currentLayer: '0',
+      blocks: { BLK: { name: 'BLK', basePoint: { x: 0, y: 0 }, entities: [polyEnt('bp1', 30)], attributes: [] } },
+    };
+    const recs = records(writeDxf(state));
+    const hatchRec = recs.find((r) => r.kind === 'HATCH')!;
+    expect(group(hatchRec, 71)).toBe('0');
+    expect(boundaryRefListsOf(hatchRec).flat()).toHaveLength(2);
+    expect(reactorsOf(recs.find((r) => r.kind === 'LWPOLYLINE')!)).toEqual([]);
+  });
+});

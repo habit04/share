@@ -28,6 +28,7 @@ import { importedPlacementsToAuthoredFrame, localAttributePlacement } from '../.
 import type { TextPlacement } from '../../core/text-placement';
 import { hatchGradientRenderProblem, hatchGradientExportProblem } from '../../core/hatch-gradient';
 import { POLYFACE_UNSUPPORTED_REASON, payloadText, native3dObject } from './mesh3d-read';
+import { canonicalCadHandle } from '../../core/cad-graph';
 
 /** Entity types the reader converts (anything else is reported, or kept raw when safe). */
 const READ_KINDS = new Set(['LINE', 'CIRCLE', 'ARC', 'LWPOLYLINE', 'POLYLINE', 'SOLID', 'TRACE', 'TEXT', 'MTEXT', 'ELLIPSE', 'POINT', 'XLINE', 'RAY', 'DIMENSION', 'SPLINE', 'HATCH', 'LEADER', 'MULTILEADER', 'MLEADER', 'IMAGE', 'ACAD_TABLE', 'INSERT']);
@@ -239,8 +240,11 @@ function applyExtrusion(o: Obj, e: Entity, ctx: ReadContext): Entity {
  * repair it). Round 4: a hatch whose input flag is NOT 71 = 1 is inert —
  * its handles are never promoted (see the branch below). Round 5: a
  * hatch naming itself or another HATCH as a boundary demotes to the
- * same inert posture regardless of its flag. Runs per list, in the
- * LEADER-340 post-pass pattern.
+ * same inert posture regardless of its flag. Round 6: the hatch check
+ * is drawing-wide — a handle naming a HATCH in ANY space or block
+ * definition, or a retained raw HATCH record, demotes too; the lookup
+ * (ctx.hatchHandles) keys handles canonically, so 00050 matches 50.
+ * Runs per list, in the LEADER-340 post-pass pattern.
  */
 function resolveHatchAssociations(list: Entity[], hatchObjs: ReadonlyMap<HatchEntity, Obj>, ctx: ReadContext): void {
   if (hatchObjs.size === 0) return;
@@ -283,9 +287,21 @@ function resolveHatchAssociations(list: Entity[], hatchObjs: ReadonlyMap<HatchEn
     // whole list raw, associative pinned false), whatever its 71
     // says; the writer's matching demote keeps every later save inert
     // and never emits the hatch handle.
+    // Round 6: the same-list resolution is only half the picture — a
+    // hatch in ANOTHER space or block definition, or a retained raw
+    // HATCH record no list models, never appears in this list's
+    // byHandle map, so the captured handle is ALSO matched against
+    // the drawing-wide hatch lookup (ctx.hatchHandles: every HATCH
+    // record in the file, pre-scanned by the reader). The lookup keys
+    // are canonical, so a zero-padded spelling (00050) names the
+    // hatch whose handle is 50 exactly like the canonical spelling.
+    // Only hatch-typed targets demote: an ordinary cross-space
+    // boundary keeps the round-2 semantics (raw here, O5 at save).
     const namesHatch = hatch.loops.some((loop) => (loop.boundaryRefs ?? []).some((hh) => {
       const id = byHandle.get(hh.trim().toUpperCase());
-      return id !== undefined && byId.get(id)?.type === 'hatch';
+      if (id !== undefined && byId.get(id)?.type === 'hatch') return true;
+      if (!ctx.hatchHandles) return false;
+      try { return ctx.hatchHandles.has(canonicalCadHandle(hh.trim())); } catch { return false; }
     }));
     if (namesHatch) {
       const { loops: inertLoops } = inertLoopsOf(hatch);
