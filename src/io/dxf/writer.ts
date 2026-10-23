@@ -38,7 +38,7 @@ import { entityMTextBackground } from '../../core/mtext-background';
 import { materializePolylineWidthFrames } from './polyline-width-blocks';
 import { LAYER_TRANSPARENCY_APP, transparencyToDxf, validColorName } from '../../core/appearance';
 import { namedCameraDisplayCenter, planarNamedCamera } from '../../core/named-view';
-import { annotationScaleRatio, graphAnnotationCarrier, graphAnnotationScaleEntries, graphMLeaderContextChainCarriers, graphTableRoundtripCarriers, preserveDxfCadGraph, type MLeaderContextChainCarrier } from '../cad-graph-dxf';
+import { annotationScaleRatio, ensureAssociativeHatchReactors, graphAnnotationCarrier, graphAnnotationScaleEntries, graphMLeaderContextChainCarriers, graphTableRoundtripCarriers, preserveDxfCadGraph, type MLeaderContextChainCarrier } from '../cad-graph-dxf';
 import { canonicalCadHandle } from '../../core/cad-graph';
 
 /** Linetype names referenced anywhere in the drawing (layers, entities, block entities). */
@@ -282,6 +282,21 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
   for (const b of blockList) allEntities.push(...b.entities);
   // P17: hatch boundary refs resolve against everything this writer emits.
   extras.entityById = new Map(allEntities.map((e) => [e.id, e]));
+  // P17 R1 (O5): the owner handle each entity is written under — model
+  // space, a layout's block record, or a block definition's record — with
+  // the same strings the write loops pass as `owner`, so writeHatch can
+  // tell a same-owner (associative) link from a cross-owner one.
+  const entityOwner = new Map<string, string>();
+  for (const e of state.entities) entityOwner.set(e.id, MODEL_SPACE);
+  for (const r of layoutPlan.records) {
+    for (const e of r.layout.entities) entityOwner.set(e.id, r.blockRecord);
+    for (const v of r.layout.viewports) if (v.clipBoundary) entityOwner.set(v.clipBoundary.id, r.blockRecord);
+  }
+  for (const b of blockList) {
+    const record = blockRecordHandles.get(b.name);
+    if (record !== undefined) for (const e of b.entities) entityOwner.set(e.id, record);
+  }
+  extras.entityOwner = entityOwner;
   // LTYPE340 points forward to STYLE. Reserve real target handles before writing LTYPE.
   const textStyles = textStylesForWrite(state), shapeStyles = Object.entries(shapeStylesOf(state));
   for (const lt of linetypes) {
@@ -1392,6 +1407,8 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
   w.pair(0, 'EOF');
   // The handle seed must exceed every handle used in the file.
   // AC1015 is read in the $DWGCODEPAGE page: non-ASCII goes out as \U+XXXX escapes (see io/encoding.ts).
-  const plain = preserveDxfCadGraph(w.toString(), mleaderContextObjectCount || mleaderChainsWithheldCount ? graphWithoutModelledContextChains(state, w, allEntities) : state, w.cadAnchors);
+  // P17 R1: with every record's handle final, complete the boundary-side
+  // back-pointers ({ACAD_REACTORS -> hatch}) for associative hatches.
+  const plain = ensureAssociativeHatchReactors(preserveDxfCadGraph(w.toString(), mleaderContextObjectCount || mleaderChainsWithheldCount ? graphWithoutModelledContextChains(state, w, allEntities) : state, w.cadAnchors));
   return encodeDxfText(plain.replace('HANDSEED_PLACEHOLDER', (w.lastHandle() + 1).toString(16).toUpperCase()), acadVersion);
 }

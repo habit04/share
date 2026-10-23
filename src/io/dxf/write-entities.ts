@@ -125,13 +125,25 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtr
   // P17 associative hatches: the per-loop boundary objects that resolve to
   // entities this writer emits are named (97 count + one 330 each, the
   // boundary's reserved handle). The flag is written only when at least one
-  // link is emitted — a bare associative flag makes AutoCAD's AUDIT repair
-  // the hatch. Unresolvable refs are omitted (the document detaches erased
-  // boundaries; imported raw handles live on HatchLoop.boundaryHandles).
+  // SAME-OWNER link is emitted — a bare associative flag makes AutoCAD's
+  // AUDIT repair the hatch, and a cross-owner link (O5: the boundary lives
+  // in another space / block definition) is not a live association in
+  // AutoCAD, so such a hatch is saved non-associative (71 = 0) with its
+  // handle list retained (on reopen the handles stay raw boundary handles,
+  // never live links; no data is lost). Unresolvable refs are omitted (the
+  // document detaches erased boundaries; imported raw handles live on
+  // HatchLoop.boundaryHandles). The boundary-side back-pointer
+  // ({ACAD_REACTORS -> this hatch}) is completed on the final text by
+  // ensureAssociativeHatchReactors (io/cad-graph-dxf.ts), once every
+  // record's handle is final.
   const loopRefs = e.loops.map((l) => (l.boundaryRefs ?? [])
     .map((id) => extras?.entityById?.get(id))
     .filter((b): b is Entity => !!b));
-  w.pair(71, loopRefs.some((refs) => refs.length > 0) ? 1 : 0);
+  const sameOwner = (b: Entity): boolean => {
+    const o = extras?.entityOwner?.get(b.id);
+    return o === undefined || o === owner;
+  };
+  w.pair(71, loopRefs.some((refs) => refs.some(sameOwner)) ? 1 : 0);
   w.pair(91, e.loops.length);
   e.loops.forEach((l, i) => {
     const hasBulge = !!l.bulges && l.bulges.some((b) => Math.abs(b) > 1e-12);
