@@ -17,8 +17,11 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { HatchEntity, PolylineEntity } from '../src/core/entities';
 import type { DrawingState } from '../src/core/document';
+import { Drawing } from '../src/core/document';
 import { readDxf, writeDxf } from '../src/io/dxf';
 import { importReportOf } from '../src/io/import-report';
+import { hatchEditTool } from '../src/tools/drafting-annot';
+import { fakeContext, drive } from './fake-context';
 
 type Pair = readonly [number, string | number];
 
@@ -764,5 +767,112 @@ describe('P17 round 2 (Codex P1): the O5 classification covers the COMPLETE emit
     expect(group(hatchRec, 71)).toBe('1');
     expect(boundaryRefListsOf(hatchRec)).toEqual([[group(first, 5)], [group(second, 5)]]);
     for (const p of [first, second]) expect(reactorsOf(p)).toEqual([group(hatchRec, 5)]);
+  });
+});
+
+describe('P17 round 4 (lead ruling): 71 = 0 is inert on read; HATCHEDIT Disassociate sticks', () => {
+  // Round 4 item 1: a hatch saved 71 = 0 (the round-2 mixed-owner shapes
+  // below) must REOPEN inert — its retained 97/330 list stays raw handles,
+  // never live refs — so a later boundary edit cannot move its fill, and
+  // the next save still writes 71 = 0. At c0f70e9 the read resolver
+  // promotes the local handle to a live ref regardless of the 71 flag, so
+  // the reopened hatch is associative and the fill follows the boundary.
+  // Round 4 item 2: HATCHEDIT's Disassociate must clear the links
+  // themselves (refs AND retained handles on every loop), not just the
+  // flag — at c0f70e9 the tool only flips the flag, maintenance refreshes
+  // the fill on the next boundary edit, and the writer re-derives 71 = 1.
+  const props = { layer: '0', color: 'ByLayer' as const };
+  const sq = (x: number, y: number, s: number) => [
+    { x, y }, { x: x + s, y }, { x: x + s, y: y + s }, { x, y: y + s },
+  ];
+  const boundaryRefListsOf = (rec: { groups: Array<[number, string]> }): string[][] => {
+    const out: string[][] = [];
+    rec.groups.forEach(([c, v], i) => {
+      if (c !== 97) return;
+      const count = Number(v);
+      out.push(rec.groups.slice(i + 1, i + 1 + count).filter(([cc]) => cc === 330).map(([, vv]) => vv));
+    });
+    return out;
+  };
+  const localPoly = (id: string): PolylineEntity => ({
+    id, ...props, type: 'polyline', points: sq(0, 0, 10), closed: true,
+  });
+  const foreignPoly = (id: string): PolylineEntity => ({
+    id, ...props, type: 'polyline', points: sq(30, 0, 10), closed: true,
+  });
+  const mixedState = (hatch: HatchEntity): DrawingState => ({
+    entities: [localPoly('m1'), hatch], layers: [], currentLayer: '0',
+    blocks: { BLK: { name: 'BLK', basePoint: { x: 0, y: 0 }, entities: [foreignPoly('bp1')], attributes: [] } },
+  });
+  const hatchOf = (state: DrawingState): HatchEntity => state.entities.find((e): e is HatchEntity => e.type === 'hatch')!;
+
+  const expectInertAfterReopen = (hatch: HatchEntity): void => {
+    const saved = writeDxf(mixedState(hatch));
+    const hatchRec = records(saved).find((r) => r.kind === 'HATCH')!;
+    expect(group(hatchRec, 71)).toBe('0');
+    const writtenLists = boundaryRefListsOf(hatchRec);
+    expect(writtenLists.flat()).toHaveLength(2);
+    const doc = new Drawing(readDxf(saved));
+    const reopened = hatchOf(doc.snapshot);
+    expect(reopened.associative).toBe(false);
+    for (const loop of reopened.loops) expect(loop.boundaryRefs).toBeUndefined();
+    expect(reopened.loops.map((l) => [...(l.boundaryHandles ?? [])])).toEqual(writtenLists);
+    const fillBefore = reopened.loops.map((l) => l.points.map((p) => ({ ...p })));
+    const local = doc.snapshot.entities.find((e): e is PolylineEntity => e.type === 'polyline')!;
+    doc.replaceEntities([{ ...local, points: sq(100, 100, 10) }]);
+    expect(hatchOf(doc.snapshot).loops.map((l) => l.points)).toEqual(fillBefore);
+    const hatchRec2 = records(writeDxf(doc.snapshot)).find((r) => r.kind === 'HATCH')!;
+    expect(group(hatchRec2, 71)).toBe('0');
+    expect(boundaryRefListsOf(hatchRec2)).toEqual(writtenLists);
+  };
+
+  it('mixed-in-one-loop saved 71 = 0 reopens inert: moving the local boundary leaves the fill unchanged, second save still 71 = 0', () => {
+    expectInertAfterReopen({
+      id: 'h1', ...props, type: 'hatch', pattern: 'SOLID', solid: true, angle: 0, scale: 1, associative: true,
+      loops: [{ points: sq(0, 0, 10), boundaryRefs: ['m1', 'bp1'] }],
+    });
+  });
+
+  it('mixed-across-loops saved 71 = 0 reopens inert: moving the local boundary leaves the fill unchanged, second save still 71 = 0', () => {
+    expectInertAfterReopen({
+      id: 'h1', ...props, type: 'hatch', pattern: 'SOLID', solid: true, angle: 0, scale: 1, associative: true,
+      loops: [
+        { points: sq(0, 0, 10), boundaryRefs: ['m1'] },
+        { points: sq(30, 0, 10), boundaryRefs: ['bp1'] },
+      ],
+    });
+  });
+
+  it('HATCHEDIT Disassociate via the real tool clears refs and handles on all loops, never refreshes, saves 71 = 0 / 97 = 0, reopens inert, and undo restores the link', () => {
+    const doc = new Drawing(readDxf(assocDxf()));
+    const poly0 = doc.snapshot.entities.find((e): e is PolylineEntity => e.type === 'polyline')!;
+    const hatch0 = hatchOf(doc.snapshot);
+    expect(hatch0.associative).toBe(true);
+    expect(hatch0.loops[0]!.boundaryRefs).toEqual([poly0.id]);
+    const ctx = fakeContext(doc);
+    ctx.selection.add(hatch0.id);
+    drive(hatchEditTool(), ctx, ['Disassociate']);
+    const h1 = hatchOf(doc.snapshot);
+    expect(h1.associative).toBe(false);
+    for (const loop of h1.loops) {
+      expect(loop.boundaryRefs).toBeUndefined();
+      expect(loop.boundaryHandles).toBeUndefined();
+    }
+    const fillBefore = h1.loops.map((l) => l.points.map((p) => ({ ...p })));
+    doc.replaceEntities([{ ...poly0, points: sq(100, 100, 10) }]);
+    expect(hatchOf(doc.snapshot).loops.map((l) => l.points)).toEqual(fillBefore);
+    const saved = writeDxf(doc.snapshot);
+    const rec = records(saved).find((r) => r.kind === 'HATCH')!;
+    expect(group(rec, 71)).toBe('0');
+    expect(group(rec, 97)).toBe('0');
+    const reopened = readDxf(saved).entities.find((e): e is HatchEntity => e.type === 'hatch')!;
+    expect(reopened.associative).toBeFalsy();
+    expect(reopened.loops[0]!.boundaryRefs).toBeUndefined();
+    // Undo the boundary move, then undo the disassociate: the link returns.
+    expect(doc.undo()).toBe(true);
+    expect(doc.undo()).toBe(true);
+    const h3 = hatchOf(doc.snapshot);
+    expect(h3.associative).toBe(true);
+    expect(h3.loops[0]!.boundaryRefs).toEqual([poly0.id]);
   });
 });

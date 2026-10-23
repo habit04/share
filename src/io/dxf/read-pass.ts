@@ -236,7 +236,9 @@ function applyExtrusion(o: Obj, e: Entity, ctx: ReadContext): Entity {
  * writeHatch in io/dxf/write-entities.ts). A
  * bare associative flag with no resolvable link is cleared and reported
  * (the writer cannot emit a flag without links; AutoCAD's AUDIT would
- * repair it). Runs per list, in the LEADER-340 post-pass pattern.
+ * repair it). Round 4: a hatch whose input flag is NOT 71 = 1 is inert —
+ * its handles are never promoted (see the branch below). Runs per list,
+ * in the LEADER-340 post-pass pattern.
  */
 function resolveHatchAssociations(list: Entity[], hatchObjs: ReadonlyMap<HatchEntity, Obj>, ctx: ReadContext): void {
   if (hatchObjs.size === 0) return;
@@ -245,6 +247,27 @@ function resolveHatchAssociations(list: Entity[], hatchObjs: ReadonlyMap<HatchEn
   for (const [hatch, o] of hatchObjs) {
     const at = list.indexOf(hatch);
     if (at < 0) continue;
+    if (!hatch.associative) {
+      // Round 4 (lead ruling): 71 = 0 means INERT. The captured 97/330
+      // handles are NOT promoted to live boundaryRefs: the whole list
+      // stays raw boundaryHandles and the hatch is pinned
+      // associative = false, so maintenance never refreshes it and the
+      // writer (whose 71 derivation requires associative !== false)
+      // keeps writing 71 = 0 on every later save. No report: the file
+      // said non-associative and the model now says exactly that.
+      let touchedInert = false;
+      const inertLoops: HatchLoop[] = hatch.loops.map((loop) => {
+        const handles = loop.boundaryRefs;
+        if (!handles || handles.length === 0) return loop;
+        touchedInert = true;
+        const raw: string[] = [...(loop.boundaryHandles ?? [])];
+        for (const h of handles) if (!raw.includes(h)) raw.push(h);
+        const { boundaryRefs: _refs, boundaryHandles: _raw, ...rest } = loop;
+        return { ...rest, boundaryHandles: raw };
+      });
+      if (touchedInert) list[at] = { ...hatch, loops: inertLoops, associative: false };
+      continue;
+    }
     let kept = 0;
     let total = 0;
     const unresolved: string[] = [];

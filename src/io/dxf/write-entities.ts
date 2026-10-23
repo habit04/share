@@ -217,7 +217,12 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtr
     return links;
   });
   const allLinks = loopLinks.flat();
-  w.pair(71, allLinks.length > 0 && allLinks.every((l) => l.sameOwner) ? 1 : 0);
+  // Round 4: an explicitly disassociated hatch (associative === false —
+  // HATCHEDIT Disassociate, or a 71 = 0 original pinned inert by the
+  // reader) NEVER re-derives 71 = 1 from its retained links: 71 requires
+  // the flag AND links AND all-same-owner. associative === undefined
+  // (model-built hatches) keeps the links-decide behaviour.
+  w.pair(71, e.associative !== false && allLinks.length > 0 && allLinks.every((l) => l.sameOwner) ? 1 : 0);
   w.pair(91, e.loops.length);
   e.loops.forEach((l, i) => {
     const hasBulge = !!l.bulges && l.bulges.some((b) => Math.abs(b) > 1e-12);

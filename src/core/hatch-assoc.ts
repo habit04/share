@@ -64,6 +64,9 @@ const problem = (kind: HatchAssocProblemKind, hatch: HatchEntity, loopIndex: num
  * reported either way.
  */
 export function refreshAssociativeHatch(hatch: HatchEntity, byId: ReadonlyMap<string, Entity>): HatchRefreshResult {
+  // Round 4 hard guard: an explicitly disassociated hatch is never
+  // refreshed, even if a loop still carries refs (inert retained data).
+  if (hatch.associative === false) return { hatch, problems: [] };
   const problems: HatchAssocProblem[] = [];
   const loops: HatchLoop[] = [];
   let changed = false;
@@ -138,9 +141,9 @@ export function hatchAssocProblem(hatch: HatchEntity, byId: ReadonlyMap<string, 
   return refreshAssociativeHatch(hatch, byId).problems[0]?.message;
 }
 
-/** True when any loop of any hatch in the list carries live boundary refs. */
+/** True when any loop of any non-disassociated hatch in the list carries live boundary refs. */
 export function hasHatchAssociations(entities: readonly Entity[]): boolean {
-  return entities.some((e) => e.type === 'hatch' && e.loops.some((l) => l.boundaryRefs && l.boundaryRefs.length > 0));
+  return entities.some((e) => e.type === 'hatch' && e.associative !== false && e.loops.some((l) => l.boundaryRefs && l.boundaryRefs.length > 0));
 }
 
 /**
@@ -153,7 +156,7 @@ export function hatchUpdatesForBoundaryEdits(entities: readonly Entity[], change
   const byId = new Map(entities.map((e) => [e.id, e]));
   const updates: HatchEntity[] = [];
   for (const e of entities) {
-    if (e.type !== 'hatch') continue;
+    if (e.type !== 'hatch' || e.associative === false) continue;
     if (!e.loops.some((l) => l.boundaryRefs?.some((r) => changedIds.has(r)))) continue;
     const { hatch, problems } = refreshAssociativeHatch(e, byId);
     if (problems.length === 0 && hatch !== e) updates.push(hatch);
@@ -168,8 +171,10 @@ const omitRefs = (loop: HatchLoop): HatchLoop => {
 
 const withAssociative = (hatch: HatchEntity, loops: readonly HatchLoop[]): HatchEntity => {
   const { associative: _a, ...rest } = hatch;
-  const any = loops.some((l) => l.boundaryRefs && l.boundaryRefs.length > 0);
-  return { ...rest, loops, ...(any ? { associative: true } : {}) };
+  // Round 4 hard guard: never resurrect a disassociated hatch — a hatch
+  // pinned associative === false stays false even when loops retain refs.
+  const any = hatch.associative !== false && loops.some((l) => l.boundaryRefs && l.boundaryRefs.length > 0);
+  return { ...rest, loops, ...(any ? { associative: true } : hatch.associative === false ? { associative: false } : {}) };
 };
 
 /**
@@ -180,7 +185,7 @@ const withAssociative = (hatch: HatchEntity, loops: readonly HatchLoop[]): Hatch
 export function detachErasedBoundaries(entities: readonly Entity[], erasedIds: ReadonlySet<string>): Entity[] {
   if (erasedIds.size === 0 || !hasHatchAssociations(entities)) return [...entities];
   return entities.map((e) => {
-    if (e.type !== 'hatch') return e;
+    if (e.type !== 'hatch' || e.associative === false) return e;
     let touched = false;
     const loops = e.loops.map((loop) => {
       if (!loop.boundaryRefs?.some((r) => erasedIds.has(r))) return loop;
@@ -196,7 +201,7 @@ export function detachErasedBoundaries(entities: readonly Entity[], erasedIds: R
 export function remapHatchBoundaryRefs(entities: readonly Entity[], idMap: ReadonlyMap<string, string>): Entity[] {
   if (idMap.size === 0) return [...entities];
   return entities.map((e) => {
-    if (e.type !== 'hatch') return e;
+    if (e.type !== 'hatch' || e.associative === false) return e;
     let touched = false;
     const loops = e.loops.map((loop) => {
       if (!loop.boundaryRefs?.some((r) => idMap.has(r))) return loop;
