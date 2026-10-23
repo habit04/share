@@ -243,6 +243,11 @@ export interface WriteExtras {
   tableBlocks: Map<TableEntity, { name: string; recordHandle: string; styleHandle: string; roundtrip?: TableRoundtripPlan }>;
   /** P17: every entity the writer will emit, by id — a hatch's boundary refs resolve through it. */
   entityById?: ReadonlyMap<string, Entity>;
+  /** P17 (Codex PR #44 P1-d): every entity the writer will emit, by canonical SOURCE handle
+   *  (its cadIdentity, bare or as the "<session>:<handle>" suffix) — a hatch loop's retained
+   *  raw boundary handles resolve through it, so a retained link naming an object that IS in
+   *  the drawing is written back instead of silently dropped. */
+  entityBySourceHandle?: ReadonlyMap<string, Entity>;
   /** P17 R1: the owner handle string each entity is written under (its space / block record), by id — a hatch link is associative only within one owner (O5). */
   entityOwner?: ReadonlyMap<string, string>;
   /** DIMASZ × DIMSCALE of the header style (leaders store their arrow size as an override when it differs). */

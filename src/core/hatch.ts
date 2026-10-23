@@ -93,8 +93,13 @@ export interface HatchLoop {
   readonly boundaryRefs?: readonly string[];
   /**
    * P17: raw source-file handles of boundary objects that could not be
-   * resolved to an imported entity. Retained for reporting and in-session
-   * fidelity; never written back as 330 (they name objects not in the file).
+   * resolved to an imported entity IN THIS LOOP'S OWN LIST (the object
+   * may still live in another space / block definition of the same
+   * drawing). Retained for reporting and in-session fidelity. On save, a
+   * retained handle that resolves — through the named entity's source
+   * identity — to an entity the writer emits IS written back as a 330
+   * link (Codex PR #44 P1-d); a handle naming no object in the drawing
+   * stays unemitted.
    */
   readonly boundaryHandles?: readonly string[];
 }

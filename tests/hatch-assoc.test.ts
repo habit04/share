@@ -10,6 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import { Drawing } from '../src/core/document';
 import type { Entity, HatchEntity, PolylineEntity, CircleEntity } from '../src/core/entities';
+import { blockTransform, mirrorEntityAcross, rotateEntity, scaleEntityBy, translateEntity } from '../src/core/entities';
 import {
   MAX_HATCH_ASSOC_REFS_PER_LOOP,
   detachErasedBoundaries,
@@ -106,6 +107,110 @@ describe('associative hatch: boundary edits update the fill in one undo step', (
     doc.replaceEntities([{ ...copiedBoundary, points: square(40, 40, 10) }]);
     expect(hatchOf(doc, 'h9').loops[0]!.points).toEqual(square(40, 40, 10));
     expect(hatchOf(doc, 'h1').loops[0]!.points).toEqual(square(0, 0, 10));
+  });
+});
+
+describe('P17 additions (Codex P1-a/P1-b/P1-c): transforms, multi-batch clones, transact-boundary maintenance', () => {
+  it('P1-a: affine transforms carry boundaryRefs and boundaryHandles through the rebuilt loops', () => {
+    const hatch = assocHatch('h1', [{ points: square(0, 0, 10), boundaryRefs: ['b1'], boundaryHandles: ['7E'] }]);
+    const moved = translateEntity(hatch, { x: 5, y: 2 }) as HatchEntity;
+    expect(moved.loops[0]!.boundaryRefs).toEqual(['b1']);
+    expect(moved.loops[0]!.boundaryHandles).toEqual(['7E']);
+    expect(moved.loops[0]!.points).toEqual(square(5, 2, 10));
+    const rotated = rotateEntity(hatch, { x: 0, y: 0 }, Math.PI / 2) as HatchEntity;
+    expect(rotated.loops[0]!.boundaryRefs).toEqual(['b1']);
+    expect(rotated.loops[0]!.boundaryHandles).toEqual(['7E']);
+    const scaled = scaleEntityBy(hatch, { x: 0, y: 0 }, 2) as HatchEntity;
+    expect(scaled.loops[0]!.boundaryRefs).toEqual(['b1']);
+    expect(scaled.loops[0]!.boundaryHandles).toEqual(['7E']);
+    const mirrored = mirrorEntityAcross(hatch, { x: 0, y: 0 }, { x: 0, y: 1 }) as HatchEntity;
+    expect(mirrored.loops[0]!.boundaryRefs).toEqual(['b1']);
+    expect(mirrored.loops[0]!.boundaryHandles).toEqual(['7E']);
+  });
+
+  it('P1-a: a bulged loop keeps its association through mirror bulge-negation and the non-uniform polygonize branch', () => {
+    const arc = assocHatch('h1', [{ points: [{ x: 8, y: 5 }, { x: 2, y: 5 }], bulges: [1, 1], boundaryRefs: ['c1'] }]);
+    const mirrored = mirrorEntityAcross(arc, { x: 0, y: 0 }, { x: 1, y: 0 }) as HatchEntity;
+    expect(mirrored.loops[0]!.boundaryRefs).toEqual(['c1']);
+    expect(mirrored.loops[0]!.bulges).toEqual([-1, -1]);
+    const stretched = blockTransform(arc, (p) => ({ x: p.x * 2, y: p.y }), 0, 2, 1, false) as HatchEntity;
+    expect(stretched.loops[0]!.boundaryRefs).toEqual(['c1']);
+    expect(stretched.loops[0]!.points.length).toBeGreaterThan(2);
+  });
+
+  it('P1-a: MOVE of boundary + hatch together (replaceEntities with transformed copies) keeps the association live', () => {
+    const b = boundary('b1');
+    const hatch = assocHatch('h1', [{ points: square(0, 0, 10), boundaryRefs: ['b1'] }]);
+    const doc = new Drawing({ entities: [b, hatch] });
+    doc.replaceEntities([translateEntity(b, { x: 20, y: 0 }), translateEntity(hatch, { x: 20, y: 0 })]);
+    const after = hatchOf(doc, 'h1');
+    expect(after.loops[0]!.boundaryRefs).toEqual(['b1']);
+    expect(after.loops[0]!.points).toEqual(square(20, 0, 10));
+    // Still live: the next boundary edit refreshes the fill.
+    doc.replaceEntities([{ ...(entityOf(doc, 'b1') as PolylineEntity), points: square(50, 0, 10) }]);
+    expect(hatchOf(doc, 'h1').loops[0]!.points).toEqual(square(50, 0, 10));
+  });
+
+  it('P1-b: one addEntities call with several clone batches remaps each copied hatch with its OWN batch map', () => {
+    const source = boundary('b1');
+    const hatch = assocHatch('h1', [{ points: square(0, 0, 10), boundaryRefs: ['b1'] }]);
+    const doc = new Drawing({ entities: [source, hatch] });
+    // The copies an ARRAYRECT/ARRAYPOLAR cell produces: geometry moved, fresh
+    // ids, loop refs still naming the SOURCE boundary until the batch remap.
+    const cell = (dx: number, bId: string, hId: string): Entity[] => [
+      { ...boundary(bId), points: square(dx, 0, 10) },
+      assocHatch(hId, [{ points: square(dx, 0, 10), boundaryRefs: ['b1'] }]),
+    ];
+    doc.addEntities([...cell(20, 'b2', 'h2'), ...cell(40, 'b3', 'h3')], false, {
+      cloneBatches: [
+        { entityIds: { b1: 'b2', h1: 'h2' } },
+        { entityIds: { b1: 'b3', h1: 'h3' } },
+      ],
+    });
+    expect(hatchOf(doc, 'h2').loops[0]!.boundaryRefs).toEqual(['b2']);
+    expect(hatchOf(doc, 'h3').loops[0]!.boundaryRefs).toEqual(['b3']);
+    // Each copy follows its own cell's boundary afterwards, not the last cell's.
+    doc.replaceEntities([{ ...(entityOf(doc, 'b3') as PolylineEntity), points: square(90, 90, 10) }]);
+    expect(hatchOf(doc, 'h3').loops[0]!.points).toEqual(square(90, 90, 10));
+    expect(hatchOf(doc, 'h2').loops[0]!.points).toEqual(square(20, 0, 10));
+  });
+
+  it('P1-c: a raw transact replacing a boundary refreshes its hatch (the API replace path)', () => {
+    const doc = new Drawing({ entities: [boundary('b1'), assocHatch('h1', [{ points: square(0, 0, 10), boundaryRefs: ['b1'] }])] });
+    doc.transact((s) => ({ ...s, entities: s.entities.map((e) => (e.id === 'b1' ? { ...e, points: square(30, 0, 10) } : e)) }));
+    expect(hatchOf(doc, 'h1').loops[0]!.points).toEqual(square(30, 0, 10));
+    expect(hatchOf(doc, 'h1').loops[0]!.boundaryRefs).toEqual(['b1']);
+  });
+
+  it('P1-c: a raw transact erasing a boundary detaches its hatch (the API remove path)', () => {
+    const doc = new Drawing({ entities: [boundary('b1'), assocHatch('h1', [{ points: square(0, 0, 10), boundaryRefs: ['b1'] }])] });
+    doc.transact((s) => ({ ...s, entities: s.entities.filter((e) => e.id !== 'b1') }));
+    const after = hatchOf(doc, 'h1');
+    expect(after.loops[0]!.points).toEqual(square(0, 0, 10));
+    expect(after.loops[0]!.boundaryRefs).toBeUndefined();
+    expect(after.associative).toBeUndefined();
+  });
+
+  it('P1-c: a clipboard-style paste transact remaps the pasted hatch to the pasted boundary', () => {
+    const doc = new Drawing({ entities: [boundary('b1'), assocHatch('h1', [{ points: square(0, 0, 10), boundaryRefs: ['b1'] }])] });
+    const pastedBoundary = { ...boundary('b7'), points: square(100, 100, 10) };
+    const pastedHatch = assocHatch('h7', [{ points: square(100, 100, 10), boundaryRefs: ['b1'] }]);
+    doc.transact((s) => ({ ...s, entities: [...s.entities, pastedBoundary, pastedHatch] }), {
+      cloneBatches: [{ entityIds: { b1: 'b7', h1: 'h7' } }],
+    });
+    expect(hatchOf(doc, 'h7').loops[0]!.boundaryRefs).toEqual(['b7']);
+    expect(hatchOf(doc, 'h1').loops[0]!.boundaryRefs).toEqual(['b1']);
+    // The pasted hatch follows the pasted boundary, not the source's.
+    doc.replaceEntities([{ ...pastedBoundary, points: square(200, 200, 10) }]);
+    expect(hatchOf(doc, 'h7').loops[0]!.points).toEqual(square(200, 200, 10));
+    expect(hatchOf(doc, 'h1').loops[0]!.points).toEqual(square(0, 0, 10));
+  });
+
+  it('P1-c guard: a transaction that does not change the entity list leaves hatch state untouched', () => {
+    const doc = new Drawing({ entities: [boundary('b1'), assocHatch('h1', [{ points: square(0, 0, 10), boundaryRefs: ['b1'] }])] });
+    const before = doc.snapshot.entities;
+    doc.addLayer({ name: 'NEWLAYER', color: 7, visible: true, locked: false, lineWeight: 0.25 });
+    expect(doc.snapshot.entities).toBe(before);
   });
 });
 

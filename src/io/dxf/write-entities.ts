@@ -16,6 +16,7 @@ import type { AttributeDefExt } from '../../electrical/symbol-builder-core';
 import { attdefFlags } from '../../electrical/symbol-builder-core';
 import { insertArrayProblem } from '../../core/insert-array';
 import { DYNAMIC_APP } from './codes';
+import { canonicalCadHandle } from '../../core/cad-graph';
 import { chunkDynamicPayload, encodeDynamicInstance } from './dynamic-data';
 import { hatchGradientDataProblem, hatchGradientExportProblem } from '../../core/hatch-gradient';
 
@@ -124,21 +125,54 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtr
   w.pair(70, e.solid ? 1 : 0);
   // P17 associative hatches: the per-loop boundary objects that resolve to
   // entities this writer emits are named (97 count + one 330 each, the
-  // boundary's reserved handle). The flag is written only when at least one
-  // SAME-OWNER link is emitted — a bare associative flag makes AutoCAD's
-  // AUDIT repair the hatch, and a cross-owner link (O5: the boundary lives
-  // in another space / block definition) is not a live association in
-  // AutoCAD, so such a hatch is saved non-associative (71 = 0) with its
-  // handle list retained (on reopen the handles stay raw boundary handles,
-  // never live links; no data is lost). Unresolvable refs are omitted (the
-  // document detaches erased boundaries; imported raw handles live on
-  // HatchLoop.boundaryHandles). The boundary-side back-pointer
-  // ({ACAD_REACTORS -> this hatch}) is completed on the final text by
+  // boundary's reserved handle). A loop's links come from BOTH of its
+  // association fields: boundaryRefs (document entity ids) and
+  // boundaryHandles (retained raw source handles). P1-d (Codex PR #44):
+  // the handle list used to be silently dropped here, so a block-resident
+  // hatch linked to a model-space boundary — unresolvable per-list at
+  // import, hence retained as a handle — lost the link on the first save
+  // and its 97/71 were gone for good; a retained handle that resolves,
+  // through the entity's source identity, to an entity this writer emits
+  // is a link like any other and is emitted (the entity's reserved handle
+  // in THIS file, never the raw source text). A handle naming no emitted
+  // entity stays unemitted: it names an object that is not in the file,
+  // and writing it could alias a handle this writer reuses. The flag is
+  // written only when at least one SAME-OWNER link is emitted — a bare
+  // associative flag makes AutoCAD's AUDIT repair the hatch, and a
+  // cross-owner link (O5: the boundary lives in another space / block
+  // definition) is not a live association in AutoCAD, so such a hatch is
+  // saved non-associative (71 = 0) with its handle list retained (on
+  // reopen the handles stay raw boundary handles, never live links; no
+  // data is lost). Unresolvable refs are omitted (the document detaches
+  // erased boundaries). The boundary-side back-pointer ({ACAD_REACTORS ->
+  // this hatch}) is completed on the final text by
   // ensureAssociativeHatchReactors (io/cad-graph-dxf.ts), once every
-  // record's handle is final.
-  const loopRefs = e.loops.map((l) => (l.boundaryRefs ?? [])
-    .map((id) => extras?.entityById?.get(id))
-    .filter((b): b is Entity => !!b));
+  // record's handle is final — it reads the same 97/330 list written
+  // here, so handle-derived links compose with it unchanged.
+  const loopRefs = e.loops.map((l) => {
+    const seen = new Set<string>();
+    const links: Entity[] = [];
+    for (const id of l.boundaryRefs ?? []) {
+      const b = extras?.entityById?.get(id);
+      if (b && !seen.has(b.id)) {
+        seen.add(b.id);
+        links.push(b);
+      }
+    }
+    for (const raw of l.boundaryHandles ?? []) {
+      let b: Entity | undefined;
+      try {
+        b = extras?.entityBySourceHandle?.get(canonicalCadHandle(raw));
+      } catch {
+        b = undefined;
+      }
+      if (b && !seen.has(b.id)) {
+        seen.add(b.id);
+        links.push(b);
+      }
+    }
+    return links;
+  });
   const sameOwner = (b: Entity): boolean => {
     const o = extras?.entityOwner?.get(b.id);
     return o === undefined || o === owner;

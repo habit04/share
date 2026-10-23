@@ -282,6 +282,39 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
   for (const b of blockList) allEntities.push(...b.entities);
   // P17: hatch boundary refs resolve against everything this writer emits.
   extras.entityById = new Map(allEntities.map((e) => [e.id, e]));
+  // P17 (Codex PR #44 P1-d): the same universe by canonical source handle,
+  // so a hatch loop's retained raw handles (boundaryHandles) that name an
+  // emitted entity resolve to it. cadIdentity is the bare source handle
+  // or "<session>:<handle>"; both spellings are indexed. Duplicate source
+  // handles resolve last-wins, the accepted O4 posture.
+  const entityBySourceHandle = new Map<string, Entity>();
+  for (const e of allEntities) {
+    if (!e.cadIdentity) continue;
+    const full = e.cadIdentity.trim().toUpperCase();
+    const suffix = full.slice(full.lastIndexOf(':') + 1);
+    for (const key of new Set([full, suffix])) {
+      try {
+        entityBySourceHandle.set(canonicalCadHandle(key), e);
+      } catch {
+        // Not a handle spelling (a session id, a node id): not a key.
+      }
+    }
+  }
+  // After a real import the entities carry no cadIdentity — their source
+  // identity lives in the cad graph (node sourceHandle + entity anchor).
+  // The graph is the authoritative spelling of the same source file the
+  // retained handles came from, so its entries overwrite the ones above.
+  for (const node of state.cadGraph?.nodes ?? []) {
+    if (node.anchor?.kind !== 'entity' || !node.sourceHandle) continue;
+    const e = extras.entityById.get(node.anchor.id);
+    if (!e) continue;
+    try {
+      entityBySourceHandle.set(canonicalCadHandle(node.sourceHandle), e);
+    } catch {
+      // A node id, not a handle: not a key.
+    }
+  }
+  extras.entityBySourceHandle = entityBySourceHandle;
   // P17 R1 (O5): the owner handle each entity is written under — model
   // space, a layout's block record, or a block definition's record — with
   // the same strings the write loops pass as `owner`, so writeHatch can
