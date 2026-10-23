@@ -1363,3 +1363,161 @@ describe('P17 round 6 (lead ruling, final): cross-space demotion, stale-reactor 
     expect(reactorsOf(recs.find((r) => r.kind === 'LWPOLYLINE')!)).toEqual([]);
   });
 });
+
+describe('P17 round 7 (lead ruling): canonical spelling on read; a non-live import link never writes 71 = 1', () => {
+  // The lead's native gate at e645616 (legs CANP5 / CANP5M / CANP3M): a
+  // boundary polyline whose group 5 is spelled zero-padded (00011B)
+  // while the hatch's 330 names it unpadded (11B) — or the reverse —
+  // imports NON-LIVE, because resolveHatchAssociations keyed its
+  // ordinary-boundary map by the raw cadIdentity text and looked the
+  // captured handles up the same way (round 6 canonicalized only the
+  // HATCH-target lookup). The writer's retained-handle path DOES
+  // canonicalize, so the save upgraded the link to 71 = 1 + reactor:
+  // the model said the fill does not follow the boundary, the file
+  // said it does, and after an edit AutoCAD showed the fill in a
+  // different place than JCad. Fix 1 canonicalizes BOTH sides of the
+  // ordinary resolution, like round 6 did for hatch targets. Fix 2 is
+  // the invariant guard behind it: a raw link whose only resolution is
+  // the retained-graph entity join — the join the reader already
+  // adjudicated — cannot by itself carry 71 = 1 at save.
+  const sq = (x: number, y: number, s: number) => [
+    { x, y }, { x: x + s, y }, { x: x + s, y: y + s }, { x, y: y + s },
+  ];
+  const reactorsOf = (rec: { groups: Array<[number, string]> }): string[] => {
+    const out: string[] = [];
+    let inside = false;
+    for (const [c, v] of rec.groups) {
+      if (c === 102 && v === '{ACAD_REACTORS') inside = true;
+      else if (c === 102 && v === '}' && inside) inside = false;
+      else if (inside && c === 330) out.push(v);
+    }
+    return out;
+  };
+  /** The loop points a written HATCH record carries (the pairs after its 93 count). */
+  const hatchPointsOf = (rec: { groups: Array<[number, string]> }): Array<{ x: number; y: number }> => {
+    const at = rec.groups.findIndex(([c]) => c === 93);
+    const n = Number(rec.groups[at]![1]);
+    const pts: Array<{ x: number; y: number }> = [];
+    for (let k = 0; k < n; k += 1) {
+      pts.push({ x: Number(rec.groups[at + 1 + k * 2]![1]), y: Number(rec.groups[at + 2 + k * 2]![1]) });
+    }
+    return pts;
+  };
+  /** A square LWPOLYLINE (handle `boundaryHandle`) + a SOLID hatch (51) whose 330 spells the boundary `ref`. */
+  const paddedDxf = (boundaryHandle: string, ref: string): string => {
+    const fields: Pair[] = [
+      [0, 'SECTION'], [2, 'HEADER'], [9, '$ACADVER'], [1, 'AC1015'], [0, 'ENDSEC'],
+      [0, 'SECTION'], [2, 'ENTITIES'],
+      [0, 'LWPOLYLINE'], [5, boundaryHandle], [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbPolyline'],
+      [90, 4], [70, 1],
+      [10, 0], [20, 0], [10, 10], [20, 0], [10, 10], [20, 10], [10, 0], [20, 10],
+      [0, 'HATCH'], [5, '51'], [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbHatch'],
+      [10, 0], [20, 0], [30, 0], [210, 0], [220, 0], [230, 1],
+      [2, 'SOLID'], [70, 1], [71, 1], [91, 1],
+      [92, 3], [72, 0], [73, 1], [93, 4],
+      [10, 0], [20, 0], [10, 10], [20, 0], [10, 10], [20, 10], [10, 0], [20, 10],
+      [97, 1], [330, ref],
+      [75, 0], [76, 1], [98, 0],
+      [0, 'ENDSEC'], [0, 'EOF'],
+    ];
+    return fields.flat().join('\n');
+  };
+  const hatchOf = (state: DrawingState): HatchEntity =>
+    state.entities.find((e): e is HatchEntity => e.type === 'hatch')!;
+  const polyOf = (state: DrawingState): PolylineEntity =>
+    state.entities.find((e): e is PolylineEntity => e.type === 'polyline')!;
+
+  for (const [label, boundaryHandle, ref] of [
+    ['group 5 padded (00011B), 330 unpadded (11B)', '00011B', '11B'],
+    ['group 5 unpadded (11B), 330 padded (00011B)', '11B', '00011B'],
+  ] as const) {
+    it(`(a/b) SPELLING: ${label} — imports LIVE, the fill follows a boundary move, and the save agrees (71 = 1 + reactor)`, () => {
+      const state = readDxf(paddedDxf(boundaryHandle, ref));
+      const hatch = hatchOf(state);
+      const poly = polyOf(state);
+      expect(hatch.associative).toBe(true);
+      expect(hatch.loops[0]!.boundaryRefs).toEqual([poly.id]);
+      expect(hatch.loops[0]!.boundaryHandles).toBeUndefined();
+      // The fill FOLLOWS a boundary move in the model (the repaired
+      // behaviour — before the fix the model left it behind while the
+      // written file claimed the link was live).
+      const doc = new Drawing(state);
+      const polyNow = polyOf(doc.snapshot);
+      doc.replaceEntities([{ ...polyNow, points: sq(100, 100, 10) }]);
+      expect(hatchOf(doc.snapshot).loops[0]!.points).toEqual(sq(100, 100, 10));
+      // The save agrees with the model: live, with the back-reactor.
+      const recs = records(writeDxf(state));
+      const hatchRec = recs.find((r) => r.kind === 'HATCH')!;
+      const polyRec = recs.find((r) => r.kind === 'LWPOLYLINE')!;
+      expect(group(hatchRec, 71)).toBe('1');
+      expect(boundaryRefsOf(hatchRec)).toEqual([group(polyRec, 5)]);
+      expect(reactorsOf(polyRec)).toEqual([group(hatchRec, 5)]);
+    });
+
+    it(`(c) MOVE-THEN-SAVE: ${label} — import, move, save, reopen: model and file geometry agree and the link stays live`, () => {
+      const state = readDxf(paddedDxf(boundaryHandle, ref));
+      const doc = new Drawing(state);
+      doc.replaceEntities([{ ...polyOf(doc.snapshot), points: sq(100, 100, 10) }]);
+      const modelFill = hatchOf(doc.snapshot).loops[0]!.points.map((p) => ({ ...p }));
+      expect(modelFill).toEqual(sq(100, 100, 10));
+      const saved = writeDxf(doc.snapshot);
+      const hatchRec = records(saved).find((r) => r.kind === 'HATCH')!;
+      expect(group(hatchRec, 71)).toBe('1');
+      // The geometry in the file is the model's post-move fill, exactly.
+      expect(hatchPointsOf(hatchRec)).toEqual(modelFill);
+      // Reopen: still live, and a second move refreshes identically.
+      const reopened = readDxf(saved);
+      const reHatch = hatchOf(reopened);
+      expect(reHatch.associative).toBe(true);
+      expect(reHatch.loops[0]!.boundaryRefs).toEqual([polyOf(reopened).id]);
+      expect(reHatch.loops[0]!.points).toEqual(modelFill);
+      const doc2 = new Drawing(reopened);
+      doc2.replaceEntities([{ ...polyOf(doc2.snapshot), points: sq(200, 200, 10) }]);
+      expect(hatchOf(doc2.snapshot).loops[0]!.points).toEqual(sq(200, 200, 10));
+    });
+  }
+
+  it('(d) GUARD: a raw-only loop on a graph-backed import state (the post-import shape) is emitted but never carries 71 = 1', () => {
+    // Model-level pin (see the README): after fix 1 the DXF reader
+    // resolves every same-list spelling, so the residual shape — a
+    // loop carrying ONLY a raw handle naming an emitted entity, on a
+    // state whose identities live in the retained cad graph, with
+    // associative unset — is constructed here from a real import by
+    // reducing its live hatch to exactly that shape (the CANP5
+    // aftermath, had the link stayed non-live). The writer resolves
+    // the handle through the graph join and EMITS the link (retention
+    // is not loss), but the invariant guard keeps it from upgrading
+    // the hatch: 71 = 0, no back-reactor. On reopen the file and the
+    // model agree the hatch is inert (round 4).
+    const imported = readDxf(assocDxf());
+    const poly = polyOf(imported);
+    const hatch = hatchOf(imported);
+    expect(hatch.loops[0]!.boundaryRefs).toEqual([poly.id]);
+    const rawOnly: HatchEntity = {
+      ...hatch,
+      associative: undefined,
+      loops: [{ points: hatch.loops[0]!.points, boundaryHandles: ['50'] }],
+    };
+    const state: DrawingState = { ...imported, entities: imported.entities.map((e) => (e.id === hatch.id ? rawOnly : e)) };
+    const recs = records(writeDxf(state));
+    const hatchRec = recs.find((r) => r.kind === 'HATCH')!;
+    const polyRec = recs.find((r) => r.kind === 'LWPOLYLINE')!;
+    expect(group(hatchRec, 97)).toBe('1');
+    expect(boundaryRefsOf(hatchRec)).toEqual([group(polyRec, 5)]);
+    expect(group(hatchRec, 71)).toBe('0');
+    expect(reactorsOf(polyRec)).toEqual([]);
+    const reopened = hatchOf(readDxf(writeDxf(state)));
+    expect(reopened.associative).toBe(false);
+    expect(reopened.loops[0]!.boundaryRefs).toBeUndefined();
+    // Control: the same import left live (refs + flag) writes 71 = 1 —
+    // the guard touches only the raw-only upgrade.
+    const liveRecs = records(writeDxf(imported));
+    expect(group(liveRecs.find((r) => r.kind === 'HATCH')!, 71)).toBe('1');
+  });
+
+  it('(e) BYTE-STABILITY: the canonical-spelling import saves byte-identically before and after a reopen cycle', () => {
+    const once = writeDxf(readDxf(assocDxf()));
+    const twice = writeDxf(readDxf(once));
+    expect(twice).toBe(once);
+  });
+});

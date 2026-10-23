@@ -261,6 +261,15 @@ export interface WriteExtras {
    *  A hatch loop's retained handle naming one is a hatch boundary: the link
    *  is never emitted and the hatch demotes (see writeHatch in write-entities.ts). */
   hatchAnchorHandles?: ReadonlySet<string>;
+  /** P17 round 7: the canonical source handles whose entityBySourceHandle
+   *  entry was supplied (or overwritten) by the retained cad graph's
+   *  entity-anchor join — as opposed to an identity the entity carries in
+   *  the model itself (cadIdentity). The graph is the same evidence the
+   *  reader adjudicated the file's links against, so a retained handle
+   *  resolving ONLY through this join names a link the import already had
+   *  its chance to make live: writeHatch emits it (retention) but it
+   *  cannot by itself carry 71 = 1 (see writeHatch in write-entities.ts). */
+  graphEntityHandles?: ReadonlySet<string>;
   /** P17 round 2: the canonical source handle of EVERY retained graph node. A hatch
    *  loop's retained handle that names one of these but resolves to no emitted entity
    *  or anchor names an object the drawing retains yet this writer does not emit as a

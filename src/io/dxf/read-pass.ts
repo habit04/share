@@ -244,12 +244,26 @@ function applyExtrusion(o: Obj, e: Entity, ctx: ReadContext): Entity {
  * is drawing-wide — a handle naming a HATCH in ANY space or block
  * definition, or a retained raw HATCH record, demotes too; the lookup
  * (ctx.hatchHandles) keys handles canonically, so 00050 matches 50.
+ * Round 7: the ORDINARY resolution below keys canonically too — the
+ * map is built from canonicalCadHandle keys and every captured handle
+ * is looked up by its canonical key. Before this, a boundary whose
+ * group 5 was spelled zero-padded (00011B) while the hatch's 330
+ * spelled it unpadded (11B) — or the reverse — missed on both sides
+ * and imported non-live, while the writer's canonical retained-handle
+ * path resolved it and wrote 71 = 1: model and file disagreed about
+ * whether the fill follows the boundary (lead gate legs CANP5 /
+ * CANP5M / CANP3M). A spelling that is not a handle at all keys by its
+ * trimmed uppercase text, exactly as before.
  * Runs per list, in the LEADER-340 post-pass pattern.
  */
 function resolveHatchAssociations(list: Entity[], hatchObjs: ReadonlyMap<HatchEntity, Obj>, ctx: ReadContext): void {
   if (hatchObjs.size === 0) return;
+  /** Round 7: the canonical lookup key of a source handle spelling. */
+  const canonKey = (value: string): string => {
+    try { return canonicalCadHandle(value.trim()); } catch { return value.trim().toUpperCase(); }
+  };
   const byHandle = new Map<string, string>();
-  for (const e of list) if (e.cadIdentity) byHandle.set(e.cadIdentity.trim().toUpperCase(), e.id);
+  for (const e of list) if (e.cadIdentity) byHandle.set(canonKey(e.cadIdentity), e.id);
   const byId = new Map(list.map((e) => [e.id, e]));
   /** The inert posture: every captured handle stays a raw boundaryHandle, no live refs. */
   const inertLoopsOf = (h: HatchEntity): { loops: HatchLoop[]; touched: boolean } => {
@@ -298,7 +312,7 @@ function resolveHatchAssociations(list: Entity[], hatchObjs: ReadonlyMap<HatchEn
     // Only hatch-typed targets demote: an ordinary cross-space
     // boundary keeps the round-2 semantics (raw here, O5 at save).
     const namesHatch = hatch.loops.some((loop) => (loop.boundaryRefs ?? []).some((hh) => {
-      const id = byHandle.get(hh.trim().toUpperCase());
+      const id = byHandle.get(canonKey(hh));
       if (id !== undefined && byId.get(id)?.type === 'hatch') return true;
       if (!ctx.hatchHandles) return false;
       try { return ctx.hatchHandles.has(canonicalCadHandle(hh.trim())); } catch { return false; }
@@ -320,7 +334,7 @@ function resolveHatchAssociations(list: Entity[], hatchObjs: ReadonlyMap<HatchEn
       const ids: string[] = [];
       const raw: string[] = [...(loop.boundaryHandles ?? [])];
       for (const h of handles) {
-        const id = byHandle.get(h.trim().toUpperCase());
+        const id = byHandle.get(canonKey(h));
         if (id !== undefined && id !== hatch.id) ids.push(id);
         else {
           raw.push(h);

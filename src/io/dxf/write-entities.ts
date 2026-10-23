@@ -185,6 +185,21 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtr
   // untouched. The demotion is a pure function of the model, so every
   // save of such a hatch reproduces it.
   let hatchBoundary = false;
+  // Round 7 (invariant guard): whether at least one emitted link is
+  // LIVE by the model's own lights — derived from boundaryRefs (a live
+  // model link), from a retained handle naming a graph anchor (round 2:
+  // anchors are never modelled as entities, so the writer is their only
+  // adjudicator), or from a retained handle resolving through an
+  // identity the entity carries in the model itself (cadIdentity — the
+  // P1-d authored posture). A retained handle resolving ONLY through
+  // the retained graph's entity join does NOT set this: the graph is
+  // the same evidence the reader resolved the file against, so such a
+  // link is one the import already had its chance to make live. It is
+  // still EMITTED (retention is not loss, and its owner still counts in
+  // the classification below), but it cannot by itself carry 71 = 1 —
+  // before the guard, exactly that upgrade wrote CANP5's divergent
+  // file (model inert, file 71 = 1 + reactor).
+  let carriedLive = false;
   const loopLinks = e.loops.map((l) => {
     const seen = new Set<string>();
     const links: HatchLink[] = [];
@@ -200,7 +215,10 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtr
     };
     for (const id of l.boundaryRefs ?? []) {
       const b = extras?.entityById?.get(id);
-      if (b) pushEntity(b);
+      if (!b) continue;
+      const before = links.length;
+      pushEntity(b);
+      if (links.length > before) carriedLive = true;
     }
     for (const raw of l.boundaryHandles ?? []) {
       let canon: string;
@@ -211,7 +229,9 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtr
       }
       const b = extras?.entityBySourceHandle?.get(canon);
       if (b) {
+        const before = links.length;
         pushEntity(b);
+        if (links.length > before && !(extras?.graphEntityHandles?.has(canon) ?? false)) carriedLive = true;
         continue;
       }
       if (extras?.hatchAnchorHandles?.has(canon)) {
@@ -226,6 +246,7 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtr
         if (!seen.has(`a:${anchor.handle}`)) {
           seen.add(`a:${anchor.handle}`);
           links.push({ emit: () => anchor.handle, sameOwner: anchor.owner !== undefined && anchor.owner === owner });
+          carriedLive = true;
         }
         continue;
       }
@@ -246,7 +267,13 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtr
   // (model-built hatches) keeps the links-decide behaviour.
   // Round 5: a hatch-boundary link (hatchBoundary above) demotes the
   // whole hatch regardless of flag, links and owners.
-  w.pair(71, e.associative !== false && !hatchBoundary && allLinks.length > 0 && allLinks.every((l) => l.sameOwner) ? 1 : 0);
+  // Round 7: 71 = 1 additionally requires a carried-live link
+  // (carriedLive above): a hatch whose ONLY emitted links are retained
+  // handles resolving through the cad graph's entity join — links the
+  // import left non-live — is written 71 = 0 with its links emitted
+  // inert (the demote posture, never a refusal: no data is lost, and
+  // round 4 keeps the reopened hatch inert, so file and model agree).
+  w.pair(71, e.associative !== false && !hatchBoundary && carriedLive && allLinks.length > 0 && allLinks.every((l) => l.sameOwner) ? 1 : 0);
   w.pair(91, e.loops.length);
   e.loops.forEach((l, i) => {
     const hasBulge = !!l.bulges && l.bulges.some((b) => Math.abs(b) > 1e-12);

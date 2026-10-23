@@ -414,17 +414,25 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
   // identity lives in the cad graph (node sourceHandle + entity anchor).
   // The graph is the authoritative spelling of the same source file the
   // retained handles came from, so its entries overwrite the ones above.
+  // Round 7: the handles this join supplies (or overwrites) are recorded
+  // apart — a retained hatch handle resolving only through the graph
+  // names a link the reader already adjudicated non-live, and writeHatch
+  // must not let it carry 71 = 1 on its own (the CANP5 divergence).
+  const graphEntityHandles = new Set<string>();
   for (const node of state.cadGraph?.nodes ?? []) {
     if (node.anchor?.kind !== 'entity' || !node.sourceHandle) continue;
     const e = extras.entityById.get(node.anchor.id);
     if (!e) continue;
     try {
-      entityBySourceHandle.set(canonicalCadHandle(node.sourceHandle), e);
+      const canon = canonicalCadHandle(node.sourceHandle);
+      entityBySourceHandle.set(canon, e);
+      graphEntityHandles.add(canon);
     } catch {
       // A node id, not a handle: not a key.
     }
   }
   extras.entityBySourceHandle = entityBySourceHandle;
+  extras.graphEntityHandles = graphEntityHandles;
   // P17 round 2 (Codex P1): retained graph anchors — ENTITIES records
   // the merge still emits that are not entities (REGION / BODY / other
   // raw carriers) — resolve by canonical source handle, the handle
