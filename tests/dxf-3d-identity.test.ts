@@ -58,6 +58,15 @@
  *   including every 141/142, byte-identical. F-1 does not touch this fixture (no
  *   multi-line cell) and O-1 does not (every text is under 250 chars). The other three
  *   [1] hashes, every [0] input hash and the [2] legacy goldens are byte-unchanged.
+ * - Hatch-scale exception (2026-10-23, PR #50, same discipline): the hatch [1] output hash was
+ *   updated once more, because the hatch pattern-scale fix (74757b90) makes the declared
+ *   group-41 scale win over the scale re-derived from the definition-line offsets when the
+ *   two agree within tolerance — previously the re-derived ratio, computed from offsets the
+ *   writer emits at 10 decimal places, drifted the round-tripped scale. Verified line-by-line
+ *   against the 125143e9 output (1610 lines both sides): the delta is EXACTLY one value line,
+ *   the ANSI31 hatch's pattern scale (group 41) 0.9999999995 -> 1, the fixture's own declared
+ *   value — nothing else differs, including the pattern definition lines. The other three [1]
+ *   hashes, every [0] input hash and the [2] legacy goldens are byte-unchanged.
  * - Every fixture's output is also compared with the output for the same state carrying an empty
  *   model, and checked for any trace of the 3D records.
  */
@@ -72,7 +81,7 @@ const sha = (text: string) => createHash('sha256').update(lf(text)).digest('hex'
 // Tuple: fixture input, pre-integration output, unchanged incoming legacy golden.
 const BASELINES: Readonly<Record<string, readonly [string, string, string]>> = {
   'block-colors': ['d44dd28a3a2d19a88de28c2b6ef18ce4622109b709c8add8ddf27826f37de98f', '826c47754d9e093493c812bc4ad8ef9767fabeec611b0eb40aa971340afe8c81', '712755e567e4b52f3dd87f501eccfe6269ef930d1a754f93019a917c41af4a6e'],
-  hatch: ['99872d47f2af1a55fd8462083b25926fabd788fead26427f9d7202839b7aaa82', '0690ef325b7b5fa09e789a0db9d276f2427a0006851c56f64e2af8756bd55b67', '2f683468b3d721d2170c8dd2bc1c5c3eebaa20fffcb5891e9092e6a673e4e34b'],
+  hatch: ['99872d47f2af1a55fd8462083b25926fabd788fead26427f9d7202839b7aaa82', '8a760d197135686dcbe0cad06363b977523d6a642a41df6219e1c5519734a6ca', '2f683468b3d721d2170c8dd2bc1c5c3eebaa20fffcb5891e9092e6a673e4e34b'],
   'polyline-widths': ['41ff2357bdb4653396400d44113273203ea0fdc10e8efec283b56ec5108818fb', '51f8507514c66efa3714ddb3cea5c9bf8271636d49f1e1628a69f4a182e76ba3', '67fbdf3d4849505709756959a95e0ed0a001619554d80209a7f5f58ee22c4dc5'],
   'acad-table': ['0e3a7e374c9372782fc73c1875fe3ba80f43836e4a6217cb681b36734ccbfd29', '6e7d055b0cf8a0aedd20877cfa7aa2732e678f696ebaa727edafdeef3bb1ac1c', '495a35c874461dfafc244d185ad1c3a070ebf93df346581a33b9ab0913a7c4b5'],
 };
