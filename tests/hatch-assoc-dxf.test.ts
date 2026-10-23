@@ -353,3 +353,114 @@ describe('P17 R1: boundary back-reactors ({ACAD_REACTORS}) and the O5 save rule'
     expect(reactorsOf(writtenPoly)).toEqual([]);
   });
 });
+
+describe('P17 additions (Codex P1-d): retained handle links are emitted, not dropped', () => {
+  // Codex PR #44 P1-d: the writer emitted only boundaryRefs-derived links;
+  // a loop's retained raw handles (HatchLoop.boundaryHandles) were silently
+  // dropped, so a block-resident hatch linked to a model-space boundary
+  // lost the link on save — the reopened file had nothing, and 97/71 were
+  // gone. A retained handle that names an entity this writer emits (via
+  // its source identity) is a link like any other: it joins the 97/330
+  // list, follows the same O5 owner rule, and composes with the R1
+  // back-reactor pass. A handle naming NO object in the drawing stays
+  // unemitted — absence is not a link.
+  const props = { layer: '0', color: 'ByLayer' as const };
+  const sq = (x: number, y: number, s: number) => [
+    { x, y }, { x: x + s, y }, { x: x + s, y: y + s }, { x, y: y + s },
+  ];
+  /** 330 values inside a record's {ACAD_REACTORS …} block, in file order. */
+  const reactorsOf = (rec: { groups: Array<[number, string]> }): string[] => {
+    const out: string[] = [];
+    let inside = false;
+    for (const [c, v] of rec.groups) {
+      if (c === 102 && v === '{ACAD_REACTORS') inside = true;
+      else if (c === 102 && v === '}' && inside) inside = false;
+      else if (inside && c === 330) out.push(v);
+    }
+    return out;
+  };
+
+  it('a block hatch whose retained handle names a model-space boundary writes the link, stays 71 = 0 (O5), and survives a second save', () => {
+    const modelPoly: PolylineEntity = {
+      id: 'm1', ...props, type: 'polyline', points: sq(0, 0, 10), closed: true, cadIdentity: '50',
+    };
+    const blockHatch: HatchEntity = {
+      id: 'bh1', ...props, type: 'hatch', pattern: 'SOLID', solid: true, angle: 0, scale: 1,
+      loops: [{ points: sq(0, 0, 10), boundaryHandles: ['50'] }],
+    };
+    const state: DrawingState = {
+      entities: [modelPoly], layers: [], currentLayer: '0',
+      blocks: { BLK: { name: 'BLK', basePoint: { x: 0, y: 0 }, entities: [blockHatch], attributes: [] } },
+    };
+    const written = writeDxf(state);
+    const recs = records(written);
+    const hatchRec = recs.find((r) => r.kind === 'HATCH')!;
+    const polyRec = recs.find((r) => r.kind === 'LWPOLYLINE')!;
+    expect(group(hatchRec, 97)).toBe('1');
+    expect(boundaryRefsOf(hatchRec)).toEqual([group(polyRec, 5)]);
+    expect(group(hatchRec, 71)).toBe('0');
+    expect(reactorsOf(polyRec)).toEqual([]);
+    // Reopen: the block hatch retains the handle as written; the second
+    // save emits it again — 97/71 do not clear.
+    const reopened = readDxf(written);
+    const reHatch = reopened.blocks['BLK']!.entities.find((e): e is HatchEntity => e.type === 'hatch')!;
+    expect(reHatch.loops[0]!.boundaryHandles).toEqual([group(polyRec, 5)]);
+    const recs2 = records(writeDxf(reopened));
+    const hatch2 = recs2.find((r) => r.kind === 'HATCH')!;
+    const poly2 = recs2.find((r) => r.kind === 'LWPOLYLINE')!;
+    expect(group(hatch2, 97)).toBe('1');
+    expect(boundaryRefsOf(hatch2)).toEqual([group(poly2, 5)]);
+    expect(group(hatch2, 71)).toBe('0');
+  });
+
+  it('a retained handle naming a boundary in the SAME block is a live same-owner link (71 = 1, back-reactor written)', () => {
+    const polyInBlock: PolylineEntity = {
+      id: 'bp1', ...props, type: 'polyline', points: sq(0, 0, 10), closed: true, cadIdentity: '50',
+    };
+    const hatchInBlock: HatchEntity = {
+      id: 'bh1', ...props, type: 'hatch', pattern: 'SOLID', solid: true, angle: 0, scale: 1,
+      loops: [{ points: sq(0, 0, 10), boundaryHandles: ['50'] }],
+    };
+    const state: DrawingState = {
+      entities: [], layers: [], currentLayer: '0',
+      blocks: { BLK: { name: 'BLK', basePoint: { x: 0, y: 0 }, entities: [polyInBlock, hatchInBlock], attributes: [] } },
+    };
+    const recs = records(writeDxf(state));
+    const hatchRec = recs.find((r) => r.kind === 'HATCH')!;
+    const polyRec = recs.find((r) => r.kind === 'LWPOLYLINE')!;
+    expect(group(hatchRec, 97)).toBe('1');
+    expect(boundaryRefsOf(hatchRec)).toEqual([group(polyRec, 5)]);
+    expect(group(hatchRec, 71)).toBe('1');
+    expect(reactorsOf(polyRec)).toEqual([group(hatchRec, 5)]);
+  });
+
+  it('a loop naming one boundary by BOTH entity id and retained handle emits the link once', () => {
+    const poly: PolylineEntity = {
+      id: 'm1', ...props, type: 'polyline', points: sq(0, 0, 10), closed: true, cadIdentity: '50',
+    };
+    const hatch: HatchEntity = {
+      id: 'h1', ...props, type: 'hatch', pattern: 'SOLID', solid: true, angle: 0, scale: 1, associative: true,
+      loops: [{ points: sq(0, 0, 10), boundaryRefs: ['m1'], boundaryHandles: ['50'] }],
+    };
+    const state: DrawingState = { entities: [poly, hatch], layers: [], blocks: {}, currentLayer: '0' };
+    const recs = records(writeDxf(state));
+    const hatchRec = recs.find((r) => r.kind === 'HATCH')!;
+    const polyRec = recs.find((r) => r.kind === 'LWPOLYLINE')!;
+    expect(group(hatchRec, 97)).toBe('1');
+    expect(boundaryRefsOf(hatchRec)).toEqual([group(polyRec, 5)]);
+    expect(group(hatchRec, 71)).toBe('1');
+    expect(reactorsOf(polyRec)).toEqual([group(hatchRec, 5)]);
+  });
+
+  it('a retained handle naming NO object in the drawing is still not emitted (absence is not a link)', () => {
+    const hatch: HatchEntity = {
+      id: 'h1', ...props, type: 'hatch', pattern: 'SOLID', solid: true, angle: 0, scale: 1,
+      loops: [{ points: sq(0, 0, 10), boundaryHandles: ['7E'] }],
+    };
+    const state: DrawingState = { entities: [hatch], layers: [], blocks: {}, currentLayer: '0' };
+    const hatchRec = records(writeDxf(state)).find((r) => r.kind === 'HATCH')!;
+    expect(group(hatchRec, 97)).toBe('0');
+    expect(boundaryRefsOf(hatchRec)).toEqual([]);
+    expect(group(hatchRec, 71)).toBe('0');
+  });
+});

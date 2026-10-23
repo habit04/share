@@ -21,7 +21,7 @@ import type { ConstraintSet } from './constraints/model';
 import { enforceConstraintPolicy } from './constraints/policy';
 import { noteSignatureEdit, type PreservedSignatureRecord } from '../project/drawing-signature';
 import { validateDataLinks, type DataLink } from '../project/data-links';
-import { detachErasedBoundaries, hatchUpdatesForBoundaryEdits, remapHatchBoundaryRefs } from './hatch-assoc';
+import { detachErasedBoundaries, hasHatchAssociations, hatchUpdatesForBoundaryEdits, remapHatchBoundaryRefs } from './hatch-assoc';
 
 import type { Model3D } from '../model3d/types';
 import { model3dOf, withModel3D } from '../model3d/model';
@@ -74,6 +74,79 @@ function invalidateSignatureRecord(state: DrawingState): DrawingState {
 /** Prepare a complete graph-aware transition before any history, UI or file mutation. */
 export function prepareDrawingTransition(previous: DrawingState, state: DrawingState, intent?: CadGraphEditIntent): DrawingState {
   return prepareDrawingState(reconcileCadGraph(previous, state, intent), previous);
+}
+
+/**
+ * P17 (Codex PR #44 P1-b/P1-c): associative-hatch maintenance at the
+ * transaction boundary. It used to live inside addEntities /
+ * replaceEntities / removeEntities only, so every mutation that goes
+ * through Drawing.transact directly — EntityClipboard.paste, the plugin
+ * API's replace/remove, replaceWith, updateModel3D — silently skipped it:
+ * pasted hatches kept naming the SOURCE drawing's boundaries, and API
+ * boundary edits left fills stale and refs dangling. Running it here, on
+ * the (before, after) pair of every transact, gives every path the same
+ * three steps, in an order that cannot resurrect a dropped link:
+ *   1. clone remap — each clone batch rewrites the refs of ITS OWN
+ *      copies with ITS OWN entityIds map (P1-b: flattening all batches
+ *      into one map made repeated source ids resolve last-wins, so in
+ *      ARRAYRECT/ARRAYPOLAR every copied hatch pointed at the LAST
+ *      cell's boundary);
+ *   2. detach — loops naming an entity this transaction removed lose
+ *      the reference, geometry frozen (the erase semantics);
+ *   3. refresh — hatches whose boundary object was replaced are
+ *      refreshed from the new boundary geometry.
+ * The helpers' own guards keep it free for transactions that touch no
+ * hatches: an unchanged entity list returns at once, and a list with no
+ * live boundary refs does no further work. Paths that maintained inline
+ * before (addEntities / replaceEntities / removeEntities) now get the
+ * identical result from here — the diff below is exactly the set of ids
+ * those methods used to compute — so nothing is maintained twice.
+ */
+function maintainHatchAssociations(before: DrawingState, after: DrawingState, intent?: CadGraphEditIntent): DrawingState {
+  if (after.entities === before.entities) return after;
+  if (!hasHatchAssociations(after.entities)) return after;
+  let entities = after.entities;
+  let out = after;
+  const splice = (next: readonly Entity[]): void => {
+    entities = next;
+    out = { ...after, entities: next };
+  };
+  // 1. Clone remap, one batch at a time, scoped to that batch's copies.
+  for (const batch of intent?.cloneBatches ?? []) {
+    const idMap = new Map(Object.entries(batch.entityIds));
+    if (idMap.size === 0) continue;
+    const targets = new Set(idMap.values());
+    const subset = entities.filter((e) => targets.has(e.id));
+    if (!subset.some((e) => e.type === 'hatch')) continue;
+    const remapped = remapHatchBoundaryRefs(subset, idMap);
+    if (remapped.some((e, i) => e !== subset[i])) {
+      const byId = new Map(remapped.map((e) => [e.id, e]));
+      splice(entities.map((e) => byId.get(e.id) ?? e));
+    }
+  }
+  // 2. Detach loops whose boundary this transaction removed.
+  const afterIds = new Set(entities.map((e) => e.id));
+  const removed = new Set<string>();
+  for (const e of before.entities) if (!afterIds.has(e.id)) removed.add(e.id);
+  if (removed.size > 0) {
+    const detached = detachErasedBoundaries(entities, removed);
+    if (detached.some((e, i) => e !== entities[i])) splice(detached);
+  }
+  // 3. Refresh hatches whose boundary object was replaced in place.
+  const beforeById = new Map(before.entities.map((e) => [e.id, e]));
+  const changed = new Set<string>();
+  for (const e of entities) {
+    const prev = beforeById.get(e.id);
+    if (prev && prev !== e) changed.add(e.id);
+  }
+  if (changed.size > 0) {
+    const updates = hatchUpdatesForBoundaryEdits(entities, changed);
+    if (updates.length > 0) {
+      const byId = new Map(updates.map((e) => [e.id, e]));
+      splice(entities.map((e) => byId.get(e.id) ?? e));
+    }
+  }
+  return out;
 }
 
 /** A named view (VIEW command): world centre and view height. */
@@ -386,12 +459,15 @@ export class Drawing {
 
   /** Apply an active-space state transition as one undoable step. */
   transact(fn: (s: DrawingState) => DrawingState, intent?: CadGraphEditIntent): void {
-    this.commitTransition(this.project(fn), intent);
+    // P17: hatch-association maintenance runs on the PROJECTED pair, so in
+    // paper space it maintains the layout's entity list — the same list
+    // the caller's fn saw — before the result is folded back.
+    this.commitTransition(this.project((s) => maintainHatchAssociations(s, fn(s), intent)), intent);
   }
 
   /** Apply a document-wide transition without projecting the active paper layout. */
   transactDrawing(fn: (s: DrawingState) => DrawingState, intent?: CadGraphEditIntent): void {
-    this.commitTransition(fn(this.state), intent);
+    this.commitTransition(maintainHatchAssociations(this.state, fn(this.state), intent), intent);
   }
 
   /** Shared preparation, bounded undo history and dirty notification for both transaction scopes. */
@@ -516,14 +592,10 @@ export class Drawing {
    */
   addEntities(entities: readonly Entity[], applyDefaults = true, intent?: CadGraphEditIntent): void {
     if (entities.length === 0) return;
-    let list = applyDefaults ? this.withEntityDefaults(entities) : entities;
-    // P17: a declared clone batch copies boundary + hatch together; the copies'
-    // associations must name the copied boundaries, not the originals.
-    if (intent?.cloneBatches?.length) {
-      const idMap = new Map<string, string>();
-      for (const batch of intent.cloneBatches) for (const [from, to] of Object.entries(batch.entityIds)) idMap.set(from, to);
-      if (idMap.size > 0) list = remapHatchBoundaryRefs(list, idMap);
-    }
+    const list = applyDefaults ? this.withEntityDefaults(entities) : entities;
+    // P17: a declared clone batch copies boundary + hatch together; the
+    // copies' associations are remapped per batch by the transact-boundary
+    // maintenance (maintainHatchAssociations), not here.
     this.transact((s) => ({ ...s, entities: [...s.entities, ...list] }), intent);
   }
 
@@ -574,12 +646,13 @@ export class Drawing {
   removeEntities(ids: Iterable<string>): void {
     const set = new Set(ids);
     if (set.size === 0) return;
+    // P17: erasing a boundary detaches its hatches in the same step — the
+    // transact-boundary maintenance (maintainHatchAssociations) drops the
+    // reference when it sees the id leave the entity list.
     this.transact((s) => {
       const kept = s.entities.filter((e) => !set.has(e.id));
       if (kept.length === s.entities.length) return s;
-      // P17: erasing a boundary detaches its hatches in the same step
-      // (loop geometry frozen, the reference dropped — never left dangling).
-      return { ...s, entities: detachErasedBoundaries(kept, set) };
+      return { ...s, entities: kept };
     });
   }
 
@@ -587,6 +660,10 @@ export class Drawing {
   replaceEntities(replacements: readonly Entity[], intent?: CadGraphEditIntent): void {
     if (replacements.length === 0) return;
     const map = new Map(replacements.map((e) => [e.id, e]));
+    // P17: associative hatches whose boundary was replaced are refreshed
+    // from the new boundary geometry inside this same transaction (the
+    // boundary edit and the fill update are exactly one undo step) by the
+    // transact-boundary maintenance (maintainHatchAssociations).
     this.transact((s) => {
       let changed = false;
       const replaced = s.entities.map((e) => {
@@ -598,13 +675,7 @@ export class Drawing {
         return e;
       });
       if (!changed) return s;
-      // P17: associative hatches whose boundary was replaced are refreshed
-      // from the new boundary geometry inside this same transaction, so the
-      // boundary edit and the fill update are exactly one undo step.
-      const updates = hatchUpdatesForBoundaryEdits(replaced, new Set(map.keys()));
-      if (updates.length === 0) return { ...s, entities: replaced };
-      const updateMap = new Map(updates.map((e) => [e.id, e]));
-      return { ...s, entities: replaced.map((e) => updateMap.get(e.id) ?? e) };
+      return { ...s, entities: replaced };
     }, intent);
   }
 

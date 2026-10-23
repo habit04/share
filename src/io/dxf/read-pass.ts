@@ -231,7 +231,9 @@ function applyExtrusion(o: Obj, e: Entity, ctx: ReadContext): Entity {
  * document entity ids, via the cadIdentity map of THIS entity list (a
  * hatch and its boundaries live in the same space / block definition).
  * Resolved loops keep entity ids; unresolved handles move to
- * boundaryHandles — retained, reported, never written back as links. A
+ * boundaryHandles — retained and reported (on save they are written
+ * back as links only when they name an object in the drawing; see
+ * writeHatch in io/dxf/write-entities.ts). A
  * bare associative flag with no resolvable link is cleared and reported
  * (the writer cannot emit a flag without links; AutoCAD's AUDIT would
  * repair it). Runs per list, in the LEADER-340 post-pass pattern.
@@ -281,7 +283,7 @@ function resolveHatchAssociations(list: Entity[], hatchObjs: ReadonlyMap<HatchEn
     const { associative: _a, ...rest } = hatch;
     list[at] = { ...rest, loops, ...(kept > 0 ? { associative: true } : {}) };
     if (unresolved.length > 0) {
-      reportObj(ctx, o, 'simplified', `associative hatch: ${kept} of ${total} boundary links kept; unresolved boundary object handle(s) ${unresolved.join(', ')} are retained as raw handles on the loop and are not written back`);
+      reportObj(ctx, o, 'simplified', `associative hatch: ${kept} of ${total} boundary links kept; unresolved boundary object handle(s) ${unresolved.join(', ')} are retained as raw handles on the loop and are written back only if they name an object in the drawing`);
     }
   }
 }
