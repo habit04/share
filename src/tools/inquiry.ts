@@ -304,6 +304,15 @@ export function listEntity(e: Entity, doc: Drawing): string[] {
       if (e.fade) lines.push(`                     Fade  ${e.fade}`);
       break;
     }
+    case 'underlay': {
+      // The stored path lives on the definition in the underlays sibling,
+      // joined by handle — never invented from the placement (RULING-P28 C2).
+      const def = Object.values(doc.snapshot.underlays ?? {}).find((d) => d.handle?.toUpperCase() === e.definitionHandle);
+      lines.push(`                     Kind  ${e.kind.toUpperCase()} underlay`, `            insert point, ${P(e.position)}`, `           Definition handle  ${e.definitionHandle}`);
+      lines.push(def ? `                     Path  ${def.sourcePath}${def.page ? ` (page ${def.page})` : ''}` : '                     Path  (definition not in this drawing)');
+      if (e.fade) lines.push(`                     Fade  ${e.fade}`);
+      break;
+    }
   }
   const b = entityBounds(e, doc.lookupBlock);
   if (b && e.type !== 'line' && e.type !== 'point') lines.push(`             Bounding box: ${f(b.min.x)}, ${f(b.min.y)}  to  ${f(b.max.x)}, ${f(b.max.y)}`);

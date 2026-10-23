@@ -32,6 +32,7 @@ import type { CadNode } from '../../core/cad-graph';
 import { dimStyleRecordPairs } from '../../core/dimension';
 import { writeEntityAnno, writeEntity } from './write-entities';
 import { tableStyleKey, tablePictureForm, tableRoundtripCells, writeTableRoundtrip, emitMLeaderContext, mleaderContextViews } from './write-annotations';
+import { writeUnderlayDefinition } from './underlay-codec';
 import { attdefFlags } from '../../electrical/symbol-builder-core';
 import { tableParts, dimensionParts } from '../../core/entities';
 import { entityMTextBackground } from '../../core/mtext-background';
@@ -498,6 +499,19 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
     }
   }
   const tableList = [...extras.tableBlocks.entries()];
+  // RULING-P28 C8: underlay definition handles are allocated for EVERY
+  // definition in the sibling — referenced or not, unreferenced definitions
+  // are written back (C2) — in this pre-pass, before any section (and so
+  // before ENTITIES) is emitted, so a placement's group 340 always names a
+  // handle this file defines.
+  const underlayDefs = Object.values(state.underlays ?? {});
+  for (const def of underlayDefs) {
+    const handle = w.nextHandle();
+    extras.underlayDefHandles.set(def.id, handle);
+    if (def.handle) extras.underlayHandlesByDef.set(def.handle.toUpperCase(), handle);
+  }
+  const underlayEntityKinds = new Set(allEntities.flatMap((e) => (e.type === 'underlay' ? [e.kind] : [])));
+  const underlayDefKinds = new Set(underlayDefs.map((d) => d.kind));
 
   // HEADER
   w.pair(0, 'SECTION');
@@ -597,6 +611,15 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
         w.pair(280, 0);
         w.pair(281, 0);
       }
+    }
+    // Underlay CLASS registrations are presence-gated per kind (RULING-P28 C8).
+    for (const kind of ['pdf', 'dwf', 'dgn'] as const) {
+      const entityName = kind === 'pdf' ? 'PDFUNDERLAY' : kind === 'dwf' ? 'DWFUNDERLAY' : 'DGNUNDERLAY';
+      const defName = kind === 'pdf' ? 'PDFDEFINITION' : kind === 'dwf' ? 'DWFDEFINITION' : 'DGNDEFINITION';
+      const entityCpp = kind === 'pdf' ? 'AcDbPdfUnderlay' : kind === 'dwf' ? 'AcDbDwfUnderlay' : 'AcDbDgnUnderlay';
+      const defCpp = kind === 'pdf' ? 'AcDbPdfDefinition' : kind === 'dwf' ? 'AcDbDwfDefinition' : 'AcDbDgnDefinition';
+      if (underlayEntityKinds.has(kind)) cls(entityName, entityCpp, 127, true, allEntities.filter((e) => e.type === 'underlay' && e.kind === kind).length);
+      if (underlayDefKinds.has(kind)) cls(defName, defCpp, 0, false, underlayDefs.filter((d) => d.kind === kind).length);
     }
     if (createCannoVariable || createAnnoVariable) {
       // AutoCAD's specimen registration (the HANDBUILT fixtures): app name
@@ -1384,6 +1407,20 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
       });
       // The context objects themselves, in the same (dictionary) order.
       views.forEach((v, i) => emitObject(v, i));
+    }
+  }
+  // Underlay definitions in OBJECTS, through the codec (RULING-P28 C8): the
+  // stored path is emitted verbatim, never normalised or resolved. The
+  // writer owns the record handle (5), the owner (330: the named-objects
+  // dictionary, handle 'C' as elsewhere in this writer) and the subclass
+  // markers — codec copies of those codes are structural and skipped.
+  for (const def of underlayDefs) {
+    w.pair(0, def.kind === 'pdf' ? 'PDFDEFINITION' : def.kind === 'dwf' ? 'DWFDEFINITION' : 'DGNDEFINITION');
+    w.pair(5, extras.underlayDefHandles.get(def.id)!);
+    w.pair(330, 'C');
+    for (const [code, value] of writeUnderlayDefinition(def)) {
+      if (code === 5 || code === 100 || code === 330) continue;
+      w.pair(code, value);
     }
   }
   w.pair(0, 'ENDSEC');

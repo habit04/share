@@ -18,6 +18,7 @@ import type { TextGeometryContext } from './text-metrics';
 import type { NativeViewCamera } from './named-view';
 import { reconcileCadGraph, validateCadState, type CadGraph, type CadGraphEditIntent } from './cad-graph';
 import type { ConstraintSet } from './constraints/model';
+import type { UnderlayDefinition } from './underlay';
 import { enforceConstraintPolicy } from './constraints/policy';
 import { noteSignatureEdit, type PreservedSignatureRecord } from '../project/drawing-signature';
 import { validateDataLinks, type DataLink } from '../project/data-links';
@@ -202,6 +203,17 @@ export interface DrawingState {
    * the linked cell CONTENT is digested as table content.
    */
   readonly dataLinks?: readonly DataLink[];
+  /**
+   * Priority 28: underlay *DEFINITION objects (core/underlay.ts), keyed by
+   * definition id — a sibling of `entities`, not part of it (RULING-P28 C2).
+   * Placements (UnderlayEntity) join to a definition by
+   * placement.definitionHandle === definition.handle in the reader post-pass.
+   * Definitions with no placement are retained and written back. Absent =
+   * no underlay definitions; ordinary drawings are untouched. Definitions
+   * are not entities and carry no entity geometry work (C5). Mutation only
+   * through Drawing.transact, like every other state field (C7).
+   */
+  readonly underlays?: Readonly<Record<string, UnderlayDefinition>>;
 }
 
 export type DocListener = (doc: Drawing) => void;

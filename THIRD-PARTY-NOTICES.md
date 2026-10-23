@@ -63,6 +63,7 @@ Versions are the ones in `package-lock.json` at the time this file was written.
 | electron-updater | 6.8.9 | MIT | Copyright (c) 2015 Loopline Systems | direct dependency | <https://github.com/electron-userland/electron-builder> |
 | hershey | 2.1.7 | MIT (code); Hershey font data under the Hershey use restriction | Copyright (c) 2019 Ben Nortier | direct dependency | <https://github.com/bjnortier/hershey> |
 | manifold-3d | 3.5.4 | Apache-2.0 | Copyright 2021 The Manifold Authors (Emmett Lalish, Chun Kit Lam and contributors) | bundled at build time (3D kernel worker) | <https://github.com/elalish/manifold> |
+| pdfjs-dist | 6.4.299 | Apache-2.0 | Copyright Mozilla Foundation and contributors | PDF underlay rasterization (`src/io/underlay-pdfjs.ts`), loaded lazily in a dedicated worker | <https://github.com/mozilla/pdf.js> |
 | qpdf | 12.4.2 | Apache-2.0 | Copyright 2005-2021 Jay Berkenbilt, 2022-2026 Jay Berkenbilt and Manfred Holger | locally built WebAssembly engine, bundled at build time (restricted PDF export) | <https://github.com/qpdf/qpdf> |
 | zlib | 1.3.1 | zlib | Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler | statically linked into the qpdf engine | <https://zlib.net/> |
 | libjpeg-turbo | 3.1.1 | IJG + BSD-style (see licence text) | The Independent JPEG Group; libjpeg-turbo contributors | statically linked into the qpdf engine (built without SIMD for WebAssembly) | <https://github.com/libjpeg-turbo/libjpeg-turbo> |

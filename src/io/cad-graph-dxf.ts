@@ -1119,7 +1119,7 @@ export function attachDxfCadGraph(state: DrawingState, pairs: readonly Pair[], o
   const metadataIds = new Set<string>();
   const byId = new Map(nodes.map(node => [node.id, node]));
   for (const node of nodes) {
-    if (node.anchor?.kind === 'entity' && (node.groups.some(([code]) => code === 102) || hasRetainedXdata(node) || node.references?.some(ref => ref.role !== 'owner' && ref.kind !== 'arbitrary' && (node.groups[ref.groupIndex]![0] === 1005 || !['DIMENSION', 'LEADER', 'MULTILEADER', 'MLEADER', 'ACAD_TABLE', 'IMAGE'].includes(node.type))))) metadataIds.add(node.anchor.id);
+    if (node.anchor?.kind === 'entity' && (node.groups.some(([code]) => code === 102) || hasRetainedXdata(node) || node.references?.some(ref => ref.role !== 'owner' && ref.kind !== 'arbitrary' && (node.groups[ref.groupIndex]![0] === 1005 || !['DIMENSION', 'LEADER', 'MULTILEADER', 'MLEADER', 'ACAD_TABLE', 'IMAGE', 'PDFUNDERLAY', 'DWFUNDERLAY', 'DGNUNDERLAY'].includes(node.type))))) metadataIds.add(node.anchor.id);
     if (node.section === 'OBJECTS') for (const ref of node.references ?? []) if (ref.target && ref.role !== 'owner') {
       const target = byId.get(ref.target);
       if (target?.anchor?.kind === 'entity') metadataIds.add(target.anchor.id);
@@ -1162,6 +1162,21 @@ function logicalKeys(records: readonly RecordData[]): Map<RecordData, string> {
     else if (record.type === 'HEADER') keys.set(record, 'header');
     else if (record.type === 'BLOCK') keys.set(record, JSON.stringify(['block', name.toUpperCase()]));
     else if (record.type === 'LAYOUT') keys.set(record, JSON.stringify(['layout', layoutName(record).toUpperCase()]));
+    // RULING-P28 C6, corrected by PR #42 fix 2: an underlay DEFINITION
+    // dedupes on its REAL identity — kind + stored path (group 1) +
+    // page/model as stored (group 2). The C6 key omitted the page, so
+    // two pages of one PDF collided and the merge kept a copy per pass
+    // (2 -> 3 -> 5 -> 9 -> 17 definitions). This branch also runs BEFORE
+    // the dictionary branch: a definition owned through a named
+    // sub-dictionary (ACAD_PDFDEFINITIONS and kin) keys by the same
+    // identity as the generated records, which the writer parents to
+    // the root dictionary directly — keyed by dictionary path, the two
+    // never matched and dictionary-owned definitions duplicated too.
+    // In a graph-carrying state the model/codec is authoritative for
+    // the modelled definition content; the retained node contributes
+    // only unmodelled extras through the merge, so retained groups are
+    // neither doubled nor lost.
+    else if (record.type === 'PDFDEFINITION' || record.type === 'DWFDEFINITION' || record.type === 'DGNDEFINITION') keys.set(record, JSON.stringify(['underlay', record.type, identifierValue(record, 1), identifierValue(record, 2)]));
     else if (record.handle && paths.has(record.handle)) keys.set(record, JSON.stringify(['dictionary', ...paths.get(record.handle)!]));
     else if (record.type === 'IMAGEDEF') keys.set(record, JSON.stringify(['image', identifierValue(record, 1)]));
   }
@@ -1343,6 +1358,140 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     const owner = generatedByHandle.get(value(record, 330)), sourceOwner = owner && match.get(owner), node = sourceOwner && imageReactors.get(sourceOwner.id);
     if (node && !matched.has(node.id)) { match.set(record, node); matched.add(node.id); }
   }
+  // PR #42 fix 2, second half: a definition whose stored path the model
+  // edited cannot match on its full identity (the source key carries
+  // the old path). Its identity survives in (kind, page/model): when
+  // exactly ONE unmatched source definition and ONE unmatched generated
+  // record share it, they are the same definition — the generated
+  // record (model authoritative for the path, RULING-P28 C6) takes the
+  // retained node's place and its extras merge once, instead of the
+  // stale record surviving beside the new one (4 definitions, old path
+  // included). Ambiguous pairings are left unmatched on purpose.
+  const isUnderlayDefinition = (type: string) => type === 'PDFDEFINITION' || type === 'DWFDEFINITION' || type === 'DGNDEFINITION';
+  const isUnderlayEntity = (type: string) => type === 'PDFUNDERLAY' || type === 'DWFUNDERLAY' || type === 'DGNUNDERLAY';
+  // PR #42 cleanup (4): BEFORE the (kind, page) fallback, bind edited
+  // definitions by the model's definition/reference identity. A
+  // placement matched by its entity anchor, and its retained node
+  // references exactly the definition node it pointed at in the
+  // source, while the placement's generated record points (group 340,
+  // remapped by the writer) at the generated definition record. When
+  // every claim through that chain agrees on one pairing, the pairing
+  // is proven — even when two definitions share kind AND page and
+  // both paths moved in one transaction (the 2-and-2 remainder the
+  // fallback cannot pair, which used to emit 4 definitions).
+  const nodeById = new Map(graph.nodes.map(node => [node.id, node]));
+  const claimsOf = new Map<RecordData, Set<CadNode>>(), claimedBy = new Map<CadNode, Set<RecordData>>();
+  for (const record of generated) {
+    const node = match.get(record);
+    if (!node || !isUnderlayEntity(record.type)) continue;
+    const targets = new Set((node.references ?? []).flatMap(ref => {
+      const target = ref.target ? nodeById.get(ref.target) : undefined;
+      return target && isUnderlayDefinition(target.type) && !matched.has(target.id) ? [target] : [];
+    }));
+    if (!targets.size) continue;
+    for (const [code, raw] of record.groups) {
+      const kind = cadReferenceKind(code);
+      if (!kind || kind === 'arbitrary') continue;
+      const pointed = generatedByHandle.get(canonicalCadHandle(raw.trim()));
+      if (!pointed || !isUnderlayDefinition(pointed.type) || match.has(pointed)) continue;
+      claimsOf.set(pointed, new Set([...(claimsOf.get(pointed) ?? []), ...targets]));
+      for (const target of targets) claimedBy.set(target, new Set([...(claimedBy.get(target) ?? []), pointed]));
+    }
+  }
+  for (const [record, targets] of claimsOf) {
+    if (targets.size !== 1 || match.has(record)) continue;
+    const node = [...targets][0]!;
+    if ((claimedBy.get(node)?.size ?? 0) !== 1 || matched.has(node.id)) continue;
+    match.set(record, node); matched.add(node.id);
+  }
+  const unmatchedSourcesByPage = new Map<string, CadNode[]>();
+  graph.nodes.forEach((node, index) => {
+    if (matched.has(node.id) || !isUnderlayDefinition(node.type)) return;
+    const key = JSON.stringify(['underlay-page', node.type, identifierValue(sources[index]!, 2)]);
+    unmatchedSourcesByPage.set(key, [...(unmatchedSourcesByPage.get(key) ?? []), node]);
+  });
+  const unmatchedGeneratedByPage = new Map<string, RecordData[]>();
+  for (const record of generated) {
+    if (match.has(record) || !isUnderlayDefinition(record.type)) continue;
+    const key = JSON.stringify(['underlay-page', record.type, identifierValue(record, 2)]);
+    unmatchedGeneratedByPage.set(key, [...(unmatchedGeneratedByPage.get(key) ?? []), record]);
+  }
+  for (const [key, recordsForPage] of unmatchedGeneratedByPage) {
+    const nodesForPage = unmatchedSourcesByPage.get(key) ?? [];
+    if (recordsForPage.length === 1 && nodesForPage.length === 1) {
+      match.set(recordsForPage[0]!, nodesForPage[0]!);
+      matched.add(nodesForPage[0]!.id);
+    }
+  }
+  // PR #42 stable-binding fix (supersedes the cleanup-(4) leftover
+  // check, which keyed unbound definitions by (type, page)): the page
+  // is EDITABLE, so a modelled definition whose page — or path and
+  // page — moved fell out of every content key above and was emitted
+  // beside its stale predecessor (one unplaced dictionary-owned
+  // definition duplicated on a page-only edit; two became four on
+  // path+page edits). Bind each modelled definition to its source
+  // record by the identity editable fields cannot move: the model
+  // definition carries its source record handle
+  // (UnderlayDefinition.handle), the retained node carries the same
+  // handle as its sourceHandle, and a generated definition record
+  // corresponds to the model definition the writer emitted it from
+  // (the writer emits the sibling in order, one record per
+  // definition, so the correspondence replays deterministically per
+  // type). The binding is authoritative: a content-based pairing that
+  // contradicts it (two definitions of one file swapping pages pair
+  // crosswise on the (kind, path, page) key) is re-paired. A modelled
+  // definition that cannot be bound to its source record — its handle
+  // names no retained definition record, two definitions claim one
+  // record, or the generated records do not correspond to the
+  // modelled definitions — refuses the save atomically, whatever page
+  // it has. The scope is the MODELLED definitions (the ones the model
+  // carries in its underlays sibling and is authoritative for,
+  // RULING-P28 C6): retained records the model never claimed stay
+  // outside the pairing entirely and are emitted verbatim as before.
+  const modelledDefHandles = new Set(Object.values(state.underlays ?? {}).flatMap(def => def.handle ? [canonicalCadHandle(def.handle)] : []));
+  const defTypeOfKind: Readonly<Record<string, string>> = { pdf: 'PDFDEFINITION', dwf: 'DWFDEFINITION', dgn: 'DGNDEFINITION' };
+  const generatedDefsByType = new Map<string, RecordData[]>();
+  for (const record of generated) if (isUnderlayDefinition(record.type)) generatedDefsByType.set(record.type, [...(generatedDefsByType.get(record.type) ?? []), record]);
+  const modelDefsByType = new Map<string, { readonly handle?: string; readonly sourcePath: string }[]>();
+  for (const def of Object.values(state.underlays ?? {})) {
+    const type = defTypeOfKind[def.kind];
+    if (type) modelDefsByType.set(type, [...(modelDefsByType.get(type) ?? []), def]);
+  }
+  const defNodeByHandle = new Map(graph.nodes.flatMap(node => node.sourceHandle && isUnderlayDefinition(node.type) ? [[canonicalCadHandle(node.sourceHandle), node] as const] : []));
+  const stablePairs = new Map<RecordData, CadNode>();
+  for (const [type, defsForType] of modelDefsByType) {
+    const recordsForType = generatedDefsByType.get(type) ?? [];
+    if (recordsForType.length !== defsForType.length) {
+      if (defsForType.some(def => def.handle) || recordsForType.length) throw new CadGraphError('dependency', `Cannot save: the model carries ${defsForType.length} ${type} definition(s) but the generated drawing carries ${recordsForType.length}, so a modelled definition cannot be bound to its source record. The original records are retained.`);
+      continue;
+    }
+    defsForType.forEach((def, index) => {
+      if (!def.handle) return; // Created in the model: it claims no source record.
+      const node = defNodeByHandle.get(canonicalCadHandle(def.handle));
+      if (!node || node.type !== type) throw new CadGraphError('dependency', `Cannot save: the modelled ${type} definition "${def.sourcePath}" carries source handle ${canonicalCadHandle(def.handle)}, which no retained ${type} record carries, so it cannot be bound to its source record. The original records are retained.`);
+      if ([...stablePairs.values()].includes(node)) throw new CadGraphError('dependency', `Cannot save: two modelled ${type} definitions claim source record ${canonicalCadHandle(def.handle)}, so neither can be bound to its source record unambiguously. The original records are retained.`);
+      stablePairs.set(recordsForType[index]!, node);
+    });
+  }
+  if (stablePairs.size) {
+    const stableNodes = new Set([...stablePairs.values()].map(node => node.id));
+    for (const [record, node] of [...match]) {
+      if (!isUnderlayDefinition(record.type) || stablePairs.get(record) === node) continue;
+      if (stablePairs.has(record) || stableNodes.has(node.id)) { match.delete(record); matched.delete(node.id); }
+    }
+    for (const [record, node] of stablePairs) { match.set(record, node); matched.add(node.id); }
+  }
+  // Residual fail-closed, now page-independent: whatever still leaves
+  // a modelled retained definition unmatched beside an unmatched
+  // generated record of the same type is the silent-duplication shape
+  // in its general form — refuse rather than emit both.
+  const leftoverModelledTypes = new Set<string>(), leftoverGeneratedTypes = new Set<string>();
+  for (const node of graph.nodes) {
+    if (matched.has(node.id) || !isUnderlayDefinition(node.type)) continue;
+    if (node.sourceHandle && modelledDefHandles.has(canonicalCadHandle(node.sourceHandle))) leftoverModelledTypes.add(node.type);
+  }
+  for (const record of generated) if (!match.has(record) && isUnderlayDefinition(record.type)) leftoverGeneratedTypes.add(record.type);
+  for (const type of leftoverGeneratedTypes) if (leftoverModelledTypes.has(type)) throw new CadGraphError('dependency', `Cannot save: a retained ${type} definition the model carries could not be paired with its generated record, and writing both would duplicate a definition. The original records are retained.`);
   const hintHandles = new Map(graph.generatedHandles?.map(hint => [hint.key, canonicalCadHandle(hint.handle)]));
   const generatedSlots = structuralKeys(generated);
   const reserved = new Set([...graph.nodes.flatMap(n => n.sourceHandle ? [canonicalCadHandle(n.sourceHandle)] : []), ...hintHandles.values()]);
@@ -1591,7 +1740,7 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     const provenClip = sourceClip && clipPointers.length === 1
       && node.references?.some(ref => ref.target === sourceClip.id && node.groups[ref.groupIndex]?.[0] === 340
         && node.groups[ref.groupIndex]![1].trim() === clipPointers[0]);
-    const rebuilt = liveComplex ? complexCodes : node.type === 'LAYER' ? new Set([390]) : node.type === 'DIMSTYLE' ? new Set([340, 342, 343, 344]) : node.type === 'LEADER' ? new Set([340]) : node.type === 'VIEWPORT' ? new Set(provenClip ? [331, 340] : [331]) : ['MULTILEADER', 'MLEADER', 'ACAD_TABLE', 'IMAGE'].includes(node.type) ? new Set([340, 341, 342, 343, 344, 360]) : new Set<number>();
+    const rebuilt = liveComplex ? complexCodes : node.type === 'LAYER' ? new Set([390]) : node.type === 'DIMSTYLE' ? new Set([340, 342, 343, 344]) : node.type === 'LEADER' ? new Set([340]) : ['PDFUNDERLAY', 'DWFUNDERLAY', 'DGNUNDERLAY'].includes(node.type) ? new Set([340]) : node.type === 'VIEWPORT' ? new Set(provenClip ? [331, 340] : [331]) : ['MULTILEADER', 'MLEADER', 'ACAD_TABLE', 'IMAGE'].includes(node.type) ? new Set([340, 341, 342, 343, 344, 360]) : new Set<number>();
     let nesting = 0, selectedApp: string | undefined, keepHeader = false, layoutSubclass = false, retainedLayoutBlock = false;
     const existingVariables = new Set(record.groups.filter(([code]) => code === 9).map(([, name]) => name));
     node.groups.forEach(([code, raw], index) => {

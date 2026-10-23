@@ -7,7 +7,8 @@
  * never written to a file: re-opening a saved drawing produces a fresh report.
  */
 import type { DrawingState } from '../core/document';
-import { expansionReport, MAX_INSERT_EXPANSION, MAX_BLOCK_EXPANSION_WORK, type BlockDef, type Entity } from '../core/entities';
+import { expansionReport, MAX_INSERT_EXPANSION, MAX_BLOCK_EXPANSION_WORK, underlayPlacementOf, type BlockDef, type Entity } from '../core/entities';
+import { validateUnderlayPlacement } from '../core/underlay';
 import { mtextFormattingProblem } from '../core/mtext';
 import { polylineWidthProblem } from '../core/polyline-widths';
 import { samePath } from '../app/paths';
@@ -274,6 +275,11 @@ export function geometryProblem(e: Entity): string | null {
   const bad = nonFinite(e, '');
   if (bad) return `${bad} is not a finite number`;
   switch (e.type) {
+    case 'underlay':
+      // Placements are validated by the model's own total validator: a
+      // hand-built placement that fails it is reported with the validator's
+      // first problem, never silently normalised.
+      return validateUnderlayPlacement(underlayPlacementOf(e))[0] ?? null;
     case 'insert':
       return insertArrayProblem(e);
     case 'circle':

@@ -7,6 +7,8 @@
 import type { FieldContext } from '../../core/fields';
 import type { DrawingState, NamedView } from '../../core/document';
 import type { DimStyle, Layer, BlockDef, Entity } from '../../core/entities';
+import { entityTypeName } from '../../core/entities';
+import { validateUnderlayDefinitions, type UnderlayDefinition } from '../../core/underlay';
 import { ImportReportBuilder, reportBlockExpansion, rawEntitiesOf, withImportData } from '../import-report';
 import { recoverOversizedReferences } from '../import-recovery';
 import type { RawDxfEntity } from '../import-report';
@@ -316,6 +318,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     solids: new Model3DReader(opts.model3d === true, report),
   };
   const imageDefs = new Map<string, string>();
+  const underlayDefsRaw: UnderlayDefinition[] = [];
   const layoutReader = new LayoutReader(report);
 
   // find sections
@@ -334,7 +337,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
       if (name === 'HEADER') {
         currentLayer = readHeaderSection(pairs, i + 2, j, headerVars, ctx);
       } else if (name === 'OBJECTS') {
-        readObjectsSection(objs, imageDefs, layoutReader, report);
+        readObjectsSection(objs, imageDefs, layoutReader, report, underlayDefsRaw);
       } else if (name === 'TABLES') {
         readTablesSection(objs, { layers, linetypes, views, textStyles, shapeStyles }, dimStyles, headerVars, ctx, layoutReader);
       } else if (name === 'BLOCKS') {
@@ -435,6 +438,42 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     for (const [key, block] of Object.entries(blocks)) blocks[key] = { ...block, entities: resolve(block.entities) };
     layouts = layouts?.map((l) => ({ ...l, entities: resolve(l.entities) }));
   }
+  // RULING-P28 C1/C2: build the underlays sibling. Definition ids come from
+  // the codec (underlaydef:<HANDLE>); a repeated id (the same handle on two
+  // records, or a fallback collision) is made unique in file order with a
+  // ~2, ~3, ... suffix, so ids cannot collide with each other — and the
+  // underlaydef: prefix cannot collide with reader-minted entity ids
+  // (e<base36>). The join is placement.definitionHandle === definition.handle
+  // (this post-pass, the IMAGE precedent above): a placement whose
+  // definition is absent is KEPT and reported `simplified` — never
+  // fabricated, and its display is the frame+cross with no path label.
+  let underlays: Record<string, UnderlayDefinition> | undefined;
+  if (underlayDefsRaw.length) {
+    const usedIds = new Set<string>();
+    underlays = {};
+    for (const def of underlayDefsRaw) {
+      let id = def.id;
+      for (let n = 2; usedIds.has(id); n += 1) id = `${def.id}~${n}`;
+      usedIds.add(id);
+      underlays[id] = id === def.id ? def : { ...def, id };
+    }
+    for (const problem of validateUnderlayDefinitions(Object.values(underlays))) {
+      report.add({ type: 'PDFDEFINITION', action: 'simplified', reason: `underlay definitions: ${problem}` });
+    }
+  }
+  {
+    const defHandles = new Set(Object.values(underlays ?? {}).map((d) => (d.handle ?? '').toUpperCase()));
+    const checkDangling = (list: readonly Entity[]): void => {
+      for (const e of list) {
+        if (e.type === 'underlay' && !defHandles.has(e.definitionHandle)) {
+          report.add({ type: entityTypeName(e), action: 'simplified', layer: e.layer, reason: `underlay definition ${e.definitionHandle} is not in this drawing; the placement is kept as a frame without content` });
+        }
+      }
+    };
+    checkDangling(entities);
+    for (const block of Object.values(blocks)) checkDangling(block.entities);
+    for (const l of layouts ?? []) checkDangling(l.entities);
+  }
   for (const l of layouts ?? []) {
     for (const e of l.entities) ensureEntityLayers(e);
     for (const v of l.viewports) ensure(v.layer);
@@ -470,7 +509,7 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
   }
   const textMeta = textStylesMeta(textStyles), shapeMeta = shapeStylesMeta(shapeStyles);
   const styleMeta = textMeta || shapeMeta ? { ...textMeta, ...shapeMeta } : undefined;
-  const base = withDimStylesMeta({ entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}), ...(layouts ? { layouts } : {}), ...(constraints ? { constraints } : {}), ...(constraintsRetained !== undefined ? { constraintsRetained } : {}), ...(solids.length || dims3d.length ? { model3d: { ...EMPTY_MODEL3D, solids, ...(dims3d.length ? { dimensions: dims3d } : {}) } } : {}) }, dimStyles);
+  const base = withDimStylesMeta({ entities, layers, blocks, currentLayer, header, ...(styleMeta ? { meta: styleMeta } : {}), ...(layouts ? { layouts } : {}), ...(constraints ? { constraints } : {}), ...(constraintsRetained !== undefined ? { constraintsRetained } : {}), ...(underlays ? { underlays } : {}), ...(solids.length || dims3d.length ? { model3d: { ...EMPTY_MODEL3D, solids, ...(dims3d.length ? { dimensions: dims3d } : {}) } } : {}) }, dimStyles);
   return attachDxfCadGraph(base, retainedPairs, { fields: ctx.fields, viewportHandles: layoutReader.viewportHandles,
     model3dHandles: ctx.solids!.carrierAnchors,
     model3dLines: ctx.solids!.carrierLines,
