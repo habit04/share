@@ -10,7 +10,7 @@ import { DEFAULT_UNITS } from './units';
 // Paper-space layouts (Track E): the layout model and the paper-space entity projection.
 import type { Layout, SpaceRef } from './layouts';
 import { applyPaperEntities, layoutsOf, paperEntities, paperSpaceLayout, sheetBounds, withLayout } from './layouts';
-import { prepareDrawingState as prepareGeometryState, validateGeometryBudget } from './geometry-budget';
+import { prepareDrawingState as prepareGeometryState, sealDrawingState, validateGeometryBudget } from './geometry-budget';
 import { sealImmutableData } from './immutable-data';
 import { textStylesOf, type TextStyle } from '../io/encoding';
 import { textGeometryForStyles, EMPTY_TEXT_STYLES } from '../render/font-metrics';
@@ -19,6 +19,8 @@ import type { NativeViewCamera } from './named-view';
 import { reconcileCadGraph, validateCadState, type CadGraph, type CadGraphEditIntent } from './cad-graph';
 import type { ConstraintSet } from './constraints/model';
 import { enforceConstraintPolicy } from './constraints/policy';
+import { noteSignatureEdit, type PreservedSignatureRecord } from '../project/drawing-signature';
+import { validateDataLinks, type DataLink } from '../project/data-links';
 
 import type { Model3D } from '../model3d/types';
 import { model3dOf, withModel3D } from '../model3d/model';
@@ -27,6 +29,7 @@ import { validateModel3DState } from '../model3d/state-validation';
 function validateDrawingProperties(state: DrawingState, previous?: DrawingState): void {
   validateModel3DState(state);
   validateCadState(state);
+  validateDataLinks(state);
   const unchanged = previous ? new Set([previous.entities, ...Object.values(previous.blocks).map((b) => b.entities), ...(previous.layouts ?? []).map((l) => l.entities)]) : undefined;
   for (const list of [state.entities, ...Object.values(state.blocks).map((b) => b.entities), ...(state.layouts ?? []).map((l) => l.entities)]) {
     if (unchanged?.has(list)) continue;
@@ -48,6 +51,23 @@ export function validateDrawingState(state: DrawingState, previous?: DrawingStat
 function prepareDrawingState(state: DrawingState, previous?: DrawingState): DrawingState {
   validateDrawingProperties(state, previous);
   return prepareGeometryState(state, previous);
+}
+
+/**
+ * P31C detection (RULING-P31 C2): fold signature invalidation into a candidate next state.
+ * noteSignatureEdit is applied UNCONDITIONALLY to any present record — fail closed, no
+ * curated edit kinds, no content diffing, no intent filtering. Identity when there is
+ * nothing to do (no record, or a record whose status noteSignatureEdit already returns
+ * unchanged: 'unsigned' / 'invalidated-by-edit'), so with no live record the state
+ * replacement points produce exactly the objects base produces (C3 inertness). The
+ * record is never cloned beyond noteSignatureEdit's own payload copy, and never
+ * re-created here: it travels with the state by identity (AMENDMENT defensive copy).
+ */
+function invalidateSignatureRecord(state: DrawingState): DrawingState {
+  const record = state.signatureRecord;
+  if (!record) return state;
+  const noted = noteSignatureEdit(record);
+  return noted === record ? state : { ...state, signatureRecord: noted };
 }
 
 /** Prepare a complete graph-aware transition before any history, UI or file mutation. */
@@ -151,6 +171,37 @@ export interface DrawingState {
    * field is absent and constraint edits/solves are refused, never guessed.
    */
   readonly constraintsRetained?: string;
+  /**
+   * P31C: the preserved native drawing-signature record (src/project/drawing-signature.ts),
+   * captured at import alongside the content digest it attests. Absent = unsigned /
+   * untracked; ordinary drawings are untouched. Detection (RULING-P31 C2): any edit
+   * invalidates a present record at the two state-replacement points (commitTransition
+   * and outsideHistory), folded into the same transition so undo restores record and
+   * content together. The record is EXCLUDED from the canonical content digest (G1) and
+   * is NOT serialized into DXF/DWG by this slice (C6 — no persistence claim).
+   *
+   * SEAL CAVEAT (AMENDMENT TO RULING-P31, invariant (d)): this subtree is exempt from the
+   * whole-state seal and is NOT seal-certified — it is not traversed, frozen or sealed,
+   * so a holder of the record or its payload reference CAN mutate its bytes/fields
+   * through a state handle and the seal will not prevent it. Invalidation stickiness is
+   * a property of the C2 API transitions above, not of seal enforcement; the record's
+   * integrity posture is the documented (f2) one — unauthenticated, API discipline.
+   */
+  readonly signatureRecord?: PreservedSignatureRecord;
+  /**
+   * P31-B: data links (src/project/data-links.ts) — bindings from table
+   * rectangles to ranges of external delimited-text sources, refreshed
+   * in-session through src/app/data-link-refresh.ts. Plain serializable
+   * data only, validated totally by validateDataLinks on every state
+   * preparation — NO seal-exemption posture (contrast signatureRecord
+   * above): link records are seal-certified like all other plain data.
+   * IN-SESSION ONLY: no codec serializes this field, so links are lost
+   * on save/reopen while refreshed cell content persists as ordinary
+   * table content. EXCLUDED from the canonical content digest (Q1, lead
+   * ruling 2026-10-21): the digest attests nothing about link records;
+   * the linked cell CONTENT is digested as table content.
+   */
+  readonly dataLinks?: readonly DataLink[];
 }
 
 export type DocListener = (doc: Drawing) => void;
@@ -216,9 +267,19 @@ export class Drawing {
    * it does not apply).
    */
   private outsideHistory(fn: (s: DrawingState) => DrawingState, current = fn(this.state)): void {
-    const next = prepareDrawingState(reconcileCadGraph(this.state, current), this.state);
-    const undo = this.undoStack.map((s) => prepareDrawingState(reconcileCadGraph(s, fn(s)), s));
-    const redo = this.redoStack.map((s) => prepareDrawingState(reconcileCadGraph(s, fn(s)), s));
+    // RULING-P31 C2 (detection totality): EVERY outsideHistory application invalidates
+    // any present signature record — in the resulting current state AND in every undo /
+    // redo snapshot this application rewrites, mirroring the apply-everywhere semantics
+    // below, so no reachable state pairs a 'preserved-unverified' record with content
+    // that passed through an outsideHistory change. Fail closed: noteSignatureEdit is
+    // applied unconditionally (its identity cases keep record-free and already-settled
+    // states object-identical). Invalidation folds into each candidate BEFORE prepare,
+    // so a failure in any history entry still leaves the complete document untouched.
+    const apply = (s: DrawingState, candidate: DrawingState): DrawingState =>
+      prepareDrawingState(invalidateSignatureRecord(reconcileCadGraph(s, candidate)), s);
+    const next = apply(this.state, current);
+    const undo = this.undoStack.map((s) => apply(s, fn(s)));
+    const redo = this.redoStack.map((s) => apply(s, fn(s)));
     // A failure in any history entry must leave the complete document untouched.
     this.state = next;
     this.undoStack = undo;
@@ -255,7 +316,9 @@ export class Drawing {
     const { space: _cur, ...rest } = this.state;
     // The current state takes the space as asked (the layout may be the implicit Layout1).
     let next: DrawingState = space ? { ...rest, space } : rest;
-    if (patch) next = patch(sealImmutableData(next));
+    // Whole-state seal: route through the exempting DrawingState seal (AMENDMENT TO
+    // RULING-P31) so a record-carrying state does not throw here.
+    if (patch) next = patch(sealDrawingState(next));
     this.outsideHistory(apply, next);
     this.emit();
   }
@@ -338,7 +401,15 @@ export class Drawing {
     // on refusal — before anything is assigned — so a refused edit leaves
     // no history entry, no dirty flag and no revision change.
     const enforced = enforceConstraintPolicy(this.state, state);
-    const next = prepareDrawingTransition(this.state, enforced, intent);
+    // RULING-P31 C2/C3: a transition that actually replaces the state invalidates any
+    // present signature record, folded into the prepared next state BEFORE the history
+    // push — same transition, exactly one history entry, undo restores record and
+    // content together. A no-op (the transition input IS the current state, which
+    // prepareDrawingTransition returns unchanged below) invalidates nothing; a refused
+    // transition throws out of prepare and leaves the record untouched, because the
+    // fold below only ever touched the discarded candidate.
+    const candidate = enforced === this.state ? enforced : invalidateSignatureRecord(enforced);
+    const next = prepareDrawingTransition(this.state, candidate, intent);
     if (next === this.state) return;
     this.undoStack.push(this.state);
     if (this.undoStack.length > this.maxUndo) this.undoStack.shift();
@@ -356,7 +427,9 @@ export class Drawing {
     const cur = this.state;
     const lay = paperSpaceLayout(cur);
     if (!lay) return fn(cur);
-    const view = sealImmutableData({ ...cur, entities: paperEntities(lay) });
+    // Whole-state seal of the projected view: route through the exempting DrawingState
+    // seal (AMENDMENT TO RULING-P31) so a record-carrying state does not throw here.
+    const view = sealDrawingState({ ...cur, entities: paperEntities(lay) });
     const out = fn(view);
     if (out === view) return cur;
     const base: DrawingState = { ...out, entities: cur.entities };

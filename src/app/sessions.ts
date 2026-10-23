@@ -40,6 +40,20 @@ export interface DocumentSession {
   view: { center: Point; scale: number; twist?: number } | null;
   parkedSpaceViews: ParkedSpaceViews | null;
   selection: Set<string>;
+  /**
+   * P31A wiring (PROPOSAL-P31-A-WIRING, ADMITTED WITH CONDITIONS by
+   * RULING-P31-A-WIRING): the stable sheet id (SheetSetSheet.id) this
+   * document is bound to in the host's open sheet set
+   * (src/app/sheet-set-host.ts). Session-scope only — never part of
+   * DrawingState — so it parks/restores with the tab like filePath/dirty and
+   * survives every Drawing state-replacement path by construction. Absent =
+   * unbound; \AcSm fields in an unbound document show ####.
+   * Maintained under the ruling's condition C2: a binding follows the
+   * session's FILE — the session layer clears/re-derives it at every
+   * session content/file change (see sessionContentOrFileChanged below),
+   * never leaves it pointing at a previous drawing.
+   */
+  sheetId?: string;
   /** Name shown for drawings without a file (Drawing1.dxf, Drawing2.dxf ...). */
   untitledName: string;
 }
@@ -76,6 +90,28 @@ export function newDocumentId(): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
+/** Change detection for session file paths: samePath treats null as never-equal, so null transitions are handled first. */
+function filePathChanged(a: string | null, b: string | null): boolean {
+  if (a === null || b === null) return a !== b;
+  return !samePath(a, b);
+}
+
+/**
+ * The moment a session's content or file changes (RULING-P31-A-WIRING C2):
+ * any app-scope binding keyed on the session's file is stale from here.
+ * DocumentSession.sheetId is cleared by the session layer itself — a
+ * binding follows the session's FILE and must never survive silently onto
+ * a different drawing — and onSessionFileChanged then fires so the app can
+ * re-derive the binding against the session's NEW filePath
+ * (SheetSetHost.bindSession). The clear happens connected or not: the
+ * worst case is an unbound session (\AcSm ####), never the previous
+ * drawing's sheet values served for a different file.
+ */
+function sessionContentOrFileChanged(manager: SessionManager, s: DocumentSession): void {
+  s.sheetId = undefined;
+  manager.onSessionFileChanged?.(s);
+}
+
 export function sessionTitle(s: Pick<DocumentSession, 'filePath' | 'untitledName'>): string {
   if (!s.filePath) return s.untitledName;
   return fileBaseName(s.filePath) || s.untitledName;
@@ -90,6 +126,15 @@ export class SessionManager {
   private observedDocumentLoadCount = 0;
   /** Fired after the active document changed (tab switch, add, close). */
   onChange: (() => void) | null = null;
+  /**
+   * Fired when a session's content or file path changed (a load replaced
+   * the live document, an open landed in the session, a save-as moved its
+   * file) — AFTER the manager has cleared the file-keyed sheet binding
+   * (see sessionContentOrFileChanged). The app composes this with
+   * SheetSetHost.bindSession(session, session.filePath) to re-derive the
+   * binding against the session's new file.
+   */
+  onSessionFileChanged: ((session: DocumentSession) => void) | null = null;
   /** Fired exactly once per successful close() with the closing session's permanent docId (host-tab-close signal; the manager itself stays free of bridge/IPC knowledge). */
   onDocClosed: ((docId: string) => void) | null = null;
 
@@ -169,10 +214,12 @@ export class SessionManager {
     const s = this.list[this.activeIndex];
     if (!s) return;
     const { doc, viewport } = this.host;
+    let contentOrFileChanged = false;
     if (doc.loadCount !== this.observedDocumentLoadCount) {
       forgetOpenedSourceProof(s);
       s.contentGeneration += 1;
       this.observedDocumentLoadCount = doc.loadCount;
+      contentOrFileChanged = true;
     }
     if (doc.revision !== this.observedDocumentRevision) {
       s.revision += 1;
@@ -180,6 +227,7 @@ export class SessionManager {
     }
     const h = doc.history();
     s.state = doc.snapshot;
+    if (filePathChanged(s.filePath, doc.filePath)) contentOrFileChanged = true;
     s.filePath = doc.filePath;
     s.dirty = doc.dirty;
     s.undo = [...h.undo];
@@ -187,6 +235,9 @@ export class SessionManager {
     if (viewport) s.view = { center: { ...viewport.center }, scale: viewport.scale, ...(viewport.twist ? { twist: viewport.twist } : {}) };
     s.parkedSpaceViews = this.host.captureParkedSpaceViews?.() ?? null;
     s.selection = new Set(this.host.selection);
+    // C2: the record now holds the NEW content/file — clear the file-keyed
+    // sheet binding and let the app re-derive it (sessionContentOrFileChanged).
+    if (contentOrFileChanged) sessionContentOrFileChanged(this, s);
   }
 
   private restoring = false;
@@ -314,6 +365,8 @@ export class SessionManager {
     if (i === this.activeIndex) {
       this.host.loadState(state, filePath);
       this.host.doc.dirty = dirty;
+      // The trailing sync() observes the load (loadCount) and runs the C2
+      // binding re-derivation for the replaced content/file.
       this.sync();
       return true;
     }
@@ -329,6 +382,9 @@ export class SessionManager {
     s.view = null;
     s.parkedSpaceViews = null;
     s.selection = new Set();
+    // C2: this session's content AND file were replaced wholesale — its
+    // binding re-derives or clears against the new file.
+    sessionContentOrFileChanged(this, s);
     this.onChange?.();
     return true;
   }
@@ -376,6 +432,10 @@ export function applySaveResult(sessions: SessionManager, host: SessionHost, ses
   if (active.id === sessionId) {
     if (active.contentGeneration !== contentGeneration) return 'replaced';
     host.doc.filePath = path;
+    // Propagate the (possibly new) path into the session record now: a
+    // save-as to a different path is a session file change, and sync()
+    // runs the C2 binding re-derivation for it.
+    sessions.sync();
     if (host.doc.snapshot === savedState) {
       host.doc.dirty = false;
       return 'clean';
@@ -385,7 +445,11 @@ export function applySaveResult(sessions: SessionManager, host: SessionHost, ses
   const s = sessions.all.find((x) => x.id === sessionId);
   if (!s) return 'closed';
   if (s.contentGeneration !== contentGeneration) return 'replaced';
+  const moved = filePathChanged(s.filePath, path);
   s.filePath = path;
+  // C2: a save-as moved this parked session's file — its binding
+  // re-derives or clears against the new path.
+  if (moved) sessionContentOrFileChanged(sessions, s);
   if (s.state === savedState) {
     s.dirty = false;
     return 'clean';
