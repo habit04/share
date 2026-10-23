@@ -137,10 +137,13 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtr
   // retained REGION saved with 97 = 0 while the REGION itself was
   // written). An entity link is emitted with the entity's reserved
   // handle in THIS file, never the raw source text; an anchor link with
-  // the anchor's canonical source handle, the handle the merge emits
-  // its record under (writeDxf withholds those handles from this
-  // writer's allocator, so the raw value cannot be mistaken for a
-  // writer handle by the merge's generated-record rewrite). A retained
+  // the handle the merge emits the anchor's record under — its
+  // canonical source handle, withheld from this writer's allocator so
+  // the raw value cannot be mistaken for a writer handle by the
+  // merge's generated-record rewrite; or, when that source handle
+  // collides with a fixed structural handle of the generated stream
+  // (round 3), the fresh handle writeDxf remapped the anchor to,
+  // which the merge emits the record under by the same remap. A retained
   // handle that names a graph object this writer does NOT emit as a
   // boundary refuses the save (the throw below): the link names
   // something the drawing retains, and dropping it silently is the

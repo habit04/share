@@ -556,6 +556,120 @@ describe('P17 round 2 (Codex P1): retained graph anchors (REGION/BODY) as hatch 
   });
 });
 
+describe('P17 round 3 (Codex PR #48 P1): retained anchors colliding with fixed structural handles', () => {
+  // Codex PR #48, the one remaining P1 (writer.ts / write-entities.ts):
+  // round 2's anchorAvoid withholds a hatch-named anchor handle from
+  // the writer's ALLOCATOR, but the generated stream also carries FIXED
+  // structural handles that are never allocated — the root dictionary
+  // (C), the model-space BLOCK_RECORD (1F), the other symbol tables and
+  // dictionaries. Those records enter preserveDxfCadGraph's
+  // generated-reference rewrite map keyed by their handle, so a retained
+  // REGION/BODY whose SOURCE handle is C or 1F aliased them: the
+  // hatch's raw 330 was rewritten to the dictionary / block record (or
+  // the boundary record duplicated the structural handle outright).
+  // The fix remaps such an anchor to a fresh writer handle BEFORE the
+  // rewrite map exists — the retained record is emitted under the fresh
+  // handle and the hatch names it — so a boundary reference can never
+  // alias a fixed structural handle.
+  const reactorsOf = (rec: { groups: Array<[number, string]> }): string[] => {
+    const out: string[] = [];
+    let inside = false;
+    for (const [c, v] of rec.groups) {
+      if (c === 102 && v === '{ACAD_REACTORS') inside = true;
+      else if (c === 102 && v === '}' && inside) inside = false;
+      else if (inside && c === 330) out.push(v);
+    }
+    return out;
+  };
+  /** A retained REGION/BODY at `handle` + a SOLID hatch (51) naming it as its boundary.
+   * The boundary is owned by the model-space BLOCK_RECORD, which the graph
+   * carries under its own handle (20) — in a real file the boundary's handle
+   * colliding with the writer's fixed 1F does not make it its own owner. */
+  const rawBoundaryDxf = (kind: 'REGION' | 'BODY', handle: string): string => {
+    const fields: Pair[] = [
+      [0, 'SECTION'], [2, 'HEADER'], [9, '$ACADVER'], [1, 'AC1015'], [0, 'ENDSEC'],
+      [0, 'SECTION'], [2, 'TABLES'],
+      [0, 'TABLE'], [2, 'BLOCK_RECORD'], [5, '1'], [330, '0'], [100, 'AcDbSymbolTable'], [70, 2],
+      [0, 'BLOCK_RECORD'], [5, '20'], [330, '1'], [100, 'AcDbSymbolTableRecord'], [100, 'AcDbBlockTableRecord'], [2, '*Model_Space'], [70, 0], [280, 1], [281, 0],
+      [0, 'BLOCK_RECORD'], [5, '21'], [330, '1'], [100, 'AcDbSymbolTableRecord'], [100, 'AcDbBlockTableRecord'], [2, '*Paper_Space'], [70, 0], [280, 1], [281, 0],
+      [0, 'ENDTAB'], [0, 'ENDSEC'],
+      [0, 'SECTION'], [2, 'ENTITIES'],
+      [0, kind], [5, handle], [330, '20'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbModelerGeometry'],
+      [1, 'ACIS data placeholder line one'], [1, 'ACIS data placeholder line two'],
+      [0, 'HATCH'], [5, '51'], [330, '20'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbHatch'],
+      [10, 0], [20, 0], [30, 0], [210, 0], [220, 0], [230, 1],
+      [2, 'SOLID'], [70, 1], [71, 1], [91, 1],
+      [92, 3], [72, 0], [73, 1], [93, 4],
+      [10, 0], [20, 0], [10, 10], [20, 0], [10, 10], [20, 10], [10, 0], [20, 10],
+      [97, 1], [330, handle],
+      [75, 0], [76, 1], [98, 0],
+      [0, 'ENDSEC'], [0, 'EOF'],
+    ];
+    return fields.flat().join('\n');
+  };
+
+  for (const kind of ['REGION', 'BODY'] as const) {
+    for (const fixed of ['C', '1F'] as const) {
+      it(`a retained ${kind} at fixed handle ${fixed}: the link is remapped to a fresh handle naming the boundary`, () => {
+        const state = readDxf(rawBoundaryDxf(kind, fixed));
+        const hatch = state.entities.find((e): e is HatchEntity => e.type === 'hatch')!;
+        expect(hatch.loops[0]!.boundaryHandles).toEqual([fixed]);
+        const written = writeDxf(state);
+        const recs = records(written);
+        const rawRec = recs.find((r) => r.kind === kind)!;
+        const hatchRec = recs.find((r) => r.kind === 'HATCH')!;
+        expect(rawRec).toBeDefined();
+        const fresh = group(rawRec, 5)!;
+        // The boundary is NOT emitted under the structural handle…
+        expect(fresh).not.toBe(fixed);
+        // …the hatch's target resolves to exactly one record — the boundary.
+        // (The structural record itself is in the file under the merge's own
+        // handle; what the aliasing broke was the RESOLUTION, so that is
+        // what is pinned here.)
+        const atFresh = recs.filter((r) => group(r, 5) === fresh);
+        expect(atFresh).toHaveLength(1);
+        expect(atFresh[0]!.kind).toBe(kind);
+        const structural = fixed === 'C'
+          ? recs.find((r) => r.kind === 'DICTIONARY')
+          : recs.find((r) => r.kind === 'BLOCK_RECORD' && group(r, 2) === '*Model_Space');
+        expect(structural).toBeDefined();
+        expect(group(structural!, 5)).not.toBe(fresh);
+        // …no handle in the file is duplicated…
+        const handles = recs.map((r) => group(r, 5)).filter((h): h is string => h !== undefined);
+        expect(new Set(handles).size).toBe(handles.length);
+        // …and the hatch points at the boundary's fresh handle, associatively.
+        expect(group(hatchRec, 97)).toBe('1');
+        expect(boundaryRefsOf(hatchRec)).toEqual([fresh]);
+        expect(group(hatchRec, 71)).toBe('1');
+        expect(reactorsOf(rawRec)).toEqual([group(hatchRec, 5)]);
+        // Reopen + save again: the remapped link is a fixed point.
+        const recs2 = records(writeDxf(readDxf(written)));
+        const raw2 = recs2.find((r) => r.kind === kind)!;
+        const hatch2 = recs2.find((r) => r.kind === 'HATCH')!;
+        expect(group(raw2, 5)).toBe(fresh);
+        expect(boundaryRefsOf(hatch2)).toEqual([fresh]);
+        expect(group(hatch2, 71)).toBe('1');
+        expect(reactorsOf(raw2)).toEqual([group(hatch2, 5)]);
+      });
+    }
+  }
+
+  it('a retained REGION at 103 (allocator range, withheld since round 2) is NOT remapped', () => {
+    const state = readDxf(rawBoundaryDxf('REGION', '103'));
+    const written = writeDxf(state);
+    const recs = records(written);
+    const rawRec = recs.find((r) => r.kind === 'REGION')!;
+    const hatchRec = recs.find((r) => r.kind === 'HATCH')!;
+    expect(group(rawRec, 5)).toBe('103');
+    expect(boundaryRefsOf(hatchRec)).toEqual(['103']);
+    expect(group(hatchRec, 71)).toBe('1');
+    expect(reactorsOf(rawRec)).toEqual([group(hatchRec, 5)]);
+    const recs2 = records(writeDxf(readDxf(written)));
+    expect(group(recs2.find((r) => r.kind === 'REGION')!, 5)).toBe('103');
+    expect(boundaryRefsOf(recs2.find((r) => r.kind === 'HATCH')!)).toEqual(['103']);
+  });
+});
+
 describe('P17 round 2 (Codex P1): the O5 classification covers the COMPLETE emitted boundary set', () => {
   // Codex PR #44 round 2, P1 (write-entities.ts): ANY same-owner boundary
   // used to enable 71 = 1 while foreign-owned boundaries were still

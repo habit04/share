@@ -159,6 +159,41 @@ function graphWithoutModelledContextChains(state: DrawingState, w: Writer, entit
 }
 
 /**
+ * The handles the generated stream carries as FIXED structural records on
+ * every write, independent of the drawing — never handed out by the
+ * allocator (which starts at 101): the symbol-table records from the
+ * `table(...)` calls in writeDxf (BLOCK_RECORD 1, LAYER 2, STYLE 3,
+ * LTYPE 5, VIEW 6, UCS 7, VPORT 8, APPID 9, DIMSTYLE A), the
+ * *Model_Space / *Paper_Space BLOCK_RECORDs (1F / 1B) and the OBJECTS
+ * root + ACAD_GROUP dictionaries (C / D). A new fixed structural record
+ * added to the skeleton must be added here too (P17 round 3).
+ */
+const FIXED_STRUCTURAL_HANDLES: ReadonlySet<string> = new Set([
+  '1', '2', '3', '5', '6', '7', '8', '9', 'A', 'C', 'D', '1B', '1F',
+]);
+
+/**
+ * P17 round 3: the merge-side half of the anchor handle remap — the
+ * retained records of remapped anchors carry the fresh handle as their
+ * sourceHandle in the state preserveDxfCadGraph sees, so the merge
+ * emits them under it (its nodeHandles value) and every graph-internal
+ * reference, which resolves by node id through nodeHandles, follows.
+ */
+function withAnchorHandleRemap(state: DrawingState, remap: ReadonlyMap<string, string>): DrawingState {
+  if (!state.cadGraph) return state;
+  return {
+    ...state,
+    cadGraph: {
+      ...state.cadGraph,
+      nodes: state.cadGraph.nodes.map((node) => {
+        const handle = remap.get(node.id);
+        return handle ? { ...node, sourceHandle: handle } : node;
+      }),
+    },
+  };
+}
+
+/**
  * Write the drawing as DXF text. The optional export-report sink receives
  * the losses a save itself decides (P18 FIX group 1: an annotative context
  * chain withheld because no SCALE object can be referenced for one of its
@@ -177,8 +212,8 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
   // value, so every anchor handle a hatch actually names is withheld
   // from the writer's allocator before the first allocation.
   const anchorAvoid = new Set<string>();
+  const named = new Set<string>();
   if (state.cadGraph) {
-    const named = new Set<string>();
     const scanHatches = (list: readonly Entity[]): void => {
       for (const e of list) {
         if (e.type !== 'hatch') continue;
@@ -224,6 +259,46 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
     w.avoidHandles = avoid;
   }
   if (anchorAvoid.size > 0) w.avoidHandles = new Set([...w.avoidHandles, ...anchorAvoid]);
+  // P17 round 3 (Codex PR #48 P1): a hatch-named anchor whose canonical
+  // source handle collides with a FIXED structural handle
+  // (FIXED_STRUCTURAL_HANDLES) cannot be protected by anchorAvoid: the
+  // structural record is emitted under that handle regardless of the
+  // allocator, so it enters preserveDxfCadGraph's generated-reference
+  // rewrite map and the hatch's raw 330 would resolve to the dictionary
+  // / block record instead of the boundary — and the retained record
+  // itself would duplicate the structural handle in the output. Remap
+  // such anchors BEFORE the rewrite map exists: each takes a fresh
+  // writer handle here (allocated after both avoid sets are installed,
+  // and skipped against every graph source handle and generated-handle
+  // hint, so the merge's own allocator can never hand it out either —
+  // the merge-side state carries the remap as the node's sourceHandle,
+  // which puts it in the merge's reserved set). anchorBySourceHandle
+  // below names the fresh handle for the hatch; the retained record is
+  // emitted under it. First node wins per handle, matching the anchor
+  // map's own first-wins posture.
+  const anchorRemapByNode = new Map<string, string>();
+  const anchorRemapByHandle = new Map<string, string>();
+  if (state.cadGraph && named.size > 0) {
+    const taken = new Set<string>(FIXED_STRUCTURAL_HANDLES);
+    for (const node of state.cadGraph.nodes) {
+      if (!node.sourceHandle) continue;
+      try { taken.add(canonicalCadHandle(node.sourceHandle)); } catch { /* not a handle spelling: never a key */ }
+    }
+    for (const hint of state.cadGraph.generatedHandles ?? []) {
+      try { taken.add(canonicalCadHandle(hint.handle)); } catch { /* not a handle spelling: never a key */ }
+    }
+    for (const node of state.cadGraph.nodes) {
+      if (!node.sourceHandle || node.section !== 'ENTITIES' || node.anchor?.kind === 'entity') continue;
+      let canon: string;
+      try { canon = canonicalCadHandle(node.sourceHandle); } catch { continue; }
+      if (!named.has(canon) || !FIXED_STRUCTURAL_HANDLES.has(canon)) continue;
+      let fresh = w.nextHandle();
+      while (taken.has(fresh)) fresh = w.nextHandle();
+      taken.add(fresh);
+      anchorRemapByNode.set(node.id, fresh);
+      if (!anchorRemapByHandle.has(canon)) anchorRemapByHandle.set(canon, fresh);
+    }
+  }
   // ACAD_PLOTSTYLENAME: the dictionary layers point at (390) and its "Normal" entry (AutoCAD's
   // AUDIT reports layers whose plot style handle names no object).
   const plotStyleDictionary = w.nextHandle();
@@ -353,7 +428,11 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
   // P17 round 2 (Codex P1): retained graph anchors — ENTITIES records
   // the merge still emits that are not entities (REGION / BODY / other
   // raw carriers) — resolve by canonical source handle, the handle
-  // preserveDxfCadGraph emits the record under (its nodeHandles value).
+  // preserveDxfCadGraph emits the record under (its nodeHandles value);
+  // round 3: that handle is the anchor's FRESH remap when its source
+  // handle collides with a fixed structural handle (see the remap
+  // above) — the merge-side state carries the same remap, so the value
+  // named here is the handle the record is actually emitted under.
   // A hatch's retained handle naming one is a link like any other: it is
   // written with the anchor's handle and classified by the anchor's
   // owner, proven from the node's owner reference: no proven owner on an
@@ -386,7 +465,7 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
         if (name === '*MODEL_SPACE') owner = MODEL_SPACE;
         else if (name !== undefined) owner = recordHandleByName.get(name);
       }
-      anchorBySourceHandle.set(canon, { handle: canon, ...(owner !== undefined ? { owner } : {}) });
+      anchorBySourceHandle.set(canon, { handle: anchorRemapByHandle.get(canon) ?? canon, ...(owner !== undefined ? { owner } : {}) });
     }
   }
   extras.anchorBySourceHandle = anchorBySourceHandle;
@@ -1518,6 +1597,7 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
   // AC1015 is read in the $DWGCODEPAGE page: non-ASCII goes out as \U+XXXX escapes (see io/encoding.ts).
   // P17 R1: with every record's handle final, complete the boundary-side
   // back-pointers ({ACAD_REACTORS -> hatch}) for associative hatches.
-  const plain = ensureAssociativeHatchReactors(preserveDxfCadGraph(w.toString(), mleaderContextObjectCount || mleaderChainsWithheldCount ? graphWithoutModelledContextChains(state, w, allEntities) : state, w.cadAnchors));
+  const graphState = mleaderContextObjectCount || mleaderChainsWithheldCount ? graphWithoutModelledContextChains(state, w, allEntities) : state;
+  const plain = ensureAssociativeHatchReactors(preserveDxfCadGraph(w.toString(), anchorRemapByNode.size > 0 ? withAnchorHandleRemap(graphState, anchorRemapByNode) : graphState, w.cadAnchors));
   return encodeDxfText(plain.replace('HANDSEED_PLACEHOLDER', (w.lastHandle() + 1).toString(16).toUpperCase()), acadVersion);
 }
