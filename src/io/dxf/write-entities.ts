@@ -174,10 +174,25 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtr
     emit: (ww: Writer) => string;
     sameOwner: boolean;
   }
+  // Round 5 (lead ruling — DEMOTE): a HATCH must never be an ACTIVE
+  // boundary of a hatch, itself or another hatch. If any loop links to
+  // a HATCH entity — by boundaryRefs, by a retained handle resolving to
+  // an emitted hatch entity, or by a retained handle naming a retained
+  // raw HATCH record — the link is NOT emitted at all and the whole
+  // hatch demotes exactly like the O5 case above: 71 = 0 (so no
+  // reactors), the remaining non-hatch links still emitted, inert
+  // under 71 = 0 (round 4 keeps them raw on reopen), geometry
+  // untouched. The demotion is a pure function of the model, so every
+  // save of such a hatch reproduces it.
+  let hatchBoundary = false;
   const loopLinks = e.loops.map((l) => {
     const seen = new Set<string>();
     const links: HatchLink[] = [];
     const pushEntity = (b: Entity): void => {
+      if (b.type === 'hatch') {
+        hatchBoundary = true;
+        return;
+      }
       if (seen.has(`e:${b.id}`)) return;
       seen.add(`e:${b.id}`);
       const o = extras?.entityOwner?.get(b.id);
@@ -197,6 +212,13 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtr
       const b = extras?.entityBySourceHandle?.get(canon);
       if (b) {
         pushEntity(b);
+        continue;
+      }
+      if (extras?.hatchAnchorHandles?.has(canon)) {
+        // Round 5: the retained handle names a retained raw HATCH
+        // record — a hatch boundary, demote (never emitted, and never
+        // the graph-refusal below: the link is governed, not dropped).
+        hatchBoundary = true;
         continue;
       }
       const anchor = extras?.anchorBySourceHandle?.get(canon);
@@ -222,7 +244,9 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtr
   // reader) NEVER re-derives 71 = 1 from its retained links: 71 requires
   // the flag AND links AND all-same-owner. associative === undefined
   // (model-built hatches) keeps the links-decide behaviour.
-  w.pair(71, e.associative !== false && allLinks.length > 0 && allLinks.every((l) => l.sameOwner) ? 1 : 0);
+  // Round 5: a hatch-boundary link (hatchBoundary above) demotes the
+  // whole hatch regardless of flag, links and owners.
+  w.pair(71, e.associative !== false && !hatchBoundary && allLinks.length > 0 && allLinks.every((l) => l.sameOwner) ? 1 : 0);
   w.pair(91, e.loops.length);
   e.loops.forEach((l, i) => {
     const hasBulge = !!l.bulges && l.bulges.some((b) => Math.abs(b) > 1e-12);

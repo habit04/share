@@ -322,3 +322,38 @@ describe('P17 round 2 (Codex P1): hatch refresh runs AFTER the constraint policy
     expect(hatchOf(doc, 'h1').loops[0]!.points).toEqual([{ x: 12, y: 0 }, { x: 8, y: 0 }]);
   });
 });
+
+describe('P17 round 5 (lead ruling): maintenance never activates a hatch boundary', () => {
+  // The DEMOTE ruling's maintenance clause: a hatch entity appearing in
+  // boundaryRefs — the hatch itself or another hatch — must never be
+  // resurrected into an active association by the maintenance helpers.
+  // refreshAssociativeHatch already refuses both shapes with a 'cycle'
+  // problem (pinned here at the document level, where a boundary edit
+  // on the boundary hatch must leave the dependent hatch's fill
+  // untouched), and an explicitly disassociated hatch is never
+  // refreshed even when its refs name itself. These are pins: the
+  // round-5 change itself lives on the DXF read/write paths.
+  it('editing a boundary HATCH does not refresh the hatch that names it', () => {
+    const boundaryHatch = assocHatch('hb', [{ points: square(0, 0, 10), boundaryRefs: ['b1'] }]);
+    const dependent = assocHatch('ha', [{ points: square(0, 0, 10), boundaryRefs: ['hb'] }]);
+    const byId = new Map<string, Entity>([[boundaryHatch.id, boundaryHatch], [dependent.id, dependent]]);
+    const { hatch: out, problems } = refreshAssociativeHatch(dependent, byId);
+    expect(problems.map((p) => p.kind)).toEqual(['cycle']);
+    expect(out).toBe(dependent);
+    const doc = new Drawing({ entities: [boundary('b1'), boundaryHatch, dependent] });
+    doc.replaceEntities([{ ...boundaryHatch, loops: [{ points: square(50, 50, 10) }] }]);
+    expect(hatchOf(doc, 'ha').loops[0]!.points).toEqual(square(0, 0, 10));
+    expect(hatchOf(doc, 'ha').loops[0]!.boundaryRefs).toEqual(['hb']);
+  });
+
+  it('an explicitly non-associative hatch naming itself is never refreshed', () => {
+    const hatch: HatchEntity = {
+      id: 'h1', ...props, type: 'hatch', pattern: 'SOLID', solid: true, angle: 0, scale: 1,
+      associative: false,
+      loops: [{ points: square(0, 0, 10), boundaryRefs: ['h1'] }],
+    };
+    const { hatch: out, problems } = refreshAssociativeHatch(hatch, new Map([[hatch.id, hatch]]));
+    expect(problems).toEqual([]);
+    expect(out).toBe(hatch);
+  });
+});

@@ -237,13 +237,30 @@ function applyExtrusion(o: Obj, e: Entity, ctx: ReadContext): Entity {
  * bare associative flag with no resolvable link is cleared and reported
  * (the writer cannot emit a flag without links; AutoCAD's AUDIT would
  * repair it). Round 4: a hatch whose input flag is NOT 71 = 1 is inert —
- * its handles are never promoted (see the branch below). Runs per list,
- * in the LEADER-340 post-pass pattern.
+ * its handles are never promoted (see the branch below). Round 5: a
+ * hatch naming itself or another HATCH as a boundary demotes to the
+ * same inert posture regardless of its flag. Runs per list, in the
+ * LEADER-340 post-pass pattern.
  */
 function resolveHatchAssociations(list: Entity[], hatchObjs: ReadonlyMap<HatchEntity, Obj>, ctx: ReadContext): void {
   if (hatchObjs.size === 0) return;
   const byHandle = new Map<string, string>();
   for (const e of list) if (e.cadIdentity) byHandle.set(e.cadIdentity.trim().toUpperCase(), e.id);
+  const byId = new Map(list.map((e) => [e.id, e]));
+  /** The inert posture: every captured handle stays a raw boundaryHandle, no live refs. */
+  const inertLoopsOf = (h: HatchEntity): { loops: HatchLoop[]; touched: boolean } => {
+    let touched = false;
+    const loops = h.loops.map((loop) => {
+      const handles = loop.boundaryRefs;
+      if (!handles || handles.length === 0) return loop;
+      touched = true;
+      const raw: string[] = [...(loop.boundaryHandles ?? [])];
+      for (const hh of handles) if (!raw.includes(hh)) raw.push(hh);
+      const { boundaryRefs: _refs, boundaryHandles: _raw, ...rest } = loop;
+      return { ...rest, boundaryHandles: raw };
+    });
+    return { loops, touched };
+  };
   for (const [hatch, o] of hatchObjs) {
     const at = list.indexOf(hatch);
     if (at < 0) continue;
@@ -255,17 +272,25 @@ function resolveHatchAssociations(list: Entity[], hatchObjs: ReadonlyMap<HatchEn
       // writer (whose 71 derivation requires associative !== false)
       // keeps writing 71 = 0 on every later save. No report: the file
       // said non-associative and the model now says exactly that.
-      let touchedInert = false;
-      const inertLoops: HatchLoop[] = hatch.loops.map((loop) => {
-        const handles = loop.boundaryRefs;
-        if (!handles || handles.length === 0) return loop;
-        touchedInert = true;
-        const raw: string[] = [...(loop.boundaryHandles ?? [])];
-        for (const h of handles) if (!raw.includes(h)) raw.push(h);
-        const { boundaryRefs: _refs, boundaryHandles: _raw, ...rest } = loop;
-        return { ...rest, boundaryHandles: raw };
-      });
+      const { loops: inertLoops, touched: touchedInert } = inertLoopsOf(hatch);
       if (touchedInert) list[at] = { ...hatch, loops: inertLoops, associative: false };
+      continue;
+    }
+    // Round 5 (lead ruling — DEMOTE): a HATCH must never be an active
+    // boundary of a hatch. If any captured handle in any loop resolves
+    // to a hatch entity of this list — the hatch itself or another
+    // hatch — the WHOLE hatch imports inert (the round-4 posture:
+    // whole list raw, associative pinned false), whatever its 71
+    // says; the writer's matching demote keeps every later save inert
+    // and never emits the hatch handle.
+    const namesHatch = hatch.loops.some((loop) => (loop.boundaryRefs ?? []).some((hh) => {
+      const id = byHandle.get(hh.trim().toUpperCase());
+      return id !== undefined && byId.get(id)?.type === 'hatch';
+    }));
+    if (namesHatch) {
+      const { loops: inertLoops } = inertLoopsOf(hatch);
+      list[at] = { ...hatch, loops: inertLoops, associative: false };
+      reportObj(ctx, o, 'simplified', 'associative hatch names a hatch as a boundary object; a hatch cannot be an associative boundary, so the hatch is kept non-associative and its boundary handles are retained as raw handles');
       continue;
     }
     let kept = 0;

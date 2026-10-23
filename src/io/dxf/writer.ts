@@ -446,6 +446,12 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
   // emitted entity or anchor refuses the save (see writeHatch).
   const graphSourceHandles = new Set<string>();
   const anchorBySourceHandle = new Map<string, { handle: string; owner?: string }>();
+  // P17 round 5: retained raw HATCH records (never modelled as entities)
+  // are collected apart: a hatch boundary handle naming one is a hatch
+  // boundary and demotes the naming hatch; such records are NOT offered
+  // as ordinary anchors. Modelled hatches resolve through
+  // entityBySourceHandle first, so listing their handles here is inert.
+  const hatchAnchorHandles = new Set<string>();
   if (state.cadGraph) {
     const nodeById = new Map(state.cadGraph.nodes.map((n) => [n.id, n]));
     const recordHandleByName = new Map(blockList.map((b) => [b.name.toUpperCase(), blockRecordHandles.get(b.name)!]));
@@ -454,6 +460,7 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
       let canon: string;
       try { canon = canonicalCadHandle(node.sourceHandle); } catch { continue; }
       graphSourceHandles.add(canon);
+      if (node.type === 'HATCH') hatchAnchorHandles.add(canon);
       if (node.section !== 'ENTITIES' || node.anchor?.kind === 'entity' || anchorBySourceHandle.has(canon)) continue;
       let owner: string | undefined;
       const ownerTarget = node.references?.find((r) => r.role === 'owner')?.target;
@@ -469,6 +476,7 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
     }
   }
   extras.anchorBySourceHandle = anchorBySourceHandle;
+  extras.hatchAnchorHandles = hatchAnchorHandles;
   extras.graphSourceHandles = graphSourceHandles;
   // P17 R1 (O5): the owner handle each entity is written under — model
   // space, a layout's block record, or a block definition's record — with

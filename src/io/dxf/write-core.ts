@@ -256,6 +256,11 @@ export interface WriteExtras {
    *  written instead of dropped. An anchor whose owner cannot be proven in writer
    *  terms carries no owner and classifies as foreign-owned (O5). */
   anchorBySourceHandle?: ReadonlyMap<string, { handle: string; owner?: string }>;
+  /** P17 round 5: canonical source handles of retained cad-graph records of type
+   *  HATCH that this writer does not emit as entities (raw retained records).
+   *  A hatch loop's retained handle naming one is a hatch boundary: the link
+   *  is never emitted and the hatch demotes (see writeHatch in write-entities.ts). */
+  hatchAnchorHandles?: ReadonlySet<string>;
   /** P17 round 2: the canonical source handle of EVERY retained graph node. A hatch
    *  loop's retained handle that names one of these but resolves to no emitted entity
    *  or anchor names an object the drawing retains yet this writer does not emit as a

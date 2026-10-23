@@ -876,3 +876,213 @@ describe('P17 round 4 (lead ruling): 71 = 0 is inert on read; HATCHEDIT Disassoc
     expect(h3.loops[0]!.boundaryRefs).toEqual([poly0.id]);
   });
 });
+
+describe('P17 round 5 (lead ruling): a HATCH is never an active boundary — DEMOTE', () => {
+  // Codex PR #48 P2: nothing stopped a hatch's boundaryRefs /
+  // boundaryHandles from naming a HATCH entity — itself or another
+  // hatch — and the writer emitted such a link at 71 = 1 with reactors
+  // while the reader promoted a read DXF's hatch-naming 97/330 entries
+  // to live refs. The ruling is DEMOTE, on both sides: on write, any
+  // loop linking to a hatch demotes the WHOLE hatch (71 = 0, no
+  // reactors, the hatch handle is NOT emitted in 97/330 at all, the
+  // other links stay as inert raw handles under 71 = 0, geometry
+  // untouched); on read, a DXF naming itself or another HATCH in
+  // 97/330 imports that hatch inert (whole list raw, associative
+  // pinned false), whatever its 71 says. At a2f44e4 cases (1)-(4) and
+  // the write leg of (6) fail; (5) and the model leg of (6) are pins.
+  const props = { layer: '0', color: 'ByLayer' as const };
+  const sq = (x: number, y: number, s: number) => [
+    { x, y }, { x: x + s, y }, { x: x + s, y: y + s }, { x, y: y + s },
+  ];
+  const boundaryRefListsOf = (rec: { groups: Array<[number, string]> }): string[][] => {
+    const out: string[][] = [];
+    rec.groups.forEach(([c, v], i) => {
+      if (c !== 97) return;
+      const count = Number(v);
+      out.push(rec.groups.slice(i + 1, i + 1 + count).filter(([cc]) => cc === 330).map(([, vv]) => vv));
+    });
+    return out;
+  };
+  const reactorsOf = (rec: { groups: Array<[number, string]> }): string[] => {
+    const out: string[] = [];
+    let inside = false;
+    for (const [c, v] of rec.groups) {
+      if (c === 102 && v === '{ACAD_REACTORS') inside = true;
+      else if (c === 102 && v === '}' && inside) inside = false;
+      else if (inside && c === 330) out.push(v);
+    }
+    return out;
+  };
+  const poly = (id: string, x = 0): PolylineEntity => ({
+    id, ...props, type: 'polyline', points: sq(x, 0, 10), closed: true,
+  });
+  const hatchEnt = (id: string, refs: readonly string[], x = 0, associative: boolean | undefined = true): HatchEntity => ({
+    id, ...props, type: 'hatch', pattern: 'SOLID', solid: true, angle: 0, scale: 1,
+    ...(associative !== undefined ? { associative } : {}),
+    loops: [{ points: sq(x, 0, 10), boundaryRefs: [...refs] }],
+  });
+  const stateOf = (entities: DrawingState['entities']): DrawingState => ({
+    entities, layers: [], blocks: {}, currentLayer: '0',
+  });
+  const hatchOf = (state: DrawingState, id?: string): HatchEntity =>
+    state.entities.find((e): e is HatchEntity => e.type === 'hatch' && (id === undefined || e.id === id))!;
+
+  it('(1) SELF: a hatch bounded by itself demotes on save — 71 = 0, no reactors, its own handle absent from 97/330, other links retained inert, geometry intact; reopen inert', () => {
+    const state = stateOf([poly('m1'), hatchEnt('h1', ['h1', 'm1'])]);
+    const saved = writeDxf(state);
+    const recs = records(saved);
+    const hatchRec = recs.find((r) => r.kind === 'HATCH')!;
+    const polyRec = recs.find((r) => r.kind === 'LWPOLYLINE')!;
+    expect(group(hatchRec, 71)).toBe('0');
+    // The self handle is NOT emitted at all; the polyline link is
+    // retained, inert under 71 = 0.
+    expect(boundaryRefListsOf(hatchRec)).toEqual([[group(polyRec, 5)]]);
+    expect(reactorsOf(polyRec)).toEqual([]);
+    // Geometry intact: the loop still carries its 4 points.
+    expect(group(hatchRec, 93)).toBe('4');
+    // Reopen inert, and the demotion survives a second save.
+    const doc = new Drawing(readDxf(saved));
+    const reopened = hatchOf(doc.snapshot);
+    expect(reopened.associative).toBe(false);
+    expect(reopened.loops[0]!.boundaryRefs).toBeUndefined();
+    expect(reopened.loops[0]!.boundaryHandles).toEqual([group(polyRec, 5)]);
+    const hatchRec2 = records(writeDxf(doc.snapshot)).find((r) => r.kind === 'HATCH')!;
+    expect(group(hatchRec2, 71)).toBe('0');
+    expect(boundaryRefListsOf(hatchRec2)).toEqual([[group(polyRec, 5)]]);
+    // Pure self-boundary: nothing at all is emitted in 97/330.
+    const pure = records(writeDxf(stateOf([hatchEnt('h1', ['h1'])]))).find((r) => r.kind === 'HATCH')!;
+    expect(group(pure, 71)).toBe('0');
+    expect(group(pure, 97)).toBe('0');
+    expect(boundaryRefListsOf(pure)).toEqual([[]]);
+  });
+
+  it('(2) OTHER HATCH: hatch A bounded by hatch B demotes; B and its own association are unaffected', () => {
+    const state = stateOf([poly('m1'), hatchEnt('hb', ['m1'], 0), hatchEnt('ha', ['hb'], 20)]);
+    const recs = records(writeDxf(state));
+    const hatchRecs = recs.filter((r) => r.kind === 'HATCH');
+    const polyRec = recs.find((r) => r.kind === 'LWPOLYLINE')!;
+    const recB = hatchRecs.find((r) => group(r, 71) === '1')!;
+    const recA = hatchRecs.find((r) => group(r, 71) === '0')!;
+    expect(recB).toBeDefined();
+    expect(recA).toBeDefined();
+    // B is unaffected: still associative to the polyline, which carries
+    // B's back-reactor and nobody else's.
+    expect(boundaryRefListsOf(recB)).toEqual([[group(polyRec, 5)]]);
+    expect(reactorsOf(polyRec)).toEqual([group(recB, 5)]);
+    // A demoted: B's handle is NOT in A's list (A has no other links).
+    expect(boundaryRefListsOf(recA)).toEqual([[]]);
+    expect(group(recA, 93)).toBe('4');
+    // Reopen: A inert (its emitted list was empty — the hatch handle
+    // was never written — so there is nothing to pin; the flag is the
+    // plain non-associative posture and no refs exist), B still live,
+    // and a second save still demotes A.
+    const reopened = readDxf(writeDxf(state));
+    const a2 = reopened.entities.filter((e): e is HatchEntity => e.type === 'hatch')
+      .find((h) => h.associative !== true)!;
+    expect(a2.associative).not.toBe(true);
+    expect(a2.loops[0]!.boundaryRefs).toBeUndefined();
+    expect(a2.loops[0]!.boundaryHandles).toBeUndefined();
+    const recs2 = records(writeDxf(reopened)).filter((r) => r.kind === 'HATCH');
+    expect(recs2.filter((r) => group(r, 71) === '0')).toHaveLength(1);
+    expect(recs2.filter((r) => group(r, 71) === '1')).toHaveLength(1);
+    const b2 = reopened.entities.filter((e): e is HatchEntity => e.type === 'hatch')
+      .find((h) => h.associative === true)!;
+    expect(b2.loops[0]!.boundaryRefs).toHaveLength(1);
+  });
+
+  it('(3) IMPORTED SELF: a DXF naming the hatch itself in 97/330 (71 = 1 in the file) imports inert and never re-emits the self link', () => {
+    // assocDxf's hatch carries handle 51; refHandle '51' names itself.
+    const state = readDxf(assocDxf({ refHandle: '51' }));
+    const hatch = hatchOf(state);
+    expect(hatch.associative).toBe(false);
+    expect(hatch.loops[0]!.boundaryRefs).toBeUndefined();
+    expect(hatch.loops[0]!.boundaryHandles).toEqual(['51']);
+    const report = importReportOf(state);
+    expect(report?.items.some((item) => /names a hatch as a boundary/.test(item.reason))).toBe(true);
+    // Re-save: 71 = 0 and the self handle is not emitted, live or inert.
+    const rec = records(writeDxf(state)).find((r) => r.kind === 'HATCH')!;
+    expect(group(rec, 71)).toBe('0');
+    expect(group(rec, 97)).toBe('0');
+    expect(boundaryRefsOf(rec)).toEqual([]);
+    // The re-saved file names no hatch at all (97 = 0), so its reopen
+    // is a plain non-associative hatch: no flag pin, no refs, no
+    // retained handles — inert by absence.
+    const reopened = hatchOf(readDxf(writeDxf(state)));
+    expect(reopened.associative).not.toBe(true);
+    expect(reopened.loops[0]!.boundaryRefs).toBeUndefined();
+    expect(reopened.loops[0]!.boundaryHandles).toBeUndefined();
+  });
+
+  it('(4) IMPORTED OTHER HATCH: a DXF where hatch A names hatch B imports A inert, B live; re-save keeps A inert', () => {
+    const hatchRecord = (handle: string, ref: string, x: number): Pair[] => [
+      [0, 'HATCH'], [5, handle], [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbHatch'],
+      [10, 0], [20, 0], [30, 0], [210, 0], [220, 0], [230, 1],
+      [2, 'SOLID'], [70, 1], [71, 1], [91, 1],
+      [92, 3], [72, 0], [73, 1], [93, 4],
+      [10, x], [20, 0], [10, x + 10], [20, 0], [10, x + 10], [20, 10], [10, x], [20, 10],
+      [97, 1], [330, ref],
+      [75, 0], [76, 1], [98, 0],
+    ];
+    const fields: Pair[] = [
+      [0, 'SECTION'], [2, 'HEADER'], [9, '$ACADVER'], [1, 'AC1015'], [0, 'ENDSEC'],
+      [0, 'SECTION'], [2, 'ENTITIES'],
+      [0, 'LWPOLYLINE'], [5, '50'], [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbPolyline'],
+      [90, 4], [70, 1],
+      [10, 0], [20, 0], [10, 10], [20, 0], [10, 10], [20, 10], [10, 0], [20, 10],
+      ...hatchRecord('51', '50', 0),
+      ...hatchRecord('52', '51', 20),
+      [0, 'ENDSEC'], [0, 'EOF'],
+    ];
+    const state = readDxf(fields.flat().join('\n'));
+    const polyEnt = state.entities.find((e): e is PolylineEntity => e.type === 'polyline')!;
+    const hatches = state.entities.filter((e): e is HatchEntity => e.type === 'hatch');
+    expect(hatches).toHaveLength(2);
+    const a = hatches.find((h) => h.associative !== true)!;
+    const b = hatches.find((h) => h.associative === true)!;
+    // A (handle 52, naming B) is inert: flag pinned false, list raw.
+    expect(a.associative).toBe(false);
+    expect(a.loops[0]!.boundaryRefs).toBeUndefined();
+    expect(a.loops[0]!.boundaryHandles).toEqual(['51']);
+    // B (handle 51, naming the polyline) is unaffected and live.
+    expect(b.loops[0]!.boundaryRefs).toEqual([polyEnt.id]);
+    // Re-save: A stays 71 = 0 and B's written handle is absent from A's
+    // list; B stays 71 = 1 naming the polyline.
+    const recs = records(writeDxf(state));
+    const hatchRecs = recs.filter((r) => r.kind === 'HATCH');
+    const recA = hatchRecs.find((r) => group(r, 71) === '0')!;
+    const recB = hatchRecs.find((r) => group(r, 71) === '1')!;
+    const polyRec = recs.find((r) => r.kind === 'LWPOLYLINE')!;
+    expect(recA).toBeDefined();
+    expect(boundaryRefListsOf(recA)).toEqual([[]]);
+    expect(boundaryRefListsOf(recB)).toEqual([[group(polyRec, 5)]]);
+  });
+
+  it('(5) CONTROL: a polyline-bounded hatch stays 71 = 1 with live refs and reactors, and refreshes on boundary edits', () => {
+    const state = readDxf(assocDxf());
+    const recs = records(writeDxf(state));
+    const hatchRec = recs.find((r) => r.kind === 'HATCH')!;
+    const polyRec = recs.find((r) => r.kind === 'LWPOLYLINE')!;
+    expect(group(hatchRec, 71)).toBe('1');
+    expect(boundaryRefsOf(hatchRec)).toEqual([group(polyRec, 5)]);
+    expect(reactorsOf(polyRec)).toEqual([group(hatchRec, 5)]);
+    const doc = new Drawing(state);
+    const hatch = hatchOf(doc.snapshot);
+    expect(hatch.associative).toBe(true);
+    const polyEnt = doc.snapshot.entities.find((e): e is PolylineEntity => e.type === 'polyline')!;
+    expect(hatch.loops[0]!.boundaryRefs).toEqual([polyEnt.id]);
+    doc.replaceEntities([{ ...polyEnt, points: sq(100, 100, 10) }]);
+    expect(hatchOf(doc.snapshot).loops[0]!.points).toEqual(sq(100, 100, 10));
+  });
+
+  it('(6) EXPLICIT NON-ASSOCIATIVE SELF: a hatch modelled associative = false naming itself emits no self link and stays inert end-to-end', () => {
+    const state = stateOf([hatchEnt('h1', ['h1'], 0, false)]);
+    const rec = records(writeDxf(state)).find((r) => r.kind === 'HATCH')!;
+    expect(group(rec, 71)).toBe('0');
+    // The self handle is not emitted even as an inert retained entry.
+    expect(group(rec, 97)).toBe('0');
+    expect(boundaryRefsOf(rec)).toEqual([]);
+    const reopened = hatchOf(readDxf(writeDxf(state)));
+    expect(reopened.associative).toBeFalsy();
+    expect(reopened.loops[0]!.boundaryRefs).toBeUndefined();
+  });
+});
