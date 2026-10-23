@@ -8,6 +8,8 @@
 // handler from it — the same entry point pdfjs's own fake worker
 // uses. Test-only: production code never sees this file.
 import { parentPort, workerData } from 'node:worker_threads';
+import { Buffer } from 'node:buffer';
+import { pathToFileURL } from 'node:url';
 
 // The worker code uses the same recent Uint8Array/Map methods the
 // main-side test shim patches in (tests/pdfjs-node-shims.ts); a real
@@ -50,5 +52,8 @@ parentPort.on('message', (data) => {
   for (const listener of [...listeners]) listener({ data });
 });
 
-const { WorkerMessageHandler } = await import(workerData.pdfjsWorkerSrc);
+// The worker source crosses the dynamic import as a file URL, never a
+// bare filesystem path: a Windows 'C:\…' path is not a valid ESM
+// specifier (ERR_UNSUPPORTED_ESM_URL_SCHEME).
+const { WorkerMessageHandler } = await import(pathToFileURL(workerData.pdfjsWorkerSrc).href);
 WorkerMessageHandler.initializeFromPort(port);
