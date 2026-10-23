@@ -319,6 +319,16 @@ export function edgeArc(startDeg: number, endDeg: number, ccw: boolean): { a0: n
  * an ISO drawing's ANSI31 is 25.4 times the imperial one at "scale 1", so the effective scale and
  * angle are derived from the lines; double hatches or lines that do not match the table are kept
  * as world-space lines.
+ *
+ * `unitFactor` is the ratio between the file's pattern-definition units and this (imperial)
+ * table: 25.4 for a metric drawing ($MEASUREMENT = 1), whose stored definitions are the ISO
+ * ones — the same definitions expressed in millimetres. The declared scale (group 41) is
+ * expressed in the FILE's system, the derived ratio in table space; agreement in either
+ * space (lines authored against this table, or against the file's ISO definitions) snaps
+ * the model scale to the declared value expressed in table space. The model scale is
+ * therefore always the geometric multiplier on the imperial table that reproduces the
+ * file's lines; converting back to the file's system on write is the writer's side of the
+ * same rule.
  */
 export function fitPatternToLines(
   pattern: HatchPattern | undefined,
@@ -326,6 +336,7 @@ export function fitPatternToLines(
   scale: number,
   lines: readonly WorldPatternLine[],
   double: boolean,
+  unitFactor = 1,
 ): { angle: number; scale: number; origin?: Point; patternLines?: WorldPatternLine[] } {
   if (!lines.length) return { angle, scale };
   if (!pattern || !pattern.lines.length || double || lines.length !== pattern.lines.length) return { angle, scale, patternLines: [...lines] };
@@ -339,7 +350,17 @@ export function fitPatternToLines(
   // scale round-trips exactly (74757b90: 1 came back as 0.9999999995). A genuine disagreement
   // — an ISO file whose lines run 25.4x the table at declared scale 1 — is far outside the
   // tolerance and still derives.
-  const eff = Number.isFinite(scale) && scale > 0 && Math.abs(derived - scale) <= 1e-6 * Math.max(1, Math.abs(scale)) ? scale : derived;
+  // The agreement may live in either space: the lines may be authored against this table
+  // (derived ≈ declared — the imperial case, and imperial-authored lines inside a metric
+  // file), or, in a metric file, against the ISO definitions (derived / unitFactor ≈
+  // declared), in which case the declared value is multiplied into table space. The two
+  // can only agree at once for a degenerate zero scale, so the order is safe.
+  const tol = 1e-6 * Math.max(1, Math.abs(scale));
+  let eff = derived;
+  if (Number.isFinite(scale) && scale > 0) {
+    if (Math.abs(derived - scale) <= tol) eff = scale;
+    else if (unitFactor !== 1 && Math.abs(derived / unitFactor - scale) <= tol) eff = scale * unitFactor;
+  }
   const effAngle = g.normAngle(lines[0]!.angle - g.rad(t0.angle));
   const origin = g.sub(lines[0]!.base, g.rotate(g.scale(t0.origin, eff), effAngle));
   const expect = worldPatternLines(pattern, effAngle, eff, origin);

@@ -185,6 +185,10 @@ export interface DrawingHeader {
   readonly celtscale?: number;
   /** Preserved source $TEXTSTYLE: current named text style; absent = Standard on export. */
   readonly textStyle?: string;
+  /** Preserved source $MEASUREMENT: 0 = imperial pattern definitions, 1 = metric (ISO)
+   *  definitions; absent = the source had no $MEASUREMENT. A hatch's group 41 is expressed
+   *  in this system (see fitPatternToLines' unit factor and the DXF writer). */
+  readonly measurement?: number;
   /** $CANNOSCALE: annotation scale name ("1:4"); annotative objects show at 1 / scale in model space. */
   readonly cannoscale?: string;
   /** $ANNOALLVISIBLE (default on): off hides annotative objects in viewports whose scale is not CANNOSCALE. */
