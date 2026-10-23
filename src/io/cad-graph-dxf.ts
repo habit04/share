@@ -1368,6 +1368,42 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   // stale record surviving beside the new one (4 definitions, old path
   // included). Ambiguous pairings are left unmatched on purpose.
   const isUnderlayDefinition = (type: string) => type === 'PDFDEFINITION' || type === 'DWFDEFINITION' || type === 'DGNDEFINITION';
+  const isUnderlayEntity = (type: string) => type === 'PDFUNDERLAY' || type === 'DWFUNDERLAY' || type === 'DGNUNDERLAY';
+  // PR #42 cleanup (4): BEFORE the (kind, page) fallback, bind edited
+  // definitions by the model's definition/reference identity. A
+  // placement matched by its entity anchor, and its retained node
+  // references exactly the definition node it pointed at in the
+  // source, while the placement's generated record points (group 340,
+  // remapped by the writer) at the generated definition record. When
+  // every claim through that chain agrees on one pairing, the pairing
+  // is proven — even when two definitions share kind AND page and
+  // both paths moved in one transaction (the 2-and-2 remainder the
+  // fallback cannot pair, which used to emit 4 definitions).
+  const nodeById = new Map(graph.nodes.map(node => [node.id, node]));
+  const claimsOf = new Map<RecordData, Set<CadNode>>(), claimedBy = new Map<CadNode, Set<RecordData>>();
+  for (const record of generated) {
+    const node = match.get(record);
+    if (!node || !isUnderlayEntity(record.type)) continue;
+    const targets = new Set((node.references ?? []).flatMap(ref => {
+      const target = ref.target ? nodeById.get(ref.target) : undefined;
+      return target && isUnderlayDefinition(target.type) && !matched.has(target.id) ? [target] : [];
+    }));
+    if (!targets.size) continue;
+    for (const [code, raw] of record.groups) {
+      const kind = cadReferenceKind(code);
+      if (!kind || kind === 'arbitrary') continue;
+      const pointed = generatedByHandle.get(canonicalCadHandle(raw.trim()));
+      if (!pointed || !isUnderlayDefinition(pointed.type) || match.has(pointed)) continue;
+      claimsOf.set(pointed, new Set([...(claimsOf.get(pointed) ?? []), ...targets]));
+      for (const target of targets) claimedBy.set(target, new Set([...(claimedBy.get(target) ?? []), pointed]));
+    }
+  }
+  for (const [record, targets] of claimsOf) {
+    if (targets.size !== 1 || match.has(record)) continue;
+    const node = [...targets][0]!;
+    if ((claimedBy.get(node)?.size ?? 0) !== 1 || matched.has(node.id)) continue;
+    match.set(record, node); matched.add(node.id);
+  }
   const unmatchedSourcesByPage = new Map<string, CadNode[]>();
   graph.nodes.forEach((node, index) => {
     if (matched.has(node.id) || !isUnderlayDefinition(node.type)) return;
@@ -1386,6 +1422,34 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       match.set(recordsForPage[0]!, nodesForPage[0]!);
       matched.add(nodesForPage[0]!.id);
     }
+  }
+  // PR #42 cleanup (4), second half: whatever the two binding passes
+  // could not pair stays unmatched — an unmatched generated record is
+  // emitted fresh and an unmatched retained node is emitted verbatim,
+  // so a same-(kind, page) remainder on BOTH sides is exactly the
+  // silent-duplication shape (a stale record beside its edited
+  // successor). Refuse the save atomically instead. The scope is the
+  // MODELLED definitions (the ones the model carries in its underlays
+  // sibling and is authoritative for, RULING-P28 C6): retained records
+  // the model never claimed stay outside the pairing entirely and are
+  // emitted verbatim as before.
+  const modelledDefHandles = new Set(Object.values(state.underlays ?? {}).flatMap(def => def.handle ? [canonicalCadHandle(def.handle)] : []));
+  const leftoverModelled = new Map<string, { type: string; page: string; count: number }>(), leftoverGenerated = new Map<string, number>();
+  graph.nodes.forEach((node, index) => {
+    if (matched.has(node.id) || !isUnderlayDefinition(node.type)) return;
+    if (!node.sourceHandle || !modelledDefHandles.has(canonicalCadHandle(node.sourceHandle))) return;
+    const page = identifierValue(sources[index]!, 2), key = JSON.stringify([node.type, page]);
+    const entry = leftoverModelled.get(key) ?? { type: node.type, page, count: 0 };
+    entry.count += 1; leftoverModelled.set(key, entry);
+  });
+  for (const record of generated) {
+    if (match.has(record) || !isUnderlayDefinition(record.type)) continue;
+    const key = JSON.stringify([record.type, identifierValue(record, 2)]);
+    leftoverGenerated.set(key, (leftoverGenerated.get(key) ?? 0) + 1);
+  }
+  for (const [key, count] of leftoverGenerated) {
+    const retained = leftoverModelled.get(key);
+    if (retained) throw new CadGraphError('dependency', `Cannot save: ${count} generated and ${retained.count} retained ${retained.type} definition(s) for page/model "${retained.page}" cannot be paired unambiguously — their identity survives neither in placement references nor in a unique kind/page match, and writing both would duplicate a definition. The original records are retained.`);
   }
   const hintHandles = new Map(graph.generatedHandles?.map(hint => [hint.key, canonicalCadHandle(hint.handle)]));
   const generatedSlots = structuralKeys(generated);

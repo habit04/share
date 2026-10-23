@@ -45,6 +45,11 @@
  * - Node 22: pdfjs-runtime-shims installs Promise.try where the runtime
  *   lacks it (Node 22.23.3 has none; without it pdfjs's worker message
  *   dispatch throws and every operation hangs — see that module).
+ * - Cleanup 1: an unsuccessful open owns its session's disposal —
+ *   hard-terminate first, synchronously, destroy fire-and-forget,
+ *   never awaited (a withheld Terminate reply hung the cap refusals'
+ *   previously awaited destroy past the deadline, unabortable, with
+ *   the worker never terminated).
  */
 import './pdfjs-runtime-shims';
 import { DEFAULT_UNDERLAY_CAPS } from './underlay-adapter';
@@ -229,16 +234,36 @@ export function createPdfjsEngine(deps: PdfjsEngineDeps = {}): UnderlayRasterEng
       // hard-terminated session it re-parses from them in a fresh one.
       const stored = bytes.slice();
       const first = await createSession(pdfjs, stored, guard);
-      guard.check();
-      if (first.doc.numPages === 0) {
-        await first.loadingTask.destroy();
+      // The operation OWNS this session until open succeeds and hands
+      // it to the returned document (PR #42 cleanup 1): EVERY
+      // unsuccessful open — a cap refusal, the deadline, an abort, a
+      // late success after the deadline — disposes it here. Disposal
+      // hard-terminates the worker FIRST, synchronously, and lets the
+      // graceful destroy trail fire-and-forget: the destroy is never
+      // awaited, because a worker that withholds its Terminate reply
+      // would otherwise hold the open (and the deadline, and the
+      // abort) hostage forever — the previously awaited destroy WAS
+      // that hang, and it left the adapter's terminate unreached.
+      let firstDisposed = false;
+      const disposeFirst = (): void => {
+        if (firstDisposed) return;
+        firstDisposed = true;
         if (first.worker) { try { first.worker.terminate(); } catch { /* already gone */ } }
-        return underlayRefusal('corrupt', 'the document has no pages');
-      }
-      if (first.doc.numPages > caps.maxPages) {
-        await first.loadingTask.destroy();
-        if (first.worker) { try { first.worker.terminate(); } catch { /* already gone */ } }
-        return underlayRefusal('too-many-pages', `the document claims ${first.doc.numPages} pages, over the ${caps.maxPages}-page cap`);
+        void first.loadingTask.destroy().catch(() => undefined);
+      };
+      try {
+        guard.check();
+        if (first.doc.numPages === 0) {
+          disposeFirst();
+          return underlayRefusal('corrupt', 'the document has no pages');
+        }
+        if (first.doc.numPages > caps.maxPages) {
+          disposeFirst();
+          return underlayRefusal('too-many-pages', `the document claims ${first.doc.numPages} pages, over the ${caps.maxPages}-page cap`);
+        }
+      } catch (err) {
+        disposeFirst();
+        throw err;
       }
       return {
         ok: true,
