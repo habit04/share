@@ -4044,4 +4044,55 @@ mod tests {
     fn installs_and_verifies_the_os_process_memory_limit() {
         assert!(windows_job::ProcessLimit::install().is_ok());
     }
+
+    // The SORTENTSTABLE body AutoCAD writes for draw order (mirrored from the
+    // genuine record in tests/fixtures/interchange/r2018-truecolor-linetypes.dxf
+    // and tests/sortents-roundtrip.test.ts): the record handle is the FIRST
+    // group 5 (27D); each entry is a (331 entity handle, 5 sort handle) pair,
+    // so the trailing group 5s are payload, not identity.
+    const SORTENTS_DXF: &str = concat!(
+        "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n",
+        "0\nSECTION\n2\nOBJECTS\n",
+        "0\nSORTENTSTABLE\n5\n27D\n102\n{ACAD_REACTORS\n330\n15D\n102\n}\n330\n15D\n",
+        "100\nAcDbSortentsTable\n330\n1F\n331\n27C\n5\n279\n331\n270\n5\n115\n",
+        "0\nENDSEC\n0\nEOF\n",
+    );
+
+    #[test]
+    fn retained_sortents_table_identity_is_the_first_group_5() {
+        // Failing-first for the PR #49 fallout: capture used to key the table
+        // by its LAST group 5 (a sort handle), so verify() refused every
+        // draw-order drawing with "SORTENTSTABLE source identity disappeared
+        // during import" even though the table imported intact at 27D.
+        let mut document =
+            DxfReader::from_reader(std::io::Cursor::new(SORTENTS_DXF.as_bytes().to_vec()))
+                .unwrap()
+                .read()
+                .unwrap();
+        assert!(
+            document.objects.contains_key(&Handle::new(0x27D)),
+            "the imported document must carry the SORTENTSTABLE at its record handle"
+        );
+        let schema = source_schema::capture(SORTENTS_DXF).unwrap();
+        schema.verify(&mut document).unwrap();
+    }
+
+    #[test]
+    fn retained_sortents_table_disappearance_still_refuses() {
+        // Pin: reading only the first group 5 must not weaken the refusal —
+        // a table that genuinely does not survive import still refuses with
+        // the same identity error.
+        let mut document =
+            DxfReader::from_reader(std::io::Cursor::new(SORTENTS_DXF.as_bytes().to_vec()))
+                .unwrap()
+                .read()
+                .unwrap();
+        document.objects.remove(&Handle::new(0x27D));
+        let schema = source_schema::capture(SORTENTS_DXF).unwrap();
+        let error = schema.verify(&mut document).unwrap_err();
+        assert!(
+            error.contains("SORTENTSTABLE source identity disappeared during import"),
+            "{error}"
+        );
+    }
 }

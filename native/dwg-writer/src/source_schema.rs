@@ -452,7 +452,13 @@ pub fn capture(text: &str) -> Result<SourceSchema, String> {
                 groups.push((code, value.into()));
             }
         } else if !kind.is_empty() {
-            if code == 5 && !xdata && context.is_empty() {
+            // Only the FIRST group 5 is the record identity (the same reading
+            // as recordsOf on the TypeScript side). Later group 5s are payload:
+            // a SORTENTSTABLE body carries one (331 entity, 5 sort handle) pair
+            // per draw-order entry, and treating a sort handle as the table's
+            // identity makes verify() refuse every draw-order drawing with
+            // "source identity disappeared during import".
+            if code == 5 && handle.is_none() && !xdata && context.is_empty() {
                 handle = Some(
                     u64::from_str_radix(value.trim(), 16).map_err(|_| refusal("OBJECTS handle"))?,
                 );
