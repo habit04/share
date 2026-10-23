@@ -98,8 +98,12 @@ export interface HatchLoop {
    * drawing). Retained for reporting and in-session fidelity. On save, a
    * retained handle that resolves — through the named entity's source
    * identity — to an entity the writer emits IS written back as a 330
-   * link (Codex PR #44 P1-d); a handle naming no object in the drawing
-   * stays unemitted.
+   * link (Codex PR #44 P1-d); a retained handle naming a retained
+   * REGION / BODY (or other non-entity) record the writer still emits
+   * resolves the same way, to that record's emitted handle (round 2);
+   * a handle naming a retained object the writer does not emit as a
+   * boundary refuses the save rather than dropping the link; a handle
+   * naming no object in the drawing stays unemitted.
    */
   readonly boundaryHandles?: readonly string[];
 }

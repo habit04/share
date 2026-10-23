@@ -123,61 +123,98 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtr
   w.pair(230, 1);
   w.pair(2, e.solid ? 'SOLID' : e.pattern || 'ANSI31');
   w.pair(70, e.solid ? 1 : 0);
-  // P17 associative hatches: the per-loop boundary objects that resolve to
-  // entities this writer emits are named (97 count + one 330 each, the
-  // boundary's reserved handle). A loop's links come from BOTH of its
-  // association fields: boundaryRefs (document entity ids) and
-  // boundaryHandles (retained raw source handles). P1-d (Codex PR #44):
-  // the handle list used to be silently dropped here, so a block-resident
-  // hatch linked to a model-space boundary — unresolvable per-list at
-  // import, hence retained as a handle — lost the link on the first save
-  // and its 97/71 were gone for good; a retained handle that resolves,
-  // through the entity's source identity, to an entity this writer emits
-  // is a link like any other and is emitted (the entity's reserved handle
-  // in THIS file, never the raw source text). A handle naming no emitted
-  // entity stays unemitted: it names an object that is not in the file,
-  // and writing it could alias a handle this writer reuses. The flag is
-  // written only when at least one SAME-OWNER link is emitted — a bare
-  // associative flag makes AutoCAD's AUDIT repair the hatch, and a
-  // cross-owner link (O5: the boundary lives in another space / block
-  // definition) is not a live association in AutoCAD, so such a hatch is
-  // saved non-associative (71 = 0) with its handle list retained (on
-  // reopen the handles stay raw boundary handles, never live links; no
-  // data is lost). Unresolvable refs are omitted (the document detaches
-  // erased boundaries). The boundary-side back-pointer ({ACAD_REACTORS ->
-  // this hatch}) is completed on the final text by
+  // P17 associative hatches: the per-loop boundary objects that resolve
+  // to objects this writer emits are named (97 count + one 330 each). A
+  // loop's links come from BOTH of its association fields: boundaryRefs
+  // (document entity ids) and boundaryHandles (retained raw source
+  // handles). A retained handle resolves, in order, to an emitted ENTITY
+  // (through its source identity — P1-d, Codex PR #44: the handle list
+  // used to be silently dropped here, so a block-resident hatch linked
+  // to a model-space boundary lost the link on the first save and its
+  // 97/71 were gone for good) or to a retained graph ANCHOR the merge
+  // still emits (REGION / BODY / other raw records — round 2: the
+  // entity-only index skipped them, so an imported hatch linked to a
+  // retained REGION saved with 97 = 0 while the REGION itself was
+  // written). An entity link is emitted with the entity's reserved
+  // handle in THIS file, never the raw source text; an anchor link with
+  // the anchor's canonical source handle, the handle the merge emits
+  // its record under (writeDxf withholds those handles from this
+  // writer's allocator, so the raw value cannot be mistaken for a
+  // writer handle by the merge's generated-record rewrite). A retained
+  // handle that names a graph object this writer does NOT emit as a
+  // boundary refuses the save (the throw below): the link names
+  // something the drawing retains, and dropping it silently is the
+  // failure both P1 rounds exist to remove. A handle naming no object
+  // in the drawing at all stays unemitted: it names an object that is
+  // not in the file, and writing it could alias a handle this writer
+  // reuses. Unresolvable refs are omitted (the document detaches erased
+  // boundaries).
+  //
+  // The 71 flag classifies the COMPLETE emitted boundary set (round 2,
+  // settling R1's open question): a cross-owner link (O5: the boundary
+  // lives in another space / block definition) is not a live
+  // association in AutoCAD, so if ANY emitted boundary is foreign-owned
+  // the WHOLE hatch is saved non-associative (71 = 0) with its handle
+  // list retained (on reopen the handles stay raw boundary handles,
+  // never live links; no data is lost) — previously ANY same-owner link
+  // enabled 71 = 1 while the foreign boundaries were still emitted with
+  // no back-reactor, an associative hatch whose foreign boundary
+  // AutoCAD's AUDIT would repair. Only a hatch whose emitted boundaries
+  // are ALL same-owner is written 71 = 1. The boundary-side back-pointer
+  // ({ACAD_REACTORS -> this hatch}) is completed on the final text by
   // ensureAssociativeHatchReactors (io/cad-graph-dxf.ts), once every
-  // record's handle is final — it reads the same 97/330 list written
-  // here, so handle-derived links compose with it unchanged.
-  const loopRefs = e.loops.map((l) => {
+  // record's handle is final — it keys off this same 71 flag and the
+  // 97/330 list written here, so a demoted hatch gains no reactors and
+  // handle- and anchor-derived links compose with it unchanged.
+  interface HatchLink {
+    /** The 330 value to emit, produced at emission time (entity handles are reserved in loop order, exactly as before). */
+    emit: (ww: Writer) => string;
+    sameOwner: boolean;
+  }
+  const loopLinks = e.loops.map((l) => {
     const seen = new Set<string>();
-    const links: Entity[] = [];
+    const links: HatchLink[] = [];
+    const pushEntity = (b: Entity): void => {
+      if (seen.has(`e:${b.id}`)) return;
+      seen.add(`e:${b.id}`);
+      const o = extras?.entityOwner?.get(b.id);
+      links.push({ emit: (ww) => ww.reserveEntityHandle(b), sameOwner: o === undefined || o === owner });
+    };
     for (const id of l.boundaryRefs ?? []) {
       const b = extras?.entityById?.get(id);
-      if (b && !seen.has(b.id)) {
-        seen.add(b.id);
-        links.push(b);
-      }
+      if (b) pushEntity(b);
     }
     for (const raw of l.boundaryHandles ?? []) {
-      let b: Entity | undefined;
+      let canon: string;
       try {
-        b = extras?.entityBySourceHandle?.get(canonicalCadHandle(raw));
+        canon = canonicalCadHandle(raw);
       } catch {
-        b = undefined;
+        continue; // Not a handle spelling: names nothing, stays unemitted.
       }
-      if (b && !seen.has(b.id)) {
-        seen.add(b.id);
-        links.push(b);
+      const b = extras?.entityBySourceHandle?.get(canon);
+      if (b) {
+        pushEntity(b);
+        continue;
       }
+      const anchor = extras?.anchorBySourceHandle?.get(canon);
+      if (anchor) {
+        if (!seen.has(`a:${anchor.handle}`)) {
+          seen.add(`a:${anchor.handle}`);
+          links.push({ emit: () => anchor.handle, sameOwner: anchor.owner !== undefined && anchor.owner === owner });
+        }
+        continue;
+      }
+      if (extras?.graphSourceHandles?.has(canon)) {
+        throw new Error(
+          `Cannot save associative hatch: boundary handle ${canon} names a retained object that this writer does not emit as a boundary; refusing rather than dropping the link.`,
+        );
+      }
+      // Names no object in the drawing: stays unemitted (absence is not a link).
     }
     return links;
   });
-  const sameOwner = (b: Entity): boolean => {
-    const o = extras?.entityOwner?.get(b.id);
-    return o === undefined || o === owner;
-  };
-  w.pair(71, loopRefs.some((refs) => refs.some(sameOwner)) ? 1 : 0);
+  const allLinks = loopLinks.flat();
+  w.pair(71, allLinks.length > 0 && allLinks.every((l) => l.sameOwner) ? 1 : 0);
   w.pair(91, e.loops.length);
   e.loops.forEach((l, i) => {
     const hasBulge = !!l.bulges && l.bulges.some((b) => Math.abs(b) > 1e-12);
@@ -190,9 +227,9 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtr
       w.pair(20, p.y);
       if (hasBulge) w.pair(42, l.bulges![k] ?? 0);
     });
-    const refs = loopRefs[i]!;
-    w.pair(97, refs.length);
-    for (const b of refs) w.pair(330, w.reserveEntityHandle(b));
+    const links = loopLinks[i]!;
+    w.pair(97, links.length);
+    for (const link of links) w.pair(330, link.emit(w));
   });
   w.pair(75, e.style ?? 0);
   const custom = !e.solid && !findPattern(e.pattern);

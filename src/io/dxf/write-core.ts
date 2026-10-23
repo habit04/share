@@ -248,6 +248,19 @@ export interface WriteExtras {
    *  raw boundary handles resolve through it, so a retained link naming an object that IS in
    *  the drawing is written back instead of silently dropped. */
   entityBySourceHandle?: ReadonlyMap<string, Entity>;
+  /** P17 round 2 (Codex P1): retained cad-graph anchors the writer still emits but that
+   *  are not entities (REGION / BODY / 3DSOLID raw records), by canonical SOURCE handle —
+   *  a hatch loop's retained handle naming one resolves to the anchor's emitted handle
+   *  (its canonical source handle, the handle preserveDxfCadGraph emits the record
+   *  under) and the owner string it is written under, so the link is remapped and
+   *  written instead of dropped. An anchor whose owner cannot be proven in writer
+   *  terms carries no owner and classifies as foreign-owned (O5). */
+  anchorBySourceHandle?: ReadonlyMap<string, { handle: string; owner?: string }>;
+  /** P17 round 2: the canonical source handle of EVERY retained graph node. A hatch
+   *  loop's retained handle that names one of these but resolves to no emitted entity
+   *  or anchor names an object the drawing retains yet this writer does not emit as a
+   *  boundary — the save refuses atomically rather than silently dropping the link. */
+  graphSourceHandles?: ReadonlySet<string>;
   /** P17 R1: the owner handle string each entity is written under (its space / block record), by id — a hatch link is associative only within one owner (O5). */
   entityOwner?: ReadonlyMap<string, string>;
   /** DIMASZ × DIMSCALE of the header style (leaders store their arrow size as an override when it differs). */

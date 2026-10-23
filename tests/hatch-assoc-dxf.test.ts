@@ -464,3 +464,191 @@ describe('P17 additions (Codex P1-d): retained handle links are emitted, not dro
     expect(group(hatchRec, 71)).toBe('0');
   });
 });
+
+describe('P17 round 2 (Codex P1): retained graph anchors (REGION/BODY) as hatch boundaries', () => {
+  // Codex PR #44 round 2, P1 (writer.ts / write-entities.ts): the
+  // source-handle index only covered ENTITIES, so an imported hatch whose
+  // boundary is a retained REGION or BODY — kept in the cad graph as a raw
+  // record and still emitted on save — wrote 97 = 0 and lost the link.
+  // Retained graph anchors join the lookup and the link is remapped to the
+  // anchor's emitted handle; a retained handle that names a graph object
+  // the writer does NOT emit as a boundary refuses the save atomically
+  // instead of being silently dropped.
+  const reactorsOf = (rec: { groups: Array<[number, string]> }): string[] => {
+    const out: string[] = [];
+    let inside = false;
+    for (const [c, v] of rec.groups) {
+      if (c === 102 && v === '{ACAD_REACTORS') inside = true;
+      else if (c === 102 && v === '}' && inside) inside = false;
+      else if (inside && c === 330) out.push(v);
+    }
+    return out;
+  };
+  /** A retained REGION/BODY (handle 60) + a SOLID hatch (51) naming it as its boundary. */
+  const rawBoundaryDxf = (kind: 'REGION' | 'BODY', handle = '60'): string => {
+    const fields: Pair[] = [
+      [0, 'SECTION'], [2, 'HEADER'], [9, '$ACADVER'], [1, 'AC1015'], [0, 'ENDSEC'],
+      [0, 'SECTION'], [2, 'ENTITIES'],
+      [0, kind], [5, handle], [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbModelerGeometry'],
+      [1, 'ACIS data placeholder line one'], [1, 'ACIS data placeholder line two'],
+      [0, 'HATCH'], [5, '51'], [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbHatch'],
+      [10, 0], [20, 0], [30, 0], [210, 0], [220, 0], [230, 1],
+      [2, 'SOLID'], [70, 1], [71, 1], [91, 1],
+      [92, 3], [72, 0], [73, 1], [93, 4],
+      [10, 0], [20, 0], [10, 10], [20, 0], [10, 10], [20, 10], [10, 0], [20, 10],
+      [97, 1], [330, handle],
+      [75, 0], [76, 1], [98, 0],
+      [0, 'ENDSEC'], [0, 'EOF'],
+    ];
+    return fields.flat().join('\n');
+  };
+
+  for (const kind of ['REGION', 'BODY'] as const) {
+    it(`an imported hatch linked to a retained ${kind} keeps the link (97/330 remapped, 71 = 1, back-reactor)`, () => {
+      const state = readDxf(rawBoundaryDxf(kind));
+      const hatch = state.entities.find((e): e is HatchEntity => e.type === 'hatch')!;
+      expect(hatch.loops[0]!.boundaryHandles).toEqual(['60']);
+      const written = writeDxf(state);
+      const recs = records(written);
+      const rawRec = recs.find((r) => r.kind === kind)!;
+      const hatchRec = recs.find((r) => r.kind === 'HATCH')!;
+      expect(rawRec).toBeDefined();
+      expect(group(rawRec, 5)).toBe('60');
+      expect(group(hatchRec, 97)).toBe('1');
+      expect(boundaryRefsOf(hatchRec)).toEqual(['60']);
+      expect(group(hatchRec, 71)).toBe('1');
+      expect(reactorsOf(rawRec)).toEqual([group(hatchRec, 5)]);
+      // Reopen + save again: the link is a fixed point, not a one-save survival.
+      const recs2 = records(writeDxf(readDxf(written)));
+      const raw2 = recs2.find((r) => r.kind === kind)!;
+      const hatch2 = recs2.find((r) => r.kind === 'HATCH')!;
+      expect(group(hatch2, 97)).toBe('1');
+      expect(boundaryRefsOf(hatch2)).toEqual(['60']);
+      expect(group(hatch2, 71)).toBe('1');
+      expect(reactorsOf(raw2)).toEqual([group(hatch2, 5)]);
+    });
+  }
+
+  it('a retained handle naming a graph object that is not an emitted boundary refuses the save atomically', () => {
+    // The hatch's boundary handle (70) names the drawing's DICTIONARY —
+    // an object the retained graph carries but that is not a boundary the
+    // writer emits. Dropping the link silently is the P1 failure mode;
+    // the save must refuse, not write a hatch that lost its boundary.
+    const fields: Pair[] = [
+      [0, 'SECTION'], [2, 'HEADER'], [9, '$ACADVER'], [1, 'AC1015'], [0, 'ENDSEC'],
+      [0, 'SECTION'], [2, 'ENTITIES'],
+      [0, 'HATCH'], [5, '51'], [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbHatch'],
+      [10, 0], [20, 0], [30, 0], [210, 0], [220, 0], [230, 1],
+      [2, 'SOLID'], [70, 1], [71, 1], [91, 1],
+      [92, 3], [72, 0], [73, 1], [93, 4],
+      [10, 0], [20, 0], [10, 10], [20, 0], [10, 10], [20, 10], [10, 0], [20, 10],
+      [97, 1], [330, '70'],
+      [75, 0], [76, 1], [98, 0],
+      [0, 'ENDSEC'],
+      [0, 'SECTION'], [2, 'OBJECTS'],
+      [0, 'DICTIONARY'], [5, '70'], [330, '0'], [100, 'AcDbDictionary'], [280, 0], [281, 1],
+      [0, 'ENDSEC'], [0, 'EOF'],
+    ];
+    const state = readDxf(fields.flat().join('\n'));
+    const hatch = state.entities.find((e): e is HatchEntity => e.type === 'hatch')!;
+    expect(hatch.loops[0]!.boundaryHandles).toEqual(['70']);
+    expect(() => writeDxf(state)).toThrow(/boundary handle 70/i);
+  });
+});
+
+describe('P17 round 2 (Codex P1): the O5 classification covers the COMPLETE emitted boundary set', () => {
+  // Codex PR #44 round 2, P1 (write-entities.ts): ANY same-owner boundary
+  // used to enable 71 = 1 while foreign-owned boundaries were still
+  // emitted, with no back-reactor for them — a hatch AutoCAD sees as
+  // associative whose foreign boundary carries no reactor. The ruling:
+  // if ANY emitted boundary is foreign-owned, the WHOLE hatch is 71 = 0
+  // and no reactors are written for it; the handle list is retained.
+  const props = { layer: '0', color: 'ByLayer' as const };
+  const sq = (x: number, y: number, s: number) => [
+    { x, y }, { x: x + s, y }, { x: x + s, y: y + s }, { x, y: y + s },
+  ];
+  const reactorsOf = (rec: { groups: Array<[number, string]> }): string[] => {
+    const out: string[] = [];
+    let inside = false;
+    for (const [c, v] of rec.groups) {
+      if (c === 102 && v === '{ACAD_REACTORS') inside = true;
+      else if (c === 102 && v === '}' && inside) inside = false;
+      else if (inside && c === 330) out.push(v);
+    }
+    return out;
+  };
+  /** Every loop's 97/330 list, in loop order. */
+  const boundaryRefListsOf = (rec: { groups: Array<[number, string]> }): string[][] => {
+    const out: string[][] = [];
+    rec.groups.forEach(([c, v], i) => {
+      if (c !== 97) return;
+      const count = Number(v);
+      out.push(rec.groups.slice(i + 1, i + 1 + count).filter(([cc]) => cc === 330).map(([, vv]) => vv));
+    });
+    return out;
+  };
+  const localPoly = (id: string): PolylineEntity => ({
+    id, ...props, type: 'polyline', points: sq(0, 0, 10), closed: true,
+  });
+  const foreignPoly = (id: string): PolylineEntity => ({
+    id, ...props, type: 'polyline', points: sq(30, 0, 10), closed: true,
+  });
+  const mixedState = (hatch: HatchEntity): DrawingState => ({
+    entities: [localPoly('m1'), hatch], layers: [], currentLayer: '0',
+    blocks: { BLK: { name: 'BLK', basePoint: { x: 0, y: 0 }, entities: [foreignPoly('bp1')], attributes: [] } },
+  });
+
+  /** The written LWPOLYLINE records, identified by first-point x (0 = the local square, 30 = the other). */
+  const polyAt = (recs: Array<{ kind: string; groups: Array<[number, string]> }>, x: string) =>
+    recs.filter((r) => r.kind === 'LWPOLYLINE').find((p) => group(p, 10) === x)!;
+
+  it('mixed ownership inside ONE loop: the whole hatch is 71 = 0, both links retained, no reactors anywhere', () => {
+    const hatch: HatchEntity = {
+      id: 'h1', ...props, type: 'hatch', pattern: 'SOLID', solid: true, angle: 0, scale: 1, associative: true,
+      loops: [{ points: sq(0, 0, 10), boundaryRefs: ['m1', 'bp1'] }],
+    };
+    const recs = records(writeDxf(mixedState(hatch)));
+    const hatchRec = recs.find((r) => r.kind === 'HATCH')!;
+    const local = polyAt(recs, '0'), foreign = polyAt(recs, '30');
+    expect(group(hatchRec, 71)).toBe('0');
+    expect(boundaryRefListsOf(hatchRec)).toEqual([[group(local, 5), group(foreign, 5)]]);
+    expect(reactorsOf(local)).toEqual([]);
+    expect(reactorsOf(foreign)).toEqual([]);
+  });
+
+  it('mixed ownership across SEPARATE loops: the whole hatch is 71 = 0, both links retained, no reactors anywhere', () => {
+    const hatch: HatchEntity = {
+      id: 'h1', ...props, type: 'hatch', pattern: 'SOLID', solid: true, angle: 0, scale: 1, associative: true,
+      loops: [
+        { points: sq(0, 0, 10), boundaryRefs: ['m1'] },
+        { points: sq(30, 0, 10), boundaryRefs: ['bp1'] },
+      ],
+    };
+    const recs = records(writeDxf(mixedState(hatch)));
+    const hatchRec = recs.find((r) => r.kind === 'HATCH')!;
+    const local = polyAt(recs, '0'), foreign = polyAt(recs, '30');
+    expect(group(hatchRec, 71)).toBe('0');
+    expect(boundaryRefListsOf(hatchRec)).toEqual([[group(local, 5)], [group(foreign, 5)]]);
+    expect(reactorsOf(local)).toEqual([]);
+    expect(reactorsOf(foreign)).toEqual([]);
+  });
+
+  it('guard: a multi-loop hatch whose boundaries are ALL same-owner stays 71 = 1 with back-reactors', () => {
+    const hatch: HatchEntity = {
+      id: 'h1', ...props, type: 'hatch', pattern: 'SOLID', solid: true, angle: 0, scale: 1, associative: true,
+      loops: [
+        { points: sq(0, 0, 10), boundaryRefs: ['m1'] },
+        { points: sq(30, 0, 10), boundaryRefs: ['m2'] },
+      ],
+    };
+    const state: DrawingState = {
+      entities: [localPoly('m1'), foreignPoly('m2'), hatch], layers: [], blocks: {}, currentLayer: '0',
+    };
+    const recs = records(writeDxf(state));
+    const hatchRec = recs.find((r) => r.kind === 'HATCH')!;
+    const first = polyAt(recs, '0'), second = polyAt(recs, '30');
+    expect(group(hatchRec, 71)).toBe('1');
+    expect(boundaryRefListsOf(hatchRec)).toEqual([[group(first, 5)], [group(second, 5)]]);
+    for (const p of [first, second]) expect(reactorsOf(p)).toEqual([group(hatchRec, 5)]);
+  });
+});
