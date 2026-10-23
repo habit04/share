@@ -30,6 +30,29 @@ export class Writer {
   private out: string[] = [];
   private handle = 0x100;
   readonly textStyleHandles = new Map<string, string>();
+  /** P18: MLEADERSTYLE handles by upper-case style name, pre-allocated like textStyleHandles. */
+  readonly mleaderStyleHandles = new Map<string, string>();
+  /** P18 slice 2 (PROPOSAL-P18-S2 item (4)): BLOCK_RECORD handles by upper-case block name,
+   *  copied from writeDxf's allocation scope when a native block-content mleader exists —
+   *  a written mleader names its content block by THIS file's record handle. */
+  readonly blockRecordHandles = new Map<string, string>();
+  /** P18 slice 2 (PROPOSAL-P18-S2 item (4)): ATTDEF handles as written in this file's BLOCKS
+   *  section, keyed "NAME TAG" and "NAME #index" (upper-case name) — populated by the BLOCKS
+   *  loop as each ATTDEF is written; a block mleader's attribute entry (group 330) must name
+   *  the handle of this file, which only the writer knows. */
+  readonly blockAttdefHandles = new Map<string, string>();
+  /** P18 S3-D (Amendment 2 (iv)): extension-dictionary chain handles per
+   *  multi-context native mleader — extension, manager and scales dictionary
+   *  handles plus one context-object handle per context INCLUDING the
+   *  primary's, in dictionary order. Allocated by W-ALLOC-18; consumed by
+   *  writeEntityCommon's gated subgroup and writer.ts's W-OBJECTS
+   *  context-objects block. */
+  readonly mleaderContextChains = new WeakMap<Entity, MLeaderContextChainHandles>();
+  /** P18 FIX group 1: entities whose context chain is WITHHELD on this write
+   *  (a source scale name resolves to no SCALE and cannot be recreated) —
+   *  graphWithoutModelledContextChains drops their retained chains too, so
+   *  a withheld chain is absent from the output rather than resurrected. */
+  readonly mleaderChainsWithheld = new WeakSet<Entity>();
   readonly dimensionStyles = new Map<string, DimStyle>();
   readonly reservedEntityHandles = new WeakMap<Entity, string>();
   reserveEntityHandle(entity: Entity): string {
@@ -49,8 +72,15 @@ export class Writer {
   pair(code: number, value: string | number): void {
     this.out.push(String(code), typeof value === 'number' ? fmt(value) : value);
   }
+  /** Handles nextHandle must never hand out (P18 FIX group 1): a context
+   *  object's group 340 names a RETAINED scale by its source handle, a
+   *  cross-space reference the merge's generated-record rewrite would
+   *  mistake for a writer handle if the writer allocated the same value. */
+  avoidHandles: ReadonlySet<string> = new Set();
   nextHandle(): string {
-    this.handle += 1;
+    do {
+      this.handle += 1;
+    } while (this.avoidHandles.has(this.handle.toString(16).toUpperCase()));
     return this.handle.toString(16).toUpperCase();
   }
   lastHandle(): number {
@@ -63,6 +93,24 @@ export class Writer {
 
 function colorCode(c: ColorSpec): number {
   return c === 'ByLayer' ? 256 : c;
+}
+
+/**
+ * P18 S3-D (Amendment 2 (iv)): the extension-dictionary chain handles of one
+ * native multileader carrying annotative contexts — see Writer's
+ * mleaderContextChains field. `objects` holds one handle per context object,
+ * the primary's first (dictionary order).
+ */
+export interface MLeaderContextChainHandles {
+  extension: string;
+  manager: string;
+  scales: string;
+  objects: string[];
+  /** P18 FIX group 2: the chain is CARRIED — its handles are the retained
+   *  source handles and preserveDxfCadGraph regenerates the retained
+   *  records in place; writer.ts's OBJECTS block emits only the objects
+   *  beyond the retained count (the model's growth). */
+  carried?: boolean;
 }
 
 /** Block-record handles of paper-space layouts while writeDxf runs: their entities get group 67 = 1 (Track E). */
@@ -90,9 +138,22 @@ export function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: str
   // where AutoCAD puts it (the genuine AC1015 table control): 102 block, the
   // hard-owner 360, 102 close. Only the native table's roundtrip chain uses
   // this today (P22 F-2 successor).
-  if (extensionDictionary) {
+  // P18 S3-D (Amendment 2 (v)): the ONE gated insertion — a native mleader
+  // carrying annotative contexts names its extension dictionary here, in
+  // the fixture-verified position (after group 5, before group 330).
+  // Entities without a chain entry emit byte-identical output.
+  // Composition (lead ruling at the P18 rebase onto the P22 PR-fix head):
+  // the explicit parameter is consulted first, the mleader context-chain
+  // map second. The two mechanisms serve disjoint entity kinds (ACAD_TABLE
+  // vs MULTILEADER), so both naming one entity is a programming error.
+  const contextChain = w.mleaderContextChains.get(e);
+  if (extensionDictionary && contextChain) {
+    throw new Error(`Entity ${e.id} has both an explicit extension dictionary and an mleader context chain; only one mechanism may name an entity's extension dictionary.`);
+  }
+  const extensionDictHandle = extensionDictionary ?? contextChain?.extension;
+  if (extensionDictHandle) {
     w.pair(102, '{ACAD_XDICTIONARY');
-    w.pair(360, extensionDictionary);
+    w.pair(360, extensionDictHandle);
     w.pair(102, '}');
   }
   w.pair(330, owner);

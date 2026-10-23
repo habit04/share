@@ -17,6 +17,9 @@ import { insertArrayCount, insertArrayInstances, MAX_INSERT_ARRAY_INSTANCES } fr
 import { evaluateDynamicBlock, type AttributeActionTransform } from './parametric/evaluate';
 import { dynamicGrips } from './parametric/grips';
 import { hasHatchGradient, hatchGradientDataProblem, hatchGradientFrame, hatchGradientFrameProblem, transformHatchGradientFrame, type HatchGradient, type HatchGradientFrame } from './hatch-gradient';
+import type { MLeaderNative } from './multileader';
+
+export type { MLeaderNative, MLeaderContentType, MLeaderStyleData } from './multileader';
 
 export type { DimensionEntity, DimStyle, DimKind } from './dimension';
 export type { MTextEntity, MTextAttachment } from './mtext';
@@ -302,8 +305,16 @@ export interface LeaderEntity extends EntityBase {
   readonly textLayer?: string;
   readonly textLineSpacing?: number;
   readonly textColumns?: MTextColumns;
-  /** Where it came from (LEADER + MTEXT or MULTILEADER); written back as LEADER + MTEXT either way. */
+  /** Where it came from (LEADER + MTEXT or MULTILEADER). */
   readonly kind?: 'leader' | 'mleader';
+  /**
+   * P18: native multileader data (core/multileader.ts). Present only on a
+   * `kind: 'mleader'` whose content this build models (slice 1: MTEXT / none):
+   * such an entity is written back as a native MULTILEADER + MLEADERSTYLE.
+   * Absent (every pre-P18 save; block-content imports) the write-back stays
+   * LEADER + MTEXT, exactly as before, and the import report says so.
+   */
+  readonly mleader?: MLeaderNative;
 }
 
 /** Raster image reference (IMAGE + IMAGEDEF). Drawn as a frame with the file name unless a loader supplies the bitmap. */
@@ -1021,6 +1032,65 @@ function affineCompound(e: Compound, A: Affine): Entity {
         ...(e.textColumns ? { textColumns: scaledMTextColumns(e.textColumns, k) } : {}),
         textRotation: A.mirrored ? readableAngle(dirAngle(rot), rot + A.rotation) : normAngle(rot + A.rotation),
         ...(A.mirrored && att ? { textAttachment: flip(att) } : {}),
+        // P18 slice 3 (PROPOSAL-P18-S3 item (3)): a native multileader's
+        // additional annotative contexts transform WITH the primary — their
+        // points/vectors/placements take the same tf/vec, their sizes scale
+        // by k like the primary's entity-level sizes, their text rotation and
+        // attachment follow the primary's rules above. The mleader-internal
+        // scalars (each context's scaleFactor and landingGap) do not
+        // transform — the same posture as the primary's landingGap, which
+        // rides through the spread above untouched.
+        // P18 FIX group 3 (Codex PR #40 P1): block placements transform
+        // WHOLE, the primary's and every context's alike — position by tf,
+        // scale by |kx|/|ky| (the insert convention in this same function),
+        // rotation by the direction map.
+        // P18 PR #43 fix (Codex PR #43 P1): a mirror must yield the EXACT
+        // affine of the reflection, and an unsigned scale cannot carry it
+        // (the placement map would be a rotation, the block un-reflected).
+        // The model accepts signed nonzero scales, so the reflection rides
+        // on scale Y: with the rotation at the direction-mapped (reflected)
+        // angle, Rot(θ') · diag(|kx|·sx, −|ky|·sy) is exactly the mirrored
+        // placement map. Applied identically to the primary's block and to
+        // every context's, below.
+        ...(e.mleader && (e.mleader.block || e.mleader.contexts) ? {
+          mleader: {
+            ...e.mleader,
+            ...(e.mleader.block ? {
+              block: {
+                ...e.mleader.block,
+                position: A.tf(e.mleader.block.position),
+                scale: { x: e.mleader.block.scale.x * Math.abs(A.kx), y: e.mleader.block.scale.y * Math.abs(A.ky) * (A.mirrored ? -1 : 1) },
+                rotation: normAngle(dirAngle(e.mleader.block.rotation)),
+              },
+            } : {}),
+            ...(e.mleader.contexts ? {
+              contexts: e.mleader.contexts.map((c) => {
+                const cr = c.textRotation ?? 0;
+                return {
+                  ...c,
+                  paths: c.paths.map((p) => p.map(A.tf)),
+                  ...(c.dogleg ? { dogleg: A.vec(c.dogleg) } : {}),
+                  ...(c.textPosition ? { textPosition: A.tf(c.textPosition) } : {}),
+                  textHeight: c.textHeight * k,
+                  arrowSize: c.arrowSize * k,
+                  ...(c.textWidth !== undefined ? { textWidth: c.textWidth * k } : {}),
+                  ...(c.textRotation !== undefined || A.rotation !== 0 || A.mirrored
+                    ? { textRotation: A.mirrored ? readableAngle(dirAngle(cr), cr + A.rotation) : normAngle(cr + A.rotation) }
+                    : {}),
+                  ...(A.mirrored && c.textAttachment ? { textAttachment: flip(c.textAttachment as MTextAttachment) } : {}),
+                  ...(c.block ? {
+                    block: {
+                      ...c.block,
+                      position: A.tf(c.block.position),
+                      scale: { x: c.block.scale.x * Math.abs(A.kx), y: c.block.scale.y * Math.abs(A.ky) * (A.mirrored ? -1 : 1) },
+                      rotation: normAngle(dirAngle(c.block.rotation)),
+                    },
+                  } : {}),
+                };
+              }),
+            } : {}),
+          },
+        } : {}),
       };
     }
     case 'table': {
@@ -1248,8 +1318,20 @@ export function entityGeometryWork(entity: Entity): number {
       }
       break;
     case 'leader':
-      work += entity.vertices.length + (entity.text?.length ?? 0) + (entity.raw?.length ?? 0) + (entity.textColumns?.heights.length ?? 0);
+      work += entity.vertices.length + (entity.text?.length ?? 0) + (entity.raw?.length ?? 0) + (entity.textColumns?.heights.length ?? 0) + (entity.mleader?.styleName.length ?? 0);
       for (const path of entity.extraPaths ?? []) work += path.length;
+      // AMENDMENT-P18-S3-C (LEAD RULING — P18 O-B): charge each native
+      // context's stored geometry — its leader-line path points and its
+      // text/raw, mirroring the primary's own charges above — so the
+      // document geometry budget (geometry-budget.ts) sees context
+      // geometry. Without this, a multi-context multileader charged as
+      // its primary alone and the stored-geometry aggregate cap could be
+      // exceeded by an arbitrary factor through contexts alone
+      // (acceptance observation O-B).
+      for (const context of entity.mleader?.contexts ?? []) {
+        for (const path of context.paths) work += path.length;
+        work += (context.text?.length ?? 0) + (context.raw?.length ?? 0);
+      }
       break;
     case 'text':
       work += entity.text.length;

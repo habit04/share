@@ -14,7 +14,7 @@ import { diffDimStyles, STANDARD_DIMSTYLE, DIMSTYLES_META_KEY } from '../../core
 import { DxfReadError, tokenize, objects, has, str, num, isIntegerText } from './groups';
 import { decodeUnicodeEscapes, textStyleOf, textStylesMeta, shapeStylesMeta } from '../encoding';
 import type { TextStyle } from '../encoding';
-import type { Pair } from './groups';
+import type { Obj, Pair } from './groups';
 import type { Linetype, LinetypeShapeStyle } from '../../core/linetypes';
 import type { ReadContext } from './read-core';
 import { LayoutReader } from '../dxf-layouts';
@@ -30,6 +30,7 @@ import { attachDxfCadGraph } from '../cad-graph-dxf';
 import { CadGraphError, canonicalCadHandle } from '../../core/cad-graph';
 import { Model3DReader, native3dObject } from './mesh3d-read';
 import { EMPTY_MODEL3D } from '../../model3d/model';
+import { STANDARD_MLEADER_STYLE, type MLeaderStyleRetained } from '../../core/multileader';
 import { DXF_READ_LIMITS } from '../../model3d/file-format';
 
 export interface DxfReadOptions {
@@ -146,6 +147,139 @@ function tableStylesOf(pairs: readonly Pair[]): Map<string, TableStyleData> {
   return out;
 }
 
+/**
+ * The MLEADERSTYLE names of the OBJECTS section, by upper-case style handle (P18):
+ * a style's name is the dictionary key of the entry that points at the MLEADERSTYLE
+ * object (the ACAD_MLEADERSTYLE dictionary chain), so it is resolved from the
+ * dictionaries, not from the style object itself. OBJECTS comes last, read first.
+ */
+function mleaderStyleNamesOf(pairs: readonly Pair[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (let i = 0; i + 1 < pairs.length; i += 1) {
+    if (pairs[i]!.code !== 0 || pairs[i]!.value !== 'SECTION' || pairs[i + 1]!.value !== 'OBJECTS') continue;
+    let j = i + 2;
+    while (j < pairs.length && !(pairs[j]!.code === 0 && pairs[j]!.value === 'ENDSEC')) j += 1;
+    const objs = objects(pairs as Pair[], i + 2, j);
+    const styleHandles = new Set(objs.filter((o) => o.kind === 'MLEADERSTYLE' && has(o, 5)).map((o) => str(o, 5).toUpperCase()));
+    for (const o of objs) {
+      if (o.kind !== 'DICTIONARY') continue;
+      for (let k = 0; k + 1 < o.groups.length; k += 1) {
+        if (o.groups[k]!.code === 3 && o.groups[k + 1]!.code === 350) {
+          const target = o.groups[k + 1]!.value.toUpperCase();
+          if (styleHandles.has(target)) out.set(target, o.groups[k]!.value);
+        }
+      }
+    }
+    i = j;
+  }
+  return out;
+}
+
+/**
+ * The MLEADERSTYLE retained values of the OBJECTS section, by upper-case style handle
+ * (P18, AMENDMENT-P18-S2-A — slice-1 acceptance must-fix V-1): the source values of the
+ * style groups no entity-level field supplies (46, 47/49/140, 141, 271/272/273, 298).
+ * Only groups whose values diverge from the specimen constants JCad synthesizes are
+ * recorded, and a style that matches the constants in full records NO entry at all —
+ * so authored data and slice-1 behaviour are untouched. Absent groups count as the
+ * constant (that is the value AutoCAD applies for them).
+ */
+function mleaderStyleValuesOf(pairs: readonly Pair[]): Map<string, MLeaderStyleRetained> {
+  const out = new Map<string, MLeaderStyleRetained>();
+  const c = STANDARD_MLEADER_STYLE;
+  for (let i = 0; i + 1 < pairs.length; i += 1) {
+    if (pairs[i]!.code !== 0 || pairs[i]!.value !== 'SECTION' || pairs[i + 1]!.value !== 'OBJECTS') continue;
+    let j = i + 2;
+    while (j < pairs.length && !(pairs[j]!.code === 0 && pairs[j]!.value === 'ENDSEC')) j += 1;
+    for (const o of objects(pairs as Pair[], i + 2, j)) {
+      if (o.kind !== 'MLEADERSTYLE' || !has(o, 5)) continue;
+      const val = (code: number): number | undefined => {
+        const raw = o.groups.find((x) => x.code === code)?.value;
+        if (raw === undefined) return undefined;
+        const n = Number(raw);
+        return Number.isFinite(n) ? n : undefined;
+      };
+      const retained: {
+        alignSpace?: number;
+        blockScale?: { x: number; y: number; z: number };
+        blockRotation?: number;
+        textAttachmentDirection?: number;
+        bottomTextAttachmentDirection?: number;
+        topTextAttachmentDirection?: number;
+        flag298?: number;
+      } = {};
+      const alignSpace = val(46);
+      if (alignSpace !== undefined && alignSpace !== c.alignSpace) retained.alignSpace = alignSpace;
+      const sx = val(47), sy = val(49), sz = val(140);
+      if ((sx !== undefined && sx !== c.blockScale.x) || (sy !== undefined && sy !== c.blockScale.y) || (sz !== undefined && sz !== c.blockScale.z)) {
+        retained.blockScale = { x: sx ?? c.blockScale.x, y: sy ?? c.blockScale.y, z: sz ?? c.blockScale.z };
+      }
+      const blockRotation = val(141);
+      if (blockRotation !== undefined && blockRotation !== c.blockRotation) retained.blockRotation = blockRotation;
+      const tad = val(271);
+      if (tad !== undefined && tad !== c.textAttachmentDirection) retained.textAttachmentDirection = tad;
+      const btad = val(272);
+      if (btad !== undefined && btad !== c.bottomTextAttachmentDirection) retained.bottomTextAttachmentDirection = btad;
+      const ttad = val(273);
+      if (ttad !== undefined && ttad !== c.topTextAttachmentDirection) retained.topTextAttachmentDirection = ttad;
+      const flag298 = val(298);
+      if (flag298 !== undefined && flag298 !== c.flag298) retained.flag298 = flag298;
+      if (Object.keys(retained).length) out.set(str(o, 5).toUpperCase(), retained);
+    }
+    i = j;
+  }
+  return out;
+}
+
+/**
+ * The BLOCK_RECORD names of the TABLES section, by upper-case record handle
+ * (P18 slice 2, PROPOSAL-P18-S2 item (2)): a block-content MULTILEADER names its
+ * block record by handle (CONTEXT_DATA 341 / trailing 344), and the name is the
+ * record's group 2. TABLES precedes ENTITIES in the file but the map is built
+ * from the raw pairs up front, like the other OBJECTS pre-scans.
+ */
+function blockRecordNamesOf(pairs: readonly Pair[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (let i = 0; i + 1 < pairs.length; i += 1) {
+    if (pairs[i]!.code !== 0 || pairs[i]!.value !== 'SECTION' || pairs[i + 1]!.value !== 'TABLES') continue;
+    let j = i + 2;
+    while (j < pairs.length && !(pairs[j]!.code === 0 && pairs[j]!.value === 'ENDSEC')) j += 1;
+    for (const o of objects(pairs as Pair[], i + 2, j)) {
+      if (o.kind === 'BLOCK_RECORD' && has(o, 5) && has(o, 2)) out.set(str(o, 5).toUpperCase(), str(o, 2));
+    }
+    i = j;
+  }
+  return out;
+}
+
+/**
+ * The OBJECTS DICTIONARY records and ACDB_MLEADEROBJECTCONTEXTDATA_CLASS records,
+ * by upper-case handle (P18 S3-D, RULING-P18-S3-D (1)(i)): AutoCAD stores a
+ * multileader's additional annotative contexts as objects behind the entity's
+ * extension dictionary, so readMLeader joins through these maps. Of the exact
+ * shape of the pre-scans above; OBJECTS comes last, read first.
+ */
+function mleaderContextDataOf(pairs: readonly Pair[]): { dictionaries: Map<string, Obj>; contextObjects: Map<string, Obj>; scales: Map<string, string> } {
+  const dictionaries = new Map<string, Obj>();
+  const contextObjects = new Map<string, Obj>();
+  // P18 FIX group 1(b): SCALE objects by handle -> their group-300 name, so
+  // readMLeader can name the scale each context object's group 340 names.
+  const scales = new Map<string, string>();
+  for (let i = 0; i + 1 < pairs.length; i += 1) {
+    if (pairs[i]!.code !== 0 || pairs[i]!.value !== 'SECTION' || pairs[i + 1]!.value !== 'OBJECTS') continue;
+    let j = i + 2;
+    while (j < pairs.length && !(pairs[j]!.code === 0 && pairs[j]!.value === 'ENDSEC')) j += 1;
+    for (const o of objects(pairs as Pair[], i + 2, j)) {
+      if (!has(o, 5)) continue;
+      if (o.kind === 'DICTIONARY') dictionaries.set(str(o, 5).toUpperCase(), o);
+      else if (o.kind === 'ACDB_MLEADEROBJECTCONTEXTDATA_CLASS') contextObjects.set(str(o, 5).toUpperCase(), o);
+      else if (o.kind === 'SCALE' && has(o, 300)) scales.set(str(o, 5).toUpperCase(), str(o, 300));
+    }
+    i = j;
+  }
+  return { dictionaries, contextObjects, scales };
+}
+
 /** The reader proper; DIMSTYLE records are collected into `dimStyles`. */
 function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string, DimStyle>, report: ImportReportBuilder, raw: RawDxfEntity[]): DrawingState {
   if (text.length > (opts.maxSourceLength ?? DXF_READ_LIMITS.maxSourceLength)) throw new DxfReadError('DXF exceeds the source text size limit.', 1);
@@ -171,6 +305,10 @@ function readDxfState(text: string, opts: DxfReadOptions, dimStyles: Map<string,
     pendingImages: new Map(),
     textStyleHandles: new Map(),
     tableStyles: tableStylesOf(pairs),
+    mleaderStyles: mleaderStyleNamesOf(pairs),
+    mleaderStyleValues: mleaderStyleValuesOf(pairs),
+    blockRecordNames: blockRecordNamesOf(pairs),
+    mleaderContextData: mleaderContextDataOf(pairs),
     consumedBlocks: new Set(),
     notes: opts.notes ?? [],
     report,

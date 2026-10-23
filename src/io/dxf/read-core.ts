@@ -9,6 +9,7 @@ import { str, has, num } from './groups';
 import { newId } from '../../core/entities';
 import type { FieldContext } from '../../core/fields';
 import type { TableStyleData } from './read-annotations';
+import type { MLeaderStyleRetained } from '../../core/multileader';
 import { ImportReportBuilder } from '../import-report';
 import { transparencyFromDxf, validColorName } from '../../core/appearance';
 import type { EntityBase } from '../../core/entities';
@@ -61,6 +62,26 @@ export interface ReadContext {
   textStyleHandles?: Map<string, string>;
   /** TABLESTYLE objects by upper-case handle (OBJECTS comes last; ACAD_TABLE group 342 names one). */
   tableStyles?: Map<string, TableStyleData>;
+  /** P18: MLEADERSTYLE names by upper-case handle (OBJECTS comes last; a MULTILEADER's trailing group 340 names one). */
+  mleaderStyles?: ReadonlyMap<string, string>;
+  /** P18 (AMENDMENT-P18-S2-A, must-fix V-1): MLEADERSTYLE retained values by upper-case handle —
+   *  the source values of the style groups no entity field supplies; a style whose values all
+   *  match the specimen constants has NO entry, so authored round trips are untouched. */
+  mleaderStyleValues?: ReadonlyMap<string, MLeaderStyleRetained>;
+  /** P18 slice 2 (PROPOSAL-P18-S2 item (1)): BLOCK_RECORD names by upper-case handle
+   *  (TABLES precedes ENTITIES; a MULTILEADER's 341 / trailing 344 name one). */
+  blockRecordNames?: ReadonlyMap<string, string>;
+  /** P18 S3-D (RULING-P18-S3-D (1)(i)): the OBJECTS DICTIONARY records and the
+   *  ACDB_MLEADEROBJECTCONTEXTDATA_CLASS records, by upper-case handle — the raw
+   *  material readMLeader's extension-dictionary join resolves a MULTILEADER's
+   *  annotative context objects through. Absent on read paths that build their
+   *  own context: the object path then simply does not engage. */
+  mleaderContextData?: {
+    dictionaries: ReadonlyMap<string, Obj>;
+    contextObjects: ReadonlyMap<string, Obj>;
+    /** P18 FIX group 1(b): SCALE objects by upper-case handle -> group-300 name. */
+    scales: ReadonlyMap<string, string>;
+  };
   /** Anonymous blocks replaced by native tables. */
   consumedBlocks?: Set<string>;
   /** Remarks about content that was simplified. */
