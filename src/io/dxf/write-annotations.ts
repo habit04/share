@@ -306,7 +306,8 @@ export function emitMLeaderContext(w: Writer, v: MLeaderCtxView, blockRecordHand
   w.pair(175, 1);
   w.pair(176, 0);
   w.pair(177, 0);
-  w.pair(290, 1);
+  // 290 is the context's has-text flag: block content carries no text (Lane B).
+  w.pair(290, v.block ? 0 : 1);
   if (v.block) {
     // Slice 2 block content in CONTEXT_DATA: signal, record, placement. The 47
     // transformation matrix (derived from position/scale/rotation), the 93
