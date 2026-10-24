@@ -980,6 +980,267 @@ fn sortents_own_tail_xdata(table: &SortEntitiesTable) -> Option<Vec<String>> {
     }
 }
 
+/// The reactor handles a SORTENTSTABLE carries in its own raw DXF tail:
+/// the group 330 values inside the {ACAD_REACTORS} block, in order, or
+/// None when the tail has no reactors block. Some(empty) means the block
+/// exists and names no reactors. The walk stops at the block's closing
+/// group 102, so the owner group 330 that follows it is never collected.
+/// Values that do not parse as hexadecimal handles are skipped, mirroring
+/// the reader's own reactor parsing for sibling objects.
+fn sortents_own_tail_reactors(table: &SortEntitiesTable) -> Option<Vec<Handle>> {
+    let raw = table.raw_dxf_codes.as_ref()?;
+    let mut in_reactors = false;
+    let mut found = false;
+    let mut reactors = Vec::new();
+    for (code, value) in raw {
+        if *code == 102 {
+            let text = value.trim();
+            if !in_reactors && text == "{ACAD_REACTORS" {
+                in_reactors = true;
+                found = true;
+                continue;
+            }
+            if in_reactors && text == "}" {
+                break;
+            }
+            continue;
+        }
+        if in_reactors && *code == 330 {
+            if let Ok(handle) = u64::from_str_radix(value.trim(), 16) {
+                reactors.push(Handle::new(handle));
+            }
+        }
+    }
+    if found {
+        Some(reactors)
+    } else {
+        None
+    }
+}
+
+/// The XDATA string sequence a SORTENTSTABLE attests, resolved from the
+/// two copies that can exist for this object type: the registry copy
+/// (`CadDocument::object_xdata`) and the own-tail copy. When both exist
+/// they must agree — Err(()) — a single copy is returned on its own, and
+/// Ok(None) means neither copy exists. Callers supply their own refusal
+/// texts for the Err and Ok(None) cases.
+fn sortents_xdata_copies(
+    doc: &CadDocument,
+    handle: Handle,
+    table: Option<&SortEntitiesTable>,
+) -> Result<Option<Vec<String>>, ()> {
+    let registry = doc
+        .object_xdata
+        .get(&handle)
+        .map(|records| xdata_string_sequence(records));
+    let own_tail = table.and_then(sortents_own_tail_xdata);
+    match (registry, own_tail) {
+        (Some(registry), Some(own_tail)) => {
+            if registry != own_tail {
+                Err(())
+            } else {
+                Ok(Some(registry))
+            }
+        }
+        (Some(registry), None) => Ok(Some(registry)),
+        (None, Some(own_tail)) => Ok(Some(own_tail)),
+        (None, None) => Ok(None),
+    }
+}
+
+/// The reactor sequence a SORTENTSTABLE attests, resolved from the two
+/// places it can live: the own-tail {ACAD_REACTORS} block and the
+/// document's recorded reactors (`CadDocument::object_reactors` — the
+/// typed fields of sibling objects and the side channel the DWG reader
+/// fills on reopening). Both present and different is Err(()); a single
+/// source is taken on its own; neither is the empty sequence (a table
+/// legitimately carries no reactors, unlike its XDATA block, whose
+/// presence is itself attested).
+fn sortents_reactors_copies(
+    doc: &CadDocument,
+    handle: Handle,
+    table: Option<&SortEntitiesTable>,
+) -> Result<Vec<Handle>, ()> {
+    let own_tail = table.and_then(sortents_own_tail_reactors);
+    let recorded = doc.object_reactors(handle);
+    match own_tail {
+        Some(own_tail) => {
+            if !recorded.is_empty() && recorded != own_tail {
+                Err(())
+            } else {
+                Ok(own_tail)
+            }
+        }
+        None => Ok(recorded),
+    }
+}
+
+/// The XDATA region of a SORTENTSTABLE's raw DXF tail, rebuilt as the
+/// registry records the DXF reader would have produced for any other
+/// object (round 5 preservation). The walk mirrors the library's
+/// extended-data parser: group 1001 opens a record under its application
+/// name; values map by group code (1000 string, 1002 control, 1003
+/// layer, 1004 hex binary, 1005 handle, 1010–1013/1020–1023/1030–1033
+/// points, 1040 real, 1041 distance, 1042 scale factor, 1070/1071
+/// integers); the region ends at the first group outside 1000..=1071.
+/// Values are taken from the tail's raw strings exactly as written; a
+/// value that does not parse is skipped, as the parser skips it. None
+/// means the tail carries no XDATA block at all.
+fn sortents_own_tail_xdata_records(
+    table: &SortEntitiesTable,
+) -> Option<acadrust::xdata::ExtendedData> {
+    use acadrust::xdata::{ExtendedData, ExtendedDataRecord, XDataValue};
+    let raw = table.raw_dxf_codes.as_ref()?;
+    let mut records = ExtendedData::new();
+    let mut current: Option<ExtendedDataRecord> = None;
+    // The point being accumulated: (x group code, x, y); z completes it.
+    let mut point: Option<(i32, Option<f64>, Option<f64>)> = None;
+    for (code, value) in raw.iter() {
+        let code = *code;
+        if code == 1001 {
+            if let Some(record) = current.take() {
+                records.add_record(record);
+            }
+            current = Some(ExtendedDataRecord::new(value.clone()));
+            point = None;
+            continue;
+        }
+        if !(1000..=1071).contains(&code) {
+            if current.is_some() {
+                // The region has ended; anything later in the tail is not
+                // XDATA (the parser likewise returns at a foreign group).
+                break;
+            }
+            continue;
+        }
+        let Some(record) = current.as_mut() else {
+            continue;
+        };
+        match code {
+            1000 => record.add_value(XDataValue::String(value.clone())),
+            1002 => record.add_value(XDataValue::ControlString(value.clone())),
+            1003 => record.add_value(XDataValue::LayerName(value.clone())),
+            1004 => {
+                let bytes: Vec<u8> = (0..value.len())
+                    .step_by(2)
+                    .filter_map(|i| {
+                        let end = (i + 2).min(value.len());
+                        u8::from_str_radix(&value[i..end], 16).ok()
+                    })
+                    .collect();
+                record.add_value(XDataValue::BinaryData(bytes));
+            }
+            1005 => {
+                if let Ok(handle) = u64::from_str_radix(value.trim(), 16) {
+                    record.add_value(XDataValue::Handle(Handle::new(handle)));
+                }
+            }
+            1010 | 1011 | 1012 | 1013 => {
+                point = Some((code, value.trim().parse::<f64>().ok(), None));
+            }
+            1020 | 1021 | 1022 | 1023 => {
+                if let Some((x_code, x, y)) = &mut point {
+                    if *x_code + 10 == code && x.is_some() {
+                        *y = value.trim().parse::<f64>().ok();
+                    }
+                }
+            }
+            1030 | 1031 | 1032 | 1033 => {
+                let finished = match point {
+                    Some((x_code, Some(x), Some(y))) if x_code + 20 == code => value
+                        .trim()
+                        .parse::<f64>()
+                        .ok()
+                        .map(|z| (x_code, x, y, z)),
+                    _ => None,
+                };
+                if let Some((x_code, x, y, z)) = finished {
+                    let point = acadrust::types::Vector3::new(x, y, z);
+                    record.add_value(match x_code {
+                        1010 => XDataValue::Point3D(point),
+                        1011 => XDataValue::Position3D(point),
+                        1012 => XDataValue::Displacement3D(point),
+                        _ => XDataValue::Direction3D(point),
+                    });
+                }
+                if matches!(point, Some((x_code, _, _)) if x_code + 20 == code) {
+                    point = None;
+                }
+            }
+            1040 | 1041 | 1042 => {
+                if let Ok(number) = value.trim().parse::<f64>() {
+                    record.add_value(match code {
+                        1040 => XDataValue::Real(number),
+                        1041 => XDataValue::Distance(number),
+                        _ => XDataValue::ScaleFactor(number),
+                    });
+                }
+            }
+            1070 => {
+                if let Ok(number) = value.trim().parse::<i16>() {
+                    record.add_value(XDataValue::Integer16(number));
+                }
+            }
+            1071 => {
+                if let Ok(number) = value.trim().parse::<i32>() {
+                    record.add_value(XDataValue::Integer32(number));
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(record) = current.take() {
+        records.add_record(record);
+    }
+    if records.is_empty() {
+        None
+    } else {
+        Some(records)
+    }
+}
+
+/// Materialize every SORTENTSTABLE's own-tail XDATA into the registry
+/// the DWG writer actually reads (round 5 preservation).
+///
+/// The DXF reader keeps a SORTENTSTABLE's XDATA in the object's raw tail
+/// by design (see `sortents_own_tail_xdata`), and the DXF writer replays
+/// that tail verbatim — but the DWG writer takes object XDATA only from
+/// `CadDocument::object_xdata`, so an as-imported document silently
+/// loses the table's XDATA in the DWG. Running this after the literal
+/// guards have attested the as-imported document and before the DWG
+/// write registers the tail's records at the table's own handle, so the
+/// written DWG carries the same XDATA the DXF carries. Tables without a
+/// tail, and handles that already carry a registry entry (the guards
+/// have established that any such copy agrees with the tail), are left
+/// untouched.
+///
+/// The table's reactors have no equivalent registration path from this
+/// crate: the common DWG writer falls back to the document's reactor
+/// side channel for objects whose typed record passes none, but that
+/// channel is crate-private in the library and the DXF reader never
+/// fills it for this object type, so a reactor-bearing table's reactors
+/// still cannot reach the DWG from here. `verify_reopening` therefore
+/// compares them and refuses the export rather than passing the loss
+/// silently.
+fn preserve_sortents_own_tail_xdata(document: &mut CadDocument) {
+    let additions = document
+        .objects
+        .iter()
+        .filter_map(|(handle, object)| {
+            let ObjectType::SortEntitiesTable(table) = object else {
+                return None;
+            };
+            if document.object_xdata.contains_key(handle) {
+                return None;
+            }
+            sortents_own_tail_xdata_records(table).map(|records| (*handle, records))
+        })
+        .collect::<Vec<_>>();
+    for (handle, records) in additions {
+        document.object_xdata.insert(handle, records);
+    }
+}
+
 fn verify_source_literals(doc: &CadDocument, source: &SourceLiterals) -> Result<(), String> {
     for (handle, expected) in &source.xrecords {
         let Some(ObjectType::XRecord(object)) = doc.objects.get(&Handle::new(*handle)) else {
@@ -1014,26 +1275,17 @@ fn verify_source_literals(doc: &CadDocument, source: &SourceLiterals) -> Result<
         // all is the identity refusal. Other object types keep the legs
         // below exactly as they were.
         if let Some(ObjectType::SortEntitiesTable(table)) = doc.objects.get(&handle) {
-            let registry = doc
-                .object_xdata
-                .get(&handle)
-                .map(|records| xdata_string_sequence(records));
-            let own_tail = sortents_own_tail_xdata(table);
-            let actual = match (registry, own_tail) {
-                (Some(registry), Some(own_tail)) => {
-                    if registry != own_tail {
-                        return Err(
-                            "XDATA literal payload changed during DXF import. Save a DXF copy instead."
-                                .into(),
-                        );
-                    }
-                    registry
-                }
-                (Some(registry), None) => registry,
-                (None, Some(own_tail)) => own_tail,
-                (None, None) => {
+            let actual = match sortents_xdata_copies(doc, handle, Some(table)) {
+                Ok(Some(actual)) => actual,
+                Ok(None) => {
                     return Err(
                         "XDATA literal source identity was lost. Save a DXF copy instead.".into(),
+                    );
+                }
+                Err(()) => {
+                    return Err(
+                        "XDATA literal payload changed during DXF import. Save a DXF copy instead."
+                            .into(),
                     );
                 }
             };
@@ -1072,6 +1324,72 @@ fn verify_reopening(before: &CadDocument, after: &CadDocument) -> Result<(), Str
         || before.entities().count() != after.entities().count()
     {
         return Err("DWG reopening changed the drawing version or entity counts.".into());
+    }
+    // Round 5: a SORTENTSTABLE's XDATA and reactors sit outside every
+    // comparison below — the metadata graph skips this object type, and
+    // the snapshot's XDATA/reactor maps read the registry and side
+    // channel, which are both empty for an as-imported table and equally
+    // empty for a reopened one once the writer has dropped the data, so
+    // the two sides agreed on nothing-present while the DWG lost both.
+    // Compare them explicitly, resolving each side from the same copies
+    // the literal guards use: the source side attests from the raw tail,
+    // the reopened side from what the DWG actually carried back.
+    for (handle, object) in &before.objects {
+        let ObjectType::SortEntitiesTable(before_table) = object else {
+            continue;
+        };
+        let after_table = match after.objects.get(handle) {
+            Some(ObjectType::SortEntitiesTable(table)) => Some(table),
+            _ => None,
+        };
+        match (
+            sortents_xdata_copies(before, *handle, Some(before_table)),
+            sortents_xdata_copies(after, *handle, after_table),
+        ) {
+            (Ok(Some(expected)), Ok(Some(actual))) => {
+                if expected != actual {
+                    return Err(
+                        "DWG reopening changed the SORTENTSTABLE XDATA literal payload. Save a DXF copy instead."
+                            .into(),
+                    );
+                }
+            }
+            (Ok(Some(_)), Ok(None)) => {
+                return Err(
+                    "DWG reopening lost the SORTENTSTABLE XDATA literal source identity. Save a DXF copy instead."
+                        .into(),
+                );
+            }
+            (Err(()), _) | (_, Err(())) => {
+                return Err(
+                    "DWG reopening changed the SORTENTSTABLE XDATA literal payload. Save a DXF copy instead."
+                        .into(),
+                );
+            }
+            _ => {}
+        }
+        match (
+            sortents_reactors_copies(before, *handle, Some(before_table)),
+            sortents_reactors_copies(after, *handle, after_table),
+        ) {
+            (Ok(expected), Ok(actual)) => {
+                if expected != actual {
+                    return Err(if actual.is_empty() {
+                        "DWG reopening lost the SORTENTSTABLE reactors. Save a DXF copy instead."
+                            .to_string()
+                    } else {
+                        "DWG reopening changed the SORTENTSTABLE reactors. Save a DXF copy instead."
+                            .to_string()
+                    });
+                }
+            }
+            (Err(()), _) | (_, Err(())) => {
+                return Err(
+                    "DWG reopening changed the SORTENTSTABLE reactors. Save a DXF copy instead."
+                        .into(),
+                );
+            }
+        }
     }
     equivalent(
         &metadata_snapshot(before)?,
@@ -1231,6 +1549,10 @@ fn convert() -> Result<Report, String> {
     document.version = DxfVersion::AC1032;
     // Refuse incomplete/unsupported native graph values before creating any output.
     metadata_snapshot(&document)?;
+    // The guards above attest the document as imported; only now
+    // materialize the SORTENTSTABLE own-tail XDATA into the registry the
+    // DWG writer reads, so the written file carries it (round 5).
+    preserve_sortents_own_tail_xdata(&mut document);
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -4419,5 +4741,279 @@ mod tests {
         );
         table.raw_dxf_codes = Some(vec![(1001, "EMPTY_APP".to_string())]);
         assert_eq!(sortents_own_tail_xdata(&table), Some(Vec::new()));
+    }
+
+    #[test]
+    fn sortents_own_tail_reactors_reads_only_the_reactors_block() {
+        // The reactors accessor's contract: None without a tail or without
+        // a {ACAD_REACTORS} block; the block's group 330 values in order;
+        // the owner group 330 after the block is not a reactor; an empty
+        // block is Some(empty).
+        let mut table = SortEntitiesTable::new();
+        assert_eq!(sortents_own_tail_reactors(&table), None);
+        table.raw_dxf_codes = Some(vec![
+            (5, "27D".to_string()),
+            (330, "15D".to_string()),
+            (100, "AcDbSortentsTable".to_string()),
+        ]);
+        assert_eq!(sortents_own_tail_reactors(&table), None);
+        table.raw_dxf_codes = Some(vec![
+            (5, "27D".to_string()),
+            (102, "{ACAD_REACTORS".to_string()),
+            (330, "15D".to_string()),
+            (330, "1A2".to_string()),
+            (102, "}".to_string()),
+            (330, "15D".to_string()),
+            (100, "AcDbSortentsTable".to_string()),
+        ]);
+        assert_eq!(
+            sortents_own_tail_reactors(&table),
+            Some(vec![Handle::new(0x15D), Handle::new(0x1A2)])
+        );
+        table.raw_dxf_codes = Some(vec![
+            (102, "{ACAD_REACTORS".to_string()),
+            (102, "}".to_string()),
+        ]);
+        assert_eq!(sortents_own_tail_reactors(&table), Some(Vec::new()));
+    }
+
+    #[test]
+    fn sortents_own_tail_xdata_records_mirror_the_reader_mapping() {
+        // The preservation converter's contract: the tail's XDATA region
+        // becomes the records the extended-data parser would have built —
+        // records split at group 1001, values typed by group code, raw
+        // string spelling preserved, groups before the first 1001 ignored.
+        use acadrust::xdata::{ExtendedData, ExtendedDataRecord, XDataValue};
+        let mut table = SortEntitiesTable::new();
+        assert!(sortents_own_tail_xdata_records(&table).is_none());
+        table.raw_dxf_codes = Some(vec![
+            (5, "27D".to_string()),
+            (100, "AcDbSortentsTable".to_string()),
+            (1000, "Not xdata".to_string()),
+        ]);
+        assert!(sortents_own_tail_xdata_records(&table).is_none());
+        table.raw_dxf_codes = Some(vec![
+            (1001, "FIRST_APP".to_string()),
+            (1000, "Literal \\U+0041".to_string()),
+            (1070, "7".to_string()),
+            (1040, "2.5".to_string()),
+            (1002, "{".to_string()),
+            (1002, "}".to_string()),
+            (1001, "SECOND_APP".to_string()),
+            (1000, "Second".to_string()),
+        ]);
+        let mut first = ExtendedDataRecord::new("FIRST_APP");
+        first.add_value(XDataValue::String("Literal \\U+0041".to_string()));
+        first.add_value(XDataValue::Integer16(7));
+        first.add_value(XDataValue::Real(2.5));
+        first.add_value(XDataValue::ControlString("{".to_string()));
+        first.add_value(XDataValue::ControlString("}".to_string()));
+        let mut second = ExtendedDataRecord::new("SECOND_APP");
+        second.add_value(XDataValue::String("Second".to_string()));
+        let mut expected = ExtendedData::new();
+        expected.add_record(first);
+        expected.add_record(second);
+        assert_eq!(sortents_own_tail_xdata_records(&table), Some(expected));
+    }
+
+    // Round 5: the multilayout drawing — a fixture that already passes
+    // every reopening gate — plus an APPID registration for SORTENTS_PROOF
+    // and a SORTENTSTABLE in its OBJECTS section, shaped like the genuine
+    // record pinned above: record handle 27D and owner dictionary 15D
+    // (both unused in this fixture), block owner 70 (this fixture's
+    // *Model_Space block record), entry payload handles as in the genuine
+    // record. The table's XDATA carries two strings and one integer under
+    // the registered application; the reactors variant adds the genuine
+    // record's {ACAD_REACTORS} block naming the owner dictionary.
+    fn sortents_round_trip_dxf(with_reactors: bool) -> String {
+        let original =
+            include_str!("../tests/fixtures/autocad-multilayout-app.dxf").replace("\r\n", "\n");
+        let appid_table = "2\nAPPID\n5\n9\n330\n0\n100\nAcDbSymbolTable\n70\n3\n";
+        assert_eq!(original.matches(appid_table).count(), 1);
+        let mut text = original.replace(
+            appid_table,
+            "2\nAPPID\n5\n9\n330\n0\n100\nAcDbSymbolTable\n70\n4\n",
+        );
+        let appid_anchor = "0\nAPPID\n5\n5E\n";
+        assert_eq!(text.matches(appid_anchor).count(), 1);
+        text = text.replace(
+            appid_anchor,
+            concat!(
+                "0\nAPPID\n5\n4A1\n330\n9\n100\nAcDbSymbolTableRecord\n",
+                "100\nAcDbRegAppTableRecord\n2\nSORTENTS_PROOF\n70\n0\n",
+                "0\nAPPID\n5\n5E\n",
+            ),
+        );
+        let mut table = String::from("0\nSORTENTSTABLE\n5\n27D\n");
+        if with_reactors {
+            table.push_str("102\n{ACAD_REACTORS\n330\n15D\n102\n}\n");
+        }
+        table.push_str(concat!(
+            "330\n15D\n100\nAcDbSortentsTable\n330\n70\n331\n27C\n5\n279\n331\n270\n5\n115\n",
+            "1001\nSORTENTS_PROOF\n1000\nDraw order literal \\U+0041\n",
+            "1000\nSecond literal\n1070\n7\n",
+        ));
+        let end = text.rfind("0\nENDSEC\n0\nEOF").unwrap();
+        text.insert_str(end, &table);
+        text
+    }
+
+    // The convert() order, at the level the suite exercises it: validate,
+    // import, schema guard, literal guard, preserve, write, reopen.
+    fn sortents_round_tripped(with_reactors: bool) -> (CadDocument, CadDocument) {
+        let text = sortents_round_trip_dxf(with_reactors);
+        validation::validate(&text).unwrap();
+        let mut document =
+            DxfReader::from_reader(std::io::Cursor::new(text.as_bytes().to_vec()))
+                .unwrap()
+                .read()
+                .unwrap();
+        let schema = source_schema::capture(&text).unwrap();
+        schema.verify(&mut document).unwrap();
+        let literals = source_literals(&text).unwrap();
+        assert_eq!(
+            literals.xdata[&0x27D],
+            vec![
+                "Draw order literal \\U+0041".to_string(),
+                "Second literal".to_string(),
+            ]
+        );
+        verify_source_literals(&document, &literals).unwrap();
+        assert!(
+            !document.object_xdata.contains_key(&Handle::new(0x27D)),
+            "as imported, the registry must not carry the table's XDATA (own-tail design)"
+        );
+        preserve_sortents_own_tail_xdata(&mut document);
+        assert!(
+            document.object_xdata.contains_key(&Handle::new(0x27D)),
+            "preservation must register the tail's XDATA at the table's handle"
+        );
+        let mut output = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut output, &document).unwrap();
+        let bytes = output.into_inner();
+        let reopened = DwgReader::from_stream(std::io::Cursor::new(bytes))
+            .read()
+            .unwrap();
+        (document, reopened)
+    }
+
+    #[test]
+    fn sortents_table_xdata_survives_dwg_round_trip() {
+        // Round 5 (preservation): the XDATA-bearing SORTENTSTABLE's
+        // payload must reach the DWG at the table's own handle. Before
+        // the fix the writer dropped it silently — it takes object XDATA
+        // only from the registry the reader keeps this table's XDATA out
+        // of — and every gate passed on the incomplete file.
+        let (document, reopened) = sortents_round_tripped(false);
+        let Some(ObjectType::SortEntitiesTable(_)) = reopened.objects.get(&Handle::new(0x27D))
+        else {
+            panic!("the reopened document must carry the SORTENTSTABLE at 27D");
+        };
+        let records = reopened
+            .object_xdata
+            .get(&Handle::new(0x27D))
+            .expect("the reopened document must carry the table's XDATA in the registry");
+        assert_eq!(
+            xdata_string_sequence(records),
+            vec![
+                "Draw order literal \\U+0041".to_string(),
+                "Second literal".to_string(),
+            ]
+        );
+        assert!(
+            records.records()[0]
+                .values
+                .contains(&acadrust::xdata::XDataValue::Integer16(7)),
+            "non-string XDATA values must survive the round trip too"
+        );
+        verify_reopening(&document, &reopened).unwrap();
+    }
+
+    #[test]
+    fn sortents_table_reactors_drop_now_refuses_at_reopening() {
+        // Round 5 (verification, and the vendor gap): the reactor-bearing
+        // table's reactors still cannot reach the DWG from this crate —
+        // the common writer takes them from the document's reactor side
+        // channel when the typed record passes none, that channel is
+        // crate-private in the library, and the DXF reader fills it for
+        // every sibling object type but never extracts this record's
+        // {ACAD_REACTORS} block out of the raw tail (the object has no
+        // reactors field to fill either). What this round changes: the
+        // loss no longer passes silently — the reopening comparison reads
+        // the source side from the tail and refuses. The same record's
+        // XDATA does survive (previous test), isolating this refusal to
+        // the reactors.
+        let (document, reopened) = sortents_round_tripped(true);
+        let records = reopened
+            .object_xdata
+            .get(&Handle::new(0x27D))
+            .expect("the reopened document must carry the table's XDATA in the registry");
+        assert_eq!(
+            xdata_string_sequence(records),
+            vec![
+                "Draw order literal \\U+0041".to_string(),
+                "Second literal".to_string(),
+            ]
+        );
+        assert_eq!(
+            reopened.object_reactors(Handle::new(0x27D)),
+            Vec::<Handle>::new(),
+            "the drop itself: the reopened document carries no reactors for the table"
+        );
+        let error = verify_reopening(&document, &reopened).unwrap_err();
+        assert!(
+            error.contains("DWG reopening lost the SORTENTSTABLE reactors"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn sortents_reopening_xdata_mutation_still_refuses() {
+        // A reopened document whose table XDATA differs from the source
+        // side refuses with the payload error — the comparison is against
+        // the imported document, not merely "some XDATA is present".
+        let (document, mut reopened) = sortents_round_tripped(false);
+        verify_reopening(&document, &reopened).unwrap();
+        let mut tampered = acadrust::xdata::ExtendedData::new();
+        let mut record = acadrust::xdata::ExtendedDataRecord::new("SORTENTS_PROOF");
+        record.add_value(acadrust::xdata::XDataValue::String(
+            "Tampered literal".to_string(),
+        ));
+        record.add_value(acadrust::xdata::XDataValue::String(
+            "Second literal".to_string(),
+        ));
+        record.add_value(acadrust::xdata::XDataValue::Integer16(7));
+        tampered.add_record(record);
+        reopened
+            .object_xdata
+            .insert(Handle::new(0x27D), tampered);
+        let error = verify_reopening(&document, &reopened).unwrap_err();
+        assert!(
+            error.contains("DWG reopening changed the SORTENTSTABLE XDATA"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn sortents_reopening_xdata_deletion_and_move_still_refuse() {
+        // Deletion and moved identity at reopening: with no copy left at
+        // the table's handle — or the only copy parked under another
+        // handle — the comparison refuses with the identity error.
+        let (document, mut reopened) = sortents_round_tripped(false);
+        let removed = reopened.object_xdata.remove(&Handle::new(0x27D));
+        assert!(removed.is_some());
+        let error = verify_reopening(&document, &reopened).unwrap_err();
+        assert!(
+            error.contains("DWG reopening lost the SORTENTSTABLE XDATA"),
+            "{error}"
+        );
+        let (document, mut reopened) = sortents_round_tripped(false);
+        let moved = reopened.object_xdata.remove(&Handle::new(0x27D)).unwrap();
+        reopened.object_xdata.insert(Handle::new(0x4A3), moved);
+        let error = verify_reopening(&document, &reopened).unwrap_err();
+        assert!(
+            error.contains("DWG reopening lost the SORTENTSTABLE XDATA"),
+            "{error}"
+        );
     }
 }
