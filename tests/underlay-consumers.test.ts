@@ -74,13 +74,38 @@ describe('UnderlayEntity consumers', () => {
     expect(s.scaleX).toBeCloseTo(4);
     expect(s.scaleY).toBeCloseTo(6);
     const m = mirrorEntityAcross(e, { x: 0, y: 0 }, { x: 0, y: 1 }) as UnderlayEntity;
-    // The corner sequence maps exactly: the mirrored frame is the reflection.
+    // The corner sequence maps exactly: the mirrored frame is the reflection
+    // (all four corners — v0.6.4 review F-H: magnitudes alone turned a
+    // MIRROR into a rotation, which only corners 0 and 1 could not tell).
     const before = underlayFramePoints(e);
     const after = underlayFramePoints(m);
-    expect(after[0]).toEqual({ x: -before[0]!.x, y: before[0]!.y });
-    expect(after[1]).toEqual({ x: -before[1]!.x, y: before[1]!.y });
+    for (let i = 0; i < 4; i += 1) {
+      expect(after[i]!.x).toBeCloseTo(-before[i]!.x);
+      expect(after[i]!.y).toBeCloseTo(before[i]!.y);
+    }
+    expect(m.scaleY).toBeLessThan(0); // the reflection is carried by the Y scale sign (INSERT convention)
     expect(m.definitionHandle).toBe('AB');
     expect(m.retainedGroups).toBe(e.retainedGroups);
+  });
+
+  it('F-H: MIRROR over the X axis reflects the frame (10,20)…(10,21) to (10,-20)…(10,-21)', () => {
+    const e = underlay({ position: { x: 10, y: 20 }, scaleX: 1, scaleY: 1, rotation: 0 });
+    expect(underlayFramePoints(e)).toEqual([{ x: 10, y: 20 }, { x: 11, y: 20 }, { x: 11, y: 21 }, { x: 10, y: 21 }]);
+    const m = mirrorEntityAcross(e, { x: 0, y: 0 }, { x: 1, y: 0 }) as UnderlayEntity;
+    const expected = [{ x: 10, y: -20 }, { x: 11, y: -20 }, { x: 11, y: -21 }, { x: 10, y: -21 }];
+    underlayFramePoints(m).forEach((p, i) => {
+      expect(p.x).toBeCloseTo(expected[i]!.x);
+      expect(p.y).toBeCloseTo(expected[i]!.y);
+    });
+    expect(m.scaleX).toBeCloseTo(1);
+    expect(m.scaleY).toBeCloseTo(-1);
+    // Mirroring twice restores the original handedness.
+    const back = mirrorEntityAcross(m, { x: 0, y: 0 }, { x: 1, y: 0 }) as UnderlayEntity;
+    expect(back.scaleY).toBeCloseTo(1);
+    underlayFramePoints(back).forEach((p, i) => {
+      expect(p.x).toBeCloseTo(underlayFramePoints(e)[i]!.x);
+      expect(p.y).toBeCloseTo(underlayFramePoints(e)[i]!.y);
+    });
   });
 
   it('block transform (affineCompound) scales the axes, leaves page-space data alone', () => {

@@ -264,18 +264,30 @@ function blockRecordNamesOf(pairs: readonly Pair[]): Map<string, string> {
  * matches the hatch whose handle is 50.
  */
 function hatchHandlesOf(pairs: readonly Pair[]): Set<string> {
+  // v0.6.4 review F-D(2): one linear scan over the raw pairs — the former
+  // version re-segmented every BLOCKS / ENTITIES record into objects on
+  // each import. The scan tracks the current section and, inside a HATCH
+  // record of a scanned section, takes its first group 5.
   const out = new Set<string>();
-  for (let i = 0; i + 1 < pairs.length; i += 1) {
-    if (pairs[i]!.code !== 0 || pairs[i]!.value !== 'SECTION') continue;
-    const name = pairs[i + 1]!.value;
-    if (name !== 'BLOCKS' && name !== 'ENTITIES') continue;
-    let j = i + 2;
-    while (j < pairs.length && !(pairs[j]!.code === 0 && pairs[j]!.value === 'ENDSEC')) j += 1;
-    for (const o of objects(pairs as Pair[], i + 2, j)) {
-      if (o.kind !== 'HATCH' || !has(o, 5)) continue;
-      try { out.add(canonicalCadHandle(str(o, 5).trim())); } catch { /* not a handle spelling: never a key */ }
+  let scanned = false;
+  let inHatch = false;
+  for (let i = 0; i < pairs.length; i += 1) {
+    const p = pairs[i]!;
+    if (p.code === 0) {
+      if (p.value === 'SECTION') {
+        const name = pairs[i + 1]?.value;
+        scanned = name === 'BLOCKS' || name === 'ENTITIES';
+        inHatch = false;
+        continue;
+      }
+      if (p.value === 'ENDSEC') { scanned = false; inHatch = false; continue; }
+      inHatch = scanned && p.value === 'HATCH';
+      continue;
     }
-    i = j;
+    if (inHatch && p.code === 5) {
+      inHatch = false; // first group 5 only, as has/str did
+      try { out.add(canonicalCadHandle(p.value.trim())); } catch { /* not a handle spelling: never a key */ }
+    }
   }
   return out;
 }

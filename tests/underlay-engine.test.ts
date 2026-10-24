@@ -4,6 +4,7 @@ import type { UnderlayDefinition } from '../src/core/underlay';
 import { underlayRefusal, type UnderlayRasterEngine } from '../src/io/underlay-engine';
 import { createUnderlayDisplayService, underlayPageIndex } from '../src/app/underlay-render';
 import { drawEntity } from '../src/render/draw';
+import { underlayDefinitionContent } from '../src/render/underlay-content';
 import { normalizeEntity } from '../src/app/api';
 import { Drawing } from '../src/core/document';
 
@@ -149,6 +150,29 @@ describe('draw path consumes the display list', () => {
     drawEntity(ctx, placement(), tf, layers, lookup, { underlaySource: source });
     expect(calls).toContain('stroke');
     expect(calls).not.toContain('drawImage');
+  });
+
+  // v0.6.4 review F-E: no composition root installs a content source, so
+  // the draw path joins the placement to the drawing's own definition and
+  // draws the file-name label in the frame (more strokes than the bare
+  // frame + cross); a dangling or mismatched placement stays label-free.
+  it('no source but the drawing holds the definition: the frame carries the label', () => {
+    const strokes = (style: Parameters<typeof drawEntity>[5]): number => {
+      const { ctx, calls } = recordingCtx();
+      drawEntity(ctx, placement(), tf, layers, lookup, style);
+      expect(calls).not.toContain('drawImage');
+      return calls.filter((c) => c === 'stroke').length;
+    };
+    const bare = strokes({});
+    const labelled = strokes({ underlayDefinitions: { 'underlaydef:41': def() } });
+    const viaSource = strokes({ underlaySource: () => ({ definition: def() }) });
+    expect(labelled).toBeGreaterThan(bare);
+    expect(labelled).toBe(viaSource);
+    // Dangling (no definition with that handle) and a mismatched handle: bare frame + cross.
+    expect(strokes({ underlayDefinitions: { 'underlaydef:99': { ...def(), id: 'underlaydef:99', handle: '99' } } })).toBe(bare);
+    expect(underlayDefinitionContent(placement(), { 'underlaydef:41': def() })?.definition.handle).toBe('41');
+    expect(underlayDefinitionContent(placement(), undefined)).toBeUndefined();
+    expect(underlayDefinitionContent(placement({ definitionHandle: '' }), { 'underlaydef:41': def() })).toBeUndefined();
   });
 });
 

@@ -6,7 +6,7 @@
 import { Writer, writeEntityCommon } from './write-core';
 import type { MTextEntity, DimensionEntity, LeaderEntity, ImageEntity, TableEntity, UnderlayEntity } from '../../core/entities';
 import { underlayPlacementOf } from '../../core/entities';
-import { writeUnderlayEntity } from './underlay-codec';
+import { writeUnderlayEntity, UNDERLAY_ENTITY_SUBCLASS } from './underlay-codec';
 import { formattedSource, mtextFromDxf, mtextToDxf } from '../../core/mtext';
 import { textStyleOf } from '../encoding';
 import { MTEXT_COLUMNS_APP, MTEXT_BACKGROUND_APP, DIM_TYPE, DIMSTYLE_APP, TABLE_APP } from './codes';
@@ -19,8 +19,9 @@ import { mleaderNativeProblem } from '../../core/multileader';
 
 import type { TableRoundtripPlan, WriteExtras } from './write-core';
 
-export function writeMText(w: Writer, e: MTextEntity, owner: string): void {
-  writeEntityCommon(w, e, owner, 'MTEXT', 'AcDbMText');
+/** Writes one MTEXT record and returns the handle it was written under. */
+export function writeMText(w: Writer, e: MTextEntity, owner: string): string {
+  const handle = writeEntityCommon(w, e, owner, 'MTEXT', 'AcDbMText');
   w.pair(10, e.position.x);
   w.pair(20, e.position.y);
   w.pair(30, 0);
@@ -67,6 +68,7 @@ export function writeMText(w: Writer, e: MTextEntity, owner: string): void {
     const metadata = JSON.stringify(e.columns);
     for (let offset = 0; offset < metadata.length; offset += 250) w.pair(1000, metadata.slice(offset, offset + 250));
   }
+  return handle;
 }
 
 function radialPoints(e: DimensionEntity): { q: g.Point; far: g.Point } {
@@ -219,16 +221,15 @@ export function writeLeader(w: Writer, e: LeaderEntity, owner: string, extras: W
   if (e.text && e.textPosition) {
     const m = leaderParts(e).find((p): p is MTextEntity => p.type === 'mtext');
     if (m) {
-      writeMText(w, { ...m, id: e.id }, owner);
-      textHandle = w.lastHandle().toString(16).toUpperCase();
+      textHandle = writeMText(w, { ...m, id: e.id }, owner);
       w.anchor(textHandle, { kind: 'entity', id: e.id, part: 'annotation' });
     }
   }
   const paths: g.Point[][] = [leaderPath(e), ...(e.extraPaths ?? []).map((p) => [...p])];
   paths.forEach((path, i) => {
     if (path.length < 2) return;
-    writeEntityCommon(w, e, owner, 'LEADER', 'AcDbLeader');
-    if (i) w.anchor(w.lastHandle().toString(16).toUpperCase(), { kind: 'entity', id: e.id, part: `leader-path:${i}` });
+    const pathHandle = writeEntityCommon(w, e, owner, 'LEADER', 'AcDbLeader');
+    if (i) w.anchor(pathHandle, { kind: 'entity', id: e.id, part: `leader-path:${i}` });
     w.pair(3, 'Standard');
     w.pair(71, e.arrow ? 1 : 0);
     w.pair(72, e.spline ? 1 : 0);
@@ -549,9 +550,12 @@ export function writeMLeader(w: Writer, e: LeaderEntity, owner: string): void {
 }
 
 export function writeImage(w: Writer, e: ImageEntity, owner: string, extras: WriteExtras): void {
-  writeEntityCommon(w, e, owner, 'IMAGE', 'AcDbRasterImage');
+  // The IMAGEDEF_REACTOR's back-pointer must name the handle this record was
+  // actually written under (reserved earlier when a hatch links to the
+  // image), not the allocator's counter (F-B).
+  const imageHandle = writeEntityCommon(w, e, owner, 'IMAGE', 'AcDbRasterImage');
   const ref = extras.imageReactors.get(e);
-  if (ref) ref.image = w.lastHandle().toString(16).toUpperCase();
+  if (ref) ref.image = imageHandle;
   w.pair(90, 0);
   w.pair(10, e.position.x);
   w.pair(20, e.position.y);
@@ -642,30 +646,63 @@ export function mtextPlainToDxf(text: string): string {
  */
 const UNDERLAY_COMMON_OWNED: ReadonlySet<number> = new Set([5, 8, 100, 330, 6, 48, 62, 67, 370, 420, 430, 440]);
 
+/**
+ * One *UNDERLAY record in AutoCAD's layout (v0.6.4 review F-F): the common
+ * head from writeEntityCommon (handle, owner, AcDbEntity, layer, appearance,
+ * then the AcDbUnderlayReference marker), followed by the codec's reference
+ * groups in AutoCAD's order with the record's retained groups slotted in.
+ * The codec drops a retained copy of any code it emits canonically (F-G),
+ * so a scaled or rotated import writes 41/42/50 exactly once, with the
+ * edited value.
+ */
+/**
+ * The groups the cad graph is the sole owner of for an underlay record
+ * (v0.6.4 re-review (1)): every 102 { ... } span (persistent reactors,
+ * extension dictionary) with its contents, and the pointer groups 330 /
+ * 360. The identity-bearing original gets them back from the graph merge
+ * (byte-stable); a COPY — same retainedGroups, no cadIdentity, no graph
+ * node — must not re-emit them: it wrote its 102 blocks after the layer,
+ * an emptied reactor block and a 360 naming a dictionary absent from the
+ * output.
+ */
+function withoutGraphOwnedGroups(groups: readonly (readonly [number, string])[]): Array<readonly [number, string]> {
+  const out: Array<readonly [number, string]> = [];
+  let depth = 0;
+  for (const g of groups) {
+    const [code, value] = g;
+    if (code === 102) {
+      const v = value.trim();
+      if (v.startsWith('{')) depth += 1;
+      else if (v === '}') depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (depth > 0 || code === 330 || code === 360) continue;
+    out.push(g);
+  }
+  return out;
+}
+
 export function writeUnderlay(w: Writer, e: UnderlayEntity, owner: string, extras: WriteExtras): void {
   const type = e.kind === 'pdf' ? 'PDFUNDERLAY' : e.kind === 'dwf' ? 'DWFUNDERLAY' : 'DGNUNDERLAY';
-  const subclass = e.kind === 'pdf' ? 'AcDbPdfUnderlay' : e.kind === 'dwf' ? 'AcDbDwfUnderlay' : 'AcDbDgnUnderlay';
-  writeEntityCommon(w, e, owner, type, subclass);
-  const handle = w.lastHandle().toString(16).toUpperCase();
   // The definition named IN THIS FILE: the placement joins to the sibling
   // by handle, and the pre-pass allocated that definition a handle before
   // ENTITIES emission (RULING-P28 C8). A dangling placement (no definition
   // in the sibling) emits its stored reference verbatim — a target is
   // never fabricated (C2).
   const defHandle = extras.underlayHandlesByDef.get(e.definitionHandle) ?? e.definitionHandle;
-  const canonical = writeUnderlayEntity({ ...underlayPlacementOf(e), handle, retainedGroups: [] });
-  for (const [code, value] of canonical) {
-    if (code === 5 || code === 100 || code === 8) continue; // writeEntityCommon emitted them
-    if (code === 340) {
-      w.pair(340, defHandle);
-      continue;
-    }
-    w.pair(code, value);
-  }
-  for (const [code, value] of e.retainedGroups) {
-    if (UNDERLAY_COMMON_OWNED.has(code)) continue;
-    w.pair(code, value);
-  }
+  // Retained copies of what the common head writes from the model are
+  // dropped (the modelled colour / linetype / owner wins); the rest goes
+  // through the codec, which places each group where AutoCAD's sequential
+  // reader expects it. The codec's output splits at its two markers: the
+  // AcDbEntity-class remainder (proxy graphics ...) rides the common head,
+  // the AcDbUnderlayReference groups follow the subclass marker.
+  const retainedGroups = withoutGraphOwnedGroups(e.retainedGroups).filter(([code]) => !UNDERLAY_COMMON_OWNED.has(code));
+  const groups = writeUnderlayEntity({ ...underlayPlacementOf(e), retainedGroups });
+  const entityMarker = groups.findIndex(([code, value]) => code === 100 && value === 'AcDbEntity');
+  const subclassMarker = groups.findIndex(([code, value]) => code === 100 && value === UNDERLAY_ENTITY_SUBCLASS);
+  const commonExtras = groups.slice(entityMarker + 1, subclassMarker).filter(([code]) => code !== 8);
+  writeEntityCommon(w, e, owner, type, UNDERLAY_ENTITY_SUBCLASS, owner, undefined, commonExtras);
+  for (const [code, value] of groups.slice(subclassMarker + 1)) w.pair(code, code === 340 ? defHandle : value);
 }
 
 

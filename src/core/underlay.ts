@@ -21,7 +21,7 @@ export type DxfGroup = readonly [code: number, value: string];
 
 export type UnderlayKind = 'pdf' | 'dwf' | 'dgn';
 
-/** DXF group 70 flag bits on an underlay entity. */
+/** DXF group 280 flag bits on an underlay entity (AutoCAD UNDERLAY: 1 clipping on, 2 on, 4 monochrome, 8 adjust for background, 16 clip inside). */
 export const UNDERLAY_FLAG_CLIPPING_ON = 1;
 export const UNDERLAY_FLAG_ON = 2;
 export const UNDERLAY_FLAG_MONOCHROME = 4;
@@ -66,15 +66,15 @@ export interface UnderlayPlacement {
   readonly scaleY: number;
   /** Radians (group 50 in degrees), the model convention for entities. */
   readonly rotation: number;
-  /** Group 70 flag bits, raw (see UNDERLAY_FLAG_*). */
+  /** Group 280 flag bits, raw (see UNDERLAY_FLAG_*). */
   readonly flags: number;
-  /** Group 280, 0..100. */
+  /** Group 281 as read; AutoCAD's range is 20..100 and the writer clamps to it. */
   readonly contrast?: number;
-  /** Group 281, 0..100. */
+  /** Group 282 as read; AutoCAD's range is 0..80 and the writer clamps to it. */
   readonly fade?: number;
   /**
-   * Clip boundary in underlay coordinates (group 14/24 point pairs, the
-   * IMAGE convention). Only meaningful when UNDERLAY_FLAG_CLIPPING_ON is
+   * Clip boundary in underlay coordinates (repeated group 11/21 point
+   * pairs; 2 points = rectangle, 3+ = polygon). Only meaningful when UNDERLAY_FLAG_CLIPPING_ON is
    * set; retained either way.
    */
   readonly clipBoundary?: readonly Point[];

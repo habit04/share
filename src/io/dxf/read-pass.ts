@@ -262,6 +262,10 @@ function resolveHatchAssociations(list: Entity[], hatchObjs: ReadonlyMap<HatchEn
   const byHandle = new Map<string, string>();
   for (const e of list) if (e.cadIdentity) byHandle.set(canonKey(e.cadIdentity), e.id);
   const byId = new Map(list.map((e) => [e.id, e]));
+  // v0.6.4 review F-D(3): each hatch's list position, built once — the
+  // former list.indexOf(hatch) per hatch was O(hatches × entities).
+  const indexOf = new Map<Entity, number>();
+  list.forEach((e, i) => { if (e.type === 'hatch') indexOf.set(e, i); });
   /** The inert posture: every captured handle stays a raw boundaryHandle, no live refs. */
   const inertLoopsOf = (h: HatchEntity): { loops: HatchLoop[]; touched: boolean } => {
     let touched = false;
@@ -277,7 +281,7 @@ function resolveHatchAssociations(list: Entity[], hatchObjs: ReadonlyMap<HatchEn
     return { loops, touched };
   };
   for (const [hatch, o] of hatchObjs) {
-    const at = list.indexOf(hatch);
+    const at = indexOf.get(hatch) ?? -1;
     if (at < 0) continue;
     if (!hatch.associative) {
       // Round 4 (lead ruling): 71 = 0 means INERT. The captured 97/330

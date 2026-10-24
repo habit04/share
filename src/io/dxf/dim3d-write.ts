@@ -72,8 +72,8 @@ function definitionPoint(dim: Dimension3D): Point {
 export function writeDimension3D(w: Writer, dim: Dimension3D, owner: string, blockName: string): void {
   const d2 = dimension3dTo2d(dim);
   const ocs = dimensionOcs(dim);
-  writeEntityCommon(w, d2, owner, 'DIMENSION', 'AcDbDimension');
-  w.anchor(w.lastHandle().toString(16).toUpperCase(), { kind: 'dimension3d', id: dim.id });
+  const handle = writeEntityCommon(w, d2, owner, 'DIMENSION', 'AcDbDimension');
+  w.anchor(handle, { kind: 'dimension3d', id: dim.id });
   w.pair(2, blockName);
   point(w, 10, planeWorld(dim.plane, definitionPoint(dim)));
   const text = planeLocal(ocs, dimension3dTextPoint(dim));

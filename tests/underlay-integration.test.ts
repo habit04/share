@@ -11,13 +11,13 @@ import { importReportOf } from '../src/io/import-report';
 
 const PDF_DXF = [
   '0', 'SECTION', '2', 'ENTITIES',
-  '0', 'PDFUNDERLAY', '5', '40', '330', '2E', '100', 'AcDbEntity', '8', 'U', '100', 'AcDbPdfUnderlay',
-  '340', '41', '10', '10', '20', '20', '41', '2', '42', '3', '70', '3', '280', '40', '281', '10',
-  '14', '0', '24', '0', '14', '100', '24', '50',
+  '0', 'PDFUNDERLAY', '5', '40', '330', '2E', '100', 'AcDbEntity', '8', 'U', '100', 'AcDbUnderlayReference',
+  '340', '41', '10', '10', '20', '20', '30', '0', '41', '2', '42', '3', '43', '1', '280', '3', '281', '40', '282', '10',
+  '11', '0', '21', '0', '11', '100', '21', '50',
   '0', 'LINE', '5', '43', '8', '0', '10', '0', '20', '0', '11', '5', '21', '5',
   '0', 'ENDSEC',
   '0', 'SECTION', '2', 'OBJECTS',
-  '0', 'PDFDEFINITION', '5', '41', '330', 'C', '100', 'AcDbObject', '100', 'AcDbPdfDefinition', '1', 'plans\\floor.pdf', '2', 'Sheet1', '90', '7',
+  '0', 'PDFDEFINITION', '5', '41', '330', 'C', '100', 'AcDbUnderlayDefinition', '1', 'plans\\floor.pdf', '2', 'Sheet1',
   '0', 'ENDSEC', '0', 'EOF',
 ].join('\n');
 
@@ -27,7 +27,7 @@ describe('underlay read/write integration', () => {
     const defs = Object.values(state.underlays ?? {});
     expect(defs).toHaveLength(1);
     expect(defs[0]).toMatchObject({ id: 'underlaydef:41', kind: 'pdf', handle: '41', sourcePath: 'plans\\floor.pdf', page: 'Sheet1' });
-    expect(defs[0]!.retainedGroups).toContainEqual([90, '7']);
+    expect(defs[0]!.retainedGroups).toContainEqual([330, 'C']);
     const e = state.entities.find((x) => x.type === 'underlay') as UnderlayEntity;
     expect(e).toMatchObject({ kind: 'pdf', definitionHandle: '41', layer: 'U', scaleX: 2, scaleY: 3, flags: 3, contrast: 40, fade: 10 });
     // cadIdentity is the cad-graph node id, present only for metadata-carrying entities (established design).
@@ -56,7 +56,7 @@ describe('underlay read/write integration', () => {
   });
 
   it('DWF and DGN pairs round-trip on their own kinds', () => {
-    const dxf = PDF_DXF.replaceAll('PDFUNDERLAY', 'DWFUNDERLAY').replaceAll('PDFDEFINITION', 'DWFDEFINITION').replaceAll('AcDbPdfUnderlay', 'AcDbDwfUnderlay').replaceAll('AcDbPdfDefinition', 'AcDbDwfDefinition');
+    const dxf = PDF_DXF.replaceAll('PDFUNDERLAY', 'DWFUNDERLAY').replaceAll('PDFDEFINITION', 'DWFDEFINITION');
     const state = readDxf(dxf);
     expect(Object.values(state.underlays ?? {})[0]!.kind).toBe('dwf');
     const text = writeDxf(state);
@@ -67,7 +67,7 @@ describe('underlay read/write integration', () => {
   it('a dangling placement is kept, reported simplified, and written with its stored reference', () => {
     const dxf = [
       '0', 'SECTION', '2', 'ENTITIES',
-      '0', 'PDFUNDERLAY', '5', '40', '100', 'AcDbEntity', '8', '0', '100', 'AcDbPdfUnderlay', '340', 'FE', '10', '0', '20', '0',
+      '0', 'PDFUNDERLAY', '5', '40', '100', 'AcDbEntity', '8', '0', '100', 'AcDbUnderlayReference', '340', 'FE', '10', '0', '20', '0',
       '0', 'ENDSEC', '0', 'EOF',
     ].join('\n');
     const state = readDxf(dxf);
@@ -84,7 +84,7 @@ describe('underlay read/write integration', () => {
   it('an unreferenced definition is retained in the sibling and written back', () => {
     const dxf = [
       '0', 'SECTION', '2', 'OBJECTS',
-      '0', 'DGNDEFINITION', '5', '51', '330', 'C', '100', 'AcDbObject', '100', 'AcDbDgnDefinition', '1', 'models\\site.dgn', '2', 'Default',
+      '0', 'DGNDEFINITION', '5', '51', '330', 'C', '100', 'AcDbUnderlayDefinition', '1', 'models\\site.dgn', '2', 'Default',
       '0', 'ENDSEC', '0', 'EOF',
     ].join('\n');
     const state = readDxf(dxf);
@@ -97,7 +97,7 @@ describe('underlay read/write integration', () => {
   it('a codec-refused placement drops with the codec reason and never aborts its siblings (C3)', () => {
     const dxf = [
       '0', 'SECTION', '2', 'ENTITIES',
-      '0', 'PDFUNDERLAY', '5', '40', '100', 'AcDbEntity', '8', '0', '100', 'AcDbPdfUnderlay', '340', '41', '10', '0', '20', '0', '14', '5',
+      '0', 'PDFUNDERLAY', '5', '40', '100', 'AcDbEntity', '8', '0', '100', 'AcDbUnderlayReference', '340', '41', '10', '0', '20', '0', '11', '5',
       '0', 'LINE', '5', '43', '8', '0', '10', '0', '20', '0', '11', '5', '21', '5',
       '0', 'ENDSEC', '0', 'EOF',
     ].join('\n');
@@ -105,7 +105,7 @@ describe('underlay read/write integration', () => {
     expect(state.entities).toHaveLength(1);
     expect(state.entities[0]!.type).toBe('line');
     const report = importReportOf(state);
-    expect(report?.items.some((x) => x.action === 'dropped' && x.type === 'PDFUNDERLAY' && /group 24/.test(x.reason))).toBe(true);
+    expect(report?.items.some((x) => x.action === 'dropped' && x.type === 'PDFUNDERLAY' && /group 21/.test(x.reason))).toBe(true);
   });
 
   it('a drawing without underlays writes no underlay records (no-underlay fixed point)', () => {
@@ -120,7 +120,7 @@ describe('underlay read/write integration', () => {
     const text1 = writeDxf(state);
     expect(text1.match(/\r\n0\r\nPDFDEFINITION\r\n/g)).toHaveLength(1);
     expect(text1.match(/\r\n0\r\nPDFUNDERLAY\r\n/g)).toHaveLength(1);
-    expect(text1.match(/\r\n90\r\n7\r\n/g)).toHaveLength(1); // the retained definition group, exactly once
+    expect(text1.match(/\r\n43\r\n1\r\n/g)).toHaveLength(1); // the retained placement group (Z scale), exactly once
     const back = readDxf(text1);
     expect(writeDxf(back)).toBe(text1); // second save byte-stable
   });

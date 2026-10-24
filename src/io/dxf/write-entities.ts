@@ -530,8 +530,10 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
       const attribDefs = block ? (block.attributes as readonly AttributeDefExt[]).filter((a) => !a.constant) : [];
       const hasAttribs = attribDefs.length > 0;
       const array = (e.columns ?? 1) > 1 || (e.rows ?? 1) > 1;
-      writeEntityCommon(w, e, owner, 'INSERT', array ? 'AcDbMInsertBlock' : 'AcDbBlockReference');
-      const insertHandle = w.lastHandle().toString(16).toUpperCase();
+      // The handle writeEntityCommon actually wrote — NOT w.lastHandle(): an
+      // associative hatch written earlier may have reserved this INSERT's
+      // handle, and the ATTRIB / SEQEND owners below must name that one (F-B).
+      const insertHandle = writeEntityCommon(w, e, owner, 'INSERT', array ? 'AcDbMInsertBlock' : 'AcDbBlockReference');
       if (hasAttribs) w.pair(66, 1);
       w.pair(2, e.block);
       w.pair(10, e.position.x);
@@ -580,8 +582,8 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
           const aEff = expanded === block ? a : expanded.attributes.find((x) => x.tag === a.tag);
           const label = aEff ? attributeText(textIns, expanded, aEff, value, false) : attributeText(e, block, a, value, false);
           // The INSERT owns its followers; their paper-space flag belongs to its enclosing block.
-          writeEntityCommon(w, label, insertHandle, 'ATTRIB', 'AcDbText', owner);
-          w.anchor(w.lastHandle().toString(16).toUpperCase(), { kind: 'entity', id: e.id, part: `attribute:${a.tag}` });
+          const attribHandle = writeEntityCommon(w, label, insertHandle, 'ATTRIB', 'AcDbText', owner);
+          w.anchor(attribHandle, { kind: 'entity', id: e.id, part: `attribute:${a.tag}` });
           writeTextLike(w, label.position, label.height, value, label.rotation, label.align, label);
           writeTextStyle(w, label);
           w.pair(100, 'AcDbAttribute');
