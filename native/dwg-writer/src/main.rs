@@ -5,7 +5,9 @@ mod spline_packet;
 mod validation;
 mod windows_job;
 
-use acadrust::objects::{ObjectType, ProxyReferenceKind, XRecordValue, XRecordValueType};
+use acadrust::objects::{
+    ObjectType, ProxyReferenceKind, SortEntitiesTable, XRecordValue, XRecordValueType,
+};
 use acadrust::tables::{Layer, TableEntry};
 use acadrust::types::Handle;
 use acadrust::{CadDocument, DwgReader, DwgWriter, DxfReader, DxfVersion};
@@ -825,6 +827,7 @@ struct SourceLiterals {
 struct LiteralRecord {
     kind: String,
     handle: Option<u64>,
+    identity_taken: bool,
     subclass: bool,
     payload: bool,
     application: bool,
@@ -876,7 +879,19 @@ fn source_literals(text: &str) -> Result<SourceLiterals, String> {
             };
             continue;
         }
-        if code == 105 && record.kind == "DIMSTYLE" || code == 5 && record.kind != "DIMSTYLE" {
+        if code == 105 && record.kind == "DIMSTYLE" {
+            record.handle = u64::from_str_radix(value.trim(), 16).ok();
+        } else if record.kind != "DIMSTYLE"
+            && source_schema::is_record_identity(code, record.identity_taken)
+        {
+            // Only the FIRST group 5 is the record identity — the shared
+            // rule capture() uses (source_schema::is_record_identity).
+            // Overwriting on every group 5 keyed a SORTENTSTABLE's
+            // literals by its final sort handle, so verify_source_literals
+            // searched the imported object under a handle it does not
+            // have and refused the export. The DIMSTYLE branch above is
+            // unchanged: group 105 is that record's only handle group.
+            record.identity_taken = true;
             record.handle = u64::from_str_radix(value.trim(), 16).ok();
         }
         if code == 1001 {
@@ -909,6 +924,62 @@ fn source_literals(text: &str) -> Result<SourceLiterals, String> {
     Ok(result)
 }
 
+/// The string sequence an XDATA container attests: every String value of
+/// every record, in order. Shared by the registry legs and the SORTENTSTABLE
+/// own-tail leg so all copies are compared in the same form.
+fn xdata_string_sequence(records: &acadrust::xdata::ExtendedData) -> Vec<String> {
+    records
+        .records()
+        .iter()
+        .flat_map(|record| &record.values)
+        .filter_map(|value| match value {
+            acadrust::xdata::XDataValue::String(value) => Some(value.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The XDATA string sequence a SORTENTSTABLE carries in its own raw DXF
+/// tail, or None when the tail carries no XDATA block (option A, round 4).
+///
+/// A SORTENTSTABLE owns its raw tail: the DXF reader stores the whole
+/// record in `SortEntitiesTable::raw_dxf_codes` and deliberately keeps it
+/// out of `CadDocument::object_xdata`, so the registry legs of
+/// `verify_source_literals` can never find the table's XDATA. This accessor
+/// is the explicit own-tail leg for that one object type; no other type is
+/// resolved here.
+///
+/// Contract: the tail is walked as (code, value) pairs, never searched as
+/// text. The XDATA region opens at the first group 1001 (the application
+/// name itself is not part of the sequence); every group 1000 value after
+/// it is collected in order, across any later 1001 blocks, mirroring the
+/// source scanner's application rule. Values are the opaque strings
+/// exactly as written — order, multiplicity and raw escape spelling are
+/// preserved; nothing is decoded or normalized. Some(sequence) is
+/// returned whenever a 1001 block exists, even when it carries no 1000
+/// strings (Some(empty)), so a tail that is malformed for XDATA purposes
+/// refuses against a non-empty source instead of passing vacuously. None
+/// means the tail itself, or any XDATA block in it, is absent.
+fn sortents_own_tail_xdata(table: &SortEntitiesTable) -> Option<Vec<String>> {
+    let raw = table.raw_dxf_codes.as_ref()?;
+    let mut in_xdata = false;
+    let mut strings = Vec::new();
+    for (code, value) in raw {
+        if *code == 1001 {
+            in_xdata = true;
+            continue;
+        }
+        if in_xdata && *code == 1000 {
+            strings.push(value.clone());
+        }
+    }
+    if in_xdata {
+        Some(strings)
+    } else {
+        None
+    }
+}
+
 fn verify_source_literals(doc: &CadDocument, source: &SourceLiterals) -> Result<(), String> {
     for (handle, expected) in &source.xrecords {
         let Some(ObjectType::XRecord(object)) = doc.objects.get(&Handle::new(*handle)) else {
@@ -933,6 +1004,47 @@ fn verify_source_literals(doc: &CadDocument, source: &SourceLiterals) -> Result<
     }
     for (handle, expected) in &source.xdata {
         let handle = Handle::new(*handle);
+        // Option A (round 4): a SORTENTSTABLE's XDATA lives in the object's
+        // own raw DXF tail, which the reader keeps out of object_xdata, so
+        // the registry legs below can never attest it. Resolve the document
+        // side from BOTH copies that can exist for this one type — the
+        // registry copy and the own-tail copy: when both exist they must
+        // agree with each other (never pick whichever copy happens to match
+        // the source), a single copy is compared on its own, and no copy at
+        // all is the identity refusal. Other object types keep the legs
+        // below exactly as they were.
+        if let Some(ObjectType::SortEntitiesTable(table)) = doc.objects.get(&handle) {
+            let registry = doc
+                .object_xdata
+                .get(&handle)
+                .map(|records| xdata_string_sequence(records));
+            let own_tail = sortents_own_tail_xdata(table);
+            let actual = match (registry, own_tail) {
+                (Some(registry), Some(own_tail)) => {
+                    if registry != own_tail {
+                        return Err(
+                            "XDATA literal payload changed during DXF import. Save a DXF copy instead."
+                                .into(),
+                        );
+                    }
+                    registry
+                }
+                (Some(registry), None) => registry,
+                (None, Some(own_tail)) => own_tail,
+                (None, None) => {
+                    return Err(
+                        "XDATA literal source identity was lost. Save a DXF copy instead.".into(),
+                    );
+                }
+            };
+            if &actual != expected {
+                return Err(
+                    "XDATA literal payload changed during DXF import. Save a DXF copy instead."
+                        .into(),
+                );
+            }
+            continue;
+        }
         let entity = doc.get_entity(handle);
         let records = entity
             .map(|value| &value.common().extended_data)
@@ -944,15 +1056,7 @@ fn verify_source_literals(doc: &CadDocument, source: &SourceLiterals) -> Result<
             .filter(|records| !records.records().is_empty())
             .or_else(|| doc.object_xdata.get(&handle))
             .ok_or("XDATA literal source identity was lost. Save a DXF copy instead.")?;
-        let actual = records
-            .records()
-            .iter()
-            .flat_map(|record| &record.values)
-            .filter_map(|value| match value {
-                acadrust::xdata::XDataValue::String(value) => Some(value.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+        let actual = xdata_string_sequence(records);
         if &actual != expected {
             return Err(
                 "XDATA literal payload changed during DXF import. Save a DXF copy instead.".into(),
@@ -4043,5 +4147,277 @@ mod tests {
     #[test]
     fn installs_and_verifies_the_os_process_memory_limit() {
         assert!(windows_job::ProcessLimit::install().is_ok());
+    }
+
+    // The SORTENTSTABLE body AutoCAD writes for draw order (mirrored from the
+    // genuine record in tests/fixtures/interchange/r2018-truecolor-linetypes.dxf
+    // and tests/sortents-roundtrip.test.ts): the record handle is the FIRST
+    // group 5 (27D); each entry is a (331 entity handle, 5 sort handle) pair,
+    // so the trailing group 5s are payload, not identity.
+    const SORTENTS_DXF: &str = concat!(
+        "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n",
+        "0\nSECTION\n2\nOBJECTS\n",
+        "0\nSORTENTSTABLE\n5\n27D\n102\n{ACAD_REACTORS\n330\n15D\n102\n}\n330\n15D\n",
+        "100\nAcDbSortentsTable\n330\n1F\n331\n27C\n5\n279\n331\n270\n5\n115\n",
+        "0\nENDSEC\n0\nEOF\n",
+    );
+
+    #[test]
+    fn retained_sortents_table_identity_is_the_first_group_5() {
+        // Failing-first for the PR #49 fallout: capture used to key the table
+        // by its LAST group 5 (a sort handle), so verify() refused every
+        // draw-order drawing with "SORTENTSTABLE source identity disappeared
+        // during import" even though the table imported intact at 27D.
+        let mut document =
+            DxfReader::from_reader(std::io::Cursor::new(SORTENTS_DXF.as_bytes().to_vec()))
+                .unwrap()
+                .read()
+                .unwrap();
+        assert!(
+            document.objects.contains_key(&Handle::new(0x27D)),
+            "the imported document must carry the SORTENTSTABLE at its record handle"
+        );
+        let schema = source_schema::capture(SORTENTS_DXF).unwrap();
+        schema.verify(&mut document).unwrap();
+    }
+
+    #[test]
+    fn retained_sortents_table_disappearance_still_refuses() {
+        // Pin: reading only the first group 5 must not weaken the refusal —
+        // a table that genuinely does not survive import still refuses with
+        // the same identity error.
+        let mut document =
+            DxfReader::from_reader(std::io::Cursor::new(SORTENTS_DXF.as_bytes().to_vec()))
+                .unwrap()
+                .read()
+                .unwrap();
+        document.objects.remove(&Handle::new(0x27D));
+        let schema = source_schema::capture(SORTENTS_DXF).unwrap();
+        let error = schema.verify(&mut document).unwrap_err();
+        assert!(
+            error.contains("SORTENTSTABLE source identity disappeared during import"),
+            "{error}"
+        );
+    }
+
+    // Round 2: the same SORTENTSTABLE carrying a 1001/1000 XDATA string.
+    // capture() keys the table at its first group 5 (27D) since round 1,
+    // but the literal scanner used to overwrite the record handle on every
+    // group 5, keying the XDATA by the final sort handle (115) — so
+    // verify_source_literals searched for the literal at 115 and refused.
+    const SORTENTS_XDATA_DXF: &str = concat!(
+        "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n",
+        "0\nSECTION\n2\nOBJECTS\n",
+        "0\nSORTENTSTABLE\n5\n27D\n102\n{ACAD_REACTORS\n330\n15D\n102\n}\n330\n15D\n",
+        "100\nAcDbSortentsTable\n330\n1F\n331\n27C\n5\n279\n331\n270\n5\n115\n",
+        "1001\nSORTENTS_PROOF\n1000\nDraw order literal \\U+0041\n",
+        "0\nENDSEC\n0\nEOF\n",
+    );
+
+    #[test]
+    fn sortents_xdata_literals_are_keyed_by_the_first_group_5() {
+        // Failing-first for the literal-scanner half of the identity rule:
+        // the XDATA-bearing table must pass BOTH guards, with its literals
+        // keyed at the record identity 27D, not the final sort handle 115.
+        // Round 4 (option A): the round-2 precondition that the registry
+        // (object_xdata) carries the table's XDATA was wrong — the reader
+        // keeps a SORTENTSTABLE's XDATA in the object's own raw DXF tail
+        // by design. The precondition is replaced by that design fact plus
+        // the own-tail copy at 27D; every guard assertion below is the
+        // round-2 one, now satisfied through the own-tail leg.
+        let mut document =
+            DxfReader::from_reader(std::io::Cursor::new(SORTENTS_XDATA_DXF.as_bytes().to_vec()))
+                .unwrap()
+                .read()
+                .unwrap();
+        assert!(
+            document.objects.contains_key(&Handle::new(0x27D)),
+            "the imported document must carry the SORTENTSTABLE at its record handle"
+        );
+        assert!(
+            !document.object_xdata.contains_key(&Handle::new(0x27D)),
+            "the reader must keep the table's XDATA out of the registry (own raw tail)"
+        );
+        let ObjectType::SortEntitiesTable(table) = &document.objects[&Handle::new(0x27D)] else {
+            panic!("the object at 27D must be the SORTENTSTABLE");
+        };
+        assert_eq!(
+            sortents_own_tail_xdata(table),
+            Some(vec!["Draw order literal \\U+0041".to_string()]),
+            "the own-tail copy must carry the table's XDATA at its record handle"
+        );
+        let schema = source_schema::capture(SORTENTS_XDATA_DXF).unwrap();
+        schema.verify(&mut document).unwrap();
+        let literals = source_literals(SORTENTS_XDATA_DXF).unwrap();
+        assert_eq!(
+            literals.xdata[&0x27D],
+            vec!["Draw order literal \\U+0041".to_string()]
+        );
+        assert!(
+            !literals.xdata.contains_key(&0x115),
+            "literals must not be keyed by a sort handle"
+        );
+        verify_source_literals(&document, &literals).unwrap();
+    }
+
+    #[test]
+    fn sortents_xdata_literal_mismatch_still_refuses() {
+        // Pins: first-group-5 keying must not weaken the literal guard — a
+        // payload that differs from the imported model still refuses, and
+        // XDATA parked under the final sort handle is not the identity.
+        // Round 4: the mutation leg is unchanged (now compared against the
+        // own-tail copy). The round-2 registry-move leg cannot survive —
+        // the registry never holds the table's copy, so moving it would
+        // unwrap an absent entry; its identity intent is covered, through
+        // both guards, by sortents_xdata_literal_moved_identity_still_refuses.
+        let document =
+            DxfReader::from_reader(std::io::Cursor::new(SORTENTS_XDATA_DXF.as_bytes().to_vec()))
+                .unwrap()
+                .read()
+                .unwrap();
+        let tampered = SORTENTS_XDATA_DXF.replace("Draw order literal", "Tampered literal");
+        let literals = source_literals(&tampered).unwrap();
+        let error = verify_source_literals(&document, &literals).unwrap_err();
+        assert!(error.contains("XDATA literal payload changed"), "{error}");
+    }
+
+    #[test]
+    fn sortents_xdata_literal_deletion_still_refuses() {
+        // Deletion (round 4): the document's table carries no XDATA at
+        // all, while the source carries the payload at 27D. Neither the
+        // registry nor the own tail has a copy, so the guard refuses with
+        // the identity error — and the schema guard still passes on the
+        // same document, isolating the refusal to the literal guard.
+        let mut document =
+            DxfReader::from_reader(std::io::Cursor::new(SORTENTS_DXF.as_bytes().to_vec()))
+                .unwrap()
+                .read()
+                .unwrap();
+        let schema = source_schema::capture(SORTENTS_DXF).unwrap();
+        schema.verify(&mut document).unwrap();
+        let literals = source_literals(SORTENTS_XDATA_DXF).unwrap();
+        let error = verify_source_literals(&document, &literals).unwrap_err();
+        assert!(
+            error.contains("XDATA literal source identity was lost"),
+            "{error}"
+        );
+        // The guard is source-driven, as for every object type: a payload
+        // only the document carries is not this guard's to refuse, so the
+        // mirror direction (source without XDATA, document with) passes.
+        let plain = source_literals(SORTENTS_DXF).unwrap();
+        assert!(plain.xdata.is_empty());
+        let xdata_document =
+            DxfReader::from_reader(std::io::Cursor::new(SORTENTS_XDATA_DXF.as_bytes().to_vec()))
+                .unwrap()
+                .read()
+                .unwrap();
+        verify_source_literals(&xdata_document, &plain).unwrap();
+    }
+
+    #[test]
+    fn sortents_xdata_literal_moved_identity_still_refuses() {
+        // Identity (round 4): the document's table sits at a different
+        // record handle (280) while the source literals key the payload
+        // at 27D. The payload exists in the document — under the wrong
+        // identity — so the guard refuses with the identity error. The
+        // schema guard passes on the variant document itself.
+        let moved_dxf = SORTENTS_XDATA_DXF.replace("5\n27D\n102\n", "5\n280\n102\n");
+        assert_ne!(moved_dxf, SORTENTS_XDATA_DXF);
+        let mut document =
+            DxfReader::from_reader(std::io::Cursor::new(moved_dxf.as_bytes().to_vec()))
+                .unwrap()
+                .read()
+                .unwrap();
+        assert!(
+            document.objects.contains_key(&Handle::new(0x280)),
+            "the variant document must carry its SORTENTSTABLE at 280"
+        );
+        let schema = source_schema::capture(&moved_dxf).unwrap();
+        schema.verify(&mut document).unwrap();
+        let literals = source_literals(SORTENTS_XDATA_DXF).unwrap();
+        let error = verify_source_literals(&document, &literals).unwrap_err();
+        assert!(
+            error.contains("XDATA literal source identity was lost"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn sortents_xdata_conflicting_copies_still_refuse() {
+        // Both copies (round 4): when a registry copy AND the own-tail
+        // copy both exist at the record handle and DISAGREE, the guard
+        // refuses — it never picks whichever copy happens to match the
+        // source. A registry copy that agrees with the own-tail sequence
+        // passes. Registry copies are inserted after the schema guard,
+        // mirroring the production order (schema verify, then literals).
+        let literals = source_literals(SORTENTS_XDATA_DXF).unwrap();
+        let registry_copy = |text: &str| {
+            let mut records = acadrust::xdata::ExtendedData::new();
+            let mut record = acadrust::xdata::ExtendedDataRecord::new("SORTENTS_PROOF");
+            record.add_value(acadrust::xdata::XDataValue::String(text.to_string()));
+            records.add_record(record);
+            records
+        };
+        let mut document =
+            DxfReader::from_reader(std::io::Cursor::new(SORTENTS_XDATA_DXF.as_bytes().to_vec()))
+                .unwrap()
+                .read()
+                .unwrap();
+        let schema = source_schema::capture(SORTENTS_XDATA_DXF).unwrap();
+        schema.verify(&mut document).unwrap();
+        document
+            .object_xdata
+            .insert(Handle::new(0x27D), registry_copy("Registry literal \\U+0042"));
+        let error = verify_source_literals(&document, &literals).unwrap_err();
+        assert!(
+            error.contains("XDATA literal payload changed"),
+            "{error}"
+        );
+        let mut document =
+            DxfReader::from_reader(std::io::Cursor::new(SORTENTS_XDATA_DXF.as_bytes().to_vec()))
+                .unwrap()
+                .read()
+                .unwrap();
+        let schema = source_schema::capture(SORTENTS_XDATA_DXF).unwrap();
+        schema.verify(&mut document).unwrap();
+        document
+            .object_xdata
+            .insert(Handle::new(0x27D), registry_copy("Draw order literal \\U+0041"));
+        verify_source_literals(&document, &literals).unwrap();
+    }
+
+    #[test]
+    fn sortents_own_tail_accessor_reads_only_the_xdata_block() {
+        // The accessor's contract, pinned directly: None without a tail or
+        // without a 1001 block; the 1000 strings after the first 1001, in
+        // order and with multiplicity, across later 1001 blocks; a 1001
+        // block with no strings is Some(empty), never a vacuous pass.
+        let mut table = SortEntitiesTable::new();
+        assert_eq!(sortents_own_tail_xdata(&table), None);
+        table.raw_dxf_codes = Some(vec![
+            (5, "27D".to_string()),
+            (100, "AcDbSortentsTable".to_string()),
+            (1000, "Not xdata".to_string()),
+        ]);
+        assert_eq!(sortents_own_tail_xdata(&table), None);
+        table.raw_dxf_codes = Some(vec![
+            (5, "27D".to_string()),
+            (1001, "SORTENTS_PROOF".to_string()),
+            (1000, "First \\U+0041".to_string()),
+            (1000, "First \\U+0041".to_string()),
+            (1070, "7".to_string()),
+            (1001, "SECOND_APP".to_string()),
+            (1000, "Second".to_string()),
+        ]);
+        assert_eq!(
+            sortents_own_tail_xdata(&table),
+            Some(vec![
+                "First \\U+0041".to_string(),
+                "First \\U+0041".to_string(),
+                "Second".to_string(),
+            ])
+        );
+        table.raw_dxf_codes = Some(vec![(1001, "EMPTY_APP".to_string())]);
+        assert_eq!(sortents_own_tail_xdata(&table), Some(Vec::new()));
     }
 }
