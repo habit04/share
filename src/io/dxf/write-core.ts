@@ -302,6 +302,9 @@ export interface WriteExtras {
   underlayDefHandles: Map<string, string>;
   /** Underlay definition source handle (upper-case) -> handle allocated in this file. */
   underlayHandlesByDef: Map<string, string>;
+  /** The drawing's preserved $MEASUREMENT (0 imperial / 1 metric); a hatch's group 41 is
+   *  expressed in this system, the model scale in imperial-table space (fitPatternToLines). */
+  measurement?: number;
 }
 
 export function emptyExtras(): WriteExtras {
