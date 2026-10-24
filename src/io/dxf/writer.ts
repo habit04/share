@@ -33,6 +33,7 @@ import { dimStyleRecordPairs } from '../../core/dimension';
 import { writeEntityAnno, writeEntity } from './write-entities';
 import { tableStyleKey, tablePictureForm, tableRoundtripCells, writeTableRoundtrip, emitMLeaderContext, mleaderContextViews } from './write-annotations';
 import { writeUnderlayDefinition, underlayDxfType, underlayDefinitionDxfType, underlayEntityClassName, underlayDefinitionClassName } from './underlay-codec';
+import type { UnderlayDefinition, UnderlayKind } from '../../core/underlay';
 import { attdefFlags } from '../../electrical/symbol-builder-core';
 import { tableParts, dimensionParts } from '../../core/entities';
 import { entityMTextBackground } from '../../core/mtext-background';
