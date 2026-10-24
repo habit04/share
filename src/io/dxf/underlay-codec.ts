@@ -171,7 +171,30 @@ export function writeUnderlayDefinition(def: UnderlayDefinition): DxfGroupPair[]
   return out;
 }
 
-export function parseUnderlayEntity(kind: UnderlayKind, groups: readonly DxfGroupPair[], fallbackId: string): UnderlayParseResult<UnderlayPlacement> {
+/** The subclass markers the pre-v0.6.4 codec wrote (never AutoCAD's). */
+const LEGACY_ENTITY_SUBCLASSES: ReadonlySet<string> = new Set(['AcDbPdfUnderlay', 'AcDbDwfUnderlay', 'AcDbDgnUnderlay']);
+/** Pre-v0.6.4 code -> AutoCAD code (flags, contrast, fade, clip X / Y). */
+const LEGACY_CODE_REMAP: ReadonlyMap<number, number> = new Map([[70, 280], [280, 281], [281, 282], [14, 11], [24, 21]]);
+
+/**
+ * v0.6.4 re-review (2): a record written by the pre-fix JCad codec (its
+ * subclass marker AcDbPdfUnderlay / AcDbDwfUnderlay / AcDbDgnUnderlay is
+ * the tell — AutoCAD never writes those) carried flags as 70, contrast as
+ * 280, fade as 281 and the clip as 14/24. Remapped to AutoCAD's codes
+ * before the scan, such a record reads as intended and is written in
+ * AutoCAD's layout with no stray 70 / 14 / 24. Records with the AutoCAD
+ * marker (or none) are untouched.
+ */
+function remapLegacyGroups(groups: readonly DxfGroupPair[]): readonly DxfGroupPair[] {
+  if (!groups.some(([code, value]) => code === 100 && LEGACY_ENTITY_SUBCLASSES.has(value.trim()))) return groups;
+  return groups.map(([code, value]) => {
+    const to = LEGACY_CODE_REMAP.get(code);
+    return to === undefined ? [code, value] as const : [to, value] as const;
+  });
+}
+
+export function parseUnderlayEntity(kind: UnderlayKind, rawGroups: readonly DxfGroupPair[], fallbackId: string): UnderlayParseResult<UnderlayPlacement> {
+  const groups = remapLegacyGroups(rawGroups);
   // Clip points (11/21 pairs) are claimed as a sequence, not as scalars.
   const points: Point[] = [];
   const rest: DxfGroupPair[] = [];
