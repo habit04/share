@@ -733,6 +733,45 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
   }
   const underlayEntityKinds = new Set(allEntities.flatMap((e) => (e.type === 'underlay' ? [e.kind] : [])));
   const underlayDefKinds = new Set(underlayDefs.map((d) => d.kind));
+  // v0.6.4 native gate B-2: a definition must be REACHABLE from the
+  // named-objects dictionary or AutoCAD drops it on its first save (and the
+  // placement's 340 dies, AUDIT 2). AutoCAD keeps them in ACAD_PDFDEFINITIONS
+  // / ACAD_DWFDEFINITIONS / ACAD_DGNDEFINITIONS under the root, one entry
+  // per definition named "<file stem> - <page>" ("real - 1"), the definition
+  // owned by (330) and reacting to that dictionary. One dictionary per kind
+  // in use, allocated here. A retained definition keeps the entry name its
+  // source dictionary gave it (looked up in the cad graph), so the graph
+  // merge — which matches the dictionary by its path and adds only missing
+  // keys — never ends up with two entries for one definition.
+  const underlayDefDicts = new Map<UnderlayKind, string>();
+  for (const kind of underlayDefKinds) underlayDefDicts.set(kind, w.nextHandle());
+  const underlayDefEntryNames = new Map<string, string>();
+  {
+    const sourceEntryName = (def: UnderlayDefinition): string | undefined => {
+      if (!def.handle || !state.cadGraph) return undefined;
+      const target = canonicalCadHandle(def.handle);
+      for (const node of state.cadGraph.nodes) {
+        if (node.type !== 'DICTIONARY') continue;
+        for (let i = 0; i + 1 < node.groups.length; i += 1) {
+          const [code, name] = node.groups[i]!, [refCode, raw] = node.groups[i + 1]!;
+          if (code !== 3 || (refCode !== 350 && refCode !== 360)) continue;
+          try { if (canonicalCadHandle(raw.trim()) === target) return name; } catch { /* not a handle: no match */ }
+        }
+      }
+      return undefined;
+    };
+    const used = new Map<UnderlayKind, Set<string>>();
+    for (const def of underlayDefs) {
+      const taken = used.get(def.kind) ?? new Set<string>();
+      used.set(def.kind, taken);
+      const stem = (def.sourcePath.split(/[\\/]/).pop() || def.sourcePath).replace(/\.[^.]*$/, '') || def.sourcePath;
+      const base = sourceEntryName(def) ?? (def.page !== undefined && def.page !== '' ? `${stem} - ${def.page}` : stem);
+      let name = base;
+      for (let n = 2; taken.has(name.toUpperCase()); n += 1) name = `${base} (${n})`;
+      taken.add(name.toUpperCase());
+      underlayDefEntryNames.set(def.id, name);
+    }
+  }
 
   // HEADER
   w.pair(0, 'SECTION');
@@ -1225,6 +1264,12 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
     w.pair(3, 'ACAD_IMAGE_DICT');
     w.pair(350, imageDict);
   }
+  for (const kind of ['pdf', 'dwf', 'dgn'] as const) {
+    const dict = underlayDefDicts.get(kind);
+    if (!dict) continue;
+    w.pair(3, kind === 'pdf' ? 'ACAD_PDFDEFINITIONS' : kind === 'dwf' ? 'ACAD_DWFDEFINITIONS' : 'ACAD_DGNDEFINITIONS');
+    w.pair(350, dict);
+  }
   if (mleaderDict) {
     w.pair(3, 'ACAD_MLEADERSTYLE');
     w.pair(350, mleaderDict);
@@ -1638,11 +1683,36 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
   // written (v0.6.4 review F-F: a definition without it made AutoCAD
   // discard the drawing, "Class separator for class AcDbUnderlayDefinition
   // expected").
+  // B-2: the per-kind definitions dictionary (AutoCAD's layout: owner the
+  // root, no reactors block, one "<stem> - <page>" entry per definition),
+  // then each definition owned by and reacting to it. B-3: a definition
+  // record carries ONLY the spec groups (5, reactors, 330, 100, 1, 2) —
+  // AutoCAD's sequential reader discards the drawing on an unknown group
+  // after 1 / 2, and the only realistic source of one is a pre-fix JCad
+  // save ("90 7").
+  for (const kind of ['pdf', 'dwf', 'dgn'] as const) {
+    const dict = underlayDefDicts.get(kind);
+    if (!dict) continue;
+    w.pair(0, 'DICTIONARY');
+    w.pair(5, dict);
+    w.pair(330, 'C');
+    w.pair(100, 'AcDbDictionary');
+    w.pair(281, 1);
+    for (const def of underlayDefs) {
+      if (def.kind !== kind) continue;
+      w.pair(3, underlayDefEntryNames.get(def.id)!);
+      w.pair(350, extras.underlayDefHandles.get(def.id)!);
+    }
+  }
   for (const def of underlayDefs) {
+    const dict = underlayDefDicts.get(def.kind)!;
     w.pair(0, underlayDefinitionDxfType(def.kind));
     w.pair(5, extras.underlayDefHandles.get(def.id)!);
-    w.pair(330, 'C');
-    for (const [code, value] of writeUnderlayDefinition(def)) {
+    w.pair(102, '{ACAD_REACTORS');
+    w.pair(330, dict);
+    w.pair(102, '}');
+    w.pair(330, dict);
+    for (const [code, value] of writeUnderlayDefinition({ ...def, retainedGroups: [] })) {
       if (code === 5 || code === 330) continue;
       w.pair(code, value);
     }

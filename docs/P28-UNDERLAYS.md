@@ -29,9 +29,16 @@
   `PDFUNDERLAY -> AcDbPdfReference`, `PDFDEFINITION -> AcDbPdfDefinition`
   under "ObjectDBX Classes" (DWF/DGN likewise). Retained groups are written
   in AutoCAD's order; an edited scale/rotation is written once (F-G);
-  MIRROR is a true reflection (F-H). The genuine AutoCAD 2027 fixture is
-  `tests/fixtures/interchange/r2018-pdf-underlay-acad2027.dxf`
-  (`tests/underlay-autocad-layout.test.ts`); where the sections below say
+  MIRROR is a true reflection (F-H). Definitions are registered in the
+  root dictionary's `ACAD_PDFDEFINITIONS` / `ACAD_DWFDEFINITIONS` /
+  `ACAD_DGNDEFINITIONS` (one entry `<file stem> - <page>` per definition,
+  the definition owned by and reacting to it) — without that AutoCAD drops
+  the definition on its first save (native gate B-2) — and a definition
+  record carries only its spec groups (B-3). The genuine AutoCAD 2027
+  fixtures are `tests/fixtures/interchange/r2018-pdf-underlay-acad2027.dxf`
+  (`tests/underlay-autocad-layout.test.ts`) and
+  `r2018-pdf-underlay-dict-acad2027.dxf`
+  (`tests/underlay-definition-dictionary.test.ts`); where the sections below say
   70 / 280 / 281 / 14 / 24 or "no underlay fixture", they describe the
   superseded slice.
 

@@ -105,7 +105,7 @@ describe('F-F: the written records are laid out as AutoCAD writes them', () => {
     const recs = records(out);
     const def = recs.find((r) => r.kind === 'PDFDEFINITION')!;
     expect(def).toBeDefined();
-    expect(codes(def)).toEqual([5, 330, 100, 1, 2]);
+    expect(codes(def)).toEqual([5, 102, 330, 102, 330, 100, 1, 2]); // B-2: reactor + owner name ACAD_PDFDEFINITIONS
     expect(group(def, 100)).toBe('AcDbUnderlayDefinition');
     expect(group(def, 1)).toBe('real.pdf');
     expect(group(def, 2)).toBe('1');
@@ -131,7 +131,7 @@ describe('F-F: the written records are laid out as AutoCAD writes them', () => {
     expect(group(u, 100)).toBe('AcDbEntity');
     expect(u.groups[4]).toEqual([100, 'AcDbUnderlayReference']);
     const def = recs.find((r) => r.kind === 'DWFDEFINITION')!;
-    expect(codes(def)).toEqual([5, 330, 100, 1, 2]);
+    expect(codes(def)).toEqual([5, 102, 330, 102, 330, 100, 1, 2]);
     expect(classOf(recs, 'DWFUNDERLAY', 'AcDbDwfReference')).toBeDefined();
     expect(classOf(recs, 'DWFDEFINITION', 'AcDbDwfDefinition')).toBeDefined();
   });

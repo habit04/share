@@ -170,3 +170,16 @@ that the pre-fix JCad writer had put into AutoCAD's input (AutoCAD kept it).
 `tests/underlay-autocad-layout.test.ts` reads it and pins the record layout
 JCad writes against it.
 
+## r2018-pdf-underlay-dict-acad2027.dxf (added 2026-10-24, v0.6.4 native gate B-2)
+
+A genuine **AutoCAD 2027 DXFOUT** (AC1032) of the same drawing, this time
+WITH its PDFDEFINITION (`real.pdf`, page 1, handle 41) registered in the
+named-objects dictionary: root entry `ACAD_PDFDEFINITIONS -> 1F0`, the
+dictionary `1F0` (owner the root, no reactors block, entry `real - 1 ->
+41`), and the definition owned by and reacting to `1F0`. Produced at the
+v0.6.4 native gate (`v064-5ace366-native-claude`, `native/in/u-acad-written.dxf`,
+leg UCTRL-PDFDEFS, AUDIT 0 on load and on AutoCAD's own re-save). SHA-256
+`64803a0e8df0fafff058b98c3b1226cec525ecc9643fda43e1aad2969b844d31`.
+`tests/underlay-definition-dictionary.test.ts` pins JCad's dictionary
+layout against it and its byte-stable round trip.
+

@@ -21,3 +21,4 @@ tests/fixtures/xref/leaf.dxf -text
 
 # Genuine AutoCAD 2027 DXFOUT (v0.6.4 F-F): keep its CRLF bytes so the provenance SHA-256 holds.
 tests/fixtures/interchange/r2018-pdf-underlay-acad2027.dxf -text
+tests/fixtures/interchange/r2018-pdf-underlay-dict-acad2027.dxf -text
