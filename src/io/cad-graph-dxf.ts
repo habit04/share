@@ -988,7 +988,14 @@ export function attachDxfCadGraph(state: DrawingState, pairs: readonly Pair[], o
   } catch (error) {
     if (!(error instanceof CadGraphError) || error.code !== 'invalid' || !options.onGraphUnavailable || options.sourceFormat === 'DWG'
       || options.model3dHandles?.size || pairs.some(pair => pair.code === 1001 && pair.value.trim() === MODEL3D_APP)) throw error;
-    options.onGraphUnavailable(`${error.message} Retained metadata and object-reference identities could not be imported safely; readable drawing geometry is kept.`);
+    // O4 (AMENDMENT-P17-HANDLES): for a duplicated handle the report also
+    // states how references to it resolve — the read pass's per-list handle
+    // maps keep the LAST same-handle object, so a reference to the handle
+    // points at that object, deterministically.
+    const resolution = error.message.startsWith('Duplicate CAD object handle ')
+      ? ' References to a duplicated handle resolve to the last object with that handle in the file.'
+      : '';
+    options.onGraphUnavailable(`${error.message} Retained metadata and object-reference identities could not be imported safely; readable drawing geometry is kept.${resolution}`);
     const { cadGraph: _graph, ...bare } = state;
     return replaceEntities(bare, entity => { const { cadIdentity: _drop, ...rest } = entity; return rest as Entity; });
   }
@@ -2583,4 +2590,194 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
   }
   out.push('0', 'EOF');
   return (out.join('\r\n') + '\r\n').replace('HANDSEED_PLACEHOLDER', (seed + 1n).toString(16).toUpperCase());
+}
+
+/**
+ * P17 R1: complete the boundary-side back-pointer of every associative
+ * hatch in a finished DXF text. An associative hatch (group 71 = 1) names
+ * its boundary objects (97 count + one 330 each), but AutoCAD keeps the
+ * link live only when each boundary object ALSO names the hatch in its
+ * {ACAD_REACTORS} group — without it AUDIT reports 'Boundary Missing a
+ * Reactor — Remove Associativity' and the hatch stops following boundary
+ * edits (the PR #44 native-gate finding; AutoCAD's own -HATCH writes
+ * exactly that back-pointer). This pass runs on the writer's final text
+ * (after preserveDxfCadGraph, so every handle is final and retained
+ * records are already spliced in) and unions the missing 330 entries
+ * into each same-owner boundary's reactors: existing entries are
+ * preserved, a hatch is never listed twice, a boundary shared by several
+ * hatches gains each hatch once, and a text that is already correct is
+ * returned byte-identical. Cross-owner boundary handles are skipped (O5:
+ * writeHatch saves those hatches non-associative, so they never carry
+ * 71 = 1 here; the owner comparison guards retained records as well).
+ * Edits are line-level splices, so every untouched line stays
+ * byte-identical.
+ *
+ * Round 6: the same pass also removes STALE reactor pointers. When a
+ * hatch is demoted in the written file (71 = 0 — the O5 rule, round-4
+ * disassociation, or the round-5/6 hatch-boundary demotion), reactor
+ * entries other records carry toward it (preserved from the input by
+ * the graph merge, or written by an earlier save) are never completed
+ * by the union above, but they are also not harmless: they claim a
+ * live association the file itself denies. Any 330 inside a depth-0
+ * {ACAD_REACTORS} block whose canonical handle names a HATCH record
+ * written 71 = 0 is spliced out; survivors keep their order, entries
+ * naming still-active (71 = 1) hatches and all unrelated entries are
+ * untouched, and a block left with no entries at all is removed whole
+ * (unless this same pass is adding entries to it). Because the pass
+ * runs on the final text, every handle it compares is already the
+ * remapped output handle.
+ */
+export function ensureAssociativeHatchReactors(text: string): string {
+  const sep = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(sep);
+  const pairCount = Math.floor(lines.length / 2);
+  const codeAt = (p: number): string => (lines[2 * p] ?? '').trim();
+  const valueAt = (p: number): string => lines[2 * p + 1] ?? '';
+  // canonicalCadHandle throws on non-handle values (e.g. the $HANDSEED
+  // placeholder a graph-less write still carries at this point); a value
+  // that is not a handle simply never matches.
+  const canon = (v: string): string | undefined => {
+    try { return canonicalCadHandle(v); } catch { return undefined; }
+  };
+  // Segment into records at each code-0 pair.
+  const starts: number[] = [];
+  for (let p = 0; p < pairCount; p++) if (codeAt(p) === '0') starts.push(p);
+  starts.push(pairCount);
+  interface Rec {
+    from: number; to: number; kind: string;
+    handlePair: number; handle?: string; owner?: string; entity: boolean;
+  }
+  const recs: Rec[] = [];
+  const byHandle = new Map<string, Rec>();
+  for (let s = 0; s + 1 < starts.length; s++) {
+    const from = starts[s]!, to = starts[s + 1]!;
+    const rec: Rec = { from, to, kind: valueAt(from).trim(), handlePair: -1, entity: false };
+    let depth = 0;
+    for (let p = from; p < to; p++) {
+      const code = codeAt(p), value = valueAt(p);
+      if ((code === '5' || code === '105') && rec.handlePair < 0) {
+        rec.handlePair = p;
+        rec.handle = canon(value);
+      } else if (code === '100' && value.trim() === 'AcDbEntity') rec.entity = true;
+      else if (code === '330' && depth === 0 && rec.owner === undefined) rec.owner = canon(value);
+      if (code === '102') {
+        const v = value.trim();
+        if (v.startsWith('{')) depth++;
+        else if (v === '}') depth = Math.max(0, depth - 1);
+      }
+    }
+    recs.push(rec);
+    if (rec.entity && rec.handle && !byHandle.has(rec.handle)) byHandle.set(rec.handle, rec);
+  }
+  // Boundary handle -> the associative hatches naming it, in file order.
+  const links = new Map<string, Array<{ hatch: Rec; raw: string }>>();
+  // Round 6: canonical handles of the HATCH records this text writes
+  // 71 = 0 (demoted or never associative) — reactor pointers naming
+  // them are stale and are spliced out below.
+  const demotedHatches = new Set<string>();
+  for (const hatch of recs) {
+    if (hatch.kind !== 'HATCH' || !hatch.handle) continue;
+    let associative = false;
+    const boundaries: string[] = [];
+    for (let p = hatch.from; p < hatch.to; p++) {
+      const code = codeAt(p);
+      if (code === '71' && !associative) associative = valueAt(p).trim() === '1';
+      else if (code === '97') {
+        const count = Number.parseInt(valueAt(p), 10);
+        if (!Number.isFinite(count)) continue;
+        for (let j = p + 1, got = 0; j < hatch.to && got < count; j++) {
+          if (codeAt(j) !== '330') break;
+          const b = canon(valueAt(j));
+          if (b !== undefined) boundaries.push(b);
+          got++;
+        }
+      }
+    }
+    if (!associative) {
+      demotedHatches.add(hatch.handle);
+      continue;
+    }
+    const raw = valueAt(hatch.handlePair).trim();
+    for (const b of boundaries) {
+      if (b === hatch.handle) continue;
+      const list = links.get(b);
+      if (list) { if (!list.some((l) => l.hatch === hatch)) list.push({ hatch, raw }); }
+      else links.set(b, [{ hatch, raw }]);
+    }
+  }
+  /** A record's {ACAD_REACTORS} block at brace depth 0: its opener and
+   *  closer pair indices and its 330 entries, in file order. */
+  interface ReactorBlock {
+    open: number; close: number;
+    entries: Array<{ pair: number; canon?: string }>;
+  }
+  const reactorBlockOf = (rec: Rec): ReactorBlock | null => {
+    let depth = 0, open = -1, close = -1;
+    const entries: Array<{ pair: number; canon?: string }> = [];
+    for (let p = rec.from; p < rec.to; p++) {
+      const code = codeAt(p), value = valueAt(p);
+      if (code === '102') {
+        const v = value.trim();
+        if (v.startsWith('{')) { if (depth === 0 && v === '{ACAD_REACTORS') open = p; depth++; continue; }
+        if (v === '}') { depth = Math.max(0, depth - 1); if (open >= 0 && depth === 0) { close = p; break; } continue; }
+      }
+      if (open >= 0 && code === '330') entries.push({ pair: p, canon: canon(value) });
+    }
+    return open >= 0 && close >= 0 ? { open, close, entries } : null;
+  };
+  const edits: Array<{ atLine: number; lines: string[] }> = [];
+  // Records whose EXISTING reactor block gains entries in this pass:
+  // their block shell must survive the cleanup below even if every
+  // pre-existing entry in it is stale.
+  const mergeTargets = new Set<Rec>();
+  for (const [boundary, hatches] of links) {
+    const rec = byHandle.get(boundary);
+    if (!rec || rec.handlePair < 0) continue;
+    const sameOwner = hatches.filter(({ hatch }) => hatch.owner !== undefined && hatch.owner === rec.owner);
+    if (sameOwner.length === 0) continue;
+    const block = reactorBlockOf(rec);
+    const existing = new Set(block?.entries.flatMap((e) => (e.canon !== undefined ? [e.canon] : [])) ?? []);
+    const add = sameOwner.filter(({ hatch }) => hatch.handle !== undefined && !existing.has(hatch.handle));
+    if (add.length === 0) continue;
+    if (block) {
+      // Merge: append the missing hatch handles just before the closing 102.
+      mergeTargets.add(rec);
+      edits.push({ atLine: 2 * block.close, lines: add.flatMap(({ raw }) => ['330', raw]) });
+    } else {
+      // No reactors block yet: create one immediately after the handle
+      // pair, the position the rest of the writer and the graph splice use.
+      edits.push({ atLine: 2 * (rec.handlePair + 1), lines: ['102', '{ACAD_REACTORS', ...add.flatMap(({ raw }) => ['330', raw]), '102', '}'] });
+    }
+  }
+  // Round 6: splice out the stale entries — 330s inside a depth-0
+  // {ACAD_REACTORS} block whose canonical handle names a demoted
+  // (71 = 0) hatch. A block whose entries are ALL stale is removed
+  // whole, unless the union above is adding live entries to it.
+  const deletions: Array<{ atLine: number; count: number }> = [];
+  if (demotedHatches.size > 0) {
+    for (const rec of recs) {
+      const block = reactorBlockOf(rec);
+      if (!block) continue;
+      const stale = block.entries.filter((e) => e.canon !== undefined && demotedHatches.has(e.canon));
+      if (stale.length === 0) continue;
+      if (stale.length === block.entries.length && !mergeTargets.has(rec)) {
+        deletions.push({ atLine: 2 * block.open, count: 2 * (block.close - block.open + 1) });
+      } else {
+        for (const e of stale) deletions.push({ atLine: 2 * e.pair, count: 2 });
+      }
+    }
+  }
+  if (edits.length === 0 && deletions.length === 0) return text;
+  // Insertions and deletions share one descending pass: every anchor
+  // refers to the ORIGINAL line numbering, and no two operations can
+  // anchor on the same line (an insertion targets a block's closing
+  // 102 or a handle pair; deletions target entry pairs strictly inside
+  // a block, or a whole block this pass adds nothing to).
+  const ops: Array<{ atLine: number; count: number; lines: string[] }> = [
+    ...deletions.map((d) => ({ atLine: d.atLine, count: d.count, lines: [] as string[] })),
+    ...edits.map((e) => ({ atLine: e.atLine, count: 0, lines: e.lines })),
+  ];
+  ops.sort((a, b) => b.atLine - a.atLine || b.count - a.count);
+  for (const op of ops) lines.splice(op.atLine, op.count, ...op.lines);
+  return lines.join(sep);
 }

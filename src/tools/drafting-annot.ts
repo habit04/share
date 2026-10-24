@@ -262,7 +262,18 @@ export function hatchEditTool(): Tool {
       const o = yield* point(ctx, 'Specify origin point:');
       if (o) ctx.doc.replaceEntities([{ ...h, origin: o }]);
     } else if (opt === 'DISASSOCIATE') {
-      ctx.doc.replaceEntities([{ ...h, associative: false }]);
+      // Round 4: clearing the flag alone did not stick — the loops kept
+      // their live refs, so transact maintenance refreshed the fill on
+      // the next boundary edit and the writer re-derived 71 = 1 from the
+      // links. Disassociate clears boundaryRefs AND boundaryHandles on
+      // EVERY loop in the same replace, so the disassociate is a single
+      // undo step and no link remains for maintenance or the writer to
+      // resurrect (maintenance also hard-guards associative === false).
+      const loops = h.loops.map((loop) => {
+        const { boundaryRefs: _refs, boundaryHandles: _handles, ...rest } = loop;
+        return rest;
+      });
+      ctx.doc.replaceEntities([{ ...h, loops, associative: false }]);
     } else if (opt === 'STYLE') {
       const st = yield* keyword(ctx, 'Enter hatch style [Ignore/Outer/Normal] <Normal>:', ['Ignore', 'Outer', 'Normal'], 'Normal');
       ctx.doc.replaceEntities([{ ...h, style: st === 'IGNORE' ? 2 : st === 'OUTER' ? 1 : 0 }]);

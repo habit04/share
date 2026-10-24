@@ -1099,8 +1099,18 @@ function affineCompound(e: Compound, A: Affine): Entity {
       };
     case 'hatch': {
       const loops = e.loops.map((l): HatchLoop => {
-        if (!conformal && l.bulges?.some((b) => Math.abs(b) > 1e-12)) return { points: loopPolygon(l).map(A.tf) };
-        return { points: l.points.map(A.tf), ...(l.bulges ? { bulges: A.mirrored ? l.bulges.map((b) => -b) : l.bulges } : {}) };
+        // P17 (Codex PR #44 P1-a): a rebuilt loop keeps its boundary
+        // association. boundaryRefs / boundaryHandles name boundary
+        // ENTITIES, not geometry, so they ride through every affine
+        // transform unchanged — dropping them here silently de-associated
+        // the hatch on MOVE / ROTATE / SCALE / MIRROR / COPY / ARRAY /
+        // PASTE, which all rebuild the hatch through this branch.
+        const assoc = {
+          ...(l.boundaryRefs ? { boundaryRefs: l.boundaryRefs } : {}),
+          ...(l.boundaryHandles ? { boundaryHandles: l.boundaryHandles } : {}),
+        };
+        if (!conformal && l.bulges?.some((b) => Math.abs(b) > 1e-12)) return { points: loopPolygon(l).map(A.tf), ...assoc };
+        return { points: l.points.map(A.tf), ...(l.bulges ? { bulges: A.mirrored ? l.bulges.map((b) => -b) : l.bulges } : {}), ...assoc };
       });
       const gradientConformal = Math.abs(A.kx) === Math.abs(A.ky);
       const frame = e.gradientFrame ?? (A.gradientInBlock || !gradientConformal ? hatchGradientFrame(e) : null);

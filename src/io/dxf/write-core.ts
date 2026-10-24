@@ -67,6 +67,23 @@ export class Writer {
    * writers whose file format changed between releases branch on it — today only
    * the ACAD_TABLE cell form (legacy at AC1015..AC1027, cell-value at AC1032). */
   acadVersion = 'AC1015';
+  private readonly entityRecordsEmitted = new WeakSet<Entity>();
+  /**
+   * Handle for the next record emitted for `entity`. The FIRST record uses
+   * the entity's reserved handle (allocating and reserving one if needed),
+   * so a reference written earlier or later — P17: a hatch's boundary-path
+   * 330 — names the handle the entity is actually emitted with. Every
+   * FURTHER record for the same object allocates a fresh handle: a
+   * multi-record entity (an mleader's several LEADER records, each with
+   * its own cad-graph part anchor) must never repeat a handle.
+   */
+  entityRecordHandle(entity: Entity): string {
+    if (!this.entityRecordsEmitted.has(entity)) {
+      this.entityRecordsEmitted.add(entity);
+      return this.reserveEntityHandle(entity);
+    }
+    return this.nextHandle();
+  }
   readonly cadAnchors = new Map<string, CadAnchor>();
   anchor(handle: string, anchor: CadAnchor): void { this.cadAnchors.set(handle, anchor); }
   pair(code: number, value: string | number): void {
@@ -131,7 +148,11 @@ export function writePaperSpaceFlag(w: Writer, spaceOwner: string): void {
 
 export function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: string, subclass: string, spaceOwner = owner, extensionDictionary?: string): void {
   w.pair(0, kind);
-  const handle = w.reservedEntityHandles.get(e) ?? w.nextHandle();
+  // The first record emitted for an entity takes its reserved handle, so a
+  // record that references it — P17: a hatch's boundary-path 330 — names
+  // the same handle; further records for the same object (an mleader's
+  // several LEADER records) allocate fresh handles, as they did before P17.
+  const handle = w.entityRecordHandle(e);
   w.pair(5, handle);
   w.anchor(handle, { kind: 'entity', id: e.id });
   // An extension dictionary rides between the handle and the owner, exactly
@@ -220,6 +241,45 @@ export interface WriteExtras {
   imageReactors: Map<ImageEntity, { reactor: string; image?: string; def: string }>;
   /** Native-table write data per table: its *T picture block (name + BLOCK_RECORD handle) and TABLESTYLE handle. */
   tableBlocks: Map<TableEntity, { name: string; recordHandle: string; styleHandle: string; roundtrip?: TableRoundtripPlan }>;
+  /** P17: every entity the writer will emit, by id — a hatch's boundary refs resolve through it. */
+  entityById?: ReadonlyMap<string, Entity>;
+  /** P17 (Codex PR #44 P1-d): every entity the writer will emit, by canonical SOURCE handle
+   *  (its cadIdentity, bare or as the "<session>:<handle>" suffix) — a hatch loop's retained
+   *  raw boundary handles resolve through it, so a retained link naming an object that IS in
+   *  the drawing is written back instead of silently dropped. */
+  entityBySourceHandle?: ReadonlyMap<string, Entity>;
+  /** P17 round 2 (Codex P1): retained cad-graph anchors the writer still emits but that
+   *  are not entities (REGION / BODY / 3DSOLID raw records), by canonical SOURCE handle —
+   *  a hatch loop's retained handle naming one resolves to the anchor's emitted handle
+   *  (its canonical source handle, the handle preserveDxfCadGraph emits the record
+   *  under) and the owner string it is written under, so the link is remapped and
+   *  written instead of dropped. An anchor whose owner cannot be proven in writer
+   *  terms carries no owner and classifies as foreign-owned (O5). */
+  anchorBySourceHandle?: ReadonlyMap<string, { handle: string; owner?: string }>;
+  /** P17 round 5: canonical source handles of retained cad-graph records of type
+   *  HATCH that this writer does not emit as entities (raw retained records).
+   *  A hatch loop's retained handle naming one is a hatch boundary: the link
+   *  is never emitted and the hatch demotes (see writeHatch in write-entities.ts). */
+  hatchAnchorHandles?: ReadonlySet<string>;
+  /** P17 round 7: the canonical source handles whose entityBySourceHandle
+   *  entry was supplied (or overwritten) by the retained cad graph's
+   *  entity-anchor join — as opposed to an identity the entity carries in
+   *  the model itself (cadIdentity). The graph is the same evidence the
+   *  reader adjudicated the file's links against, so a retained handle
+   *  resolving ONLY through this join names a link the import already had
+   *  its chance to make live: writeHatch emits it (retention) but it
+   *  cannot by itself carry 71 = 1 — and since round 8 it VETOES 71 = 1
+   *  for the whole hatch in mixed company, so a non-live link is never
+   *  written as part of a live association (see writeHatch in
+   *  write-entities.ts). */
+  graphEntityHandles?: ReadonlySet<string>;
+  /** P17 round 2: the canonical source handle of EVERY retained graph node. A hatch
+   *  loop's retained handle that names one of these but resolves to no emitted entity
+   *  or anchor names an object the drawing retains yet this writer does not emit as a
+   *  boundary — the save refuses atomically rather than silently dropping the link. */
+  graphSourceHandles?: ReadonlySet<string>;
+  /** P17 R1: the owner handle string each entity is written under (its space / block record), by id — a hatch link is associative only within one owner (O5). */
+  entityOwner?: ReadonlyMap<string, string>;
   /** DIMASZ × DIMSCALE of the header style (leaders store their arrow size as an override when it differs). */
   arrowSize: number;
   /** Underlay definition id -> handle allocated for it in this file (RULING-P28 C8 pre-pass). */

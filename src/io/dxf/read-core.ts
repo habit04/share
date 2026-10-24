@@ -71,6 +71,15 @@ export interface ReadContext {
   /** P18 slice 2 (PROPOSAL-P18-S2 item (1)): BLOCK_RECORD names by upper-case handle
    *  (TABLES precedes ENTITIES; a MULTILEADER's 341 / trailing 344 name one). */
   blockRecordNames?: ReadonlyMap<string, string>;
+  /** P17 round 6: the canonical handles of EVERY HATCH record in the file
+   *  (BLOCKS + ENTITIES sections: any space, any block definition, and
+   *  records no entity list models — retained raw records included),
+   *  pre-scanned from the raw pairs like the maps above, so a hatch's
+   *  boundary resolution can tell a hatch-typed target apart from an
+   *  ordinary cross-space boundary without depending on section order.
+   *  Absent on read paths that build their own context: the cross-space
+   *  hatch check then simply does not engage (same-list checks remain). */
+  hatchHandles?: ReadonlySet<string>;
   /** P18 S3-D (RULING-P18-S3-D (1)(i)): the OBJECTS DICTIONARY records and the
    *  ACDB_MLEADEROBJECTCONTEXTDATA_CLASS records, by upper-case handle — the raw
    *  material readMLeader's extension-dictionary join resolves a MULTILEADER's

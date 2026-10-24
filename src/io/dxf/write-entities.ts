@@ -16,6 +16,7 @@ import type { AttributeDefExt } from '../../electrical/symbol-builder-core';
 import { attdefFlags } from '../../electrical/symbol-builder-core';
 import { insertArrayProblem } from '../../core/insert-array';
 import { DYNAMIC_APP } from './codes';
+import { canonicalCadHandle } from '../../core/cad-graph';
 import { chunkDynamicPayload, encodeDynamicInstance } from './dynamic-data';
 import { hatchGradientDataProblem, hatchGradientExportProblem } from '../../core/hatch-gradient';
 
@@ -106,7 +107,7 @@ function writeSpline(w: Writer, e: SplineEntity, owner: string): void {
   }
 }
 
-function writeHatch(w: Writer, e: HatchEntity, owner: string): void {
+function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtras): void {
   if (e.gradient) {
     const problem = hatchGradientDataProblem(e.gradient);
     if (problem) throw new Error(`Cannot preserve hatch gradient in DXF: ${problem}`);
@@ -122,9 +123,183 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string): void {
   w.pair(230, 1);
   w.pair(2, e.solid ? 'SOLID' : e.pattern || 'ANSI31');
   w.pair(70, e.solid ? 1 : 0);
-  // Non-associative: the links to boundary objects are not kept (97 = 0), and a bare associative
-  // flag makes AutoCAD's AUDIT repair the hatch.
-  w.pair(71, 0);
+  // P17 associative hatches: the per-loop boundary objects that resolve
+  // to objects this writer emits are named (97 count + one 330 each). A
+  // loop's links come from BOTH of its association fields: boundaryRefs
+  // (document entity ids) and boundaryHandles (retained raw source
+  // handles). A retained handle resolves, in order, to an emitted ENTITY
+  // (through its source identity — P1-d, Codex PR #44: the handle list
+  // used to be silently dropped here, so a block-resident hatch linked
+  // to a model-space boundary lost the link on the first save and its
+  // 97/71 were gone for good) or to a retained graph ANCHOR the merge
+  // still emits (REGION / BODY / other raw records — round 2: the
+  // entity-only index skipped them, so an imported hatch linked to a
+  // retained REGION saved with 97 = 0 while the REGION itself was
+  // written). An entity link is emitted with the entity's reserved
+  // handle in THIS file, never the raw source text; an anchor link with
+  // the handle the merge emits the anchor's record under — its
+  // canonical source handle, withheld from this writer's allocator so
+  // the raw value cannot be mistaken for a writer handle by the
+  // merge's generated-record rewrite; or, when that source handle
+  // collides with a fixed structural handle of the generated stream
+  // (round 3), the fresh handle writeDxf remapped the anchor to,
+  // which the merge emits the record under by the same remap. A retained
+  // handle that names a graph object this writer does NOT emit as a
+  // boundary refuses the save (the throw below): the link names
+  // something the drawing retains, and dropping it silently is the
+  // failure both P1 rounds exist to remove. A handle naming no object
+  // in the drawing at all stays unemitted: it names an object that is
+  // not in the file, and writing it could alias a handle this writer
+  // reuses. Unresolvable refs are omitted (the document detaches erased
+  // boundaries).
+  //
+  // The 71 flag classifies the COMPLETE emitted boundary set (round 2,
+  // settling R1's open question): a cross-owner link (O5: the boundary
+  // lives in another space / block definition) is not a live
+  // association in AutoCAD, so if ANY emitted boundary is foreign-owned
+  // the WHOLE hatch is saved non-associative (71 = 0) with its handle
+  // list retained (on reopen the handles stay raw boundary handles,
+  // never live links; no data is lost) — previously ANY same-owner link
+  // enabled 71 = 1 while the foreign boundaries were still emitted with
+  // no back-reactor, an associative hatch whose foreign boundary
+  // AutoCAD's AUDIT would repair. Only a hatch whose emitted boundaries
+  // are ALL same-owner is written 71 = 1. The boundary-side back-pointer
+  // ({ACAD_REACTORS -> this hatch}) is completed on the final text by
+  // ensureAssociativeHatchReactors (io/cad-graph-dxf.ts), once every
+  // record's handle is final — it keys off this same 71 flag and the
+  // 97/330 list written here, so a demoted hatch gains no reactors and
+  // handle- and anchor-derived links compose with it unchanged.
+  interface HatchLink {
+    /** The 330 value to emit, produced at emission time (entity handles are reserved in loop order, exactly as before). */
+    emit: (ww: Writer) => string;
+    sameOwner: boolean;
+  }
+  // Round 5 (lead ruling — DEMOTE): a HATCH must never be an ACTIVE
+  // boundary of a hatch, itself or another hatch. If any loop links to
+  // a HATCH entity — by boundaryRefs, by a retained handle resolving to
+  // an emitted hatch entity, or by a retained handle naming a retained
+  // raw HATCH record — the link is NOT emitted at all and the whole
+  // hatch demotes exactly like the O5 case above: 71 = 0 (so no
+  // reactors), the remaining non-hatch links still emitted, inert
+  // under 71 = 0 (round 4 keeps them raw on reopen), geometry
+  // untouched. The demotion is a pure function of the model, so every
+  // save of such a hatch reproduces it.
+  let hatchBoundary = false;
+  // Round 7 (invariant guard): whether at least one emitted link is
+  // LIVE by the model's own lights — derived from boundaryRefs (a live
+  // model link), from a retained handle naming a graph anchor (round 2:
+  // anchors are never modelled as entities, so the writer is their only
+  // adjudicator), or from a retained handle resolving through an
+  // identity the entity carries in the model itself (cadIdentity — the
+  // P1-d authored posture). A retained handle resolving ONLY through
+  // the retained graph's entity join does NOT set this: the graph is
+  // the same evidence the reader resolved the file against, so such a
+  // link is one the import already had its chance to make live. It is
+  // still EMITTED (retention is not loss, and its owner still counts in
+  // the classification below), but it cannot by itself carry 71 = 1 —
+  // before the guard, exactly that upgrade wrote CANP5's divergent
+  // file (model inert, file 71 = 1 + reactor).
+  let carriedLive = false;
+  // Round 8 (lead ruling): the classification is PER LINK, whole-hatch
+  // like O5. Round 7's flag alone left the mixed case divergent: a
+  // hatch with one live link plus one graph-only link (below) still
+  // wrote 71 = 1, and the reactor pass — which keys off the written
+  // flag — put a back-reactor on the NON-LIVE boundary too, so the
+  // file activated a link the model holds inert and reopening the save
+  // promoted it to a live ref. So a graph-only link (an emitted link
+  // whose retained handle resolved ONLY through the cad graph's
+  // entity-anchor join — graphEntityHandles) now VETOES 71 = 1 for the
+  // whole hatch, whatever else it carries: the hatch writes 71 = 0
+  // with no reactors, its links still emitted inert, and round 4 keeps
+  // the reopened hatch wholly inert, so file and model agree again.
+  let graphOnlyLink = false;
+  const loopLinks = e.loops.map((l) => {
+    const seen = new Set<string>();
+    const links: HatchLink[] = [];
+    const pushEntity = (b: Entity): void => {
+      if (b.type === 'hatch') {
+        hatchBoundary = true;
+        return;
+      }
+      if (seen.has(`e:${b.id}`)) return;
+      seen.add(`e:${b.id}`);
+      const o = extras?.entityOwner?.get(b.id);
+      links.push({ emit: (ww) => ww.reserveEntityHandle(b), sameOwner: o === undefined || o === owner });
+    };
+    for (const id of l.boundaryRefs ?? []) {
+      const b = extras?.entityById?.get(id);
+      if (!b) continue;
+      const before = links.length;
+      pushEntity(b);
+      if (links.length > before) carriedLive = true;
+    }
+    for (const raw of l.boundaryHandles ?? []) {
+      let canon: string;
+      try {
+        canon = canonicalCadHandle(raw);
+      } catch {
+        continue; // Not a handle spelling: names nothing, stays unemitted.
+      }
+      const b = extras?.entityBySourceHandle?.get(canon);
+      if (b) {
+        const before = links.length;
+        pushEntity(b);
+        if (links.length > before) {
+          // Per link (round 8): resolved through an identity the model
+          // itself carries (cadIdentity) the link is live-class; resolved
+          // ONLY through the retained graph's entity-anchor join
+          // (graphEntityHandles supplied or overwrote this entry) it is
+          // graph-only and vetoes 71 = 1 for the whole hatch below.
+          if (extras?.graphEntityHandles?.has(canon) ?? false) graphOnlyLink = true;
+          else carriedLive = true;
+        }
+        continue;
+      }
+      if (extras?.hatchAnchorHandles?.has(canon)) {
+        // Round 5: the retained handle names a retained raw HATCH
+        // record — a hatch boundary, demote (never emitted, and never
+        // the graph-refusal below: the link is governed, not dropped).
+        hatchBoundary = true;
+        continue;
+      }
+      const anchor = extras?.anchorBySourceHandle?.get(canon);
+      if (anchor) {
+        if (!seen.has(`a:${anchor.handle}`)) {
+          seen.add(`a:${anchor.handle}`);
+          links.push({ emit: () => anchor.handle, sameOwner: anchor.owner !== undefined && anchor.owner === owner });
+          carriedLive = true;
+        }
+        continue;
+      }
+      if (extras?.graphSourceHandles?.has(canon)) {
+        throw new Error(
+          `Cannot save associative hatch: boundary handle ${canon} names a retained object that this writer does not emit as a boundary; refusing rather than dropping the link.`,
+        );
+      }
+      // Names no object in the drawing: stays unemitted (absence is not a link).
+    }
+    return links;
+  });
+  const allLinks = loopLinks.flat();
+  // Round 4: an explicitly disassociated hatch (associative === false —
+  // HATCHEDIT Disassociate, or a 71 = 0 original pinned inert by the
+  // reader) NEVER re-derives 71 = 1 from its retained links: 71 requires
+  // the flag AND links AND all-same-owner. associative === undefined
+  // (model-built hatches) keeps the links-decide behaviour.
+  // Round 5: a hatch-boundary link (hatchBoundary above) demotes the
+  // whole hatch regardless of flag, links and owners.
+  // Round 7: 71 = 1 additionally requires a carried-live link
+  // (carriedLive above): a hatch whose ONLY emitted links are retained
+  // handles resolving through the cad graph's entity join — links the
+  // import left non-live — is written 71 = 0 with its links emitted
+  // inert (the demote posture, never a refusal: no data is lost, and
+  // round 4 keeps the reopened hatch inert, so file and model agree).
+  // Round 8: 71 = 1 additionally requires NO graph-only link
+  // (graphOnlyLink above): in mixed company the graph-only link vetoes
+  // the flag for the whole hatch, live links included, exactly like
+  // the O5 complete-set classification — a non-live link is never
+  // written as part of a live association.
+  w.pair(71, e.associative !== false && !hatchBoundary && carriedLive && !graphOnlyLink && allLinks.length > 0 && allLinks.every((l) => l.sameOwner) ? 1 : 0);
   w.pair(91, e.loops.length);
   e.loops.forEach((l, i) => {
     const hasBulge = !!l.bulges && l.bulges.some((b) => Math.abs(b) > 1e-12);
@@ -137,7 +312,9 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string): void {
       w.pair(20, p.y);
       if (hasBulge) w.pair(42, l.bulges![k] ?? 0);
     });
-    w.pair(97, 0);
+    const links = loopLinks[i]!;
+    w.pair(97, links.length);
+    for (const link of links) w.pair(330, link.emit(w));
   });
   w.pair(75, e.style ?? 0);
   const custom = !e.solid && !findPattern(e.pattern);
@@ -234,7 +411,7 @@ export function writeEntity(w: Writer, e: Entity, owner: string, blocks: Readonl
       writeSpline(w, e, owner);
       break;
     case 'hatch':
-      writeHatch(w, e, owner);
+      writeHatch(w, e, owner, extras);
       break;
     case 'leader':
       // P18: only a mleader carrying modeled native data writes natively;

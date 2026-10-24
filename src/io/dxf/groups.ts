@@ -308,9 +308,12 @@ export class Cursor {
     if (n > available) throw new HatchReadError(`hatch count group ${code}${location} declares ${n} items, but only ${available} can fit in the remaining group records`);
     return n;
   }
-  sourceHandles(value: string | undefined): void {
+  /** Consume a boundary-path source list (97 count + that many 330 handles) and return the handles. */
+  sourceHandles(value: string | undefined): string[] {
     const n = this.count(value, 97);
-    for (let k = 0; k < n; k += 1) this.required(this.take(330), 330);
+    const handles: string[] = [];
+    for (let k = 0; k < n; k += 1) handles.push(this.required(this.take(330), 330)!);
+    return handles;
   }
 }
 
