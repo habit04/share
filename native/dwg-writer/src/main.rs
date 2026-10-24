@@ -4964,6 +4964,17 @@ mod tests {
     // record. The table's XDATA carries two strings and one integer under
     // the registered application; the reactors variant adds the genuine
     // record's {ACAD_REACTORS} block naming the owner dictionary.
+    // Round 8: the ACAD_SORTENTS dictionary record itself is inserted
+    // alongside the table, mirroring the genuine file (DICTIONARY 15D
+    // owned by the *Model_Space block record — the block the table's
+    // block-owner group names — its ACAD_SORTENTS entry naming the
+    // table). Rounds 5-7 named the dictionary in the table's owner and
+    // reactor groups without ever defining it; no genuine drawing does
+    // that, and once round 7 made the reactor reach the document,
+    // verify_reopening's metadata resolution refused the reference
+    // (CI run 40126748577: the reactors test's final verify_reopening
+    // returned "unresolved reference"). The resolution is correct —
+    // the fixture was not.
     fn sortents_round_trip_dxf(with_reactors: bool) -> String {
         let original =
             include_str!("../tests/fixtures/autocad-multilayout-app.dxf").replace("\r\n", "\n");
@@ -4983,17 +4994,21 @@ mod tests {
                 "0\nAPPID\n5\n5E\n",
             ),
         );
-        let mut table = String::from("0\nSORTENTSTABLE\n5\n27D\n");
+        let mut objects = String::from(concat!(
+            "0\nDICTIONARY\n5\n15D\n330\n70\n100\nAcDbDictionary\n280\n1\n281\n1\n",
+            "3\nACAD_SORTENTS\n360\n27D\n",
+        ));
+        objects.push_str("0\nSORTENTSTABLE\n5\n27D\n");
         if with_reactors {
-            table.push_str("102\n{ACAD_REACTORS\n330\n15D\n102\n}\n");
+            objects.push_str("102\n{ACAD_REACTORS\n330\n15D\n102\n}\n");
         }
-        table.push_str(concat!(
+        objects.push_str(concat!(
             "330\n15D\n100\nAcDbSortentsTable\n330\n70\n331\n27C\n5\n279\n331\n270\n5\n115\n",
             "1001\nSORTENTS_PROOF\n1000\nDraw order literal \\U+0041\n",
             "1000\nSecond literal\n1070\n7\n",
         ));
         let end = text.rfind("0\nENDSEC\n0\nEOF").unwrap();
-        text.insert_str(end, &table);
+        text.insert_str(end, &objects);
         text
     }
 
@@ -5171,6 +5186,41 @@ mod tests {
         let error = verify_reopening(&document, &reopened).unwrap_err();
         assert!(
             error.contains("DWG reopening lost the SORTENTSTABLE reactors"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn sortents_reopening_reactor_to_absent_handle_still_refuses() {
+        // Round 8: the refusal the round-7 fixture gap tripped over,
+        // pinned as a behaviour. A reactor naming a handle no object
+        // in the drawing defines (7FFF appears nowhere in the fixture)
+        // refuses at verify_reopening's metadata resolution even when
+        // both sides carry it identically — the reopening reactor leg
+        // passes, because the copies agree; the metadata graph then
+        // refuses the unresolved reference. Defining the target is
+        // what makes the genuine case above pass; absence must keep
+        // refusing.
+        let genuine = sortents_round_trip_dxf(true);
+        let tampered = genuine.replace(
+            "102\n{ACAD_REACTORS\n330\n15D\n102\n}\n",
+            "102\n{ACAD_REACTORS\n330\n7FFF\n102\n}\n",
+        );
+        assert_ne!(tampered, genuine);
+        let (document, reopened) = sortents_import_and_reopen(&tampered);
+        assert_eq!(
+            document.object_reactors(Handle::new(0x27D)),
+            vec![Handle::new(0x7FFF)],
+            "the imported document records the absent reactor target"
+        );
+        assert_eq!(
+            reopened.object_reactors(Handle::new(0x27D)),
+            vec![Handle::new(0x7FFF)],
+            "the DWG carries the absent reactor target back verbatim"
+        );
+        let error = verify_reopening(&document, &reopened).unwrap_err();
+        assert!(
+            error.contains("Drawing metadata contains an unresolved reference."),
             "{error}"
         );
     }
