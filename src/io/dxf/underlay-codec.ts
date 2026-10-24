@@ -36,8 +36,11 @@
  *   F-A).
  * - On write the retained groups are SLOTTED into the AutoCAD order above
  *   (AutoCAD's underlay reader is sequential — an out-of-place or unknown
- *   code is "Unexpected DXF group code"), each beside the canonical group
- *   of the same code.
+ *   code is "Unexpected DXF group code"), and (v0.6.4 review F-G) a
+ *   retained copy of a code the canonical emission writes is dropped: an
+ *   edited scale or rotation is written once, with the new value, never
+ *   "41 2 ... 41 1.0". A retained copy is emitted only where the canonical
+ *   emission omits that code (an explicit default).
  * - Contrast and fade are clamped to AutoCAD's ranges on write (20..100,
  *   0..80); the parsed model keeps the file's value untouched.
  * - Malformed modeled data (missing definition reference, missing
@@ -284,12 +287,12 @@ export function writeUnderlayEntity(p: UnderlayPlacement): DxfGroupPair[] {
 
   const retainedOf = (code: number): readonly DxfGroup[] => p.retainedGroups.filter(([c]) => c === code);
   const used = new Set<number>();
-  /** The canonical value for `code`, then every retained copy of it. */
+  /** The canonical value for `code`, else every retained copy of it (F-G: never both). */
   const slot = (code: number): void => {
     used.add(code);
     const c = canonical.get(code);
     if (c !== undefined) out.push([code, c]);
-    out.push(...retainedOf(code));
+    else out.push(...retainedOf(code));
   };
 
   if (p.handle) out.push([5, p.handle]);
