@@ -19,8 +19,9 @@ import { mleaderNativeProblem } from '../../core/multileader';
 
 import type { TableRoundtripPlan, WriteExtras } from './write-core';
 
-export function writeMText(w: Writer, e: MTextEntity, owner: string): void {
-  writeEntityCommon(w, e, owner, 'MTEXT', 'AcDbMText');
+/** Writes one MTEXT record and returns the handle it was written under. */
+export function writeMText(w: Writer, e: MTextEntity, owner: string): string {
+  const handle = writeEntityCommon(w, e, owner, 'MTEXT', 'AcDbMText');
   w.pair(10, e.position.x);
   w.pair(20, e.position.y);
   w.pair(30, 0);
@@ -67,6 +68,7 @@ export function writeMText(w: Writer, e: MTextEntity, owner: string): void {
     const metadata = JSON.stringify(e.columns);
     for (let offset = 0; offset < metadata.length; offset += 250) w.pair(1000, metadata.slice(offset, offset + 250));
   }
+  return handle;
 }
 
 function radialPoints(e: DimensionEntity): { q: g.Point; far: g.Point } {
@@ -219,16 +221,15 @@ export function writeLeader(w: Writer, e: LeaderEntity, owner: string, extras: W
   if (e.text && e.textPosition) {
     const m = leaderParts(e).find((p): p is MTextEntity => p.type === 'mtext');
     if (m) {
-      writeMText(w, { ...m, id: e.id }, owner);
-      textHandle = w.lastHandle().toString(16).toUpperCase();
+      textHandle = writeMText(w, { ...m, id: e.id }, owner);
       w.anchor(textHandle, { kind: 'entity', id: e.id, part: 'annotation' });
     }
   }
   const paths: g.Point[][] = [leaderPath(e), ...(e.extraPaths ?? []).map((p) => [...p])];
   paths.forEach((path, i) => {
     if (path.length < 2) return;
-    writeEntityCommon(w, e, owner, 'LEADER', 'AcDbLeader');
-    if (i) w.anchor(w.lastHandle().toString(16).toUpperCase(), { kind: 'entity', id: e.id, part: `leader-path:${i}` });
+    const pathHandle = writeEntityCommon(w, e, owner, 'LEADER', 'AcDbLeader');
+    if (i) w.anchor(pathHandle, { kind: 'entity', id: e.id, part: `leader-path:${i}` });
     w.pair(3, 'Standard');
     w.pair(71, e.arrow ? 1 : 0);
     w.pair(72, e.spline ? 1 : 0);
@@ -549,9 +550,12 @@ export function writeMLeader(w: Writer, e: LeaderEntity, owner: string): void {
 }
 
 export function writeImage(w: Writer, e: ImageEntity, owner: string, extras: WriteExtras): void {
-  writeEntityCommon(w, e, owner, 'IMAGE', 'AcDbRasterImage');
+  // The IMAGEDEF_REACTOR's back-pointer must name the handle this record was
+  // actually written under (reserved earlier when a hatch links to the
+  // image), not the allocator's counter (F-B).
+  const imageHandle = writeEntityCommon(w, e, owner, 'IMAGE', 'AcDbRasterImage');
   const ref = extras.imageReactors.get(e);
-  if (ref) ref.image = w.lastHandle().toString(16).toUpperCase();
+  if (ref) ref.image = imageHandle;
   w.pair(90, 0);
   w.pair(10, e.position.x);
   w.pair(20, e.position.y);
@@ -645,8 +649,7 @@ const UNDERLAY_COMMON_OWNED: ReadonlySet<number> = new Set([5, 8, 100, 330, 6, 4
 export function writeUnderlay(w: Writer, e: UnderlayEntity, owner: string, extras: WriteExtras): void {
   const type = e.kind === 'pdf' ? 'PDFUNDERLAY' : e.kind === 'dwf' ? 'DWFUNDERLAY' : 'DGNUNDERLAY';
   const subclass = e.kind === 'pdf' ? 'AcDbPdfUnderlay' : e.kind === 'dwf' ? 'AcDbDwfUnderlay' : 'AcDbDgnUnderlay';
-  writeEntityCommon(w, e, owner, type, subclass);
-  const handle = w.lastHandle().toString(16).toUpperCase();
+  const handle = writeEntityCommon(w, e, owner, type, subclass);
   // The definition named IN THIS FILE: the placement joins to the sibling
   // by handle, and the pre-pass allocated that definition a handle before
   // ENTITIES emission (RULING-P28 C8). A dangling placement (no definition

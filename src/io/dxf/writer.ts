@@ -1111,11 +1111,10 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
     blockShell(owner, b.name, b.basePoint, (b.attributes.length > 0 ? 2 : 0) | (b.name.startsWith('*') ? 1 : 0) | xrefFlags, b.description, () => {
       for (const e of b.entities) writeEntityAnno(w, e, owner, state.blocks, dimBlocks, extras);
       for (const [attdefIndex, a] of b.attributes.entries()) {
-        writeEntityCommon(w, { ...a, id: a.tag, type: 'text', text: a.default, rotation: a.rotation ?? 0, color: a.color ?? 'ByLayer', layer: a.layer ?? '0' }, owner, 'ATTDEF', 'AcDbText');
         // P18 slice 2 (PROPOSAL-P18-S2 item (6)): record the handle just written,
         // by tag and by definition index, so a block-content mleader's attribute
         // entries (group 330) can name THIS file's ATTDEFs. No output change.
-        const attdefHandle = w.lastHandle().toString(16).toUpperCase();
+        const attdefHandle = writeEntityCommon(w, { ...a, id: a.tag, type: 'text', text: a.default, rotation: a.rotation ?? 0, color: a.color ?? 'ByLayer', layer: a.layer ?? '0' }, owner, 'ATTDEF', 'AcDbText');
         w.blockAttdefHandles.set(`${b.name.toUpperCase()} ${a.tag}`, attdefHandle);
         w.blockAttdefHandles.set(`${b.name.toUpperCase()} #${attdefIndex}`, attdefHandle);
         writeTextLike(w, a.position, a.height, a.default, a.rotation ?? 0, a.align, a);
