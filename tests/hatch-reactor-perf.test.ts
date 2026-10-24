@@ -5,9 +5,12 @@
  * ~114 ms on v0.6.3. The pass now rebuilds the array in one linear sweep.
  *
  * The regression guard bounds GROWTH, not absolute time: the pass runs on
- * N and 4N hatches (each needing one reactor insertion) and the 4N time
- * must stay under 8× the N time (linear ≈ 4×, the quadratic loop ≈ 16×).
- * A floor on the N time keeps machine noise from producing a false ratio.
+ * N and 8N hatches (each needing one reactor insertion) and the 8N time
+ * must stay under 20× the N time (linear ≈ 8×; the quadratic loop ≈ 64×,
+ * measured 19× already at 4N on 3e66ef6). The wide gap between the linear
+ * and quadratic outcomes, a 25 ms floor on the N time and best-of-five
+ * sampling keep a CI runner's GC pause or scheduler hiccup from flipping
+ * the verdict either way (re-review follow-up (3)).
  */
 import { describe, it, expect } from 'vitest';
 import { ensureAssociativeHatchReactors } from '../src/io/cad-graph-dxf';
@@ -42,18 +45,20 @@ const best = (fn: () => unknown, runs: number): number => {
 };
 
 describe('F-C: reactor completion scales linearly in the hatch count', () => {
-  it('completes every boundary and the 4N run stays under 8× the N run', () => {
-    const n = 2000;
+  it('completes every boundary and the 8N run stays under 20× the N run', () => {
+    const n = 1500;
     const small = text(n);
-    const large = text(4 * n);
-    // Correctness on the small input: every polyline gains exactly its hatch.
+    const large = text(8 * n);
+    // Correctness on both inputs: every polyline gains exactly its hatch, and a
+    // complete text is returned untouched.
     const done = ensureAssociativeHatchReactors(small);
     expect((done.match(/\{ACAD_REACTORS/g) ?? []).length).toBe(n);
     expect(ensureAssociativeHatchReactors(done)).toBe(done);
-    // Warm-up, then best-of runs.
-    ensureAssociativeHatchReactors(large);
-    const tSmall = Math.max(best(() => ensureAssociativeHatchReactors(small), 3), 10);
+    const doneLarge = ensureAssociativeHatchReactors(large);
+    expect((doneLarge.match(/\{ACAD_REACTORS/g) ?? []).length).toBe(8 * n);
+    // Best-of runs (the calls above were the warm-up).
+    const tSmall = Math.max(best(() => ensureAssociativeHatchReactors(small), 5), 25);
     const tLarge = best(() => ensureAssociativeHatchReactors(large), 3);
-    expect(tLarge, `N=${n}: ${tSmall.toFixed(1)} ms, 4N: ${tLarge.toFixed(1)} ms`).toBeLessThan(8 * tSmall);
-  }, 120_000);
+    expect(tLarge, `N=${n}: ${tSmall.toFixed(1)} ms, 8N: ${tLarge.toFixed(1)} ms`).toBeLessThan(20 * tSmall);
+  }, 180_000);
 });
