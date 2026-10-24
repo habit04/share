@@ -1316,14 +1316,17 @@ fn sortents_xdata_record_copies(
 /// have established that any such copy agrees with the tail), are left
 /// untouched.
 ///
-/// The table's reactors have no equivalent registration path from this
-/// crate: the common DWG writer falls back to the document's reactor
-/// side channel for objects whose typed record passes none, but that
-/// channel is crate-private in the library and the DXF reader never
-/// fills it for this object type, so a reactor-bearing table's reactors
-/// still cannot reach the DWG from here. `verify_reopening` therefore
-/// compares them and refuses the export rather than passing the loss
-/// silently.
+/// The table's reactors need no registration here. The common DWG
+/// writer falls back to the document's reactor side channel for
+/// objects whose typed record passes none — this record's writer
+/// passes none — and since round 7 the vendored DXF reader fills that
+/// channel from the table's own {ACAD_REACTORS} block as it imports
+/// (the acadrust-writer pins patch to `read_sort_entities_table`,
+/// mirroring the sibling object readers), so a reactor-bearing
+/// table's reactors reach the DWG on the same path as every
+/// sibling's. `verify_reopening` still compares them, so a reactor
+/// the write or the reopening changed or dropped refuses the export
+/// rather than passing silently.
 ///
 /// Round 6: a tail whose records cannot be rebuilt exactly refuses the
 /// export here, before any output exists — materializing a partial
@@ -5066,19 +5069,18 @@ mod tests {
     }
 
     #[test]
-    fn sortents_table_reactors_drop_now_refuses_at_reopening() {
-        // Round 5 (verification, and the vendor gap): the reactor-bearing
-        // table's reactors still cannot reach the DWG from this crate —
-        // the common writer takes them from the document's reactor side
-        // channel when the typed record passes none, that channel is
-        // crate-private in the library, and the DXF reader fills it for
-        // every sibling object type but never extracts this record's
-        // {ACAD_REACTORS} block out of the raw tail (the object has no
-        // reactors field to fill either). What this round changes: the
-        // loss no longer passes silently — the reopening comparison reads
-        // the source side from the tail and refuses. The same record's
-        // XDATA does survive (previous test), isolating this refusal to
-        // the reactors.
+    fn sortents_table_reactors_survive_dwg_round_trip() {
+        // Round 7: the reactor-bearing table's reactors now reach the
+        // DWG. The vendored DXF reader extracts this record's
+        // {ACAD_REACTORS} block into the document reactor side channel
+        // as it imports (the acadrust-writer pins patch — the same
+        // channel fill the sibling object readers always had), the
+        // common writer's empty-slice fallback writes the channel, and
+        // the DWG reader's generic non-entity path fills the channel
+        // again on reopening, so the reopening comparison passes.
+        // Rounds 5-6 could only refuse this loss (the previous form of
+        // this test); the tamper tests below keep the refusal armed.
+        // The same record's XDATA does survive (previous test).
         let (document, reopened) = sortents_round_tripped(true);
         let records = reopened
             .object_xdata
@@ -5092,9 +5094,79 @@ mod tests {
             ]
         );
         assert_eq!(
+            document.object_reactors(Handle::new(0x27D)),
+            vec![Handle::new(0x15D)],
+            "as imported, the reader must record the table's reactor (its ACAD_SORTENTS owner dictionary)"
+        );
+        assert_eq!(
+            reopened.object_reactors(Handle::new(0x27D)),
+            vec![Handle::new(0x15D)],
+            "the reopened document must carry the table's reactor back from the DWG"
+        );
+        verify_reopening(&document, &reopened).unwrap();
+    }
+
+    // The convert pipeline steps the tamper tests need, without the
+    // round-trip helper's content assertions: import a source text,
+    // preserve, write, reopen.
+    fn sortents_import_and_reopen(text: &str) -> (CadDocument, CadDocument) {
+        validation::validate(text).unwrap();
+        let mut document =
+            DxfReader::from_reader(std::io::Cursor::new(text.as_bytes().to_vec()))
+                .unwrap()
+                .read()
+                .unwrap();
+        let schema = source_schema::capture(text).unwrap();
+        schema.verify(&mut document).unwrap();
+        let literals = source_literals(text).unwrap();
+        verify_source_literals(&document, &literals).unwrap();
+        preserve_sortents_own_tail_xdata(&mut document).unwrap();
+        let mut output = std::io::Cursor::new(Vec::new());
+        DwgWriter::write_to_writer(&mut output, &document).unwrap();
+        let reopened = DwgReader::from_stream(std::io::Cursor::new(output.into_inner()))
+            .read()
+            .unwrap();
+        (document, reopened)
+    }
+
+    #[test]
+    fn sortents_reopening_reactor_retarget_still_refuses() {
+        // The reopened side is rebuilt from a source whose reactor
+        // names the block record (70) instead of the table's
+        // ACAD_SORTENTS owner dictionary (15D): the DWG faithfully
+        // carries the wrong target back, and the comparison against
+        // the imported document refuses it as a change.
+        let (document, _) = sortents_round_tripped(true);
+        let genuine = sortents_round_trip_dxf(true);
+        let tampered = genuine.replace(
+            "102\n{ACAD_REACTORS\n330\n15D\n102\n}\n",
+            "102\n{ACAD_REACTORS\n330\n70\n102\n}\n",
+        );
+        assert_ne!(tampered, genuine);
+        let (_, reopened) = sortents_import_and_reopen(&tampered);
+        assert_eq!(
+            reopened.object_reactors(Handle::new(0x27D)),
+            vec![Handle::new(0x70)],
+            "the tampered target is what the DWG carried back"
+        );
+        let error = verify_reopening(&document, &reopened).unwrap_err();
+        assert!(
+            error.contains("DWG reopening changed the SORTENTSTABLE reactors"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn sortents_reopening_reactor_deletion_still_refuses() {
+        // The reopened side is rebuilt from the reactor-free variant
+        // of the same source: the comparison against the imported
+        // reactor-bearing document refuses the loss.
+        let (document, _) = sortents_round_tripped(true);
+        let (_, reopened) = sortents_import_and_reopen(&sortents_round_trip_dxf(false));
+        assert_eq!(
             reopened.object_reactors(Handle::new(0x27D)),
             Vec::<Handle>::new(),
-            "the drop itself: the reopened document carries no reactors for the table"
+            "the reactor-free rebuild carries no reactors for the table"
         );
         let error = verify_reopening(&document, &reopened).unwrap_err();
         assert!(
