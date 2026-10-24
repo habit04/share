@@ -1248,12 +1248,18 @@ function affineCompound(e: Compound, A: Affine): Entity {
       // never touched by a transform (RULING-P28 C4).
       const dirX = A.vec({ x: Math.cos(e.rotation), y: Math.sin(e.rotation) });
       const dirY = A.vec({ x: -Math.sin(e.rotation), y: Math.cos(e.rotation) });
+      // v0.6.4 review F-H: a reflection flips the handedness of the frame
+      // (the mapped Y axis falls on the clockwise side of the mapped X
+      // axis). Magnitudes alone turned a MIRROR into a rotation; the sign
+      // of the Y scale carries the reflection, the model's own
+      // "negative = mirrored, as with INSERT" convention.
+      const flip = dirX.x * dirY.y - dirX.y * dirY.x < 0 ? -1 : 1;
       return {
         ...e,
         position: A.tf(e.position),
         rotation: normAngle(Math.atan2(dirX.y, dirX.x)),
         scaleX: e.scaleX * Math.hypot(dirX.x, dirX.y),
-        scaleY: e.scaleY * Math.hypot(dirY.x, dirY.y),
+        scaleY: e.scaleY * Math.hypot(dirY.x, dirY.y) * flip,
       };
     }
   }
