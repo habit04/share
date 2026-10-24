@@ -655,6 +655,33 @@ const UNDERLAY_COMMON_OWNED: ReadonlySet<number> = new Set([5, 8, 100, 330, 6, 4
  * so a scaled or rotated import writes 41/42/50 exactly once, with the
  * edited value.
  */
+/**
+ * The groups the cad graph is the sole owner of for an underlay record
+ * (v0.6.4 re-review (1)): every 102 { ... } span (persistent reactors,
+ * extension dictionary) with its contents, and the pointer groups 330 /
+ * 360. The identity-bearing original gets them back from the graph merge
+ * (byte-stable); a COPY — same retainedGroups, no cadIdentity, no graph
+ * node — must not re-emit them: it wrote its 102 blocks after the layer,
+ * an emptied reactor block and a 360 naming a dictionary absent from the
+ * output.
+ */
+function withoutGraphOwnedGroups(groups: readonly (readonly [number, string])[]): Array<readonly [number, string]> {
+  const out: Array<readonly [number, string]> = [];
+  let depth = 0;
+  for (const g of groups) {
+    const [code, value] = g;
+    if (code === 102) {
+      const v = value.trim();
+      if (v.startsWith('{')) depth += 1;
+      else if (v === '}') depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (depth > 0 || code === 330 || code === 360) continue;
+    out.push(g);
+  }
+  return out;
+}
+
 export function writeUnderlay(w: Writer, e: UnderlayEntity, owner: string, extras: WriteExtras): void {
   const type = e.kind === 'pdf' ? 'PDFUNDERLAY' : e.kind === 'dwf' ? 'DWFUNDERLAY' : 'DGNUNDERLAY';
   // The definition named IN THIS FILE: the placement joins to the sibling
@@ -669,7 +696,7 @@ export function writeUnderlay(w: Writer, e: UnderlayEntity, owner: string, extra
   // reader expects it. The codec's output splits at its two markers: the
   // AcDbEntity-class remainder (proxy graphics ...) rides the common head,
   // the AcDbUnderlayReference groups follow the subclass marker.
-  const retainedGroups = e.retainedGroups.filter(([code]) => !UNDERLAY_COMMON_OWNED.has(code));
+  const retainedGroups = withoutGraphOwnedGroups(e.retainedGroups).filter(([code]) => !UNDERLAY_COMMON_OWNED.has(code));
   const groups = writeUnderlayEntity({ ...underlayPlacementOf(e), retainedGroups });
   const entityMarker = groups.findIndex(([code, value]) => code === 100 && value === 'AcDbEntity');
   const subclassMarker = groups.findIndex(([code, value]) => code === 100 && value === UNDERLAY_ENTITY_SUBCLASS);
