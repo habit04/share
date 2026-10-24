@@ -361,6 +361,19 @@ fn object_group(
     }
 }
 
+/// The record-identity rule, shared by capture() (below) and the literal
+/// scanner in main.rs: a record's identity is its FIRST group 5; later
+/// group 5s are payload. A SORTENTSTABLE body carries one (331 entity
+/// handle, 5 sort handle) pair per draw-order entry, so the last group 5
+/// is a sort handle, not the table — keying a record by it makes the
+/// guards look the imported object up under a handle it does not have.
+/// `identity_taken` is the caller's per-record state: true once an
+/// identity group has been consumed for the current record. Each caller
+/// keeps its own additional guards and its own parse-error policy.
+pub(crate) fn is_record_identity(code: i32, identity_taken: bool) -> bool {
+    code == 5 && !identity_taken
+}
+
 pub fn capture(text: &str) -> Result<SourceSchema, String> {
     let mut source = SourceSchema::default();
     let mut lines = text.lines();
@@ -452,13 +465,13 @@ pub fn capture(text: &str) -> Result<SourceSchema, String> {
                 groups.push((code, value.into()));
             }
         } else if !kind.is_empty() {
-            // Only the FIRST group 5 is the record identity (the same reading
-            // as recordsOf on the TypeScript side). Later group 5s are payload:
-            // a SORTENTSTABLE body carries one (331 entity, 5 sort handle) pair
-            // per draw-order entry, and treating a sort handle as the table's
-            // identity makes verify() refuse every draw-order drawing with
-            // "source identity disappeared during import".
-            if code == 5 && handle.is_none() && !xdata && context.is_empty() {
+            // Only the FIRST group 5 is the record identity (the shared
+            // rule in is_record_identity — the same reading as recordsOf on
+            // the TypeScript side). Later group 5s are payload: treating a
+            // SORTENTSTABLE sort handle as the table's identity makes
+            // verify() refuse every draw-order drawing with "source
+            // identity disappeared during import".
+            if is_record_identity(code, handle.is_some()) && !xdata && context.is_empty() {
                 handle = Some(
                     u64::from_str_radix(value.trim(), 16).map_err(|_| refusal("OBJECTS handle"))?,
                 );

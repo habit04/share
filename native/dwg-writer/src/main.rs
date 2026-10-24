@@ -825,6 +825,7 @@ struct SourceLiterals {
 struct LiteralRecord {
     kind: String,
     handle: Option<u64>,
+    identity_taken: bool,
     subclass: bool,
     payload: bool,
     application: bool,
@@ -876,7 +877,19 @@ fn source_literals(text: &str) -> Result<SourceLiterals, String> {
             };
             continue;
         }
-        if code == 105 && record.kind == "DIMSTYLE" || code == 5 && record.kind != "DIMSTYLE" {
+        if code == 105 && record.kind == "DIMSTYLE" {
+            record.handle = u64::from_str_radix(value.trim(), 16).ok();
+        } else if record.kind != "DIMSTYLE"
+            && source_schema::is_record_identity(code, record.identity_taken)
+        {
+            // Only the FIRST group 5 is the record identity — the shared
+            // rule capture() uses (source_schema::is_record_identity).
+            // Overwriting on every group 5 keyed a SORTENTSTABLE's
+            // literals by its final sort handle, so verify_source_literals
+            // searched the imported object under a handle it does not
+            // have and refused the export. The DIMSTYLE branch above is
+            // unchanged: group 105 is that record's only handle group.
+            record.identity_taken = true;
             record.handle = u64::from_str_radix(value.trim(), 16).ok();
         }
         if code == 1001 {
@@ -4092,6 +4105,77 @@ mod tests {
         let error = schema.verify(&mut document).unwrap_err();
         assert!(
             error.contains("SORTENTSTABLE source identity disappeared during import"),
+            "{error}"
+        );
+    }
+
+    // Round 2: the same SORTENTSTABLE carrying a 1001/1000 XDATA string.
+    // capture() keys the table at its first group 5 (27D) since round 1,
+    // but the literal scanner used to overwrite the record handle on every
+    // group 5, keying the XDATA by the final sort handle (115) — so
+    // verify_source_literals searched for the literal at 115 and refused.
+    const SORTENTS_XDATA_DXF: &str = concat!(
+        "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n",
+        "0\nSECTION\n2\nOBJECTS\n",
+        "0\nSORTENTSTABLE\n5\n27D\n102\n{ACAD_REACTORS\n330\n15D\n102\n}\n330\n15D\n",
+        "100\nAcDbSortentsTable\n330\n1F\n331\n27C\n5\n279\n331\n270\n5\n115\n",
+        "1001\nSORTENTS_PROOF\n1000\nDraw order literal \\U+0041\n",
+        "0\nENDSEC\n0\nEOF\n",
+    );
+
+    #[test]
+    fn sortents_xdata_literals_are_keyed_by_the_first_group_5() {
+        // Failing-first for the literal-scanner half of the identity rule:
+        // the XDATA-bearing table must pass BOTH guards, with its literals
+        // keyed at the record identity 27D, not the final sort handle 115.
+        let mut document =
+            DxfReader::from_reader(std::io::Cursor::new(SORTENTS_XDATA_DXF.as_bytes().to_vec()))
+                .unwrap()
+                .read()
+                .unwrap();
+        assert!(
+            document.objects.contains_key(&Handle::new(0x27D)),
+            "the imported document must carry the SORTENTSTABLE at its record handle"
+        );
+        assert!(
+            document.object_xdata.contains_key(&Handle::new(0x27D)),
+            "the imported document must carry the table's XDATA at its record handle"
+        );
+        let schema = source_schema::capture(SORTENTS_XDATA_DXF).unwrap();
+        schema.verify(&mut document).unwrap();
+        let literals = source_literals(SORTENTS_XDATA_DXF).unwrap();
+        assert_eq!(
+            literals.xdata[&0x27D],
+            vec!["Draw order literal \\U+0041".to_string()]
+        );
+        assert!(
+            !literals.xdata.contains_key(&0x115),
+            "literals must not be keyed by a sort handle"
+        );
+        verify_source_literals(&document, &literals).unwrap();
+    }
+
+    #[test]
+    fn sortents_xdata_literal_mismatch_still_refuses() {
+        // Pins: first-group-5 keying must not weaken the literal guard — a
+        // payload that differs from the imported model still refuses, and
+        // XDATA parked under the final sort handle is not the identity.
+        let document =
+            DxfReader::from_reader(std::io::Cursor::new(SORTENTS_XDATA_DXF.as_bytes().to_vec()))
+                .unwrap()
+                .read()
+                .unwrap();
+        let tampered = SORTENTS_XDATA_DXF.replace("Draw order literal", "Tampered literal");
+        let literals = source_literals(&tampered).unwrap();
+        let error = verify_source_literals(&document, &literals).unwrap_err();
+        assert!(error.contains("XDATA literal payload changed"), "{error}");
+        let literals = source_literals(SORTENTS_XDATA_DXF).unwrap();
+        let mut moved = document.clone();
+        let records = moved.object_xdata.remove(&Handle::new(0x27D)).unwrap();
+        moved.object_xdata.insert(Handle::new(0x115), records);
+        let error = verify_source_literals(&moved, &literals).unwrap_err();
+        assert!(
+            error.contains("XDATA literal source identity was lost"),
             "{error}"
         );
     }
