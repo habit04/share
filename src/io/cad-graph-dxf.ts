@@ -1808,7 +1808,12 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       if (brace) { metadata.push(group); continue; }
       if (code === 1001) { app = raw; apps.add(raw.trim().toUpperCase()); }
       if (app) { metadata.push(group); continue; }
-      if (node.anchor?.kind !== 'entity' && node.anchor?.kind !== 'viewport' && node.anchor?.kind !== 'dimension3d' && ![5, 105, 100, 330].includes(code) && !generatedCodes.has(code)) appendBeforeXdata(record.groups, group);
+      // v0.6.4 native gate B-3: an underlay DEFINITION carries only its spec
+      // groups (5, reactors, 330, 100, 1, 2) — AutoCAD's sequential reader
+      // discards the drawing on any other group after 1 / 2, so a retained
+      // unmodelled group (a pre-fix JCad save's "90 7") is not re-added here.
+      const underlayDefinitionNode = node.type === 'PDFDEFINITION' || node.type === 'DWFDEFINITION' || node.type === 'DGNDEFINITION';
+      if (node.anchor?.kind !== 'entity' && node.anchor?.kind !== 'viewport' && node.anchor?.kind !== 'dimension3d' && !underlayDefinitionNode && ![5, 105, 100, 330].includes(code) && !generatedCodes.has(code)) appendBeforeXdata(record.groups, group);
       else if ((node.anchor?.kind === 'entity' || node.anchor?.kind === 'viewport' || node.anchor?.kind === 'dimension3d') && cadReferenceKind(code)) appendBeforeXdata(record.groups, group);
     }
     // Source extension/reactor blocks precede the common subclass; each XDATA application occurs once.

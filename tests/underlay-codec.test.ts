@@ -216,15 +216,15 @@ describe('underlay definition codec', () => {
     expect(r.value.retainedGroups).toEqual([[330, '10'], [999, 'a comment group: retained']]);
   });
 
-  it('round-trips the definition with no group lost', () => {
+  it('writes only the spec groups: owner / reactors, marker, 1, 2 — unmodelled groups are retained on read but not re-emitted (B-3)', () => {
     const r = parseUnderlayDefinition('pdf', pdfDefGroups, 'fallback');
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const written = writeUnderlayDefinition(r.value);
-    expect(multiset(written)).toEqual(multiset(pdfDefGroups));
+    expect(written).toEqual([[5, '2E'], [330, '10'], [100, 'AcDbUnderlayDefinition'], [1, 'C:\\refs\\floor plan.pdf'], [2, 'Sheet 1']]);
     const again = parseUnderlayDefinition('pdf', written, 'fallback');
     expect(again.ok).toBe(true);
-    if (again.ok) expect(again.value).toEqual(r.value);
+    if (again.ok) expect(again.value).toEqual({ ...r.value, retainedGroups: [[330, '10']] });
   });
 
   it('refuses a definition with no stored file name (a reference to nothing is not a reference)', () => {

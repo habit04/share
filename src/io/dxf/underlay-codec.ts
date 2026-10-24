@@ -155,19 +155,23 @@ export function parseUnderlayDefinition(kind: UnderlayKind, groups: readonly Dxf
   };
 }
 
+/**
+ * A definition record holds ONLY the spec groups: 5, the owner / reactor
+ * groups the record carried (102 blocks, 330, 360 — ahead of the marker,
+ * where AutoCAD writes them), 100 AcDbUnderlayDefinition, 1 file, 2 page.
+ * Unmodelled groups are retained on read but NOT re-emitted (v0.6.4 native
+ * gate B-3): AutoCAD's sequential reader discards the whole drawing on an
+ * unknown group after 1 / 2 ("Unexpected DXF group code: 90"), and the only
+ * realistic source of one is a pre-fix JCad save. The in-app writer
+ * supplies its own 5 / 330 / reactors and skips these.
+ */
 export function writeUnderlayDefinition(def: UnderlayDefinition): DxfGroupPair[] {
   const out: Array<readonly [number, string]> = [];
   if (def.handle) out.push([5, def.handle]);
-  // Owner / reactor groups the record carried ride ahead of the subclass
-  // marker, where AutoCAD writes them; everything else follows the modelled
-  // groups. (The in-app writer supplies its own 5 / 330 and skips these.)
-  const head = def.retainedGroups.filter(([code]) => code === 330 || code === 102 || code === 360);
-  const tail = def.retainedGroups.filter(([code]) => !(code === 330 || code === 102 || code === 360));
-  out.push(...head);
+  out.push(...def.retainedGroups.filter(([code]) => code === 330 || code === 102 || code === 360));
   out.push([100, UNDERLAY_DEFINITION_SUBCLASS]);
   out.push([1, def.sourcePath]);
   if (def.page !== undefined) out.push([2, def.page]);
-  out.push(...tail);
   return out;
 }
 
