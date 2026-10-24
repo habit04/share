@@ -46,7 +46,7 @@ export async function renderPlotImage(ed: Editor, opts: PlotOptions, captured?: 
   const { drawEntity } = await import('../../render/draw');
   for (const e of entities) {
     if (hidden.has(e.layer)) continue;
-    drawEntity(ctx, e, tf, state.layers, lookup, { strokeOverride: '#000000', lineWidthOverride: Math.max(1, Math.round(px / 100)), hidden, imageLoader: source.imageLoader ?? (async () => null) });
+    drawEntity(ctx, e, tf, state.layers, lookup, { strokeOverride: '#000000', lineWidthOverride: Math.max(1, Math.round(px / 100)), hidden, imageLoader: source.imageLoader ?? (async () => null), underlayDefinitions: state.underlays });
   }
   return { dataUrl: canvas.toDataURL('image/png'), landscape: lay.landscape, sheet: lay.sheet, electron: lay.electron, reducedToFit: lay.reducedToFit };
 }

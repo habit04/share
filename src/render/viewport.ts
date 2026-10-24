@@ -408,6 +408,9 @@ export class Viewport {
     renderSettings.pdmode = header.pdmode;
     renderSettings.pdsize = header.pdsize;
     renderSettings.linetypes = header.linetypes;
+    // v0.6.4 (F-E): the drawing's underlay definitions, so a placement with no
+    // installed content source still draws its frame with the file-name label.
+    renderSettings.underlayDefinitions = this.doc.snapshot.underlays;
     setTextStyles(textStylesOf(this.doc.snapshot));
     // Model tab: annotative objects at 1 / CANNOSCALE; a layout painter sets its own (Track E).
     colorDisplay.paper = !!this.layoutPainter;

@@ -1,6 +1,6 @@
 import type { Entity, BlockLookup, Layer, PolylineEntity, TextEntity, MTextEntity, XlineEntity, RayEntity, HatchEntity, ImageEntity, UnderlayEntity } from '../core/entities';
-import { underlayDisplayList } from '../core/underlay';
-import type { UnderlayContentSource } from './underlay-content';
+import { underlayDisplayList, type UnderlayDefinition } from '../core/underlay';
+import { underlayDefinitionContent, type UnderlayContentSource } from './underlay-content';
 import {
   explodeInsert,
   entityBounds,
@@ -59,6 +59,9 @@ export interface DrawStyle {
   imageLoader?: ImageLoader;
   /** Resolved content for underlay placements (overrides renderSettings.underlaySource). */
   underlaySource?: UnderlayContentSource;
+  /** The drawing's underlay definitions (overrides renderSettings.underlayDefinitions): the
+   *  frame + cross + label fallback when no source supplies content (v0.6.4 F-E). */
+  underlayDefinitions?: Readonly<Record<string, UnderlayDefinition>>;
   /** Captured plot-only table context; ordinary Canvas drawing has no table state. */
   plot?: {
     readonly table: PlotStyleTable;
@@ -137,9 +140,18 @@ export const renderSettings: {
   imageLoader?: ImageLoader;
   /**
    * Content source for underlay placements (app/underlay-render.ts over the
-   * engine interface). Without one, underlays draw as frame + cross.
+   * engine interface). Without one, underlays draw as frame + cross + the
+   * definition's label (underlayDefinitions below), or frame + cross alone
+   * when the drawing holds no definition for the placement.
    */
   underlaySource?: UnderlayContentSource;
+  /**
+   * The current drawing's underlay definitions (DrawingState.underlays),
+   * set by the viewport before each frame: the no-source fallback joins a
+   * placement to its definition here so the frame carries the file-name
+   * label (v0.6.4 review F-E — no composition root installs a source yet).
+   */
+  underlayDefinitions?: Readonly<Record<string, UnderlayDefinition>>;
   /** Called when a bitmap finished loading so the view can repaint. */
   requestRedraw?: () => void;
 } = {
@@ -502,9 +514,12 @@ function drawImage(ctx: CanvasRenderingContext2D, e: ImageEntity, tf: Transform,
  * clip-frame / cross / label ops become primitives drawn like any other
  * parts; the image op draws the rasterized page bitmap into the frame
  * quad (the drawImage transform technique), with the placement fade.
+ * Without a content source (v0.6.4: none is installed), the definition
+ * comes from the drawing's own sibling (underlayDefinitionContent), so the
+ * frame still carries the file-name label.
  */
 function drawUnderlay(ctx: CanvasRenderingContext2D, e: UnderlayEntity, tf: Transform, layers: readonly Layer[], lookup: BlockLookup, style: DrawStyle): void {
-  const res = (style.underlaySource ?? renderSettings.underlaySource)?.(e);
+  const res = (style.underlaySource ?? renderSettings.underlaySource)?.(e) ?? underlayDefinitionContent(e, style.underlayDefinitions ?? renderSettings.underlayDefinitions);
   if (!res?.definition) {
     drawParts(ctx, underlayParts(e), tf, layers, lookup, style, e);
     return;
