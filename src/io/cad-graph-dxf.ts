@@ -1346,7 +1346,12 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     // Synthesized document registries have no source file handle. Their proven dictionary path
     // still identifies the canonical generated NOD, so no disconnected second root is emitted.
     const key = node.anchor?.kind === 'dictionary' ? anchor : node.anchor?.kind === 'solid3d' || node.anchor?.kind === 'dimension3d' ? undefined : sourceKeys.get(sources[index]!);
-    if (key) byKey.set(key, node);
+    // Two CLASS records of one name (a file AutoCAD re-wrote with a stale
+    // registration beside its own — the v0.6.4 F-F AutoCAD fixture has
+    // PDFUNDERLAY twice): the generated class binds to the FIRST, as
+    // the file ordered them, so the pair keeps its order on every save
+    // instead of swapping (last-wins bound to whichever came second).
+    if (key && !(node.type === 'CLASS' && byKey.has(key))) byKey.set(key, node);
   });
   const match = new Map<RecordData, CadNode>(), matched = new Set<string>();
   for (const record of generated) {

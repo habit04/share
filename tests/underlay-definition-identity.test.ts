@@ -25,9 +25,9 @@ function buildDxf(defs: readonly DefSpec[], opts: { dictionaryOwned?: boolean } 
   defs.forEach((def, i) => {
     const handle = `${40 + i * 3}`, defHandle = `${41 + i * 3}`;
     lines.push(
-      '0', 'PDFUNDERLAY', '5', handle, '330', '2E', '100', 'AcDbEntity', '8', 'U', '100', 'AcDbPdfUnderlay',
-      '340', defHandle, '10', '10', '20', '20', '41', '2', '42', '3', '70', '3',
-      '14', '0', '24', '0', '14', '100', '24', '50',
+      '0', 'PDFUNDERLAY', '5', handle, '330', '2E', '100', 'AcDbEntity', '8', 'U', '100', 'AcDbUnderlayReference',
+      '340', defHandle, '10', '10', '20', '20', '41', '2', '42', '3', '280', '3',
+      '11', '0', '21', '0', '11', '100', '21', '50',
     );
   });
   lines.push('0', 'ENDSEC', '0', 'SECTION', '2', 'OBJECTS');
@@ -41,7 +41,7 @@ function buildDxf(defs: readonly DefSpec[], opts: { dictionaryOwned?: boolean } 
   }
   defs.forEach((def, i) => {
     lines.push('0', 'PDFDEFINITION', '5', `${41 + i * 3}`, '330', opts.dictionaryOwned ? 'D' : 'C',
-      '100', 'AcDbObject', '100', 'AcDbPdfDefinition', '1', def.path, '2', def.page,
+      '100', 'AcDbUnderlayDefinition', '1', def.path, '2', def.page,
       ...(def.extra ?? []).flatMap(([code, value]) => [code, value]));
   });
   lines.push('0', 'ENDSEC', '0', 'EOF');
@@ -189,7 +189,7 @@ describe('underlay definition binding by reference identity (PR #42 cleanup 4)',
     ];
     defs.forEach((def, i) => {
       lines.push('0', 'PDFDEFINITION', '5', `${41 + i * 3}`, '330', 'C',
-        '100', 'AcDbObject', '100', 'AcDbPdfDefinition', '1', def.path, '2', def.page,
+        '100', 'AcDbUnderlayDefinition', '1', def.path, '2', def.page,
         ...(def.extra ?? []).flatMap(([code, value]) => [code, value]));
     });
     lines.push('0', 'ENDSEC', '0', 'EOF');
@@ -240,7 +240,7 @@ function buildUnplacedDxf(defs: readonly DefSpec[], opts: { dictionaryOwned?: bo
   }
   defs.forEach((def, i) => {
     lines.push('0', 'PDFDEFINITION', '5', `${41 + i * 3}`, '330', opts.dictionaryOwned ? 'D' : 'C',
-      '100', 'AcDbObject', '100', 'AcDbPdfDefinition', '1', def.path, '2', def.page,
+      '100', 'AcDbUnderlayDefinition', '1', def.path, '2', def.page,
       ...(def.extra ?? []).flatMap(([code, value]) => [code, value]));
   });
   lines.push('0', 'ENDSEC', '0', 'EOF');

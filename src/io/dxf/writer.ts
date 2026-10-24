@@ -32,7 +32,7 @@ import type { CadNode } from '../../core/cad-graph';
 import { dimStyleRecordPairs } from '../../core/dimension';
 import { writeEntityAnno, writeEntity } from './write-entities';
 import { tableStyleKey, tablePictureForm, tableRoundtripCells, writeTableRoundtrip, emitMLeaderContext, mleaderContextViews } from './write-annotations';
-import { writeUnderlayDefinition } from './underlay-codec';
+import { writeUnderlayDefinition, underlayDxfType, underlayDefinitionDxfType, underlayEntityClassName, underlayDefinitionClassName } from './underlay-codec';
 import { attdefFlags } from '../../electrical/symbol-builder-core';
 import { tableParts, dimensionParts } from '../../core/entities';
 import { entityMTextBackground } from '../../core/mtext-background';
@@ -776,11 +776,11 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
   w.pair(0, 'SECTION');
   w.pair(2, 'CLASSES');
   {
-    const cls = (name: string, cpp: string, flags: number, isEntity: boolean, instances = 1) => {
+    const cls = (name: string, cpp: string, flags: number, isEntity: boolean, instances = 1, app = 'ISM') => {
       w.pair(0, 'CLASS');
       w.pair(1, name);
       w.pair(2, cpp);
-      w.pair(3, 'ISM');
+      w.pair(3, app);
       w.pair(90, flags);
       if (acadVersion !== 'AC1015') w.pair(91, instances);
       w.pair(280, 0);
@@ -834,13 +834,14 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
       }
     }
     // Underlay CLASS registrations are presence-gated per kind (RULING-P28 C8).
+    // Registered exactly as AutoCAD 2027 writes them (v0.6.4 review F-F,
+    // confirmed by the gate's DXFOUT and ezdxf's class table): PDFUNDERLAY ->
+    // AcDbPdfReference, app "ObjectDBX Classes", proxy flags 4095, entity;
+    // PDFDEFINITION -> AcDbPdfDefinition, "ObjectDBX Classes", 1153, object;
+    // DWF / DGN likewise.
     for (const kind of ['pdf', 'dwf', 'dgn'] as const) {
-      const entityName = kind === 'pdf' ? 'PDFUNDERLAY' : kind === 'dwf' ? 'DWFUNDERLAY' : 'DGNUNDERLAY';
-      const defName = kind === 'pdf' ? 'PDFDEFINITION' : kind === 'dwf' ? 'DWFDEFINITION' : 'DGNDEFINITION';
-      const entityCpp = kind === 'pdf' ? 'AcDbPdfUnderlay' : kind === 'dwf' ? 'AcDbDwfUnderlay' : 'AcDbDgnUnderlay';
-      const defCpp = kind === 'pdf' ? 'AcDbPdfDefinition' : kind === 'dwf' ? 'AcDbDwfDefinition' : 'AcDbDgnDefinition';
-      if (underlayEntityKinds.has(kind)) cls(entityName, entityCpp, 127, true, allEntities.filter((e) => e.type === 'underlay' && e.kind === kind).length);
-      if (underlayDefKinds.has(kind)) cls(defName, defCpp, 0, false, underlayDefs.filter((d) => d.kind === kind).length);
+      if (underlayEntityKinds.has(kind)) cls(underlayDxfType(kind), underlayEntityClassName(kind), 4095, true, allEntities.filter((e) => e.type === 'underlay' && e.kind === kind).length, 'ObjectDBX Classes');
+      if (underlayDefKinds.has(kind)) cls(underlayDefinitionDxfType(kind), underlayDefinitionClassName(kind), 1153, false, underlayDefs.filter((d) => d.kind === kind).length, 'ObjectDBX Classes');
     }
     if (createCannoVariable || createAnnoVariable) {
       // AutoCAD's specimen registration (the HANDBUILT fixtures): app name
@@ -1631,15 +1632,18 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
   }
   // Underlay definitions in OBJECTS, through the codec (RULING-P28 C8): the
   // stored path is emitted verbatim, never normalised or resolved. The
-  // writer owns the record handle (5), the owner (330: the named-objects
-  // dictionary, handle 'C' as elsewhere in this writer) and the subclass
-  // markers — codec copies of those codes are structural and skipped.
+  // writer owns the record handle (5) and the owner (330: the named-objects
+  // dictionary, handle 'C' as elsewhere in this writer) — codec copies of
+  // those are skipped; the codec's 100 AcDbUnderlayDefinition marker IS
+  // written (v0.6.4 review F-F: a definition without it made AutoCAD
+  // discard the drawing, "Class separator for class AcDbUnderlayDefinition
+  // expected").
   for (const def of underlayDefs) {
-    w.pair(0, def.kind === 'pdf' ? 'PDFDEFINITION' : def.kind === 'dwf' ? 'DWFDEFINITION' : 'DGNDEFINITION');
+    w.pair(0, underlayDefinitionDxfType(def.kind));
     w.pair(5, extras.underlayDefHandles.get(def.id)!);
     w.pair(330, 'C');
     for (const [code, value] of writeUnderlayDefinition(def)) {
-      if (code === 5 || code === 100 || code === 330) continue;
+      if (code === 5 || code === 330) continue;
       w.pair(code, value);
     }
   }

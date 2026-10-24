@@ -3,33 +3,49 @@
  * isolated: it converts between DXF group lists (the pairs after the leading
  * 0/record-name pair) and the retained model in core/underlay.ts.
  *
- * On the base these records are dropped on read (read-pass lists them as
- * "not supported"), so an ordinary save loses the reference. This codec is
- * the retention contract the eventual integration consumes (PROPOSAL-P28):
+ * Record layout (AutoCAD DXF Reference "UNDERLAY" / "UNDERLAYDEFINITION",
+ * matched by ezdxf 1.3.5 entities/underlay.py and confirmed against an
+ * AutoCAD 2027 DXFOUT at the v0.6.4 gate — review finding F-F; the first
+ * codec used 70/280/281 and 14/24 with AcDbPdfUnderlay markers, which made
+ * AutoCAD discard the whole drawing):
+ *
+ *   PDFUNDERLAY / DWFUNDERLAY / DGNUNDERLAY
+ *     100 AcDbEntity ... 100 AcDbUnderlayReference
+ *     340 definition handle; 10/20/30 insertion; 41/42/43 scales;
+ *     50 rotation (degrees); 210/220/230 normal;
+ *     280 flags (1 clipping on, 2 on, 4 monochrome, 8 adjust for
+ *         background, 16 clip inside); 281 contrast (20..100);
+ *     282 fade (0..80); then the clip boundary as repeated 11/21 pairs
+ *     (2 points = rectangle, 3+ = polygon).
+ *   PDFDEFINITION / DWFDEFINITION / DGNDEFINITION
+ *     100 AcDbUnderlayDefinition; 1 file name; 2 page / sheet / model name.
+ *
+ * The codec's contract:
  *
  * - Groups the model claims are parsed and re-emitted canonically.
  * - Every other group — including ones no version of JCad understands yet —
- *   is retained verbatim, in order, and re-emitted. Nothing is silently
- *   discarded; a duplicate scalar group keeps its first value modeled and
- *   retains the rest.
+ *   is retained verbatim and re-emitted. Nothing is silently discarded; a
+ *   duplicate scalar group keeps its first value modeled and retains the
+ *   rest.
  * - Default-valued claimed groups are the one refinement: when a claimed
  *   group's value equals the canonical default the writer would omit
  *   (layer "0", unit scales, rotation 0, flags = on), the group ALSO rides
- *   retainedGroups verbatim, and an absent group 70 is never invented on
+ *   retainedGroups verbatim, and an absent group 280 is never invented on
  *   write — so explicit defaults stay explicit and absence stays absent,
  *   and the round trip preserves the group multiset exactly (acceptance
- *   F-A). Caveat for callers: a default-valued retained copy belongs to
- *   the field it mirrors — code that mutates that model field after parse
- *   must drop the retained copy, or the record would carry both.
+ *   F-A).
+ * - On write the retained groups are SLOTTED into the AutoCAD order above
+ *   (AutoCAD's underlay reader is sequential — an out-of-place or unknown
+ *   code is "Unexpected DXF group code"), each beside the canonical group
+ *   of the same code.
+ * - Contrast and fade are clamped to AutoCAD's ranges on write (20..100,
+ *   0..80); the parsed model keeps the file's value untouched.
  * - Malformed modeled data (missing definition reference, missing
  *   insertion point, non-numeric modeled group, unpaired clip point)
  *   refuses the whole record atomically with a reason — never a
  *   half-parsed placement.
  * - Subclass-marker (100) groups are structural: they are not retained;
- *   the writer regenerates the canonical markers for the kind.
- *
- * Wiring this into read-pass / the writer is a shared-codec change and is
- * NOT done here; it waits for PROPOSAL-P28 admission (CONTRACTS §4/§6).
+ *   the writer regenerates the canonical markers.
  */
 import {
   UNDERLAY_FLAG_ON,
@@ -48,13 +64,24 @@ const ENTITY_KIND: Readonly<Record<string, UnderlayKind>> = { PDFUNDERLAY: 'pdf'
 const DEFINITION_KIND: Readonly<Record<string, UnderlayKind>> = { PDFDEFINITION: 'pdf', DWFDEFINITION: 'dwf', DGNDEFINITION: 'dgn' };
 const ENTITY_TYPE: Readonly<Record<UnderlayKind, string>> = { pdf: 'PDFUNDERLAY', dwf: 'DWFUNDERLAY', dgn: 'DGNUNDERLAY' };
 const DEFINITION_TYPE: Readonly<Record<UnderlayKind, string>> = { pdf: 'PDFDEFINITION', dwf: 'DWFDEFINITION', dgn: 'DGNDEFINITION' };
-const ENTITY_SUBCLASS: Readonly<Record<UnderlayKind, string>> = { pdf: 'AcDbPdfUnderlay', dwf: 'AcDbDwfUnderlay', dgn: 'AcDbDgnUnderlay' };
-const DEFINITION_SUBCLASS: Readonly<Record<UnderlayKind, string>> = { pdf: 'AcDbPdfDefinition', dwf: 'AcDbDwfDefinition', dgn: 'AcDbDgnDefinition' };
+/** Subclass markers: the same for every kind (the kind is the record name). */
+export const UNDERLAY_ENTITY_SUBCLASS = 'AcDbUnderlayReference';
+export const UNDERLAY_DEFINITION_SUBCLASS = 'AcDbUnderlayDefinition';
+/** CLASSES-section C++ class names, as AutoCAD registers them ("ObjectDBX Classes"). */
+const ENTITY_CLASS: Readonly<Record<UnderlayKind, string>> = { pdf: 'AcDbPdfReference', dwf: 'AcDbDwfReference', dgn: 'AcDbDgnReference' };
+const DEFINITION_CLASS: Readonly<Record<UnderlayKind, string>> = { pdf: 'AcDbPdfDefinition', dwf: 'AcDbDwfDefinition', dgn: 'AcDbDgnDefinition' };
 
 export const underlayEntityKind = (dxfType: string): UnderlayKind | null => ENTITY_KIND[dxfType.toUpperCase()] ?? null;
 export const underlayDefinitionKind = (dxfType: string): UnderlayKind | null => DEFINITION_KIND[dxfType.toUpperCase()] ?? null;
 export const underlayDxfType = (kind: UnderlayKind): string => ENTITY_TYPE[kind];
 export const underlayDefinitionDxfType = (kind: UnderlayKind): string => DEFINITION_TYPE[kind];
+export const underlayEntityClassName = (kind: UnderlayKind): string => ENTITY_CLASS[kind];
+export const underlayDefinitionClassName = (kind: UnderlayKind): string => DEFINITION_CLASS[kind];
+
+/** AutoCAD's ranges: contrast 20..100, fade 0..80. Applied on write only. */
+export const UNDERLAY_CONTRAST_RANGE = { min: 20, max: 100 } as const;
+export const UNDERLAY_FADE_RANGE = { min: 0, max: 80 } as const;
+const clamp = (v: number, range: { readonly min: number; readonly max: number }): number => Math.min(range.max, Math.max(range.min, Math.round(v)));
 
 /** Strict DXF number parse: the whole trimmed value must be one finite number. */
 function num(value: string): number | null {
@@ -128,31 +155,36 @@ export function parseUnderlayDefinition(kind: UnderlayKind, groups: readonly Dxf
 export function writeUnderlayDefinition(def: UnderlayDefinition): DxfGroupPair[] {
   const out: Array<readonly [number, string]> = [];
   if (def.handle) out.push([5, def.handle]);
-  out.push([100, 'AcDbObject']);
-  out.push([100, DEFINITION_SUBCLASS[def.kind]]);
+  // Owner / reactor groups the record carried ride ahead of the subclass
+  // marker, where AutoCAD writes them; everything else follows the modelled
+  // groups. (The in-app writer supplies its own 5 / 330 and skips these.)
+  const head = def.retainedGroups.filter(([code]) => code === 330 || code === 102 || code === 360);
+  const tail = def.retainedGroups.filter(([code]) => !(code === 330 || code === 102 || code === 360));
+  out.push(...head);
+  out.push([100, UNDERLAY_DEFINITION_SUBCLASS]);
   out.push([1, def.sourcePath]);
   if (def.page !== undefined) out.push([2, def.page]);
-  out.push(...def.retainedGroups);
+  out.push(...tail);
   return out;
 }
 
 export function parseUnderlayEntity(kind: UnderlayKind, groups: readonly DxfGroupPair[], fallbackId: string): UnderlayParseResult<UnderlayPlacement> {
-  // Clip points (14/24 pairs) are claimed as a sequence, not as scalars.
+  // Clip points (11/21 pairs) are claimed as a sequence, not as scalars.
   const points: Point[] = [];
   const rest: DxfGroupPair[] = [];
   for (let i = 0; i < groups.length; i += 1) {
     const pair = groups[i]!;
-    if (pair[0] === 14) {
+    if (pair[0] === 11) {
       const next = groups[i + 1];
-      if (!next || next[0] !== 24) return fail(`${ENTITY_TYPE[kind]} clip boundary point (group 14) has no matching group 24`);
+      if (!next || next[0] !== 21) return fail(`${ENTITY_TYPE[kind]} clip boundary point (group 11) has no matching group 21`);
       const x = num(pair[1]);
       const y = num(next[1]);
-      if (x === null || y === null) return fail(`${ENTITY_TYPE[kind]} clip boundary point is not numeric (groups 14/24)`);
+      if (x === null || y === null) return fail(`${ENTITY_TYPE[kind]} clip boundary point is not numeric (groups 11/21)`);
       points.push({ x, y });
       i += 1;
       continue;
     }
-    if (pair[0] === 24) return fail(`${ENTITY_TYPE[kind]} clip boundary point (group 24) has no preceding group 14`);
+    if (pair[0] === 21) return fail(`${ENTITY_TYPE[kind]} clip boundary point (group 21) has no preceding group 11`);
     rest.push(pair);
   }
 
@@ -169,13 +201,13 @@ export function parseUnderlayEntity(kind: UnderlayKind, groups: readonly DxfGrou
         return num(value) === 1;
       case 50:
         return num(value) === 0;
-      case 70:
+      case 280:
         return int(value) === UNDERLAY_FLAG_ON;
       default:
         return false;
     }
   };
-  const s = scan(rest, new Set([5, 8, 340, 10, 20, 41, 42, 50, 70, 280, 281]), retainDefault);
+  const s = scan(rest, new Set([5, 8, 340, 10, 20, 41, 42, 50, 280, 281, 282]), retainDefault);
   const definitionHandle = s.take(340)?.trim().toUpperCase();
   if (!definitionHandle) return fail(`${ENTITY_TYPE[kind]} has no definition reference (group 340)`);
   const rawX = s.take(10);
@@ -194,9 +226,9 @@ export function parseUnderlayEntity(kind: UnderlayKind, groups: readonly DxfGrou
   const scaleX = scalar(41, num);
   const scaleY = scalar(42, num);
   const rotationDeg = scalar(50, num);
-  const flags = scalar(70, int);
-  const contrast = scalar(280, int);
-  const fade = scalar(281, int);
+  const flags = scalar(280, int);
+  const contrast = scalar(281, int);
+  const fade = scalar(282, int);
   for (const v of [scaleX, scaleY, rotationDeg, flags, contrast, fade]) {
     if (typeof v === 'string') return fail(v);
   }
@@ -223,31 +255,65 @@ export function parseUnderlayEntity(kind: UnderlayKind, groups: readonly DxfGrou
   };
 }
 
+/**
+ * The AcDbEntity-class codes a retained group may carry (common entity
+ * data and proxy graphics): they belong between the AcDbEntity marker and
+ * the AcDbUnderlayReference marker.
+ */
+const ENTITY_COMMON_CODES: ReadonlySet<number> = new Set([5, 102, 330, 360, 8, 6, 62, 67, 48, 60, 92, 160, 310, 347, 348, 370, 390, 420, 430, 440, 284]);
+/** The AcDbUnderlayReference groups in AutoCAD's order (clip 11/21 pairs follow them). */
+const REFERENCE_ORDER: readonly number[] = [340, 10, 20, 30, 41, 42, 43, 50, 210, 220, 230, 280, 281, 282];
+
 export function writeUnderlayEntity(p: UnderlayPlacement): DxfGroupPair[] {
   const out: Array<readonly [number, string]> = [];
+  // Canonical (modelled, non-default) values by code.
+  const canonical = new Map<number, string>();
+  canonical.set(340, p.definitionHandle);
+  canonical.set(10, fmt(p.position.x));
+  canonical.set(20, fmt(p.position.y));
+  if (p.scaleX !== 1) canonical.set(41, fmt(p.scaleX));
+  if (p.scaleY !== 1) canonical.set(42, fmt(p.scaleY));
+  if (p.rotation !== 0) canonical.set(50, fmt((p.rotation * 180) / Math.PI));
+  // Flags at the on-default are omitted like the other defaults: an
+  // absent group 280 parses to this same default, so always emitting it
+  // would invent a group the record never had (F-A). An explicit 280 at
+  // the default value reaches the output via retainedGroups instead.
+  if (p.flags !== UNDERLAY_FLAG_ON) canonical.set(280, String(p.flags));
+  if (p.contrast !== undefined) canonical.set(281, String(clamp(p.contrast, UNDERLAY_CONTRAST_RANGE)));
+  if (p.fade !== undefined) canonical.set(282, String(clamp(p.fade, UNDERLAY_FADE_RANGE)));
+
+  const retainedOf = (code: number): readonly DxfGroup[] => p.retainedGroups.filter(([c]) => c === code);
+  const used = new Set<number>();
+  /** The canonical value for `code`, then every retained copy of it. */
+  const slot = (code: number): void => {
+    used.add(code);
+    const c = canonical.get(code);
+    if (c !== undefined) out.push([code, c]);
+    out.push(...retainedOf(code));
+  };
+
   if (p.handle) out.push([5, p.handle]);
+  used.add(5);
   out.push([100, 'AcDbEntity']);
   if (p.layer !== '0') out.push([8, p.layer]);
-  out.push([100, ENTITY_SUBCLASS[p.kind]]);
-  out.push([340, p.definitionHandle]);
-  out.push([10, fmt(p.position.x)]);
-  out.push([20, fmt(p.position.y)]);
-  if (p.scaleX !== 1) out.push([41, fmt(p.scaleX)]);
-  if (p.scaleY !== 1) out.push([42, fmt(p.scaleY)]);
-  if (p.rotation !== 0) out.push([50, fmt((p.rotation * 180) / Math.PI)]);
-  // Flags at the on-default are omitted like the other defaults: an
-  // absent group 70 parses to this same default, so always emitting it
-  // would invent a group the record never had (F-A). An explicit 70 at
-  // the default value reaches the output via retainedGroups instead.
-  if (p.flags !== UNDERLAY_FLAG_ON) out.push([70, String(p.flags)]);
-  if (p.contrast !== undefined) out.push([280, String(p.contrast)]);
-  if (p.fade !== undefined) out.push([281, String(p.fade)]);
+  else out.push(...retainedOf(8));
+  used.add(8);
+  // Other common-entity data the record carried (colour, lineweight, proxy graphics ...), in order.
+  for (const g of p.retainedGroups) {
+    if (ENTITY_COMMON_CODES.has(g[0]) && !used.has(g[0])) out.push(g);
+  }
+  for (const code of ENTITY_COMMON_CODES) used.add(code);
+  out.push([100, UNDERLAY_ENTITY_SUBCLASS]);
+  for (const code of REFERENCE_ORDER) slot(code);
   if (p.clipBoundary) {
     for (const q of p.clipBoundary) {
-      out.push([14, fmt(q.x)]);
-      out.push([24, fmt(q.y)]);
+      out.push([11, fmt(q.x)]);
+      out.push([21, fmt(q.y)]);
     }
   }
-  out.push(...p.retainedGroups);
+  used.add(11);
+  used.add(21);
+  // Everything else the record carried (XDATA, unknown groups), in order, last.
+  for (const g of p.retainedGroups) if (!used.has(g[0])) out.push(g);
   return out;
 }

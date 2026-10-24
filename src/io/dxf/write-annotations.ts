@@ -6,7 +6,7 @@
 import { Writer, writeEntityCommon } from './write-core';
 import type { MTextEntity, DimensionEntity, LeaderEntity, ImageEntity, TableEntity, UnderlayEntity } from '../../core/entities';
 import { underlayPlacementOf } from '../../core/entities';
-import { writeUnderlayEntity } from './underlay-codec';
+import { writeUnderlayEntity, UNDERLAY_ENTITY_SUBCLASS } from './underlay-codec';
 import { formattedSource, mtextFromDxf, mtextToDxf } from '../../core/mtext';
 import { textStyleOf } from '../encoding';
 import { MTEXT_COLUMNS_APP, MTEXT_BACKGROUND_APP, DIM_TYPE, DIMSTYLE_APP, TABLE_APP } from './codes';
@@ -646,29 +646,36 @@ export function mtextPlainToDxf(text: string): string {
  */
 const UNDERLAY_COMMON_OWNED: ReadonlySet<number> = new Set([5, 8, 100, 330, 6, 48, 62, 67, 370, 420, 430, 440]);
 
+/**
+ * One *UNDERLAY record in AutoCAD's layout (v0.6.4 review F-F): the common
+ * head from writeEntityCommon (handle, owner, AcDbEntity, layer, appearance,
+ * then the AcDbUnderlayReference marker), followed by the codec's reference
+ * groups in AutoCAD's order with the record's retained groups slotted in.
+ * The codec drops a retained copy of any code it emits canonically (F-G),
+ * so a scaled or rotated import writes 41/42/50 exactly once, with the
+ * edited value.
+ */
 export function writeUnderlay(w: Writer, e: UnderlayEntity, owner: string, extras: WriteExtras): void {
   const type = e.kind === 'pdf' ? 'PDFUNDERLAY' : e.kind === 'dwf' ? 'DWFUNDERLAY' : 'DGNUNDERLAY';
-  const subclass = e.kind === 'pdf' ? 'AcDbPdfUnderlay' : e.kind === 'dwf' ? 'AcDbDwfUnderlay' : 'AcDbDgnUnderlay';
-  const handle = writeEntityCommon(w, e, owner, type, subclass);
   // The definition named IN THIS FILE: the placement joins to the sibling
   // by handle, and the pre-pass allocated that definition a handle before
   // ENTITIES emission (RULING-P28 C8). A dangling placement (no definition
   // in the sibling) emits its stored reference verbatim — a target is
   // never fabricated (C2).
   const defHandle = extras.underlayHandlesByDef.get(e.definitionHandle) ?? e.definitionHandle;
-  const canonical = writeUnderlayEntity({ ...underlayPlacementOf(e), handle, retainedGroups: [] });
-  for (const [code, value] of canonical) {
-    if (code === 5 || code === 100 || code === 8) continue; // writeEntityCommon emitted them
-    if (code === 340) {
-      w.pair(340, defHandle);
-      continue;
-    }
-    w.pair(code, value);
-  }
-  for (const [code, value] of e.retainedGroups) {
-    if (UNDERLAY_COMMON_OWNED.has(code)) continue;
-    w.pair(code, value);
-  }
+  // Retained copies of what the common head writes from the model are
+  // dropped (the modelled colour / linetype / owner wins); the rest goes
+  // through the codec, which places each group where AutoCAD's sequential
+  // reader expects it. The codec's output splits at its two markers: the
+  // AcDbEntity-class remainder (proxy graphics ...) rides the common head,
+  // the AcDbUnderlayReference groups follow the subclass marker.
+  const retainedGroups = e.retainedGroups.filter(([code]) => !UNDERLAY_COMMON_OWNED.has(code));
+  const groups = writeUnderlayEntity({ ...underlayPlacementOf(e), retainedGroups });
+  const entityMarker = groups.findIndex(([code, value]) => code === 100 && value === 'AcDbEntity');
+  const subclassMarker = groups.findIndex(([code, value]) => code === 100 && value === UNDERLAY_ENTITY_SUBCLASS);
+  const commonExtras = groups.slice(entityMarker + 1, subclassMarker).filter(([code]) => code !== 8);
+  writeEntityCommon(w, e, owner, type, UNDERLAY_ENTITY_SUBCLASS, owner, undefined, commonExtras);
+  for (const [code, value] of groups.slice(subclassMarker + 1)) w.pair(code, code === 340 ? defHandle : value);
 }
 
 

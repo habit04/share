@@ -360,13 +360,13 @@ export interface UnderlayEntity extends EntityBase {
   readonly scaleY: number;
   /** Radians (group 50 in degrees). */
   readonly rotation: number;
-  /** Group 70 flag bits, raw (see UNDERLAY_FLAG_* in core/underlay.ts). */
+  /** Group 280 flag bits, raw (see UNDERLAY_FLAG_* in core/underlay.ts). */
   readonly flags: number;
-  /** Group 280, 0..100. */
+  /** Group 281 as read (AutoCAD range 20..100, clamped on write). */
   readonly contrast?: number;
-  /** Group 281, 0..100. */
+  /** Group 282 as read (AutoCAD range 0..80, clamped on write). */
   readonly fade?: number;
-  /** Clip boundary in underlay coordinates (group 14/24 point pairs). */
+  /** Clip boundary in underlay coordinates (repeated group 11/21 point pairs). */
   readonly clipBoundary?: readonly Point[];
   /** Groups of the record this model does not claim, verbatim and in order. */
   readonly retainedGroups: readonly DxfGroup[];

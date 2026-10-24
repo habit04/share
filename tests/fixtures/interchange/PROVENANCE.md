@@ -149,3 +149,24 @@ for the pre-AC1032 per-cell form: group 177 override flags, the text in
 a group 1 every cell carries (empty for merge-covered cells), the
 140/170 overrides stated only where a cell departs from its row role,
 after the text. Consumer: `tests/table-p22-f2.test.ts`.
+
+## r2018-pdf-underlay-acad2027.dxf (added 2026-10-23, v0.6.4 review F-F)
+
+A genuine **AutoCAD 2027 console DXFOUT** (AC1032) of a drawing holding one
+PDFUNDERLAY on layer `U` (insertion 10,20, scales 2/2, flags 280 = 3, contrast
+281 = 40, fade 282 = 10, two-point clip 11/21), produced at the v0.6.4
+packaged-app gate (`v064-3e66ef6-packaged-gate-claude`, §B-1 step 3:
+`native/run/UC-documented4/u-acad-out.dxf`, copied to
+`probe/inputs-uacad/u-acad-2027.dxf`). AutoCAD opened the corrected input
+with AUDIT 0 and wrote this file. SHA-256
+`a3ddd0039f3f8a7688ef97a9ffe9625d247deaddcff85e52a8e3b2462fb4ec55`.
+
+Two things to know when reading it: AutoCAD's console DXFOUT left the
+PDFDEFINITION object out, so the placement's 340 (`41`) dangles (JCad
+reports it `simplified` and keeps the reference verbatim); and the CLASSES
+section carries BOTH the correct `PDFUNDERLAY / AcDbPdfReference /
+ObjectDBX Classes` registration and the stale `AcDbPdfUnderlay / ISM` one
+that the pre-fix JCad writer had put into AutoCAD's input (AutoCAD kept it).
+`tests/underlay-autocad-layout.test.ts` reads it and pins the record layout
+JCad writes against it.
+

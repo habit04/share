@@ -38,7 +38,7 @@ const pdfEntityGroups = G([
   [330, '1F'],
   [100, 'AcDbEntity'],
   [8, 'PDF-UNDERLAY'],
-  [100, 'AcDbPdfUnderlay'],
+  [100, 'AcDbUnderlayReference'],
   [340, '2E'],
   [10, '10.5'],
   [20, '-20'],
@@ -47,9 +47,9 @@ const pdfEntityGroups = G([
   [42, '3'],
   [43, '1'],
   [50, '90'],
-  [70, '10'],
-  [280, '80'],
-  [281, '15'],
+  [280, '10'],
+  [281, '80'],
+  [282, '15'],
   [290, '1'], // a group this model does not claim: must be retained, not dropped
   [1001, 'ACAD'], // XDATA application name: retained
   [1000, 'kept-verbatim'],
@@ -58,8 +58,7 @@ const pdfEntityGroups = G([
 const pdfDefGroups = G([
   [5, '2E'],
   [330, '10'],
-  [100, 'AcDbObject'],
-  [100, 'AcDbPdfDefinition'],
+  [100, 'AcDbUnderlayDefinition'],
   [1, 'C:\\refs\\floor plan.pdf'],
   [2, 'Sheet 1'],
   [999, 'a comment group: retained'],
@@ -130,8 +129,8 @@ describe('underlay entity codec', () => {
     expect(r.value.flags & 2).toBe(2);
   });
 
-  it('parses a clip boundary from 14/24 point pairs', () => {
-    const groups = G([[340, 'AA'], [10, '0'], [20, '0'], [70, '3'], [14, '0'], [24, '0'], [14, '50'], [24, '0'], [14, '50'], [24, '40']]);
+  it('parses a clip boundary from repeated 11/21 point pairs', () => {
+    const groups = G([[340, 'AA'], [10, '0'], [20, '0'], [280, '3'], [11, '0'], [21, '0'], [11, '50'], [21, '0'], [11, '50'], [21, '40']]);
     const r = parseUnderlayEntity('pdf', groups, 'x');
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -146,8 +145,10 @@ describe('underlay entity codec', () => {
     const badScale = parseUnderlayEntity('pdf', G([[340, 'AA'], [10, '0'], [20, '0'], [41, 'wide']]), 'x');
     expect(badScale.ok).toBe(false);
     if (!badScale.ok) expect(badScale.refusal).toMatch(/41/);
-    const badPoint = parseUnderlayEntity('pdf', G([[340, 'AA'], [10, '0'], [20, '0'], [14, '1']]), 'x');
-    expect(badPoint.ok).toBe(false); // a 14 with no following 24 is malformed, never half-kept
+    const badPoint = parseUnderlayEntity('pdf', G([[340, 'AA'], [10, '0'], [20, '0'], [11, '1']]), 'x');
+    expect(badPoint.ok).toBe(false); // an 11 with no following 21 is malformed, never half-kept
+    const orphanY = parseUnderlayEntity('pdf', G([[340, 'AA'], [10, '0'], [20, '0'], [21, '1']]), 'x');
+    expect(orphanY.ok).toBe(false);
   });
 
   it('a duplicate scalar group keeps the first value and retains the rest (nothing silently dropped)', () => {
@@ -160,9 +161,9 @@ describe('underlay entity codec', () => {
 });
 
 describe('underlay entity codec — default-valued groups (acceptance F-A)', () => {
-  it('an absent group 70 stays absent: the writer invents nothing', () => {
-    // Acceptance probe C1.1: no 70 in the record; the old writer always
-    // emitted [70, "2"] (the parse default), inventing a group.
+  it('an absent group 280 stays absent: the writer invents nothing', () => {
+    // Acceptance probe C1.1: no 280 in the record; the old writer always
+    // emitted the parse default, inventing a group.
     const groups = G([[999, 'a'], [340, 'AA'], [10, '1'], [20, '2'], [41, '2']]);
     const r = parseUnderlayEntity('pdf', groups, 'x');
     expect(r.ok).toBe(true);
@@ -174,7 +175,7 @@ describe('underlay entity codec — default-valued groups (acceptance F-A)', () 
   });
 
   it('explicit default-valued groups survive the round trip (acceptance C2.3)', () => {
-    const groups = G([[340, 'AA'], [8, '0'], [10, '0'], [20, '0'], [41, '1'], [42, '1'], [50, '0'], [70, '2']]);
+    const groups = G([[340, 'AA'], [8, '0'], [10, '0'], [20, '0'], [41, '1'], [42, '1'], [50, '0'], [280, '2']]);
     const r = parseUnderlayEntity('pdf', groups, 'x');
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -184,7 +185,7 @@ describe('underlay entity codec — default-valued groups (acceptance F-A)', () 
   });
 
   it('non-canonical default spellings round-trip verbatim, never canonicalized away', () => {
-    const groups = G([[340, 'AA'], [10, '0'], [20, '0'], [41, '1.0'], [42, '1.00'], [50, '0.0'], [70, '02']]);
+    const groups = G([[340, 'AA'], [10, '0'], [20, '0'], [41, '1.0'], [42, '1.00'], [50, '0.0'], [280, '02']]);
     const r = parseUnderlayEntity('pdf', groups, 'x');
     expect(r.ok).toBe(true);
     if (!r.ok) return;

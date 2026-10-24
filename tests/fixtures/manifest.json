@@ -18,6 +18,7 @@
     "tests/fixtures/interchange/native-dwg-date-oracle.json",
     "tests/fixtures/interchange/r2018-ordinate-dimensions.dxf",
     "tests/fixtures/interchange/r2018-shx-text.dxf",
+    "tests/fixtures/interchange/r2018-pdf-underlay-acad2027.dxf",
     "tests/fixtures/shx/jcad-test-font.shp",
     "tests/fixtures/shx/jcad-test-shapes.shp",
     "tests/fixtures/interchange/r2018-complex-linetypes.dxf",
