@@ -2783,16 +2783,28 @@ export function ensureAssociativeHatchReactors(text: string): string {
     }
   }
   if (edits.length === 0 && deletions.length === 0) return text;
-  // Insertions and deletions share one descending pass: every anchor
-  // refers to the ORIGINAL line numbering, and no two operations can
-  // anchor on the same line (an insertion targets a block's closing
-  // 102 or a handle pair; deletions target entry pairs strictly inside
-  // a block, or a whole block this pass adds nothing to).
+  // Insertions and deletions are applied in ONE ascending linear pass
+  // that builds the output array: every anchor refers to the ORIGINAL
+  // line numbering, and no two operations overlap (an insertion targets
+  // a block's closing 102 or a handle pair; deletions target entry pairs
+  // strictly inside a block, or a whole block this pass adds nothing
+  // to). At an equal anchor an insertion (count 0) precedes a deletion,
+  // which is the order the former descending splice loop produced.
+  // v0.6.4 review F-C: that loop did one whole-array splice per op —
+  // O(ops × lines), 8000 associative hatches took ~10× v0.6.3's save.
   const ops: Array<{ atLine: number; count: number; lines: string[] }> = [
     ...deletions.map((d) => ({ atLine: d.atLine, count: d.count, lines: [] as string[] })),
     ...edits.map((e) => ({ atLine: e.atLine, count: 0, lines: e.lines })),
   ];
-  ops.sort((a, b) => b.atLine - a.atLine || b.count - a.count);
-  for (const op of ops) lines.splice(op.atLine, op.count, ...op.lines);
-  return lines.join(sep);
+  ops.sort((a, b) => a.atLine - b.atLine || a.count - b.count);
+  const out: string[] = [];
+  let cursor = 0;
+  for (const op of ops) {
+    if (op.atLine < cursor) throw new Error('ensureAssociativeHatchReactors: overlapping reactor edits');
+    for (let i = cursor; i < op.atLine; i++) out.push(lines[i]!);
+    for (const l of op.lines) out.push(l);
+    cursor = op.atLine + op.count;
+  }
+  for (let i = cursor; i < lines.length; i++) out.push(lines[i]!);
+  return out.join(sep);
 }
