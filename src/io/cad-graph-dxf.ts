@@ -2630,6 +2630,12 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
  * text, every handle it compares is already the remapped output handle.
  */
 export function ensureAssociativeHatchReactors(text: string): string {
+  // v0.6.4 review F-D(1): the pass has nothing to do unless the text holds
+  // a HATCH record, and segmenting a 7 MB hatch-free drawing doubled its
+  // save time. A record's type value always starts a line, so a text with
+  // no "\nHATCH" cannot contain one (the check is conservative: a false
+  // positive only runs the full pass, which then changes nothing).
+  if (!text.includes('\nHATCH')) return text;
   const sep = text.includes('\r\n') ? '\r\n' : '\n';
   const lines = text.split(sep);
   const pairCount = Math.floor(lines.length / 2);
