@@ -2619,13 +2619,15 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
  * the graph merge, or written by an earlier save) are never completed
  * by the union above, but they are also not harmless: they claim a
  * live association the file itself denies. Any 330 inside a depth-0
- * {ACAD_REACTORS} block whose canonical handle names a HATCH record
- * written 71 = 0 is spliced out; survivors keep their order, entries
- * naming still-active (71 = 1) hatches and all unrelated entries are
- * untouched, and a block left with no entries at all is removed whole
- * (unless this same pass is adding entries to it). Because the pass
- * runs on the final text, every handle it compares is already the
- * remapped output handle.
+ * {ACAD_REACTORS} block of an ENTITY record whose canonical handle names
+ * a HATCH record written 71 = 0 is spliced out; survivors keep their
+ * order, entries naming still-active (71 = 1) hatches and all unrelated
+ * entries are untouched, and a block left with no entries at all is
+ * removed whole (unless this same pass is adding entries to it).
+ * OBJECTS records (dictionaries, xrecords, ...) are never edited: a
+ * hatch's extension dictionary reacts to its owning hatch regardless of
+ * associativity (v0.6.4 review F-A). Because the pass runs on the final
+ * text, every handle it compares is already the remapped output handle.
  */
 export function ensureAssociativeHatchReactors(text: string): string {
   const sep = text.includes('\r\n') ? '\r\n' : '\n';
@@ -2753,12 +2755,25 @@ export function ensureAssociativeHatchReactors(text: string): string {
   // {ACAD_REACTORS} block whose canonical handle names a demoted
   // (71 = 0) hatch. A block whose entries are ALL stale is removed
   // whole, unless the union above is adding live entries to it.
+  //
+  // v0.6.4 review F-A: the cleanup is confined to ENTITY records (those
+  // carrying 100 AcDbEntity). A persistent reactor from an entity to a
+  // HATCH is only ever the boundary back-pointer AutoCAD maintains for an
+  // associative hatch, so on an entity it is stale the moment the hatch
+  // is written 71 = 0. OBJECTS-section records are different: a hatch's
+  // extension dictionary (its ACAD_XDICTIONARY target) legitimately
+  // carries {ACAD_REACTORS 330 <owning hatch>} whatever the hatch's 71
+  // says, and so may any object the hatch owns. Those are never touched
+  // — before this guard every non-associative hatch's own xdictionary
+  // lost its back-reactor on save. A reactor the record's own ownership
+  // explains (its depth-0 330 owner is the hatch) is kept as well.
   const deletions: Array<{ atLine: number; count: number }> = [];
   if (demotedHatches.size > 0) {
     for (const rec of recs) {
+      if (!rec.entity) continue;
       const block = reactorBlockOf(rec);
       if (!block) continue;
-      const stale = block.entries.filter((e) => e.canon !== undefined && demotedHatches.has(e.canon));
+      const stale = block.entries.filter((e) => e.canon !== undefined && demotedHatches.has(e.canon) && e.canon !== rec.owner);
       if (stale.length === 0) continue;
       if (stale.length === block.entries.length && !mergeTargets.has(rec)) {
         deletions.push({ atLine: 2 * block.open, count: 2 * (block.close - block.open + 1) });
