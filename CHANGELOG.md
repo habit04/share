@@ -11,6 +11,56 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-10-24
+
+### Upgrade notes
+
+Unpublished candidate; signed v0.6.4 artifacts and publication are pending.
+
+- Windows x64 patch update from v0.6.3 for AutoCAD underlay interchange,
+  associative hatch handles and drawing-save performance.
+
+### Fixed
+
+- Write underlay references and definitions in AutoCAD's native DXF layout,
+  including flags, contrast, fade, clipping and class records, so AutoCAD can
+  load drawings that the previous layout caused it to discard.
+- Register PDF, DWF and DGN definitions in their respective named dictionaries,
+  with matching owners and reactors. Reuse existing dictionary entries and keep
+  definition identities across saves so AutoCAD retains the definitions when
+  saving and reopening the drawing. Definition records contain only their
+  supported specification groups and retained application data.
+- Write edited underlay scale and rotation fields once, and mirror underlays as
+  reflections. Preserve file/page identity and placement links through repeated
+  saves.
+- When an associative hatch is written before its boundary INSERT, IMAGE or
+  underlay, use the actual emitted handle for the boundary and its dependent
+  attribute, sequence-end and image-reactor links.
+- Preserve extension-dictionary back-reactors in OBJECTS when cleaning up stale
+  non-associative hatch reactors.
+- Build associative hatch reactors in one linear pass, avoid repeated hatch
+  searches, and skip the reactor pass entirely for drawings without hatches.
+
+### Changed
+
+- Underlay display is documented as a frame, cross and available definition
+  file-name label. The desktop does not render PDF, DWF or DGN page content.
+
+### Known limitations
+
+- Missing underlay definitions remain missing and are reported; saving cannot
+  reconstruct a definition absent from the input. Native DWG underlay reader
+  records remain unmodeled.
+- A copied grouped underlay can retain a group back-reactor whose group lists
+  only the original. The native checks report AUDIT 0 for this case; group
+  membership repair remains open.
+- Existing DWG import limitations remain: one validation drawing reports 99
+  dropped/simplified entries and 42 unsupported property groups. These counts
+  describe that drawing, not every DWG. Incomplete hatch boundaries remain
+  unfilled and identified in the import report.
+- A partial import cannot overwrite its source. Use Save As for a separate copy
+  and review the import report before continuing.
+
 ## [0.6.3] - 2026-10-23
 
 ### Upgrade notes
@@ -1533,7 +1583,8 @@ First release.
 
 - Renamed the application to JCad Electrical.
 
-[Unreleased]: https://github.com/habit04/share/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/habit04/share/compare/v0.6.4...HEAD
+[0.6.4]: https://github.com/habit04/share/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/habit04/share/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/habit04/share/compare/v0.6.1...v0.6.2
 [0.6.0]: https://github.com/habit04/share/compare/v0.5.2...v0.6.0
