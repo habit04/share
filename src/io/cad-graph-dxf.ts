@@ -1346,7 +1346,12 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     // Synthesized document registries have no source file handle. Their proven dictionary path
     // still identifies the canonical generated NOD, so no disconnected second root is emitted.
     const key = node.anchor?.kind === 'dictionary' ? anchor : node.anchor?.kind === 'solid3d' || node.anchor?.kind === 'dimension3d' ? undefined : sourceKeys.get(sources[index]!);
-    if (key) byKey.set(key, node);
+    // Two CLASS records of one name (a file AutoCAD re-wrote with a stale
+    // registration beside its own — the v0.6.4 F-F AutoCAD fixture has
+    // PDFUNDERLAY twice): the generated class binds to the FIRST, as
+    // the file ordered them, so the pair keeps its order on every save
+    // instead of swapping (last-wins bound to whichever came second).
+    if (key && !(node.type === 'CLASS' && byKey.has(key))) byKey.set(key, node);
   });
   const match = new Map<RecordData, CadNode>(), matched = new Set<string>();
   for (const record of generated) {
@@ -1803,7 +1808,12 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
       if (brace) { metadata.push(group); continue; }
       if (code === 1001) { app = raw; apps.add(raw.trim().toUpperCase()); }
       if (app) { metadata.push(group); continue; }
-      if (node.anchor?.kind !== 'entity' && node.anchor?.kind !== 'viewport' && node.anchor?.kind !== 'dimension3d' && ![5, 105, 100, 330].includes(code) && !generatedCodes.has(code)) appendBeforeXdata(record.groups, group);
+      // v0.6.4 native gate B-3: an underlay DEFINITION carries only its spec
+      // groups (5, reactors, 330, 100, 1, 2) — AutoCAD's sequential reader
+      // discards the drawing on any other group after 1 / 2, so a retained
+      // unmodelled group (a pre-fix JCad save's "90 7") is not re-added here.
+      const underlayDefinitionNode = node.type === 'PDFDEFINITION' || node.type === 'DWFDEFINITION' || node.type === 'DGNDEFINITION';
+      if (node.anchor?.kind !== 'entity' && node.anchor?.kind !== 'viewport' && node.anchor?.kind !== 'dimension3d' && !underlayDefinitionNode && ![5, 105, 100, 330].includes(code) && !generatedCodes.has(code)) appendBeforeXdata(record.groups, group);
       else if ((node.anchor?.kind === 'entity' || node.anchor?.kind === 'viewport' || node.anchor?.kind === 'dimension3d') && cadReferenceKind(code)) appendBeforeXdata(record.groups, group);
     }
     // Source extension/reactor blocks precede the common subclass; each XDATA application occurs once.
@@ -2619,15 +2629,23 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
  * the graph merge, or written by an earlier save) are never completed
  * by the union above, but they are also not harmless: they claim a
  * live association the file itself denies. Any 330 inside a depth-0
- * {ACAD_REACTORS} block whose canonical handle names a HATCH record
- * written 71 = 0 is spliced out; survivors keep their order, entries
- * naming still-active (71 = 1) hatches and all unrelated entries are
- * untouched, and a block left with no entries at all is removed whole
- * (unless this same pass is adding entries to it). Because the pass
- * runs on the final text, every handle it compares is already the
- * remapped output handle.
+ * {ACAD_REACTORS} block of an ENTITY record whose canonical handle names
+ * a HATCH record written 71 = 0 is spliced out; survivors keep their
+ * order, entries naming still-active (71 = 1) hatches and all unrelated
+ * entries are untouched, and a block left with no entries at all is
+ * removed whole (unless this same pass is adding entries to it).
+ * OBJECTS records (dictionaries, xrecords, ...) are never edited: a
+ * hatch's extension dictionary reacts to its owning hatch regardless of
+ * associativity (v0.6.4 review F-A). Because the pass runs on the final
+ * text, every handle it compares is already the remapped output handle.
  */
 export function ensureAssociativeHatchReactors(text: string): string {
+  // v0.6.4 review F-D(1): the pass has nothing to do unless the text holds
+  // a HATCH record, and segmenting a 7 MB hatch-free drawing doubled its
+  // save time. A record's type value always starts a line, so a text with
+  // no "\nHATCH" cannot contain one (the check is conservative: a false
+  // positive only runs the full pass, which then changes nothing).
+  if (!text.includes('\nHATCH')) return text;
   const sep = text.includes('\r\n') ? '\r\n' : '\n';
   const lines = text.split(sep);
   const pairCount = Math.floor(lines.length / 2);
@@ -2753,12 +2771,25 @@ export function ensureAssociativeHatchReactors(text: string): string {
   // {ACAD_REACTORS} block whose canonical handle names a demoted
   // (71 = 0) hatch. A block whose entries are ALL stale is removed
   // whole, unless the union above is adding live entries to it.
+  //
+  // v0.6.4 review F-A: the cleanup is confined to ENTITY records (those
+  // carrying 100 AcDbEntity). A persistent reactor from an entity to a
+  // HATCH is only ever the boundary back-pointer AutoCAD maintains for an
+  // associative hatch, so on an entity it is stale the moment the hatch
+  // is written 71 = 0. OBJECTS-section records are different: a hatch's
+  // extension dictionary (its ACAD_XDICTIONARY target) legitimately
+  // carries {ACAD_REACTORS 330 <owning hatch>} whatever the hatch's 71
+  // says, and so may any object the hatch owns. Those are never touched
+  // — before this guard every non-associative hatch's own xdictionary
+  // lost its back-reactor on save. A reactor the record's own ownership
+  // explains (its depth-0 330 owner is the hatch) is kept as well.
   const deletions: Array<{ atLine: number; count: number }> = [];
   if (demotedHatches.size > 0) {
     for (const rec of recs) {
+      if (!rec.entity) continue;
       const block = reactorBlockOf(rec);
       if (!block) continue;
-      const stale = block.entries.filter((e) => e.canon !== undefined && demotedHatches.has(e.canon));
+      const stale = block.entries.filter((e) => e.canon !== undefined && demotedHatches.has(e.canon) && e.canon !== rec.owner);
       if (stale.length === 0) continue;
       if (stale.length === block.entries.length && !mergeTargets.has(rec)) {
         deletions.push({ atLine: 2 * block.open, count: 2 * (block.close - block.open + 1) });
@@ -2768,16 +2799,28 @@ export function ensureAssociativeHatchReactors(text: string): string {
     }
   }
   if (edits.length === 0 && deletions.length === 0) return text;
-  // Insertions and deletions share one descending pass: every anchor
-  // refers to the ORIGINAL line numbering, and no two operations can
-  // anchor on the same line (an insertion targets a block's closing
-  // 102 or a handle pair; deletions target entry pairs strictly inside
-  // a block, or a whole block this pass adds nothing to).
+  // Insertions and deletions are applied in ONE ascending linear pass
+  // that builds the output array: every anchor refers to the ORIGINAL
+  // line numbering, and no two operations overlap (an insertion targets
+  // a block's closing 102 or a handle pair; deletions target entry pairs
+  // strictly inside a block, or a whole block this pass adds nothing
+  // to). At an equal anchor an insertion (count 0) precedes a deletion,
+  // which is the order the former descending splice loop produced.
+  // v0.6.4 review F-C: that loop did one whole-array splice per op —
+  // O(ops × lines), 8000 associative hatches took ~10× v0.6.3's save.
   const ops: Array<{ atLine: number; count: number; lines: string[] }> = [
     ...deletions.map((d) => ({ atLine: d.atLine, count: d.count, lines: [] as string[] })),
     ...edits.map((e) => ({ atLine: e.atLine, count: 0, lines: e.lines })),
   ];
-  ops.sort((a, b) => b.atLine - a.atLine || b.count - a.count);
-  for (const op of ops) lines.splice(op.atLine, op.count, ...op.lines);
-  return lines.join(sep);
+  ops.sort((a, b) => a.atLine - b.atLine || a.count - b.count);
+  const out: string[] = [];
+  let cursor = 0;
+  for (const op of ops) {
+    if (op.atLine < cursor) throw new Error('ensureAssociativeHatchReactors: overlapping reactor edits');
+    for (let i = cursor; i < op.atLine; i++) out.push(lines[i]!);
+    for (const l of op.lines) out.push(l);
+    cursor = op.atLine + op.count;
+  }
+  for (let i = cursor; i < lines.length; i++) out.push(lines[i]!);
+  return out.join(sep);
 }

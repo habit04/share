@@ -146,7 +146,18 @@ export function writePaperSpaceFlag(w: Writer, spaceOwner: string): void {
   if (paperOwners.has(spaceOwner)) w.pair(67, 1);
 }
 
-export function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: string, subclass: string, spaceOwner = owner, extensionDictionary?: string): void {
+/**
+ * Emits the common entity head and returns the handle (group 5) it wrote.
+ * Callers that need "the handle just emitted" MUST use the return value:
+ * the first record of an entity takes its RESERVED handle (P17 — a hatch
+ * written earlier may have reserved its boundary's handle through
+ * reserveEntityHandle), so it is not necessarily `w.lastHandle()`, which
+ * is only the allocator's counter. Before v0.6.4 the INSERT (ATTRIB /
+ * SEQEND owner), IMAGE (IMAGEDEF_REACTOR back-pointer) and underlay sites
+ * derived the handle from lastHandle() and wrote wrong pointers whenever an
+ * associative hatch preceded its boundary entity (review finding F-B).
+ */
+export function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: string, subclass: string, spaceOwner = owner, extensionDictionary?: string, commonExtras?: readonly (readonly [number, string])[]): string {
   w.pair(0, kind);
   // The first record emitted for an entity takes its reserved handle, so a
   // record that references it — P17: a hatch's boundary-path 330 — names
@@ -191,7 +202,12 @@ export function writeEntityCommon(w: Writer, e: Entity, owner: string, kind: str
     w.pair(430, e.colorName);
   }
   if (e.transparency !== undefined) w.pair(440, transparencyToDxf(e.transparency));
+  // Retained AcDbEntity-class groups the model does not own (an underlay's
+  // proxy graphics 160/310, for one): they belong before the subclass
+  // marker, where AutoCAD's sequential readers expect them (v0.6.4 F-F).
+  if (commonExtras) for (const [code, value] of commonExtras) w.pair(code, value);
   w.pair(100, subclass);
+  return handle;
 }
 
 export function writeTextLike(w: Writer, position: g.Point, height: number, text: string, rotation: number, align: 'left' | 'center' | 'right', placement?: TextPlacement): void {

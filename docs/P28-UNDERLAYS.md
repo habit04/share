@@ -1,9 +1,51 @@
 # P28 — Specialized 2D / PDF, DGN, DWF underlays
 
+## What actually renders in v0.6.4 (read this first)
+
+- PDFUNDERLAY / DWFUNDERLAY / DGNUNDERLAY records and their *DEFINITION
+  objects are **read, modelled, retained and written back** (model
+  integration below). They survive open -> save.
+- On screen and on paper a placement draws as its **frame, a cross and the
+  definition's file-name label** (`floor.pdf — page 2`), joined to the
+  definition the drawing itself holds. A placement whose definition is
+  missing from the file draws frame + cross with no label (RULING-P28 C2).
+- **No referenced PDF page is rasterized in the app.** The pdf.js engine
+  seam, the display service and the corpus tests described below exist and
+  pass in isolation, but no composition root installs the service
+  (`renderSettings.underlaySource` / `DrawStyle.underlaySource` is set by
+  nothing in `src/`): the desktop bridge has no file-byte channel for it.
+  Until that wiring lands, "PDF underlay display" means the labelled frame.
+  (Before v0.6.4 the frame had no label at all — review finding F-E.)
+- DWF and DGN content is never decoded (no admitted decoder).
+- **Record layout (corrected in v0.6.4, review F-F).** The codec first
+  shipped with a layout AutoCAD rejects outright (markers
+  `AcDbPdfUnderlay` / `AcDbPdfDefinition`, flags as 70, contrast/fade as
+  280/281, clip as 14/24, no marker on the definition, CLASS app "ISM");
+  AutoCAD 2027 discarded every such drawing. The codec now reads and writes
+  the AutoCAD DXF Reference layout: entity `100 AcDbUnderlayReference` with
+  340 / 10 20 30 / 41 42 43 / 50 / 210 / **280 flags / 281 contrast
+  (20..100) / 282 fade (0..80)** and the clip as repeated **11/21** pairs;
+  definition `100 AcDbUnderlayDefinition` with 1 file / 2 page; CLASS
+  `PDFUNDERLAY -> AcDbPdfReference`, `PDFDEFINITION -> AcDbPdfDefinition`
+  under "ObjectDBX Classes" (DWF/DGN likewise). Retained groups are written
+  in AutoCAD's order; an edited scale/rotation is written once (F-G);
+  MIRROR is a true reflection (F-H). Definitions are registered in the
+  root dictionary's `ACAD_PDFDEFINITIONS` / `ACAD_DWFDEFINITIONS` /
+  `ACAD_DGNDEFINITIONS` (one entry `<file stem> - <page>` per definition,
+  the definition owned by and reacting to it) — without that AutoCAD drops
+  the definition on its first save (native gate B-2) — and a definition
+  record carries only its spec groups (B-3). The genuine AutoCAD 2027
+  fixtures are `tests/fixtures/interchange/r2018-pdf-underlay-acad2027.dxf`
+  (`tests/underlay-autocad-layout.test.ts`) and
+  `r2018-pdf-underlay-dict-acad2027.dxf`
+  (`tests/underlay-definition-dictionary.test.ts`); where the sections below say
+  70 / 280 / 281 / 14 / 24 or "no underlay fixture", they describe the
+  superseded slice.
+
 Status: slice 1 implemented on `muse/p28-underlays` as pure isolated
 modules (unadmitted prototype — see PROPOSAL-P28 in the six-pipeline
-ledger). Nothing is wired into the Entity union, the document, the
-readers/writers, the renderers or the editor yet.
+ledger). The sections below are the delivery history; the model/codec and
+writer integration has since landed, the rendering wiring has not.
 
 ## Gap audit (base 038cb7b4, tree d1528615, read 2026-10-21)
 
@@ -239,7 +281,7 @@ with no network.
 | `entityTypeName` | `PDFUNDERLAY` / `DWFUNDERLAY` / `DGNUNDERLAY` by kind |
 | `compoundParts` (widened) / `underlayParts` | frame polyline + cross lines — the same generated parts for bounds, snap, selection, hit-testing, Canvas fallback and the vector plot; NO label (path lives on the definition) |
 | `entityBounds` / `distanceToEntity` / `gripPoints` / `moveGrip` / `snapCandidates` / `entitySegments` | via the frame points / parts; a point inside the frame is distance 0 |
-| `drawEntity` (Canvas + raster plot via `plotting.ts`) | consumes `underlayDisplayList`: image op draws the engine raster into the frame quad; frame/clip-frame/cross/label ops become primitives; no definition → `underlayParts` fallback |
+| `drawEntity` (Canvas + raster plot via `plotting.ts`) | consumes `underlayDisplayList`: image op draws the engine raster into the frame quad (only when a content source is installed — none is in v0.6.4); otherwise the definition comes from `DrawingState.underlays` (`underlayDefinitionContent`) and frame/cross/label ops become primitives; no definition → `underlayParts` fallback (frame + cross, no label) |
 | `pdf-vector.ts` (vector plot) | consumes `underlayParts` — a placed reference plots as its frame, never decoded content |
 | `selection.ts` polygon segments / regions | via `compoundParts`, beside `image` |
 | `properties.ts` (both `image` sites) | truthful kind / path / page / flags rows joined to the definition by handle; type name per kind |
@@ -275,7 +317,12 @@ resolved in this slice — they open page 1. DWF/DGN definitions are never
 opened. The desktop bridge exposes no generic file-byte read today
 (`read-image` returns data URLs), so no `main.ts` byte wiring exists in
 this slice: the composition root installs the service when it has a byte
-channel; until then placements render frame + label.
+channel. **As of v0.6.4 that has not happened** — nothing in `src/` sets
+`underlaySource`, so the service is exercised by tests only. Placements
+render frame + cross + the definition's label through the draw path's
+own definition join (`render/underlay-content.ts
+underlayDefinitionContent`, fed by the viewport from
+`DrawingState.underlays`).
 
 ### Pre-composition acceptance obligation — the 8-class CAD corpus
 

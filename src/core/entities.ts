@@ -360,13 +360,13 @@ export interface UnderlayEntity extends EntityBase {
   readonly scaleY: number;
   /** Radians (group 50 in degrees). */
   readonly rotation: number;
-  /** Group 70 flag bits, raw (see UNDERLAY_FLAG_* in core/underlay.ts). */
+  /** Group 280 flag bits, raw (see UNDERLAY_FLAG_* in core/underlay.ts). */
   readonly flags: number;
-  /** Group 280, 0..100. */
+  /** Group 281 as read (AutoCAD range 20..100, clamped on write). */
   readonly contrast?: number;
-  /** Group 281, 0..100. */
+  /** Group 282 as read (AutoCAD range 0..80, clamped on write). */
   readonly fade?: number;
-  /** Clip boundary in underlay coordinates (group 14/24 point pairs). */
+  /** Clip boundary in underlay coordinates (repeated group 11/21 point pairs). */
   readonly clipBoundary?: readonly Point[];
   /** Groups of the record this model does not claim, verbatim and in order. */
   readonly retainedGroups: readonly DxfGroup[];
@@ -1248,12 +1248,18 @@ function affineCompound(e: Compound, A: Affine): Entity {
       // never touched by a transform (RULING-P28 C4).
       const dirX = A.vec({ x: Math.cos(e.rotation), y: Math.sin(e.rotation) });
       const dirY = A.vec({ x: -Math.sin(e.rotation), y: Math.cos(e.rotation) });
+      // v0.6.4 review F-H: a reflection flips the handedness of the frame
+      // (the mapped Y axis falls on the clockwise side of the mapped X
+      // axis). Magnitudes alone turned a MIRROR into a rotation; the sign
+      // of the Y scale carries the reflection, the model's own
+      // "negative = mirrored, as with INSERT" convention.
+      const flip = dirX.x * dirY.y - dirX.y * dirY.x < 0 ? -1 : 1;
       return {
         ...e,
         position: A.tf(e.position),
         rotation: normAngle(Math.atan2(dirX.y, dirX.x)),
         scaleX: e.scaleX * Math.hypot(dirX.x, dirX.y),
-        scaleY: e.scaleY * Math.hypot(dirY.x, dirY.y),
+        scaleY: e.scaleY * Math.hypot(dirY.x, dirY.y) * flip,
       };
     }
   }

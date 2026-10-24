@@ -25,9 +25,9 @@ function buildDxf(defs: readonly DefSpec[], opts: { dictionaryOwned?: boolean } 
   defs.forEach((def, i) => {
     const handle = `${40 + i * 3}`, defHandle = `${41 + i * 3}`;
     lines.push(
-      '0', 'PDFUNDERLAY', '5', handle, '330', '2E', '100', 'AcDbEntity', '8', 'U', '100', 'AcDbPdfUnderlay',
-      '340', defHandle, '10', '10', '20', '20', '41', '2', '42', '3', '70', '3',
-      '14', '0', '24', '0', '14', '100', '24', '50',
+      '0', 'PDFUNDERLAY', '5', handle, '330', '2E', '100', 'AcDbEntity', '8', 'U', '100', 'AcDbUnderlayReference',
+      '340', defHandle, '10', '10', '20', '20', '41', '2', '42', '3', '280', '3',
+      '11', '0', '21', '0', '11', '100', '21', '50',
     );
   });
   lines.push('0', 'ENDSEC', '0', 'SECTION', '2', 'OBJECTS');
@@ -41,7 +41,7 @@ function buildDxf(defs: readonly DefSpec[], opts: { dictionaryOwned?: boolean } 
   }
   defs.forEach((def, i) => {
     lines.push('0', 'PDFDEFINITION', '5', `${41 + i * 3}`, '330', opts.dictionaryOwned ? 'D' : 'C',
-      '100', 'AcDbObject', '100', 'AcDbPdfDefinition', '1', def.path, '2', def.page,
+      '100', 'AcDbUnderlayDefinition', '1', def.path, '2', def.page,
       ...(def.extra ?? []).flatMap(([code, value]) => [code, value]));
   });
   lines.push('0', 'ENDSEC', '0', 'EOF');
@@ -75,10 +75,10 @@ describe('underlay definition identity (PR #42 fix 2)', () => {
     const { texts, states } = passes(buildDxf(TWO_PAGES), 4);
     for (const text of texts) expect(countDefs(text)).toBe(2);
     for (const state of states) expect(Object.values(state.underlays ?? {})).toHaveLength(2);
-    // Each definition's retained extras ride along exactly once per pass.
+    // Unmodelled definition extras are dropped on write (B-3), never re-emitted.
     for (const text of texts) {
-      expect(countOccurrences(text, '\r\n90\r\n7\r\n')).toBe(1);
-      expect(countOccurrences(text, '\r\n90\r\n9\r\n')).toBe(1);
+      expect(countOccurrences(text, '\r\n90\r\n7\r\n')).toBe(0); // B-3: unmodelled definition groups are not re-emitted
+      expect(countOccurrences(text, '\r\n90\r\n9\r\n')).toBe(0);
     }
     expect(texts[3]).toBe(texts[2]); // byte-stable once settled
   }, TEST_TIMEOUT);
@@ -89,8 +89,8 @@ describe('underlay definition identity (PR #42 fix 2)', () => {
     for (const state of states) expect(Object.values(state.underlays ?? {})).toHaveLength(2);
     for (const text of texts) {
       expect(countOccurrences(text, 'unrelated metadata - keep me')).toBe(1);
-      expect(countOccurrences(text, '\r\n90\r\n7\r\n')).toBe(1);
-      expect(countOccurrences(text, '\r\n90\r\n9\r\n')).toBe(1);
+      expect(countOccurrences(text, '\r\n90\r\n7\r\n')).toBe(0); // B-3: unmodelled definition groups are not re-emitted
+      expect(countOccurrences(text, '\r\n90\r\n9\r\n')).toBe(0);
     }
     expect(texts[3]).toBe(texts[2]);
   }, TEST_TIMEOUT);
@@ -162,9 +162,9 @@ describe('underlay definition binding by reference identity (PR #42 cleanup 4)',
     expect(countOccurrences(text, 'plans\\b-v2.pdf')).toBe(1);
     expect(countOccurrences(text, 'plans\\a.pdf')).toBe(0);
     expect(countOccurrences(text, 'plans\\b.pdf')).toBe(0);
-    // Each definition's retained extras merged exactly once.
-    expect(countOccurrences(text, '\r\n90\r\n7\r\n')).toBe(1);
-    expect(countOccurrences(text, '\r\n90\r\n9\r\n')).toBe(1);
+    // Unmodelled definition extras are dropped on write (B-3).
+    expect(countOccurrences(text, '\r\n90\r\n7\r\n')).toBe(0); // B-3: unmodelled definition groups are not re-emitted
+    expect(countOccurrences(text, '\r\n90\r\n9\r\n')).toBe(0);
     // And the result is stable: reopening keeps 2, with the new paths.
     const again = readDxf(text);
     expect(Object.values(again.underlays ?? {}).map((d) => d.sourcePath).sort()).toEqual(['plans\\a-v2.pdf', 'plans\\b-v2.pdf']);
@@ -189,7 +189,7 @@ describe('underlay definition binding by reference identity (PR #42 cleanup 4)',
     ];
     defs.forEach((def, i) => {
       lines.push('0', 'PDFDEFINITION', '5', `${41 + i * 3}`, '330', 'C',
-        '100', 'AcDbObject', '100', 'AcDbPdfDefinition', '1', def.path, '2', def.page,
+        '100', 'AcDbUnderlayDefinition', '1', def.path, '2', def.page,
         ...(def.extra ?? []).flatMap(([code, value]) => [code, value]));
     });
     lines.push('0', 'ENDSEC', '0', 'EOF');
@@ -205,8 +205,8 @@ describe('underlay definition binding by reference identity (PR #42 cleanup 4)',
     expect(countOccurrences(text, 'plans\\b-v2.pdf')).toBe(1);
     expect(countOccurrences(text, 'plans\\a.pdf')).toBe(0);
     expect(countOccurrences(text, 'plans\\b.pdf')).toBe(0);
-    expect(countOccurrences(text, '\r\n90\r\n7\r\n')).toBe(1);
-    expect(countOccurrences(text, '\r\n90\r\n9\r\n')).toBe(1);
+    expect(countOccurrences(text, '\r\n90\r\n7\r\n')).toBe(0); // B-3: unmodelled definition groups are not re-emitted
+    expect(countOccurrences(text, '\r\n90\r\n9\r\n')).toBe(0);
     const again = readDxf(text);
     expect(Object.values(again.underlays ?? {})).toHaveLength(2);
     expect(countDefs(writeDxf(again))).toBe(2);
@@ -240,7 +240,7 @@ function buildUnplacedDxf(defs: readonly DefSpec[], opts: { dictionaryOwned?: bo
   }
   defs.forEach((def, i) => {
     lines.push('0', 'PDFDEFINITION', '5', `${41 + i * 3}`, '330', opts.dictionaryOwned ? 'D' : 'C',
-      '100', 'AcDbObject', '100', 'AcDbPdfDefinition', '1', def.path, '2', def.page,
+      '100', 'AcDbUnderlayDefinition', '1', def.path, '2', def.page,
       ...(def.extra ?? []).flatMap(([code, value]) => [code, value]));
   });
   lines.push('0', 'ENDSEC', '0', 'EOF');
@@ -262,7 +262,7 @@ describe('underlay definition stable binding (PR #42 stable-binding fix)', () =>
     const edited = editDefs(state, (def) => ({ ...def, page: 'Page 2' }));
     const text = writeDxf(edited);
     expect(countDefs(text)).toBe(1);
-    expect(countOccurrences(text, '\r\n90\r\n7\r\n')).toBe(1);
+    expect(countOccurrences(text, '\r\n90\r\n7\r\n')).toBe(0); // B-3: unmodelled definition groups are not re-emitted
     const again = readDxf(text);
     const reopened = Object.values(again.underlays ?? {});
     expect(reopened).toHaveLength(1);
@@ -302,11 +302,14 @@ describe('underlay definition stable binding (PR #42 stable-binding fix)', () =>
     expect(countOccurrences(text, 'plans\\b-v2.pdf')).toBe(1);
     expect(countOccurrences(text, 'plans\\a.pdf')).toBe(0);
     expect(countOccurrences(text, 'plans\\b.pdf')).toBe(0);
-    // Each definition keeps its OWN retained extras (no cross-merge).
+    // Each definition keeps its OWN record (no cross-merge): identity is the
+    // source handle, since unmodelled extras are no longer written (B-3).
     const again = readDxf(text);
     expect(Object.values(again.underlays ?? {})).toHaveLength(2);
-    expect(extraOf(again, 'plans\\a-v2.pdf')).toBe('7');
-    expect(extraOf(again, 'plans\\b-v2.pdf')).toBe('9');
+    expect(extraOf(again, 'plans\\a-v2.pdf')).toBeUndefined();
+    const handleOf = (s: DrawingState, path: string): string | undefined => Object.values(s.underlays ?? {}).find((d) => d.sourcePath === path)?.handle;
+    expect(handleOf(again, 'plans\\a-v2.pdf')).toBe(handleOf(state, 'plans\\a.pdf'));
+    expect(handleOf(again, 'plans\\b-v2.pdf')).toBe(handleOf(state, 'plans\\b.pdf'));
     expect(Object.values(again.underlays ?? {}).map((d) => d.page).sort()).toEqual(['Page 3', 'Page 4']);
     expect(countDefs(writeDxf(again))).toBe(2);
   }, TEST_TIMEOUT);
@@ -329,9 +332,13 @@ describe('underlay definition stable binding (PR #42 stable-binding fix)', () =>
     const again = readDxf(text);
     const reopened = Object.values(again.underlays ?? {});
     expect(reopened).toHaveLength(2);
-    const byExtra = new Map(reopened.map((d) => [d.retainedGroups.find(([code]) => code === 90)?.[1], d.page]));
-    expect(byExtra.get('7')).toBe('Page 2'); // the Page-1 definition (extra 7) moved to Page 2
-    expect(byExtra.get('9')).toBe('Page 1'); // the Page-2 definition (extra 9) moved to Page 1
+    // Identity across the save is the record handle (the binding keeps each
+    // definition on its own source record); the unmodelled 90 extras are no
+    // longer re-emitted (B-3), so they cannot serve as the marker.
+    const handleOf = (page: string): string | undefined => before.find((d) => d.page === page)?.handle;
+    const byHandle = new Map(reopened.map((d) => [d.handle, d.page]));
+    expect(byHandle.get(handleOf('Page 1'))).toBe('Page 2'); // the Page-1 definition moved to Page 2
+    expect(byHandle.get(handleOf('Page 2'))).toBe('Page 1'); // the Page-2 definition moved to Page 1
   }, TEST_TIMEOUT);
 
   it('a modelled definition whose source handle names no retained record cannot be bound: the save refuses atomically', () => {
