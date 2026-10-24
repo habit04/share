@@ -1462,9 +1462,18 @@ export function preserveDxfCadGraph(text: string, state: DrawingState, anchors: 
     });
   };
   for (const record of generated) {
-    record.groups = record.groups.map(([code, raw]) => {
+    // Only the FIRST group 5 (first 105 for DIMSTYLE) is the record's
+    // identity — the position recordsOf reads the handle from. Every
+    // later 5/105 is payload: a SORTENTSTABLE's per-entry sort handles
+    // are group 5s no record owns, and routing one through
+    // generatedHandles collapsed it onto whatever record the writer
+    // happened to give that handle (or left it dangling to reach the
+    // DWG as 0, where the readback drops it — the 'SORTENTSTABLE group
+    // count changed' refusal). Payload 5s pass through untouched.
+    const identityIndex = record.groups.findIndex(([code]) => code === (record.type === 'DIMSTYLE' ? 105 : 5));
+    record.groups = record.groups.map(([code, raw], index) => {
       if (record.type === 'HEADER' && code === 5) return [code, 'HANDSEED_PLACEHOLDER'];
-      if (code === 5 || code === 105 || cadReferenceKind(code) && cadReferenceKind(code) !== 'arbitrary') return [code, generatedHandles.get(raw.trim().toUpperCase()) ?? raw];
+      if (index === identityIndex || cadReferenceKind(code) && cadReferenceKind(code) !== 'arbitrary') return [code, generatedHandles.get(raw.trim().toUpperCase()) ?? raw];
       return [code, raw];
     });
     const node = match.get(record);
