@@ -268,7 +268,10 @@ export interface WriteExtras {
    *  reader adjudicated the file's links against, so a retained handle
    *  resolving ONLY through this join names a link the import already had
    *  its chance to make live: writeHatch emits it (retention) but it
-   *  cannot by itself carry 71 = 1 (see writeHatch in write-entities.ts). */
+   *  cannot by itself carry 71 = 1 — and since round 8 it VETOES 71 = 1
+   *  for the whole hatch in mixed company, so a non-live link is never
+   *  written as part of a live association (see writeHatch in
+   *  write-entities.ts). */
   graphEntityHandles?: ReadonlySet<string>;
   /** P17 round 2: the canonical source handle of EVERY retained graph node. A hatch
    *  loop's retained handle that names one of these but resolves to no emitted entity

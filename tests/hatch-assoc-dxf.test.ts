@@ -1521,3 +1521,263 @@ describe('P17 round 7 (lead ruling): canonical spelling on read; a non-live impo
     expect(twice).toBe(once);
   });
 });
+
+describe('P17 round 8 (lead ruling): a graph-only link vetoes 71 = 1 for the WHOLE hatch', () => {
+  // Codex's inline finding on #48 at 275e36a (legs at the lead's native
+  // gate): round 7's carriedLive guard is a single WHOLE-HATCH flag —
+  // it turns true after ANY live boundaryRefs entry (or accepted
+  // anchor), and a graph-backed raw boundary link remains in the
+  // emitted set even though IT never carried live. A hatch holding one
+  // live link plus one graph-only non-live link therefore still wrote
+  // 71 = 1 and gained a back-reactor for the NON-LIVE boundary: the
+  // model leaves that boundary's fill behind on a move, the file
+  // claimed the link live, and reopening the save PROMOTED the raw
+  // link to boundaryRefs — the read/write divergence family, via
+  // classification granularity. The ruling completes the classification
+  // PER LINK, whole-hatch like O5: if ANY emitted link is graph-only
+  // non-live (resolved only through the retained cad graph's
+  // entity-anchor join — not a live boundaryRef, not an accepted
+  // round-2 anchor, not a model-carried cadIdentity), the whole hatch
+  // writes 71 = 0 with NO reactors; the links are still emitted, inert
+  // under 71 = 0, and reopen keeps them raw (round 4). All-live and
+  // accepted-anchor hatches stay 71 = 1 with reactors.
+  //
+  // Fixture discipline (Justin's direction): every divergent case is
+  // built over a REAL retained cad graph WITH NODES — a real DXF
+  // import whose cad graph anchors both boundary polylines as entity
+  // nodes (source handles 50 / 60), the imported entities themselves
+  // carrying NO cadIdentity, so a raw loop handle naming one resolves
+  // ONLY through the graph's entity-anchor join (extras
+  // .graphEntityHandles). The mixed loop compositions over that import
+  // are the post-import shapes (compare round 7 (d)).
+  const sq = (x: number, y: number, s = 10) => [
+    { x, y }, { x: x + s, y }, { x: x + s, y: y + s }, { x, y: y + s },
+  ];
+  const pts = (x: number, y: number): Pair[] => sq(x, y).flatMap((p) => [[10, p.x], [20, p.y]] as Pair[]);
+  const reactorsOf = (rec: { groups: Array<[number, string]> }): string[] => {
+    const out: string[] = [];
+    let inside = false;
+    for (const [c, v] of rec.groups) {
+      if (c === 102 && v === '{ACAD_REACTORS') inside = true;
+      else if (c === 102 && v === '}' && inside) inside = false;
+      else if (inside && c === 330) out.push(v);
+    }
+    return out;
+  };
+  /** All (97 count -> 330s) blocks of a HATCH record, in loop order. */
+  const loopLinksOf = (rec: { groups: Array<[number, string]> }): string[][] => {
+    const out: string[][] = [];
+    for (let i = 0; i < rec.groups.length; i++) {
+      if (rec.groups[i]![0] === 97) {
+        const n = Number(rec.groups[i]![1]);
+        out.push(rec.groups.slice(i + 1, i + 1 + n).filter(([c]) => c === 330).map(([, v]) => v));
+      }
+    }
+    return out;
+  };
+  const polyRecord = (kind: string, name: string, handle: string, x: number): Pair[] => [
+    [0, kind], [5, handle], [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, name],
+    [90, 4], [70, 1], ...pts(x, 0),
+  ];
+  /** Two square LWPOLYLINEs (50 at origin, 60 at +100x) + a SOLID hatch (51, 71 = 1) naming `refs` in ONE loop. */
+  const twoBoundaryDxf = (refs: string[]): string => {
+    const fields: Pair[] = [
+      [0, 'SECTION'], [2, 'HEADER'], [9, '$ACADVER'], [1, 'AC1015'], [0, 'ENDSEC'],
+      [0, 'SECTION'], [2, 'ENTITIES'],
+      ...polyRecord('LWPOLYLINE', 'AcDbPolyline', '50', 0),
+      ...polyRecord('LWPOLYLINE', 'AcDbPolyline', '60', 100),
+      [0, 'HATCH'], [5, '51'], [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbHatch'],
+      [10, 0], [20, 0], [30, 0], [210, 0], [220, 0], [230, 1],
+      [2, 'SOLID'], [70, 1], [71, 1], [91, 1],
+      [92, 3], [72, 0], [73, 1], [93, 4], ...pts(0, 0),
+      [97, refs.length], ...refs.map((r) => [330, r] as Pair),
+      [75, 0], [76, 1], [98, 0],
+      [0, 'ENDSEC'], [0, 'EOF'],
+    ];
+    return fields.flat().join('\n');
+  };
+  const hatchOf = (s: DrawingState): HatchEntity => s.entities.find((e): e is HatchEntity => e.type === 'hatch')!;
+  const polysOf = (s: DrawingState): PolylineEntity[] => s.entities.filter((e): e is PolylineEntity => e.type === 'polyline');
+
+  /** The imported two-boundary state (real graph) + its parts. */
+  const importTwo = () => {
+    const imported = readDxf(twoBoundaryDxf(['50']));
+    const hatch = hatchOf(imported);
+    const [polyA, polyB] = polysOf(imported);
+    // The fixture really is graph-backed: both boundaries are entity
+    // nodes of the retained graph and carry no model identity, so the
+    // raw handle '60' below resolves ONLY through the graph join.
+    expect(imported.cadGraph?.nodes.some((n) => n.sourceHandle === '60' && n.anchor?.kind === 'entity')).toBe(true);
+    expect(polyB!.cadIdentity).toBeUndefined();
+    const withHatch = (h: HatchEntity): DrawingState => ({
+      ...imported,
+      entities: imported.entities.map((e) => (e.id === hatch.id ? h : e)),
+    });
+    return { imported, hatch, polyA: polyA!, polyB: polyB!, withHatch };
+  };
+
+  /** The demoted-save expectations shared by all three mixed cases. */
+  const expectDemotedSave = (state: DrawingState, expectedLinks: string[][]) => {
+    const saved = writeDxf(state);
+    const recs = records(saved);
+    const hatchRec = recs.find((r) => r.kind === 'HATCH')!;
+    // The whole hatch demotes: 71 = 0, every link still EMITTED (inert),
+    // and NO boundary carries a back-reactor toward this hatch.
+    expect(group(hatchRec, 71)).toBe('0');
+    expect(loopLinksOf(hatchRec)).toEqual(expectedLinks);
+    for (const pr of recs.filter((r) => r.kind === 'LWPOLYLINE')) expect(reactorsOf(pr)).toEqual([]);
+    // Reopen: NO promotion — the whole list stays raw, the hatch is
+    // pinned inert, and moving EITHER boundary leaves the fill behind.
+    const reopened = readDxf(saved);
+    const rh = hatchOf(reopened);
+    expect(rh.associative).toBe(false);
+    for (const loop of rh.loops) expect(loop.boundaryRefs).toBeUndefined();
+    expect(rh.loops.flatMap((l) => l.boundaryHandles ?? [])).toEqual(expectedLinks.flat());
+    const doc = new Drawing(reopened);
+    const fill = JSON.stringify(hatchOf(doc.snapshot).loops.map((l) => l.points));
+    for (const p of polysOf(doc.snapshot)) {
+      doc.replaceEntities([{ ...p, points: p.points.map((q) => ({ x: q.x + 500, y: q.y })) }]);
+      expect(JSON.stringify(hatchOf(doc.snapshot).loops.map((l) => l.points))).toBe(fill);
+    }
+    return { saved, hatchRec };
+  };
+
+  it('(i) MIXED IN ONE LOOP: live ref + graph-only raw handle — the raw link vetoes 71 = 1 for the whole hatch', () => {
+    const { hatch, polyA, polyB, withHatch } = importTwo();
+    const mixed: HatchEntity = {
+      ...hatch, associative: true,
+      loops: [{ points: hatch.loops[0]!.points, boundaryRefs: [polyA.id], boundaryHandles: ['60'] }],
+    };
+    const state = withHatch(mixed);
+    // Model premise: the model itself holds the '60' link non-live —
+    // moving polyline B leaves the fill behind, moving A refreshes it.
+    const doc = new Drawing(state);
+    const fill0 = JSON.stringify(hatchOf(doc.snapshot).loops[0]!.points);
+    doc.replaceEntities([{ ...polyB, points: sq(300, 0) }]);
+    expect(JSON.stringify(hatchOf(doc.snapshot).loops[0]!.points)).toBe(fill0);
+    doc.replaceEntities([{ ...polyA, points: sq(400, 0) }]);
+    expect(JSON.stringify(hatchOf(doc.snapshot).loops[0]!.points)).not.toBe(fill0);
+    // At base this save wrote 71 = 1 with a reactor on BOTH polylines
+    // and the reopen promoted '60' to a live ref (Codex's case (iii)).
+    const recs = records(writeDxf(state));
+    const aRec = recs.filter((r) => r.kind === 'LWPOLYLINE')[0]!;
+    const bRec = recs.filter((r) => r.kind === 'LWPOLYLINE')[1]!;
+    expectDemotedSave(state, [[group(aRec, 5)!, group(bRec, 5)!]]);
+  });
+
+  for (const [label, rawFirst] of [['live loop + raw loop', false], ['raw loop + live loop', true]] as const) {
+    it(`(ii) TWO LOOPS (${label}): the graph-only loop vetoes 71 = 1 for the whole hatch`, () => {
+      const { hatch, polyA, withHatch } = importTwo();
+      const liveLoop = { points: hatch.loops[0]!.points, boundaryRefs: [polyA.id] };
+      const rawLoop = { points: sq(100, 0), boundaryHandles: ['60'] };
+      const state = withHatch({
+        ...hatch, associative: true,
+        loops: rawFirst ? [rawLoop, liveLoop] : [liveLoop, rawLoop],
+      });
+      const recs = records(writeDxf(state));
+      const aRec = recs.filter((r) => r.kind === 'LWPOLYLINE')[0]!;
+      const bRec = recs.filter((r) => r.kind === 'LWPOLYLINE')[1]!;
+      const expected = rawFirst
+        ? [[group(bRec, 5)!], [group(aRec, 5)!]]
+        : [[group(aRec, 5)!], [group(bRec, 5)!]];
+      expectDemotedSave(state, expected);
+    });
+  }
+
+  it('(pin) ALL-LIVE: both boundaries as reader-resolved refs in one loop stay 71 = 1 with reactors', () => {
+    const state = readDxf(twoBoundaryDxf(['50', '60']));
+    const recs = records(writeDxf(state));
+    const hatchRec = recs.find((r) => r.kind === 'HATCH')!;
+    expect(group(hatchRec, 71)).toBe('1');
+    expect(loopLinksOf(hatchRec)).toEqual([['50', '60']]);
+    for (const pr of recs.filter((r) => r.kind === 'LWPOLYLINE')) {
+      expect(reactorsOf(pr)).toEqual([group(hatchRec, 5)]);
+    }
+    const reopened = hatchOf(readDxf(writeDxf(state)));
+    expect(reopened.associative).toBe(true);
+    expect(reopened.loops[0]!.boundaryRefs).toHaveLength(2);
+  });
+
+  it('(pin) MIXED LIVE + ACCEPTED ANCHOR: a live ref loop plus a retained-REGION anchor loop stays 71 = 1 with reactors', () => {
+    // The anchor class is an accepted live class (round 2), NOT a
+    // graph-only entity join: mixed company with a live ref must not
+    // demote. Fixture: polyline 50 + retained REGION 60 in one real
+    // import; the hatch is composed with a live loop on the polyline
+    // and a raw-handle loop on the REGION.
+    const fields: Pair[] = [
+      [0, 'SECTION'], [2, 'HEADER'], [9, '$ACADVER'], [1, 'AC1015'], [0, 'ENDSEC'],
+      [0, 'SECTION'], [2, 'ENTITIES'],
+      ...polyRecord('LWPOLYLINE', 'AcDbPolyline', '50', 0),
+      [0, 'REGION'], [5, '60'], [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbModelerGeometry'],
+      [1, 'ACIS data placeholder line one'], [1, 'ACIS data placeholder line two'],
+      [0, 'HATCH'], [5, '51'], [330, '1F'], [100, 'AcDbEntity'], [8, '0'], [100, 'AcDbHatch'],
+      [10, 0], [20, 0], [30, 0], [210, 0], [220, 0], [230, 1],
+      [2, 'SOLID'], [70, 1], [71, 1], [91, 1],
+      [92, 3], [72, 0], [73, 1], [93, 4], ...pts(0, 0),
+      [97, 1], [330, '50'],
+      [75, 0], [76, 1], [98, 0],
+      [0, 'ENDSEC'], [0, 'EOF'],
+    ];
+    const imported = readDxf(fields.flat().join('\n'));
+    const hatch = hatchOf(imported);
+    const polyA = polysOf(imported)[0]!;
+    expect(hatch.loops[0]!.boundaryRefs).toEqual([polyA.id]);
+    const state: DrawingState = {
+      ...imported,
+      entities: imported.entities.map((e) => (e.id === hatch.id
+        ? {
+          ...hatch, associative: true,
+          loops: [
+            { points: hatch.loops[0]!.points, boundaryRefs: [polyA.id] },
+            { points: sq(100, 0), boundaryHandles: ['60'] },
+          ],
+        }
+        : e)),
+    };
+    const recs = records(writeDxf(state));
+    const hatchRec = recs.find((r) => r.kind === 'HATCH')!;
+    const polyRec = recs.find((r) => r.kind === 'LWPOLYLINE')!;
+    const regionRec = recs.find((r) => r.kind === 'REGION')!;
+    expect(group(hatchRec, 71)).toBe('1');
+    expect(loopLinksOf(hatchRec)).toEqual([[group(polyRec, 5)!], ['60']]);
+    expect(reactorsOf(polyRec)).toEqual([group(hatchRec, 5)]);
+    expect(reactorsOf(regionRec)).toEqual([group(hatchRec, 5)]);
+    const reopenedState = readDxf(writeDxf(state));
+    const reopened = hatchOf(reopenedState);
+    expect(reopened.associative).toBe(true);
+    expect(reopened.loops[0]!.boundaryRefs).toEqual([polysOf(reopenedState)[0]!.id]);
+  });
+
+  it('(pin) MIXED LIVE REF + cadIdentity HANDLE (graph-less authored state): the model-carried class stays 71 = 1', () => {
+    // The third live class: a retained handle resolving through an
+    // identity the entity carries in the model itself (cadIdentity,
+    // the P1-d posture — no cad graph in this state, so nothing about
+    // the link is graph-only).
+    const props = { layer: '0', color: 'ByLayer' as const };
+    const polyA: PolylineEntity = { id: 'm1', ...props, type: 'polyline', points: sq(0, 0), closed: true, cadIdentity: '50' };
+    const polyB: PolylineEntity = { id: 'm2', ...props, type: 'polyline', points: sq(100, 0), closed: true, cadIdentity: '60' };
+    const hatch: HatchEntity = {
+      id: 'h1', ...props, type: 'hatch', pattern: 'SOLID', solid: true, angle: 0, scale: 1, associative: true,
+      loops: [{ points: sq(0, 0), boundaryRefs: ['m1'], boundaryHandles: ['60'] }],
+    };
+    const state: DrawingState = { entities: [polyA, polyB, hatch], layers: [], blocks: {}, currentLayer: '0' };
+    const recs = records(writeDxf(state));
+    const hatchRec = recs.find((r) => r.kind === 'HATCH')!;
+    const [aRec, bRec] = recs.filter((r) => r.kind === 'LWPOLYLINE');
+    expect(group(hatchRec, 71)).toBe('1');
+    expect(loopLinksOf(hatchRec)).toEqual([[group(aRec!, 5)!, group(bRec!, 5)!]]);
+    expect(reactorsOf(aRec!)).toEqual([group(hatchRec, 5)]);
+    expect(reactorsOf(bRec!)).toEqual([group(hatchRec, 5)]);
+  });
+
+  it('(pin) RAW-ONLY over the real graph stays demoted (round 7 (d) in this fixture family)', () => {
+    const { hatch, withHatch } = importTwo();
+    const state = withHatch({
+      ...hatch, associative: undefined,
+      loops: [{ points: hatch.loops[0]!.points, boundaryHandles: ['50'] }],
+    });
+    const recs = records(writeDxf(state));
+    const aRec = recs.filter((r) => r.kind === 'LWPOLYLINE')[0]!;
+    expectDemotedSave(state, [[group(aRec, 5)!]]);
+  });
+});

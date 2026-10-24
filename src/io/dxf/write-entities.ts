@@ -200,6 +200,19 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtr
   // before the guard, exactly that upgrade wrote CANP5's divergent
   // file (model inert, file 71 = 1 + reactor).
   let carriedLive = false;
+  // Round 8 (lead ruling): the classification is PER LINK, whole-hatch
+  // like O5. Round 7's flag alone left the mixed case divergent: a
+  // hatch with one live link plus one graph-only link (below) still
+  // wrote 71 = 1, and the reactor pass — which keys off the written
+  // flag — put a back-reactor on the NON-LIVE boundary too, so the
+  // file activated a link the model holds inert and reopening the save
+  // promoted it to a live ref. So a graph-only link (an emitted link
+  // whose retained handle resolved ONLY through the cad graph's
+  // entity-anchor join — graphEntityHandles) now VETOES 71 = 1 for the
+  // whole hatch, whatever else it carries: the hatch writes 71 = 0
+  // with no reactors, its links still emitted inert, and round 4 keeps
+  // the reopened hatch wholly inert, so file and model agree again.
+  let graphOnlyLink = false;
   const loopLinks = e.loops.map((l) => {
     const seen = new Set<string>();
     const links: HatchLink[] = [];
@@ -231,7 +244,15 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtr
       if (b) {
         const before = links.length;
         pushEntity(b);
-        if (links.length > before && !(extras?.graphEntityHandles?.has(canon) ?? false)) carriedLive = true;
+        if (links.length > before) {
+          // Per link (round 8): resolved through an identity the model
+          // itself carries (cadIdentity) the link is live-class; resolved
+          // ONLY through the retained graph's entity-anchor join
+          // (graphEntityHandles supplied or overwrote this entry) it is
+          // graph-only and vetoes 71 = 1 for the whole hatch below.
+          if (extras?.graphEntityHandles?.has(canon) ?? false) graphOnlyLink = true;
+          else carriedLive = true;
+        }
         continue;
       }
       if (extras?.hatchAnchorHandles?.has(canon)) {
@@ -273,7 +294,12 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtr
   // import left non-live — is written 71 = 0 with its links emitted
   // inert (the demote posture, never a refusal: no data is lost, and
   // round 4 keeps the reopened hatch inert, so file and model agree).
-  w.pair(71, e.associative !== false && !hatchBoundary && carriedLive && allLinks.length > 0 && allLinks.every((l) => l.sameOwner) ? 1 : 0);
+  // Round 8: 71 = 1 additionally requires NO graph-only link
+  // (graphOnlyLink above): in mixed company the graph-only link vetoes
+  // the flag for the whole hatch, live links included, exactly like
+  // the O5 complete-set classification — a non-live link is never
+  // written as part of a live association.
+  w.pair(71, e.associative !== false && !hatchBoundary && carriedLive && !graphOnlyLink && allLinks.length > 0 && allLinks.every((l) => l.sameOwner) ? 1 : 0);
   w.pair(91, e.loops.length);
   e.loops.forEach((l, i) => {
     const hasBulge = !!l.bulges && l.bulges.some((b) => Math.abs(b) > 1e-12);
