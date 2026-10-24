@@ -99,7 +99,7 @@
     {
       "path": "src/io/dxf/reader/section_reader.rs",
       "beforeSha256": "bb6654d7282300e54ea568efda7824149037a6b33a01d4fd287d7c8a2c9ac45b",
-      "afterSha256": "6e1b962dbcbeec782c43805351a6b8d170d46e111ab1bb6a2c342989369ee589",
+      "afterSha256": "eae0abcac9b655bbd100a11a07fc61ccf7190b1c4f1597298806f098c9618c97",
       "replacements": [
         {
           "before": "let obj = self.read_field_object_dxf(document.version)?;",
@@ -269,6 +269,26 @@
         {
           "before": "self.read_stub_object::<PlaceHolder>()?",
           "after": "self.read_stub_object::<PlaceHolder>(document)?",
+          "count": 1
+        },
+        {
+          "before": "    fn read_sort_entities_table(\r\n        &mut self,\r\n        version: crate::types::DxfVersion,\r\n    ) -> Result<Option<SortEntitiesTable>> {\r\n        let mut set = SortEntitiesTable::new();",
+          "after": "    fn read_sort_entities_table(\r\n        &mut self,\r\n        document: &mut CadDocument,\r\n    ) -> Result<Option<SortEntitiesTable>> {\r\n        let version = document.version;\r\n        let mut set = SortEntitiesTable::new();",
+          "count": 1
+        },
+        {
+          "before": "self.read_sort_entities_table(document.version)?",
+          "after": "self.read_sort_entities_table(document)?",
+          "count": 1
+        },
+        {
+          "before": "        let mut in_group = false;\r\n        let mut in_table = false;\r\n\r\n        while let Some(pair) = self.reader.read_pair()? {\r\n            if pair.code == 0 {\r\n                self.reader.push_back(pair);\r\n                break;\r\n            }\r\n            raw_dxf_codes.push((pair.code, pair.value_string.clone()));\r\n            match pair.code {\r\n                102 => in_group = pair.value_string.trim().starts_with('{'),",
+          "after": "        let mut in_group = false;\r\n        let mut in_table = false;\r\n        let mut reactors = Vec::new();\r\n        let mut in_reactors = false;\r\n\r\n        while let Some(pair) = self.reader.read_pair()? {\r\n            if pair.code == 0 {\r\n                self.reader.push_back(pair);\r\n                break;\r\n            }\r\n            raw_dxf_codes.push((pair.code, pair.value_string.clone()));\r\n            match pair.code {\r\n                102 => {\r\n                    let text = pair.value_string.trim();\r\n                    if text == \"{ACAD_REACTORS\" {\r\n                        in_reactors = true;\r\n                    } else if text == \"}\" {\r\n                        in_reactors = false;\r\n                    }\r\n                    in_group = text.starts_with('{');\r\n                }\r\n                // The reactor block's 330s join the document reactor\r\n                // channel, exactly as the sibling object readers fill\r\n                // it; they are not consumed from the raw tail above.\r\n                330 if in_reactors => {\r\n                    if let Ok(h) = u64::from_str_radix(pair.value_string.trim(), 16) {\r\n                        reactors.push(Handle::new(h));\r\n                    }\r\n                }",
+          "count": 1
+        },
+        {
+          "before": "        set.raw_dxf_codes = Some(raw_dxf_codes);\r\n        set.raw_dxf_version = Some(version);\r\n        Ok(Some(set))",
+          "after": "        set.raw_dxf_codes = Some(raw_dxf_codes);\r\n        set.raw_dxf_version = Some(version);\r\n        if !reactors.is_empty() {\r\n            document.reactors_by_handle.insert(set.handle, reactors);\r\n        }\r\n        Ok(Some(set))",
           "count": 1
         }
       ]
