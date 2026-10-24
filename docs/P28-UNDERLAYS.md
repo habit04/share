@@ -17,6 +17,23 @@
   Until that wiring lands, "PDF underlay display" means the labelled frame.
   (Before v0.6.4 the frame had no label at all — review finding F-E.)
 - DWF and DGN content is never decoded (no admitted decoder).
+- **Record layout (corrected in v0.6.4, review F-F).** The codec first
+  shipped with a layout AutoCAD rejects outright (markers
+  `AcDbPdfUnderlay` / `AcDbPdfDefinition`, flags as 70, contrast/fade as
+  280/281, clip as 14/24, no marker on the definition, CLASS app "ISM");
+  AutoCAD 2027 discarded every such drawing. The codec now reads and writes
+  the AutoCAD DXF Reference layout: entity `100 AcDbUnderlayReference` with
+  340 / 10 20 30 / 41 42 43 / 50 / 210 / **280 flags / 281 contrast
+  (20..100) / 282 fade (0..80)** and the clip as repeated **11/21** pairs;
+  definition `100 AcDbUnderlayDefinition` with 1 file / 2 page; CLASS
+  `PDFUNDERLAY -> AcDbPdfReference`, `PDFDEFINITION -> AcDbPdfDefinition`
+  under "ObjectDBX Classes" (DWF/DGN likewise). Retained groups are written
+  in AutoCAD's order; an edited scale/rotation is written once (F-G);
+  MIRROR is a true reflection (F-H). The genuine AutoCAD 2027 fixture is
+  `tests/fixtures/interchange/r2018-pdf-underlay-acad2027.dxf`
+  (`tests/underlay-autocad-layout.test.ts`); where the sections below say
+  70 / 280 / 281 / 14 / 24 or "no underlay fixture", they describe the
+  superseded slice.
 
 Status: slice 1 implemented on `muse/p28-underlays` as pure isolated
 modules (unadmitted prototype — see PROPOSAL-P28 in the six-pipeline
