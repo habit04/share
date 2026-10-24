@@ -114,6 +114,38 @@ const writtenHatch41 = (state: DrawingState): number => {
   throw new Error('no HATCH group 41 in written DXF');
 };
 
+/** The group-41 TEXT of the first HATCH in a written DXF (precision matters). */
+const writtenHatch41Text = (state: DrawingState): string => {
+  const lines = writeDxf(state).split(/\r?\n/);
+  for (let i = 0; i + 1 < lines.length; i += 2) {
+    if (lines[i] === '0' && lines[i + 1] === 'HATCH') {
+      for (let j = i + 2; j + 1 < lines.length && lines[j] !== '0'; j += 2) {
+        if (lines[j] === '41') return lines[j + 1]!;
+      }
+    }
+  }
+  throw new Error('no HATCH group 41 in written DXF');
+};
+
+/** A DXF with a $MEASUREMENT = 1 header and one ANSI31 hatch whose stored
+ *  lines are the IMPERIAL table lines for the declared scale (spacing
+ *  0.125 x scale): a hatch authored in table space inside a metric drawing.
+ *  On read it folds at exactly the declared scale (branch 1 of the fit); the
+ *  save re-expresses its group 41 in the file's system (scale / 25.4). */
+const dxfMetricImperialFor = (scale: number) => {
+  const o = worldOffset(scale, 0);
+  return [
+    '0', 'SECTION', '2', 'HEADER', '9', '$MEASUREMENT', '70', '1', '0', 'ENDSEC',
+    '0', 'SECTION', '2', 'ENTITIES',
+    '0', 'HATCH', '8', '0', '100', 'AcDbEntity', '100', 'AcDbHatch', '10', '0', '20', '0', '30', '0', '2', 'ANSI31', '70', '0', '71', '0', '91', '1',
+    '92', '2', '72', '0', '73', '1', '93', '4', '10', '0', '20', '0', '10', '100', '20', '0', '10', '100', '20', '50', '10', '0', '20', '50', '97', '0',
+    '75', '0', '76', '1', '52', '0', '41', String(scale), '77', '0',
+    '78', '1', '53', '45', '43', '0', '44', '0', '45', String(o.x), '46', String(o.y), '79', '0',
+    '98', '0',
+    '0', 'ENDSEC', '0', 'EOF',
+  ].join('\n');
+};
+
 describe('HATCH pattern scale in metric drawings ($MEASUREMENT = 1)', () => {
   it('keeps $MEASUREMENT in the drawing header, and only when the source has it', () => {
     expect(readDxf(dxfMetricFor(1)).header?.measurement).toBe(1);
@@ -146,6 +178,29 @@ describe('HATCH pattern scale in metric drawings ($MEASUREMENT = 1)', () => {
     const first = readDxf(dxfMetricFor(1, 1, true));
     expect((first.entities[0] as HatchEntity).scale).toBe(25.4);
     expect(writtenHatch41(first)).toBe(1);
+  });
+
+  it.each([1, 2])('an imperial-authored hatch at scale %s in a metric drawing round-trips exactly (P3)', (scale) => {
+    const first = readDxf(dxfMetricImperialFor(scale));
+    const h1 = first.entities[0] as HatchEntity;
+    expect(first.header?.measurement).toBe(1);
+    // Authored in table space: folds at exactly the declared scale.
+    expect(h1.scale).toBe(scale);
+    expect(h1.patternLines).toBeUndefined();
+    // The save re-expresses 41 in the file's system (scale / 25.4). Written
+    // through the file-wide 10-decimal format that text is 0.0393700787 for
+    // scale 1, and branch 2 of the fit multiplies it back by 25.4:
+    // 0.0393700787 x 25.4 = 0.99999999898 — the re-read scale drifted off the
+    // authored value, breaking the declared-value exactness the imperial
+    // path guarantees. The metric 41 must be written at full precision.
+    const second = readDxf(writeDxf(first));
+    const h2 = second.entities[0] as HatchEntity;
+    expect(h2.scale).toBe(scale);
+    expect(h2.patternLines).toBeUndefined();
+    // Fixed point: the second save writes the identical 41 text and the
+    // scale is still exact after another full cycle.
+    expect(writtenHatch41Text(second)).toBe(writtenHatch41Text(first));
+    expect((readDxf(writeDxf(second)).entities[0] as HatchEntity).scale).toBe(scale);
   });
 
   it('$MEASUREMENT = 0 keeps the imperial rule: ISO-spaced lines at 41 = 1 still derive 25.4', () => {
