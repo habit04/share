@@ -107,6 +107,49 @@ function writeSpline(w: Writer, e: SplineEntity, owner: string): void {
   }
 }
 
+const f64View = new DataView(new ArrayBuffer(8));
+/** The double one ulp from `x` in the sign of `dir` (positive x only — the bit
+ *  pattern of a positive double orders like an integer). */
+function stepUlp(x: number, dir: 1 | -1): number {
+  f64View.setFloat64(0, x);
+  f64View.setBigUint64(0, f64View.getBigUint64(0) + BigInt(dir));
+  return f64View.getFloat64(0);
+}
+
+/**
+ * The group-41 text for a folded (table-regenerated) hatch in a metric
+ * drawing: the model scale expressed in the file's system, scale / 25.4,
+ * written at FULL double precision as a raw string (Writer.pair formats
+ * numbers through the file-wide 10-decimal fmt, and this one value must not
+ * pass through it). At 10 decimals the text for an authored scale of 1 is
+ * 0.0393700787, and fitPatternToLines' metric branch multiplies the declared
+ * value back by 25.4 on re-read: 0.0393700787 x 25.4 = 0.99999999898, so the
+ * scale drifted off the authored value — the declared-value exactness the
+ * imperial path guarantees (74757b90) broke in the metric case (P3).
+ * Full precision alone is not quite enough: the double nearest the exact
+ * quotient does not always multiply back to the authored scale
+ * (fl(1 / 25.4) x 25.4 = 0.9999999999999999, one ulp low). The emitted double
+ * is therefore the one nearest the quotient — the quotient itself whenever it
+ * qualifies, else an adjacent double within a few ulps — whose product with
+ * 25.4 IS the authored scale bit-for-bit; if no neighbour qualifies, the
+ * plain full-precision quotient is emitted. Degenerate scales (non-finite or
+ * <= 0) return the number, keeping the shared fmt behaviour byte-for-byte.
+ */
+function metricFoldedScale41(scale: number): string | number {
+  const q = scale / 25.4;
+  if (!Number.isFinite(q) || q <= 0) return q;
+  if (q * 25.4 === scale) return String(q);
+  let up = q;
+  let down = q;
+  for (let i = 0; i < 4; i++) {
+    up = stepUlp(up, 1);
+    if (up * 25.4 === scale) return String(up);
+    down = stepUlp(down, -1);
+    if (down * 25.4 === scale) return String(down);
+  }
+  return String(q);
+}
+
 function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtras): void {
   if (e.gradient) {
     const problem = hatchGradientDataProblem(e.gradient);
@@ -322,7 +365,18 @@ function writeHatch(w: Writer, e: HatchEntity, owner: string, extras?: WriteExtr
   if (!e.solid) {
     const lines = hatchPatternLines(e);
     w.pair(52, g.deg(e.angle));
-    w.pair(41, e.scale);
+    // Group 41 is expressed in the drawing's measurement system. A hatch whose lines are
+    // regenerated from the imperial pattern table (folded by fitPatternToLines, so no raw
+    // patternLines) carries its scale in table space: in a metric drawing
+    // ($MEASUREMENT = 1), whose definitions are the ISO ones at 25.4x, the authored scale
+    // is the model scale / 25.4 — writing the model scale verbatim (25.4 for a metric
+    // hatch authored at 1) makes AutoCAD's HATCHEDIT regenerate it 25.4x too coarse.
+    // A hatch keeping its raw file lines was never table-normalized: its scale is already
+    // the declared file-space value and is written verbatim.
+    const fromTable = !e.patternLines?.length && lines.length > 0;
+    // The metric folded case goes through metricFoldedScale41 (full double
+    // precision — see its comment); every other case keeps the shared fmt.
+    w.pair(41, extras?.measurement === 1 && fromTable ? metricFoldedScale41(e.scale) : e.scale);
     w.pair(77, e.double ? 1 : 0);
     w.pair(78, lines.length);
     for (const l of lines) {

@@ -388,7 +388,7 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
   const dims3dAs2d = dims3d.map(dimension3dTo2d);
   const linetypes = usedLinetypes(state);
   // Images (IMAGEDEF + reactor per image) and tables (an anonymous block each) anywhere in the drawing.
-  const extras: WriteExtras = { ...emptyExtras(), arrowSize: ds.arrowSize * (ds.scale || 1) };
+  const extras: WriteExtras = { ...emptyExtras(), arrowSize: ds.arrowSize * (ds.scale || 1), ...(header.measurement !== undefined ? { measurement: header.measurement } : {}) };
   const allEntities: Entity[] = [...state.entities, ...layoutPlan.entities];
   for (const b of blockList) allEntities.push(...b.entities);
   // P17: hatch boundary refs resolve against everything this writer emits.
@@ -751,6 +751,7 @@ export function writeDxf(state: DrawingState, exportReport?: { add(item: ImportR
   hv('$DWGCODEPAGE', 3, 'ANSI_1252');
   hv('$HANDSEED', 5, 'HANDSEED_PLACEHOLDER');
   hv('$INSUNITS', 70, header.units.insunits);
+  if (header.measurement !== undefined) hv('$MEASUREMENT', 70, header.measurement);
   hv('$LUNITS', 70, header.units.lunits);
   hv('$LUPREC', 70, header.units.luprec);
   hv('$AUNITS', 70, header.units.aunits ?? 0);
