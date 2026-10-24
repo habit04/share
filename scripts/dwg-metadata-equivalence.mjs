@@ -652,10 +652,50 @@ function tableStyleCommonPairs(record, pairs, label) {
   return [...(blocks.get('{ACAD_REACTORS') ?? []), ...(blocks.get('{ACAD_XDICTIONARY') ?? []), owner, ...tail, ...pairs.slice(end)];
 }
 
+// LibreDWG's raw projection omits a SORTENTSTABLE's block-owner group: the
+// 330 immediately after its AcDbSortentsTable subclass marker, although the
+// DWG itself carries it as the typed block_owner handle (AutoCAD reads it
+// from the same file). Account for exactly that one slot, and only after
+// the target document's own ownership chain proves it: the source owner's
+// ACAD_SORTENTS dictionary — the unique dictionary whose ACAD_SORTENTS
+// entry is this table and whose common owner is the subclass owner — must
+// match a target dictionary that is likewise the unique ACAD_SORTENTS
+// holder of the matched table, and that dictionary's common owner must
+// identify the matched source block record. The synthesized target pair
+// carries the proven target owner, so the unchanged typed loop still
+// verifies the reference itself. No other group is synthesized, skipped or
+// forgiven — the (331, sort-handle 5) payload included — and every
+// unproven shape falls through to the ordinary length/framing comparison.
+function sortentsBlockOwnerPairs(record, actual, sourcePairs, targetPairs, source, target, matches) {
+  if (record.section !== 'OBJECTS' || record.type !== 'SORTENTSTABLE' || !actual || actual.section !== 'OBJECTS' || actual.type !== 'SORTENTSTABLE') return [sourcePairs, targetPairs];
+  const marker = pairs => { const found = pairs.flatMap((pair, index) => pair.code === 100 && pair.value.trim() === 'AcDbSortentsTable' ? [index] : []); return found.length === 1 ? found[0] : -1; };
+  const sourceMarker = marker(sourcePairs), targetMarker = marker(targetPairs);
+  if (sourceMarker < 0 || targetMarker < 0) return [sourcePairs, targetPairs];
+  const sourceOwner = sourcePairs[sourceMarker + 1];
+  if (sourceOwner?.code !== 330 || targetPairs[targetMarker + 1]?.code === 330) return [sourcePairs, targetPairs];
+  const owner = handle(sourceOwner.value), block = source.handles.get(owner);
+  if (!block || block.type !== 'BLOCK_RECORD') return [sourcePairs, targetPairs];
+  const holders = (parsed, table) => parsed.records.filter(candidate => dictionaries.has(candidate.type)
+    && candidate.groups.some((pair, index) => pair.code === 3 && pair.value === 'ACAD_SORTENTS' && [350, 360].includes(candidate.groups[index + 1]?.code ?? 0))
+    && dictionaryEntries(candidate, parsed).get('ACAD_SORTENTS') === table);
+  const sourceHolders = holders(source, record).filter(candidate => commonOwner(candidate) === owner);
+  if (sourceHolders.length !== 1) return [sourcePairs, targetPairs];
+  const matchedDictionary = matches.get(sourceHolders[0]);
+  if (!matchedDictionary || !dictionaries.has(matchedDictionary.type)) return [sourcePairs, targetPairs];
+  const targetHolders = holders(target, actual);
+  if (targetHolders.length !== 1 || targetHolders[0] !== matchedDictionary) return [sourcePairs, targetPairs];
+  const targetOwner = commonOwner(matchedDictionary);
+  if (targetOwner === undefined || matches.get(block) !== target.handles.get(targetOwner)) return [sourcePairs, targetPairs];
+  const result = targetPairs.slice();
+  result.splice(targetMarker + 1, 0, { code: 330, value: targetOwner });
+  return [sourcePairs, result];
+}
+
 function comparePairs(record, actual, sourcePairs, targetPairs, source, target, matches, label) {
   const firstStyle = retainedStylePairs(record, tableStyleCommonPairs(record, normalizePairs(record, sourcePairs), label), source, label);
   const secondStyle = retainedStylePairs(actual, tableStyleCommonPairs(actual, normalizePairs(actual, targetPairs), label), target, label);
-  const first = visualStyleColorPairs(record, firstStyle.pairs, source, label), second = visualStyleColorPairs(actual, secondStyle.pairs, target, label);
+  const styledFirst = visualStyleColorPairs(record, firstStyle.pairs, source, label), styledSecond = visualStyleColorPairs(actual, secondStyle.pairs, target, label);
+  const [first, second] = sortentsBlockOwnerPairs(record, actual, styledFirst, styledSecond, source, target, matches);
   if (first.length !== second.length) fail(`${label} group count changed (${first.length} -> ${second.length})`);
   for (let index = 0; index < first.length; index++) {
     const a = first[index], b = second[index], context = `${label}.group${a.code}[${index}]`;

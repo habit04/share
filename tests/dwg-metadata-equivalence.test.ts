@@ -128,6 +128,51 @@ describe('independent raw DWG metadata postflight', () => {
     const source = fixture(), target = mutateRecord(source, 'MLEADERSTYLE', groups => groups.filter(([group]) => group !== code));
     expect(() => verify(source, target)).toThrow(/MLEADERSTYLE.*group count changed/);
   });
+  const stripSortentsReactors = (groups: Pair[]) => {
+    const at = groups.findIndex(([code, value]) => code === 102 && value === '{ACAD_REACTORS');
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(groups.slice(at, at + 3)).toEqual([[102, '{ACAD_REACTORS'], [330, '15D'], [102, '}']]);
+    return [...groups.slice(0, at), ...groups.slice(at + 3)];
+  };
+  const stripSortentsBlockOwner = (groups: Pair[]) => {
+    const at = groups.findIndex(([code, value]) => code === 100 && value === 'AcDbSortentsTable');
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(groups[at + 1]).toEqual([330, '1F']);
+    return [...groups.slice(0, at + 1), ...groups.slice(at + 2)];
+  };
+  it('accounts for the projection omitting a SORTENTSTABLE block owner proven by the ACAD_SORTENTS chain', () => {
+    const genuine = oracle('truecolor-linetypes');
+    // Reactor-free source and target isolate the projection omission: the
+    // only difference left is the block-owner 330 after the subclass marker.
+    const source = mutateRecord(genuine, 'SORTENTSTABLE', stripSortentsReactors);
+    const target = mutateRecord(source, 'SORTENTSTABLE', stripSortentsBlockOwner);
+    expect(() => verify(source, target)).not.toThrow();
+    // With the reactor block present the same accounting restores only the
+    // owner slot; the reactors still compare exactly and refuse a retarget.
+    const reactorTarget = mutateRecord(genuine, 'SORTENTSTABLE', stripSortentsBlockOwner);
+    expect(() => verify(genuine, reactorTarget)).not.toThrow();
+    expect(() => verify(genuine, mutateRecord(reactorTarget, 'SORTENTSTABLE', groups => changeValue(groups, 330, '73')))).toThrow(/SORTENTSTABLE.*reference changed/);
+  });
+  it('still refuses a genuine SORTENTSTABLE payload loss behind the projection omission', () => {
+    const genuine = oracle('truecolor-linetypes');
+    const source = mutateRecord(genuine, 'SORTENTSTABLE', stripSortentsReactors);
+    const target = mutateRecord(source, 'SORTENTSTABLE', groups => {
+      const stripped = stripSortentsBlockOwner(groups);
+      const entry = stripped.findIndex(([code, value]) => code === 331 && value === '27C');
+      expect(stripped[entry + 1]).toEqual([5, '279']);
+      return [...stripped.slice(0, entry + 1), ...stripped.slice(entry + 2)];
+    });
+    expect(() => verify(source, target)).toThrow(/SORTENTSTABLE.*group count changed/);
+    // A block owner the projection does carry is verified by the ordinary
+    // loop: naming the table's own dictionary instead of its block refuses.
+    const wrongOwner = mutateRecord(source, 'SORTENTSTABLE', groups => {
+      const at = groups.findIndex(([code, value]) => code === 100 && value === 'AcDbSortentsTable');
+      expect(groups[at + 1]).toEqual([330, '1F']);
+      groups[at + 1] = [330, '15D'];
+      return groups;
+    });
+    expect(() => verify(source, wrongOwner)).toThrow(/SORTENTSTABLE.*reference changed/);
+  });
   it('rejects real AutoCAD MLEADERSTYLE/headervar loss with object or property context', () => {
     const source = oracle('views-fields');
     const changed = mutateRecord(source, 'MLEADERSTYLE', groups => changeValue(groups, 46, 99));
