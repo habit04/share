@@ -847,7 +847,13 @@ class PageWriter {
       this.parts(underlayParts(e), e, parent, view);
       return;
     }
-    const ops = underlayDisplayList(underlayPlacementOf(e), def, { width: hit.page.width, height: hit.page.height });
+    // D3: an AutoCAD-read definition carries no extent, so the display
+    // list would frame the image at the 1x1 unit fallback. Substitute
+    // the loaded page size, exactly as the screen path
+    // (underlay-render contentFor) and the plot resolver's source
+    // already do — a stored extent still wins.
+    const framedDef = def.extent ? def : { ...def, extent: hit.page };
+    const ops = underlayDisplayList(underlayPlacementOf(e), framedDef, { width: hit.page.width, height: hit.page.height });
     const styleProps = { layer: e.layer, color: e.color, linetype: e.linetype, lineWeight: e.lineWeight };
     const frameParts: Entity[] = [];
     for (const op of ops) {
