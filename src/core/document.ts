@@ -1,5 +1,5 @@
 import type { Entity, BlockDef, Layer, BlockLookup, ColorSpec } from './entities';
-import { entityBounds } from './entities';
+import { entityBounds, underlaySizeResolver, withUnderlaySizeChannel } from './entities';
 import type { Bounds, Point } from './geometry';
 import { unionBounds } from './geometry';
 import type { DimStyle } from './dimension';
@@ -778,9 +778,15 @@ export class Drawing {
   extents(): Bounds | null {
     let b: Bounds | null = null;
     const hidden = new Set(this.state.layers.filter((l) => !l.visible).map((l) => l.name));
+    // D4 (session seam): the session knows each definition's stored
+    // extent, so underlays bound by it here — ZOOM extents included.
+    // Page sizes known only to a display engine reach extents through
+    // the plot resolver's channel and the editor's live union, not
+    // through this sync session method.
+    const lookup = withUnderlaySizeChannel(this.lookupBlock, underlaySizeResolver(this.state.underlays));
     for (const e of this.entities) {
       if (hidden.has(e.layer)) continue;
-      b = unionBounds(b, entityBounds(e, this.lookupBlock));
+      b = unionBounds(b, entityBounds(e, lookup));
     }
     // Paper space: the sheet counts as part of the extents (ZOOM Extents shows the whole sheet).
     const lay = paperSpaceLayout(this.state);

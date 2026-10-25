@@ -3,7 +3,10 @@
  * written back), the F3 / F7 .. F12 toggles, and zoom to the drawing extents.
  * The Editor's public methods delegate here (their documentation is on the Editor).
  */
-import { lineweightDisplay } from '../../render/draw';
+import { lineweightDisplay, renderSettings } from '../../render/draw';
+import { underlayBounds } from '../../core/underlay';
+import { underlayPlacementOf } from '../../core/entities';
+import * as g from '../../core/geometry';
 import { saveSettings } from '../settings';
 import type { Editor } from './editor';
 
@@ -54,7 +57,28 @@ export function toggle(ed: Editor, name: Parameters<Editor['toggle']>[0]): void 
 }
 
 export function zoomExtents(ed: Editor): void {
-  ed.viewport.zoomToBounds(ed.doc.extents());
+  let b = ed.doc.extents();
+  // D4 (editor seam): doc.extents frames underlays by the stored
+  // extent the session knows; a page size the LIVE display service
+  // has already settled wins over it (page-size-first, the same
+  // precedence as the plot channel). Residual: on first open,
+  // documents.ts calls zoomExtents before any load has settled, so
+  // that first fit still falls back to the stored extent — or the
+  // unit frame when the definition carries none.
+  const defs = ed.doc.snapshot.underlays;
+  if (defs && renderSettings.underlaySource) {
+    const hidden = new Set(ed.doc.snapshot.layers.filter((l) => !l.visible).map((l) => l.name));
+    for (const e of ed.doc.entities) {
+      if (e.type !== 'underlay' || hidden.has(e.layer)) continue;
+      const page = renderSettings.underlaySource(e)?.page;
+      if (!page) continue;
+      const def = Object.values(defs).find((d) => (d.handle ?? '').trim().toUpperCase() === (e.definitionHandle ?? '').trim().toUpperCase());
+      if (!def) continue;
+      const ub = underlayBounds(underlayPlacementOf(e), { ...def, extent: page });
+      b = g.unionBounds(b, { min: { x: ub.minX, y: ub.minY }, max: { x: ub.maxX, y: ub.maxY } });
+    }
+  }
+  ed.viewport.zoomToBounds(b);
   ed.render();
   ed.notify('view');
 }

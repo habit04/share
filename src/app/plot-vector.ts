@@ -15,7 +15,7 @@ import type { DrawingState } from '../core/document';
 import type { Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity, UnderlayEntity } from '../core/entities';
-import { entityBounds, underlayPlacementOf } from '../core/entities';
+import { entityBounds, underlayPlacementOf, underlaySizeResolver, withUnderlaySizeChannel } from '../core/entities';
 import { underlayMonochrome } from '../core/underlay';
 import { adjustUnderlayPixels, underlayBackgroundKey, underlayStyleKey } from './underlay-adjust';
 import { findLayout, layoutsOf, activeLayout, type Layout } from '../core/layouts';
@@ -137,6 +137,10 @@ export interface CapturedUnderlayResolver {
    * source/imageData seams serve. Callers merge these into the plot
    * issues, which reach the editor log. */
   readonly issues: ReadonlySet<string>;
+  /** The loaded page size of an ensured definition, when its plot
+   * load produced one (gate finding D4: the page-size-first source
+   * for the extents channel). */
+  pageSizeOf(defId: string): { width: number; height: number } | undefined;
   dispose(): void;
 }
 
@@ -246,6 +250,7 @@ export async function captureUnderlayResolver(
   };
   return {
     issues,
+    pageSizeOf: (defId) => ensured.get(defId)?.page,
     source: (e) => {
       const joined = join(e);
       if (!joined) return undefined;
@@ -310,13 +315,27 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pe
   }
   const capturedGeometry = vector ? captured.vectorGeometry : captured.geometry;
   const initialLookup = await capturedPlotLookup(snapshot, capturedGeometry);
-  const state = plottableState(snapshot, initialLookup);
+  // D4: extents are computed in two tiers. plottableState initializes
+  // pristine layouts from the extents, so it runs with the session-tier
+  // channel (each definition's stored extent). The captured resolver
+  // is then created BEFORE the pages are computed — its settled page
+  // sizes feed the page-tier channel (page-size-first) that plotPages
+  // consumes, so a 'fit' layout scales to the real page frame instead
+  // of the 1x1 placeholder the bounds used to see.
+  const state = plottableState(snapshot, withUnderlaySizeChannel(initialLookup, underlaySizeResolver(snapshot.underlays)));
   const target = vector || !snapshot.space ? plotTarget(state, opts) : snapshot.space.layout;
+  const placements: Entity[] = [...state.entities];
+  {
+    const layoutTargets = target === 'layouts' ? layoutsOf(state) : target === 'model' ? [] : [findLayout(state, target)].filter((l): l is Layout => !!l);
+    for (const l of layoutTargets) placements.push(...l.entities);
+  }
+  const underlayResolver = await captureUnderlayResolver(state, placements, captured.underlayBytes, vector ? 300 : 150);
   const initialPages = vector ? plotPages(state, initialLookup, target, opts) : [];
   const prepared = vector ? await capturedPdfLookup(state, captured.pdfFont, initialPages.flatMap((page) => page.groups), initialLookup, { restricted: restrictedMode }) : null;
-  const lookup = prepared?.lookup ?? initialLookup;
+  const lookup = withUnderlaySizeChannel(prepared?.lookup ?? initialLookup, underlaySizeResolver(state.underlays, (defId) => underlayResolver.pageSizeOf(defId)));
   const pages = plotPages(state, lookup, target, opts);
   if (pages.length === 0 || pages.every((p) => p.groups.every((grp) => grp.entities.length === 0 && !(grp.frames?.length)))) {
+    underlayResolver.dispose();
     ed.log(target === 'model' ? 'Nothing to plot: this tab has no visible objects.' : 'Nothing to plot: the layout is empty.');
     return true;
   }
@@ -330,14 +349,16 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pe
   };
   if (vector) {
     const images = await collectImages(pages, lookup, captured.imageLoader);
-    const underlayResolver = await captureUnderlayResolver(state, pages.flatMap((p) => p.groups.flatMap((grp) => grp.entities)), captured.underlayBytes, 300);
-    for (const issue of underlayResolver.issues) plotIssues.add(issue);
     const ctx = drawingContext(state, lookup, (p) => images.get(p) ?? null, (e) => underlayResolver.imageData(e));
     const fontFallbacks = new Set<string>();
     Object.assign(ctx, { embeddedFonts: prepared?.fonts, textGeometry: prepared?.geometry, fontFallbacks, ...(prepared?.shapedText ? { shapedText: prepared.shapedText } : {}) });
     const title = target === 'model' ? base : target === 'layouts' ? `${base} - layouts` : `${base} - ${target}`;
     const bytes = await vectorPdfCompressed(pages, ctx, style, title, deflate);
     underlayResolver.dispose();
+    // D5: resolver issues are merged only now — after the consumers
+    // have run — because preparation failures are recorded by the
+    // imageData/source calls the writer makes during the write.
+    for (const issue of underlayResolver.issues) plotIssues.add(issue);
     reportPlotStyles();
     if (fontFallbacks.size) ed.log(`PDF used substitute fonts for ${[...fontFallbacks].join(', ')}. ${prepared?.issues.join(' ') || 'Some glyphs or font formats are unsupported.'}`);
     if (!restrictedMode && prepared?.issues.some((issue) => issue.includes('preview/print embedding requires a read-only PDF'))) {
@@ -366,10 +387,11 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pe
   const canvas = document.createElement('canvas');
   const maxPx = 12000;
   const dpi = Math.min(150, (maxPx / Math.max(page.width, page.height)) * 72);
+  underlayResolver.dispose(); // the page-tier resolver has served its sizes; the sheet gets its own at sheet dpi
   const rasterUnderlays = await captureUnderlayResolver(state, page.groups.flatMap((grp) => grp.entities), captured.underlayBytes, dpi);
-  for (const issue of rasterUnderlays.issues) plotIssues.add(issue);
   renderPageToCanvas(canvas, page, drawingContext(state, lookup), style, dpi, captured.imageLoader ?? (async () => null), rasterUnderlays.source);
   rasterUnderlays.dispose();
+  for (const issue of rasterUnderlays.issues) plotIssues.add(issue);
   reportPlotStyles();
   const dataUrl = canvas.toDataURL('image/png');
   const sheet = { width: page.width / 72, height: page.height / 72 };
