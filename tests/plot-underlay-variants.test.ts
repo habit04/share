@@ -13,6 +13,7 @@
  * The resolver is driven through its seams (fake engine + fake variant
  * canvas factory) with a 2x1 pure-red page raster.
  */
+import { inflateSync } from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DrawingState } from '../src/core/document';
 import { type UnderlayEntity } from '../src/core/entities';
@@ -21,6 +22,12 @@ import { underlayRefusal, type UnderlayDocument, type UnderlayRasterEngine } fro
 import { captureUnderlayResolver } from '../src/app/plot-vector';
 import type { UnderlayVariantCanvasFactory } from '../src/app/underlay-render';
 import { adjustUnderlayPixels } from '../src/app/underlay-adjust';
+
+/** The pixels a served imageData payload carries (gate finding D6:
+ * the payload is deflated at capture; these pins assert the styled
+ * PIXELS, so they decode the transport encoding first). */
+const pixelsOf = (img: { data: { data: Uint8Array; deflated?: boolean } } | null): Uint8Array =>
+  (img ? (img.data.deflated ? new Uint8Array(inflateSync(img.data.data)) : img.data.data) : new Uint8Array(0));
 
 interface FakeBitmap { px: Uint8ClampedArray }
 const REDPX = new Uint8ClampedArray([255, 0, 0, 255, 255, 0, 0, 255]);
@@ -128,14 +135,14 @@ describe('captured plot resolver — per-placement raster style (#57 P2 (2))', (
     const styled = resolver.imageData(contrast0);
     const raw = resolver.imageData(identity);
     resolver.dispose();
-    expect(styled?.data.data).toEqual(new Uint8Array([255, 255, 255, 255, 255, 255]));
-    expect(raw?.data.data).toEqual(new Uint8Array([255, 0, 0, 255, 0, 0]));
+    expect(pixelsOf(styled)).toEqual(new Uint8Array([255, 255, 255, 255, 255, 255]));
+    expect(pixelsOf(raw)).toEqual(new Uint8Array([255, 0, 0, 255, 0, 0]));
   });
 
   it('imageData: a monochrome placement embeds the mono-reduced raster', async () => {
     const { resolver, mono } = await setup();
     const hit = resolver.imageData(mono);
     resolver.dispose();
-    expect(hit?.data.data).toEqual(new Uint8Array([76, 76, 76, 76, 76, 76]));
+    expect(pixelsOf(hit)).toEqual(new Uint8Array([76, 76, 76, 76, 76, 76]));
   });
 });

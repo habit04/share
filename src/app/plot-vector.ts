@@ -256,6 +256,50 @@ export async function captureUnderlayResolver(
   const notePreparationFailure = (def: (typeof defs)[string]): void => {
     issues.add(`PDF underlay ${def.sourcePath} loaded, but its raster could not be prepared for plotting (the page is too large for a canvas); its placements plot as frames.`);
   };
+  /** Canvas-extract a styled raster to RGB (white-matted), the
+   * extraction imageData has always done. Throws when the platform
+   * refuses the canvas — callers own the failure posture. */
+  const extractRgb = (styled: { bitmap: CanvasImageSource; width: number; height: number }): { width: number; height: number; rgb: Uint8Array } => {
+    const c = document.createElement('canvas');
+    c.width = styled.width;
+    c.height = styled.height;
+    const ctx = c.getContext('2d')!;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, c.width, c.height);
+    ctx.drawImage(styled.bitmap, 0, 0);
+    return { width: c.width, height: c.height, rgb: rgbaToRgb(ctx.getImageData(0, 0, c.width, c.height).data) };
+  };
+  // D6: imageData is synchronous (the vector walker consumes it), but
+  // deflate is async — so the per-placement payloads are prepared
+  // HERE, during the resolver's async capture: extract each captured
+  // placement's styled raster and deflate it with the same helper
+  // and payload shape collectImages uses for IMAGE entities
+  // ({kind:'rgb', deflated:true}, raw RGB when deflate is
+  // unavailable). A preparation failure records the D5 issue and
+  // caches the frame outcome (null).
+  const packed = new Map<string, PdfUnderlayImage | null>();
+  if (typeof document !== 'undefined') {
+    const seen = new Set<string>();
+    for (const e of placements) {
+      if (e.type !== 'underlay' || seen.has(e.id)) continue;
+      seen.add(e.id);
+      const joined = join(e);
+      if (!joined) continue; // not ensured: imageData's own path answers null
+      try {
+        const { width, height, rgb } = extractRgb(styledImage(e, joined));
+        const deflatedBytes = await deflate(rgb);
+        packed.set(e.id, {
+          data: deflatedBytes
+            ? { width, height, data: deflatedBytes, kind: 'rgb', deflated: true }
+            : { width, height, data: rgb, kind: 'rgb' },
+          page: joined.hit.page,
+        });
+      } catch {
+        notePreparationFailure(joined.def);
+        packed.set(e.id, null);
+      }
+    }
+  }
   return {
     issues,
     pageSizeOf: (defId) => ensured.get(defId)?.page,
@@ -274,20 +318,15 @@ export async function captureUnderlayResolver(
       }
     },
     imageData: (e) => {
+      // D6: placements prepared at capture serve their deflated
+      // payload (or their recorded frame outcome) from the cache.
+      if (packed.has(e.id)) return packed.get(e.id) ?? null;
       const joined = join(e);
       if (!joined || typeof document === 'undefined') return null;
       const hit = joined.hit;
       try {
-        const styled = styledImage(e, joined);
-        const c = document.createElement('canvas');
-        c.width = styled.width;
-        c.height = styled.height;
-        const ctx = c.getContext('2d')!;
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, c.width, c.height);
-        ctx.drawImage(styled.bitmap, 0, 0);
-        const rgb = rgbaToRgb(ctx.getImageData(0, 0, c.width, c.height).data);
-        return { data: { width: c.width, height: c.height, data: rgb, kind: 'rgb' }, page: hit.page };
+        const { width, height, rgb } = extractRgb(styledImage(e, joined));
+        return { data: { width, height, data: rgb, kind: 'rgb' }, page: hit.page };
       } catch {
         // D5 catch #1: extraction (or the styled derivation above)
         // failed — the raster plots as frame parts, and says so.
