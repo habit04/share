@@ -14,7 +14,7 @@ import { PAPER_SIZES } from './plot';
 import type { DrawingState } from '../core/document';
 import type { Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
-import type { Entity } from '../core/entities';
+import type { Entity, UnderlayEntity } from '../core/entities';
 import { entityBounds } from '../core/entities';
 import { findLayout, layoutsOf, activeLayout, type Layout } from '../core/layouts';
 import { initializeLayout } from '../tools/layouts';
@@ -31,7 +31,8 @@ import { deflate, rgbaToRgb } from '../io/pdf';
 import type { ImageLoader } from '../render/draw';
 import { renderPageToCanvas } from '../render/layouts';
 import { createPdfjsEngine } from '../io/underlay-pdfjs';
-import { createUnderlayDisplayService, type UnderlayByteSource } from './underlay-render';
+import type { UnderlayRasterEngine } from '../io/underlay-engine';
+import { createUnderlayDisplayService, type UnderlayByteSource, type UnderlayVariantCanvasFactory } from './underlay-render';
 import { nullUnderlayBytes } from './underlay-bytes';
 import type { UnderlayContentSource } from '../render/underlay-content';
 import type { PdfUnderlayImage } from '../io/pdf-vector';
@@ -126,9 +127,17 @@ const inches = (pt: number) => (pt / 72).toFixed(2);
 export interface CapturedUnderlayResolver {
   /** Synchronous source over the ensured entries (raster consumers). */
   readonly source: UnderlayContentSource;
-  /** Prepared PDF image data per definition id (vector consumer). */
-  readonly imageData: (defId: string) => PdfUnderlayImage | null;
+  /** Prepared PDF image data for one placement (vector consumer). */
+  readonly imageData: (e: UnderlayEntity) => PdfUnderlayImage | null;
   dispose(): void;
+}
+
+/** Test seams for the captured resolver: the raster engine and the
+ * pixel-access canvas factory for style variants. Production passes
+ * neither (the pdfjs engine and a DOM factory are built here). */
+export interface CapturedResolverSeams {
+  readonly engine?: UnderlayRasterEngine;
+  readonly variantCanvasFactory?: UnderlayVariantCanvasFactory;
 }
 
 export async function captureUnderlayResolver(
@@ -136,10 +145,11 @@ export async function captureUnderlayResolver(
   placements: readonly Entity[],
   bytesFor: UnderlayByteSource | undefined,
   dpi: number,
+  seams?: CapturedResolverSeams,
 ): Promise<CapturedUnderlayResolver> {
   const defs = state.underlays ?? {};
   const service = createUnderlayDisplayService({
-    engine: createPdfjsEngine(),
+    engine: seams?.engine ?? createPdfjsEngine(),
     bytesFor: bytesFor ?? nullUnderlayBytes,
     definitions: () => state.underlays,
     targetBackground: () => [1, 1, 1], // the declared paper background (design A.2.1)
@@ -169,9 +179,10 @@ export async function captureUnderlayResolver(
       const view = joined.def.extent ? joined.def : { ...joined.def, extent: joined.hit.page };
       return { definition: view, page: joined.hit.page, image: joined.hit.image };
     },
-    imageData: (defId) => {
-      const hit = ensured.get(defId);
-      if (!hit || typeof document === 'undefined') return null;
+    imageData: (e) => {
+      const joined = join(e);
+      if (!joined || typeof document === 'undefined') return null;
+      const hit = joined.hit;
       try {
         const c = document.createElement('canvas');
         c.width = hit.image.width;
@@ -246,7 +257,7 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pe
   if (vector) {
     const images = await collectImages(pages, lookup, captured.imageLoader);
     const underlayResolver = await captureUnderlayResolver(state, pages.flatMap((p) => p.groups.flatMap((grp) => grp.entities)), captured.underlayBytes, 300);
-    const ctx = drawingContext(state, lookup, (p) => images.get(p) ?? null, (defId) => underlayResolver.imageData(defId));
+    const ctx = drawingContext(state, lookup, (p) => images.get(p) ?? null, (e) => underlayResolver.imageData(e));
     const fontFallbacks = new Set<string>();
     Object.assign(ctx, { embeddedFonts: prepared?.fonts, textGeometry: prepared?.geometry, fontFallbacks, ...(prepared?.shapedText ? { shapedText: prepared.shapedText } : {}) });
     const title = target === 'model' ? base : target === 'layouts' ? `${base} - layouts` : `${base} - ${target}`;

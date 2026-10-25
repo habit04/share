@@ -171,8 +171,8 @@ export interface PdfDrawingContext {
   readonly image?: (path: string) => PdfImageData | null;
   /** The captured state's underlay definitions sibling (frame + label joins, P28). */
   readonly underlays?: Readonly<Record<string, UnderlayDefinition>>;
-  /** Prepared page raster of an underlay definition, by definition id (null: frame parts only). */
-  readonly underlayImage?: (defId: string) => PdfUnderlayImage | null;
+  /** Prepared page raster for one underlay placement (null: frame parts only). */
+  readonly underlayImage?: (e: UnderlayEntity) => PdfUnderlayImage | null;
 }
 
 export const MONOCHROME: PdfPlotStyle = { mode: 'monochrome', lineweights: true, usePlotStyles: true };
@@ -842,7 +842,7 @@ class PageWriter {
     // page image; without one it plots exactly the frame parts it always did.
     const defs = this.ctx.underlays;
     const def = defs ? Object.values(defs).find((d) => (d.handle ?? '').toUpperCase() === e.definitionHandle) : undefined;
-    const hit = def ? this.ctx.underlayImage?.(def.id) ?? null : null;
+    const hit = def ? this.ctx.underlayImage?.(e) ?? null : null;
     if (!def || !hit) {
       this.parts(underlayParts(e), e, parent, view);
       return;
