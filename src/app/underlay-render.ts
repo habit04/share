@@ -7,14 +7,24 @@
  * fake engine with zero pdfjs import.
  *
  * Finish-slice cache/session design (design section 3, as amended by
- * addendum A.3): entries are keyed by
- *   [epoch, def.id, def.sourcePath, sourceVersion, pageIndex,
- *    regionBucket, scaleBucket, styleKey, backgroundKey]
- * where sourceVersion is the SHA-256 of the exact captured byte snapshot
- * (Codex disposition 2026-10-25: hash and decode the SAME snapshot; the
- * hash is not access authority). Bytes are memoized per
- * (epoch, definition generation, def.id, def.sourcePath); engine document
- * sessions are keyed identically and closed exactly once at retirement.
+ * addendum A.3), described literally as the code builds it, in two
+ * levels. The ENTRY key (startLoad builds it; keyFor rebuilds it for
+ * lookup) is the seven segments
+ *   epoch | def.id | def.sourcePath | 'v?' | pageIndex | regionBucket
+ *     | scaleBucket
+ * The fourth segment is the literal placeholder 'v?', NOT the hash:
+ * loads dedupe before any bytes arrive, so no version can appear in
+ * the entry key. sourceVersion binds at the other two levels instead.
+ * The byte memo (identity: epoch, definition generation, def.id,
+ * def.sourcePath) captures the bytes once and stamps each entry with
+ * sourceVersion — the SHA-256 of that exact captured byte snapshot
+ * (Codex disposition 2026-10-25: hash and decode the SAME snapshot;
+ * the hash is not access authority). And the derived-variant key in
+ * contentFor is the entry key followed by sourceVersion, styleKey and
+ * backgroundKey. Wherever this lane's records list the flat nine-field
+ * key, read it as that composition — entry key x variant key — not as
+ * one literal key string. Engine document sessions are keyed by the
+ * memo identity and closed exactly once at retirement.
  * Every load carries a captured (epoch, generation, key, entry, serial)
  * publication guard: a settle that arrives after retirement is dropped —
  * late success and late refusal alike (no stale resurrection). Loads are
@@ -288,6 +298,9 @@ export function createUnderlayDisplayService(deps: {
 
   const startLoad = (def: UnderlayDefinition, opts: { region?: UnderlayClipRect; regionBucket: string; target: number; scaleBucket: string; dpi?: number }): Entry => {
     const pageIndex = underlayPageIndex(def);
+    // Entry key: the 'v?' segment is a literal placeholder — loads
+    // dedupe before bytes arrive; sourceVersion binds via the byte
+    // memo and the variant key, never in this string (file header).
     const key = [epoch, def.id, def.sourcePath, 'v?', pageIndex, opts.regionBucket, opts.scaleBucket].join('|');
     const existing = entries.get(key);
     if (existing) return existing;
@@ -376,6 +389,9 @@ export function createUnderlayDisplayService(deps: {
     return entry;
   };
 
+  // The lookup half of the entry key: segment-for-segment identical to
+  // startLoad's builder, 'v?' placeholder and pageIndex included — the
+  // #11(ii) pin (tests/underlay-page-change-pin.test.ts) guards both.
   const keyFor = (def: UnderlayDefinition, regionBucket: string, scaleBucket: string): string =>
     [epoch, def.id, def.sourcePath, 'v?', underlayPageIndex(def), regionBucket, scaleBucket].join('|');
 
@@ -393,6 +409,9 @@ export function createUnderlayDisplayService(deps: {
     if (identity || !deps.variantCanvasFactory) {
       return { definition: view, page: entry.page, image: entry.image };
     }
+    // Variant key: entry key + sourceVersion + styleKey + backgroundKey
+    // — the level at which the content version and the style fragments
+    // bind (see the file header for the two-level key description).
     const vKey = [entry.key, entry.sourceVersion ?? '', underlayStyleKey(style), underlayBackgroundKey(style.background)].join('|');
     let variant = variants.get(vKey);
     if (!variant) {
