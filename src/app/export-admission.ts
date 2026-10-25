@@ -15,6 +15,8 @@ export interface CapturedPlot {
   readonly vectorGeometry?: TextGeometryContext;
   readonly pdfFont?: FileBridge['pdfFont'];
   readonly imageLoader?: ImageLoader;
+  /** The confined underlay byte source frozen at capture (P28): the plot builds its own resolver over the captured state. */
+  readonly underlayBytes?: import('./underlay-render').UnderlayByteSource;
   /**
    * The PDF security decision frozen at capture (milestone 12.4): 'none' for
    * ordinary exports, 'restricted-p2' when the user opted into the
@@ -30,7 +32,7 @@ export function capturePlot(ed: Editor, bridge: FileBridge | null = ed.fileBridg
   const state = ed.doc.snapshot;
   const resources = ed.shxResources?.for(ed.sessions.current), styles = textStylesOf(state);
   return Object.freeze({ state, bridge, base: ed.fileName().replace(/\.[^.]+$/, ''), geometry: resources?.capture(styles), vectorGeometry: resources?.capture(styles, true),
-    pdfFont: bridge?.platform === 'win32' ? bridge.pdfFont?.bind(bridge) : undefined, imageLoader: renderSettings.imageLoader, security });
+    pdfFont: bridge?.platform === 'win32' ? bridge.pdfFont?.bind(bridge) : undefined, imageLoader: renderSettings.imageLoader, underlayBytes: renderSettings.underlayBytes, security });
 }
 
 export class ExportAdmission {

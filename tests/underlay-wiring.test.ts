@@ -17,8 +17,8 @@ describe('composition-root underlay wiring (design 1.2/1.4)', () => {
   });
 
   it('constructs the display service always (not conditional on a bridge method)', () => {
-    const block = main.slice(main.indexOf('createUnderlayDisplayService'));
-    expect(main.indexOf('createUnderlayDisplayService')).toBeGreaterThan(-1);
+    const block = main.slice(main.indexOf('const underlays = createUnderlayDisplayService'));
+    expect(main.indexOf('const underlays = createUnderlayDisplayService')).toBeGreaterThan(-1);
     expect(block.slice(0, 400)).toContain('bytesFor');
     expect(main).toContain('createPdfjsEngine');
     // The byte source selection is the only conditional: bridge-bound or null.
@@ -43,5 +43,36 @@ describe('composition-root underlay wiring (design 1.2/1.4)', () => {
   it('wires the visible-region supply and the editor redraw', () => {
     expect(main).toContain('visibleRegionFor');
     expect(main).toContain('requestRedraw: () => editor.render()');
+  });
+
+  it('registers Reload Underlays on the section 3.6 invalidation surface', () => {
+    expect(main).toContain("reg('RELOADUNDERLAYS'");
+    expect(main).toContain('underlays.invalidate(def.id)');
+  });
+});
+
+describe('content-consumer census (design 6.4)', () => {
+  const read = (p: string) => readFileSync(p, 'utf8');
+  it('every raster-content consumer is accounted for, with its source posture', () => {
+    // Screen: the live global installed above, or a per-draw override.
+    expect(read('src/render/draw.ts')).toContain('renderSettings.underlaySource');
+    // Captured raster sheets: the captured resolver passed explicitly —
+    // never the live global (the layouts.ts:209 bug, fixed).
+    const layouts = read('src/render/layouts.ts');
+    expect(layouts).toContain('underlaySource?: UnderlayContentSource');
+    expect(layouts).toContain('underlaySource, underlayDefinitions: ctxInfo.underlays');
+    // The layout sheet in editor/plotting.ts (the helper's bonus omission):
+    // wired to the same captured resolver, not left on frame+label.
+    const plotting = read('src/app/editor/plotting.ts');
+    expect(plotting).toContain('captureUnderlayResolver');
+    expect(plotting).toContain('underlaySource: sheetUnderlays.source');
+    // Vector PDF: the walker's underlayImage hook over the display list.
+    const walker = read('src/io/pdf-vector.ts');
+    expect(walker).toContain('underlayImage');
+    expect(walker).toContain('underlayDisplayList');
+    // Both plot branches build the resolver from the CAPTURED state.
+    const plotVector = read('src/app/plot-vector.ts');
+    expect(plotVector).toContain('captureUnderlayResolver(state');
+    expect(plotVector).toContain('captured.underlayBytes');
   });
 });

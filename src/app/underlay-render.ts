@@ -61,8 +61,8 @@ export interface UnderlayDisplayService {
   pageSizeOf(defId: string): { width: number; height: number } | undefined;
   /** Async entry point (plot): resolves when the placement's load settles. */
   ensure(e: UnderlayEntity): Promise<UnderlayDisplayContent | undefined>;
-  /** Plot-resolution load for a definition at an explicit long-edge target (design 6.3). */
-  loadForPlot(def: UnderlayDefinition, targetPixels: number): Promise<{ page: { width: number; height: number }; image: { bitmap: CanvasImageSource; width: number; height: number } } | undefined>;
+  /** Plot load for a definition at a print resolution (design 6.3): the render scale is dpi/72. */
+  loadForPlot(def: UnderlayDefinition, dpi: number): Promise<{ page: { width: number; height: number }; image: { bitmap: CanvasImageSource; width: number; height: number } } | undefined>;
   /** Retire everything and refuse further loads (the plot resolver disposes its service). */
   dispose(): void;
 }
@@ -112,6 +112,8 @@ interface Entry {
   readonly scaleBucket: string;
   readonly region?: UnderlayClipRect;
   readonly target: number;
+  /** Print-resolution loads: the render scale is dpi/72 instead of target-driven. */
+  readonly dpi?: number;
   readonly epoch: number;
   readonly generation: number;
   state: 'loading' | 'ready' | 'failed';
@@ -284,7 +286,7 @@ export function createUnderlayDisplayService(deps: {
     return !!current && current.sourcePath === entry.sourcePath;
   };
 
-  const startLoad = (def: UnderlayDefinition, opts: { region?: UnderlayClipRect; regionBucket: string; target: number; scaleBucket: string }): Entry => {
+  const startLoad = (def: UnderlayDefinition, opts: { region?: UnderlayClipRect; regionBucket: string; target: number; scaleBucket: string; dpi?: number }): Entry => {
     const pageIndex = underlayPageIndex(def);
     const key = [epoch, def.id, def.sourcePath, 'v?', pageIndex, opts.regionBucket, opts.scaleBucket].join('|');
     const existing = entries.get(key);
@@ -294,7 +296,7 @@ export function createUnderlayDisplayService(deps: {
     const entry: Entry = {
       key, defId: def.id, sourcePath: def.sourcePath, pageIndex,
       regionBucket: opts.regionBucket, scaleBucket: opts.scaleBucket,
-      region: opts.region, target: opts.target,
+      region: opts.region, target: opts.target, dpi: opts.dpi,
       epoch, generation: generationOf(def.id),
       state: 'loading', controller: new AbortController(), serial: 0,
       lastUsed: ++clock, settled, settleResolve,
@@ -332,7 +334,7 @@ export function createUnderlayDisplayService(deps: {
         if (!sized.ok) { fail(); return; }
         const size = sized.value;
         entry.page = size;
-        const scale = entry.target / Math.max(size.width, size.height);
+        const scale = entry.dpi ? entry.dpi / 72 : entry.target / Math.max(size.width, size.height);
         const hint = entry.region;
         const region: UnderlayClipRect | undefined = hint
           ? {
@@ -485,10 +487,9 @@ export function createUnderlayDisplayService(deps: {
       if (entry) await entry.settled;
       return service.source(e);
     },
-    async loadForPlot(def: UnderlayDefinition, targetPixels: number): Promise<{ page: { width: number; height: number }; image: { bitmap: CanvasImageSource; width: number; height: number } } | undefined> {
+    async loadForPlot(def: UnderlayDefinition, dpi: number): Promise<{ page: { width: number; height: number }; image: { bitmap: CanvasImageSource; width: number; height: number } } | undefined> {
       if (def.kind !== 'pdf' || disposed) return undefined;
-      const scaleBucket = `plot:${targetPixels}`;
-      const entry = startLoad(def, { regionBucket: 'full', target: targetPixels, scaleBucket });
+      const entry = startLoad(def, { regionBucket: 'full', target: 0, scaleBucket: `plot:${dpi}`, dpi });
       await entry.settled;
       if (entry.state !== 'ready' || !entry.page || !entry.image) return undefined;
       return { page: entry.page, image: entry.image };

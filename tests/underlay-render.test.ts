@@ -12,7 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import type { UnderlayEntity } from '../src/core/entities';
 import type { UnderlayDefinition } from '../src/core/underlay';
-import { underlayRefusal, type UnderlayRasterEngine, type UnderlayResult } from '../src/io/underlay-engine';
+import { underlayRefusal, type UnderlayDocument, type UnderlayRaster, type UnderlayRasterEngine, type UnderlayRegionRaster, type UnderlayResult } from '../src/io/underlay-engine';
 import { createUnderlayDisplayService } from '../src/app/underlay-render';
 
 const tick = async (n = 3): Promise<void> => { for (let i = 0; i < n; i += 1) await new Promise((r) => setTimeout(r, 0)); };
@@ -56,19 +56,19 @@ export function deferredEngine(opts: { pages?: number; pageW?: number; pageH?: n
     }
     if (state.auto && method !== 'open') queueMicrotask(() => call.settle(resultFor(call)));
   });
-  const makeDoc = () => ({
+  const makeDoc = (): UnderlayDocument => ({
     pageCount,
     pageSize: (page: number, o?: { signal?: AbortSignal }) => park<UnderlayResult<{ width: number; height: number }>>('pageSize', o?.signal)
       .then((r) => (page >= 1 && page <= pageCount ? r : underlayRefusal('corrupt', 'out of range'))),
-    renderPage: (_page: number, _scale: number, o?: { signal?: AbortSignal }) => park('renderPage', o?.signal),
-    renderRegion: (_page: number, _region: unknown, _scale: number, o?: { signal?: AbortSignal }) => park('renderRegion', o?.signal),
+    renderPage: (_page: number, _scale: number, o?: { signal?: AbortSignal }) => park<UnderlayResult<UnderlayRaster>>('renderPage', o?.signal),
+    renderRegion: (_page: number, _region: { x: number; y: number; width: number; height: number }, _scale: number, o?: { signal?: AbortSignal }) => park<UnderlayResult<UnderlayRegionRaster>>('renderRegion', o?.signal),
     close() { state.closes += 1; },
   });
   const engine: UnderlayRasterEngine = {
     kind: 'pdf',
     open: (_bytes: Uint8Array, o?: { signal?: AbortSignal }) => {
       state.opens += 1;
-      const p = park<UnderlayResult<ReturnType<typeof makeDoc>>>('open', o?.signal);
+      const p = park<UnderlayResult<UnderlayDocument>>('open', o?.signal);
       if (state.auto) queueMicrotask(() => {
         const call = state.calls[state.calls.length - 1]!;
         call.settle({ ok: true, value: makeDoc() });

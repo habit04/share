@@ -48,8 +48,12 @@ import { ensureFileLimit, MAX_DRAWING_FILE_BYTES } from './io/file-limits';
 import { installApi } from './app/api';
 import { loadPlugins, registerPluginCommands } from './app/plugins';
 import { registerDimStyleCommands } from './tools/dimension';
-import { renderSettings, clearImageCache } from './render/draw';
+import { renderSettings, clearImageCache, colorDisplay } from './render/draw';
 import { bridgeImageLoader } from './render/images';
+import { createPdfjsEngine } from './io/underlay-pdfjs';
+import { createUnderlayDisplayService, type UnderlayVariantCanvasFactory } from './app/underlay-render';
+import { bridgeUnderlayBytes, nullUnderlayBytes } from './app/underlay-bytes';
+import { visibleRegionFor } from './app/underlay-view';
 import { installOpenProgress, type OpenProgressBridge } from './ui/open-progress';
 import { registerDwgExportCommand } from './app/export-dwg';
 import { fontMetrics } from './render/font-metrics';
@@ -102,12 +106,44 @@ declare global {
       platform: string;
       /** Desktop only: an image file (absolute path) as a data URL, null when it cannot be read. */
       readImage?(file: string): Promise<string | null>;
+      /** Desktop only: a PDF underlay file (absolute path) as raw bytes, null when it cannot be read. */
+      readUnderlay?(file: string): Promise<Uint8Array | null>;
     } & Partial<OpenProgressBridge> &
       Partial<AutosaveBridge> &
       Partial<UserLibraryBridge> &
       Partial<PacksBridge>;
   }
 }
+
+/** The underlay post-process target background (design A.2.1): the editor's declared surface. */
+function underlayTargetBackground(): readonly [number, number, number] {
+  if (colorDisplay.paper) return [1, 1, 1];
+  const hex = colorDisplay.background;
+  const n = Number.parseInt(hex.replace('#', ''), 16);
+  if (!Number.isFinite(n)) return [1, 1, 1];
+  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
+/** Pixel-access canvas factory for underlay style variants (design 5.3). */
+const domVariantCanvasFactory: UnderlayVariantCanvasFactory = {
+  create(width: number, height: number) {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('a 2d canvas context is unavailable for underlay variants');
+    return {
+      canvas,
+      width,
+      height,
+      context: {
+        drawImage: (image: unknown, dx: number, dy: number) => { context.drawImage(image as CanvasImageSource, dx, dy); },
+        getImageData: (x: number, y: number, w: number, h: number) => context.getImageData(x, y, w, h),
+        putImageData: (image: { data: Uint8ClampedArray }, dx: number, dy: number) => { context.putImageData(new ImageData(new Uint8ClampedArray(image.data), width, height), dx, dy); },
+      },
+    };
+  },
+};
 
 /** Show a native file picker; resolves with the chosen File (null when cancelled). */
 function pickBrowserFile(accept: string): Promise<File | null> {
@@ -636,6 +672,41 @@ function boot(): void {
       clearImageCache();
     });
   }
+
+  // ------------------------------------------------------------ PDF underlays (P28 finish, design section 1)
+  // Always constructed — NOT conditional on the bridge (413 D-4 corrected
+  // justification): the service is what produces page content at all, and it
+  // cannot lean on renderSettings.requestRedraw, which is only set inside
+  // the readImage block above. Without a byte channel (browser build, or a
+  // bridge without readUnderlay) the posture is frame + label via
+  // nullUnderlayBytes; DWF/DGN stay frame + label by design (Q7).
+  const underlayBytes = bridge?.readUnderlay
+    ? bridgeUnderlayBytes({ readUnderlay: bridge.readUnderlay.bind(bridge), drawingPath: () => editor.doc.filePath })
+    : nullUnderlayBytes;
+  const underlays = createUnderlayDisplayService({
+    engine: createPdfjsEngine(),
+    bytesFor: underlayBytes,
+    definitions: () => editor.doc.snapshot.underlays,
+    requestRedraw: () => editor.render(),
+    visibleRegion: (def) => visibleRegionFor(
+      { viewBounds: () => editor.viewport.visibleBounds(), pageSizeOf: (id) => underlays.pageSizeOf(id) },
+      def,
+      editor.doc.snapshot.entities.filter((e) => e.type === 'underlay'),
+    ),
+    targetBackground: () => underlayTargetBackground(),
+    variantCanvasFactory: domVariantCanvasFactory,
+  });
+  renderSettings.underlaySource = (e) => underlays.source(e);
+  renderSettings.underlayBytes = underlayBytes;
+  editor.on('file', () => underlays.clear());
+  // Reload Underlays (Q5 CLOSED, design 3.6): explicit, per-definition
+  // generation retirement over the ACTIVE document's definitions — the draw
+  // path re-loads, the plot path re-runs ensure(). No watcher, no
+  // prompt-on-focus, no quiet revalidation.
+  reg('RELOADUNDERLAYS', [], 'Reload every PDF underlay of the active document from its file', () => {
+    for (const def of Object.values(editor.doc.snapshot.underlays ?? {})) underlays.invalidate(def.id);
+    editor.render();
+  });
 
   // ------------------------------------------------------------ catalog packs (signed manufacturer catalogs)
   packRegistry.setStore(bridge?.packsList && bridge.packsRead && bridge.packsWrite && bridge.packsRemove ? bridgePackStore(bridge as PacksBridge) : localPackStore(localStorage));
