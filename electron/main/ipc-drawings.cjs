@@ -8,7 +8,7 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const { createHash } = require('node:crypto');
 const { backupFile, copyFileAtomic, createAtomicWriter } = require('../atomic-write.cjs');
-const { dxfImageNames } = require('../ipc-guard.cjs');
+const { dxfImageNames, dxfUnderlayNames } = require('../ipc-guard.cjs');
 const { writeUserFile, enqueueWrite } = require('./app-data.cjs');
 const { createPortableDwgExporter } = require('../portable-dwg.cjs');
 const { decodeDxf, readDwgWithProgress } = require('./dwg.cjs');
@@ -122,6 +122,7 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     if (read.check) await read.check();
     await scope.guard();
     pathPolicy.rememberImages(file, dxfImageNames(text));
+    pathPolicy.rememberUnderlays(file, dxfUnderlayNames(text));
     return { path: file, identityPath: read.identityPath, kind: 'dxf', text, encoding };
   }));
 
@@ -181,6 +182,7 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     const { text, encoding } = await decodeDxf(/** @type {Buffer} */ (read.bytes));
     if (read.check) await read.check();
     pathPolicy.rememberImages(file, dxfImageNames(text));
+    pathPolicy.rememberUnderlays(file, dxfUnderlayNames(text));
     const openedSourceProof = reservation ? saveOrder?.completeRead(ev, opening, reservation, read.sourceEvidence) : undefined;
     return { path: file, identityPath: read.identityPath, openedSourceProof, kind: 'dxf', text, encoding };
     } finally { if (opening && reservation) saveOrder?.cancelRead(opening, reservation); }
@@ -385,6 +387,7 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
         return { path: admitted.logicalPath, identityPath: admitted.canonicalPath };
       })), scope.signal));
       pathPolicy.rememberImages(target, dxfImageNames(text));
+      pathPolicy.rememberUnderlays(target, dxfUnderlayNames(text));
       return result;
     }
     const controller = new AbortController();
@@ -400,6 +403,7 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
         await writer.atomicWriteFile(destination, bytes, { backup: true, expectedDestination: key, root });
       }), controller.signal);
       pathPolicy.rememberImages(target, dxfImageNames(text));
+      pathPolicy.rememberUnderlays(target, dxfUnderlayNames(text));
       return result;
     } finally {
       win.removeListener('closed', cancel);
@@ -519,6 +523,8 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
   // paths of image files only; the bytes come back as a data URL (null when missing or too big).
   const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.bmp': 'image/bmp', '.webp': 'image/webp' };
   const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
+/** The underlay adapter's own cap, mirrored: a PDF byte snapshot never exceeds 64 MiB (P28 section 2.2). */
+const MAX_UNDERLAY_BYTES = 64 * 1024 * 1024;
   ipcMain.handle('read-image', async (_ev, file) => {
     if (pathPolicy.shapeProblem(file)) throw new Error('Invalid path');
     const type = IMAGE_TYPES[path.extname(file).toLowerCase()];
@@ -542,6 +548,42 @@ function registerDrawingIpc(ctx, { takeHandedOverProject }) {
     return `data:${type};base64,${bytes.toString('base64')}`;
   });
   // ------------------------------------------------------------------ end of read-image
+
+  // The bytes behind a placed PDF underlay (P28 finish, design section 2.2): the confined
+  // sibling of read-image. Policy violations throw (the renderer's byte source treats a
+  // throw as "not the bytes" and settles frame + label); an ordinary unreadable file —
+  // missing, a directory, oversize, the wrong kind — resolves null. Main does no parsing
+  // beyond the %PDF- magic and never touches a directory beyond the one named file. Raw
+  // bytes cross IPC (structured clone), never base64.
+  ipcMain.handle('read-underlay', async (_ev, file) => {
+    const problem = pathPolicy.shapeProblem(file);
+    if (problem) {
+      rejections.reject('read-underlay', `${problem}: ${String(file).slice(0, 300)}`);
+      throw new Error('Invalid path');
+    }
+    if (path.extname(file).toLowerCase() !== '.pdf') return null;
+    try {
+      file = await pathPolicy.underlayPath(file);
+    } catch (err) {
+      if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) return null;
+      if (err && err.code === 'ERR_UNDERLAY_PATH') {
+        rejections.reject('read-underlay', `${err.message}: ${String(file).slice(0, 300)}`);
+        throw new Error('Invalid path');
+      }
+      throw err;
+    }
+    let stat;
+    try {
+      stat = await fs.stat(file);
+    } catch {
+      return null;
+    }
+    if (!stat.isFile() || stat.size > MAX_UNDERLAY_BYTES) return null;
+    const bytes = /** @type {Buffer} */ (await readLimitedFile(fs, file, MAX_UNDERLAY_BYTES));
+    if (bytes.length < 5 || bytes.subarray(0, 5).toString('latin1') !== '%PDF-') return null;
+    return new Uint8Array(bytes);
+  });
+  // ------------------------------------------------------------------ end of read-underlay
 }
 
 module.exports = { registerDrawingIpc };

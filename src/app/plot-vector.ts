@@ -30,6 +30,11 @@ import {
 import { deflate, rgbaToRgb } from '../io/pdf';
 import type { ImageLoader } from '../render/draw';
 import { renderPageToCanvas } from '../render/layouts';
+import { createPdfjsEngine } from '../io/underlay-pdfjs';
+import { createUnderlayDisplayService, type UnderlayByteSource } from './underlay-render';
+import { nullUnderlayBytes } from './underlay-bytes';
+import type { UnderlayContentSource } from '../render/underlay-content';
+import type { PdfUnderlayImage } from '../io/pdf-vector';
 import { capturedPlotLookup } from './plot-fonts';
 import { capturedPdfLookup } from './pdf-fonts';
 import { capturePlot, ExportAdmission, type PlotExportContext } from './export-admission';
@@ -109,6 +114,82 @@ async function collectImages(pages: readonly PdfPageSpec[], lookup: Editor['doc'
 
 const inches = (pt: number) => (pt / 72).toFixed(2);
 
+/**
+ * The captured underlay resolver (P28 finish, design 6.1): its OWN display
+ * service over the CAPTURED state — never the live editor's service — with
+ * definitions read from the captured snapshot and bytes from the byte
+ * source frozen at capture. Every PDF definition the plotted placements
+ * reference is ensured at plot resolution before any page is produced, so
+ * the synchronous consumers (vector walker, raster sheet) only ever read
+ * settled entries. Disposed by the caller when the plot finishes.
+ */
+export interface CapturedUnderlayResolver {
+  /** Synchronous source over the ensured entries (raster consumers). */
+  readonly source: UnderlayContentSource;
+  /** Prepared PDF image data per definition id (vector consumer). */
+  readonly imageData: (defId: string) => PdfUnderlayImage | null;
+  dispose(): void;
+}
+
+export async function captureUnderlayResolver(
+  state: DrawingState,
+  placements: readonly Entity[],
+  bytesFor: UnderlayByteSource | undefined,
+  dpi: number,
+): Promise<CapturedUnderlayResolver> {
+  const defs = state.underlays ?? {};
+  const service = createUnderlayDisplayService({
+    engine: createPdfjsEngine(),
+    bytesFor: bytesFor ?? nullUnderlayBytes,
+    definitions: () => state.underlays,
+    targetBackground: () => [1, 1, 1], // the declared paper background (design A.2.1)
+  });
+  const ensured = new Map<string, { page: { width: number; height: number }; image: { bitmap: CanvasImageSource; width: number; height: number } }>();
+  const wanted = new Set<string>();
+  for (const e of placements) {
+    if (e.type !== 'underlay') continue;
+    const def = Object.values(defs).find((d) => (d.handle ?? '').toUpperCase() === e.definitionHandle);
+    if (def && def.kind === 'pdf') wanted.add(def.id);
+  }
+  for (const defId of wanted) {
+    const def = Object.values(defs).find((d) => d.id === defId)!;
+    const hit = await service.loadForPlot(def, dpi);
+    if (hit) ensured.set(defId, hit);
+  }
+  const join = (e: Entity): { def: (typeof defs)[string]; hit: { page: { width: number; height: number }; image: { bitmap: CanvasImageSource; width: number; height: number } } } | undefined => {
+    if (e.type !== 'underlay') return undefined;
+    const def = Object.values(defs).find((d) => (d.handle ?? '').toUpperCase() === e.definitionHandle);
+    const hit = def ? ensured.get(def.id) : undefined;
+    return def && hit ? { def, hit } : undefined;
+  };
+  return {
+    source: (e) => {
+      const joined = join(e);
+      if (!joined) return undefined;
+      const view = joined.def.extent ? joined.def : { ...joined.def, extent: joined.hit.page };
+      return { definition: view, page: joined.hit.page, image: joined.hit.image };
+    },
+    imageData: (defId) => {
+      const hit = ensured.get(defId);
+      if (!hit || typeof document === 'undefined') return null;
+      try {
+        const c = document.createElement('canvas');
+        c.width = hit.image.width;
+        c.height = hit.image.height;
+        const ctx = c.getContext('2d')!;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, c.width, c.height);
+        ctx.drawImage(hit.image.bitmap, 0, 0);
+        const rgb = rgbaToRgb(ctx.getImageData(0, 0, c.width, c.height).data);
+        return { data: { width: c.width, height: c.height, data: rgb, kind: 'rgb' }, page: hit.page };
+      } catch {
+        return null; // an unreadable raster plots as frame parts
+      }
+    },
+    dispose: () => { service.dispose(); },
+  };
+}
+
 /** Handle a PLOT / PRINT choice when it involves a layout or vector PDF; false = the caller's raster model path. */
 export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pending?: PlotExportContext): Promise<boolean> {
   const bridge = pending?.captured.bridge ?? ed.fileBridge ?? null;
@@ -164,11 +245,13 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pe
   };
   if (vector) {
     const images = await collectImages(pages, lookup, captured.imageLoader);
-    const ctx = drawingContext(state, lookup, (p) => images.get(p) ?? null);
+    const underlayResolver = await captureUnderlayResolver(state, pages.flatMap((p) => p.groups.flatMap((grp) => grp.entities)), captured.underlayBytes, 300);
+    const ctx = drawingContext(state, lookup, (p) => images.get(p) ?? null, (defId) => underlayResolver.imageData(defId));
     const fontFallbacks = new Set<string>();
     Object.assign(ctx, { embeddedFonts: prepared?.fonts, textGeometry: prepared?.geometry, fontFallbacks, ...(prepared?.shapedText ? { shapedText: prepared.shapedText } : {}) });
     const title = target === 'model' ? base : target === 'layouts' ? `${base} - layouts` : `${base} - ${target}`;
     const bytes = await vectorPdfCompressed(pages, ctx, style, title, deflate);
+    underlayResolver.dispose();
     reportPlotStyles();
     if (fontFallbacks.size) ed.log(`PDF used substitute fonts for ${[...fontFallbacks].join(', ')}. ${prepared?.issues.join(' ') || 'Some glyphs or font formats are unsupported.'}`);
     if (!restrictedMode && prepared?.issues.some((issue) => issue.includes('preview/print embedding requires a read-only PDF'))) {
@@ -197,7 +280,9 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pe
   const canvas = document.createElement('canvas');
   const maxPx = 12000;
   const dpi = Math.min(150, (maxPx / Math.max(page.width, page.height)) * 72);
-  renderPageToCanvas(canvas, page, drawingContext(state, lookup), style, dpi, captured.imageLoader ?? (async () => null));
+  const rasterUnderlays = await captureUnderlayResolver(state, page.groups.flatMap((grp) => grp.entities), captured.underlayBytes, dpi);
+  renderPageToCanvas(canvas, page, drawingContext(state, lookup), style, dpi, captured.imageLoader ?? (async () => null), rasterUnderlays.source);
+  rasterUnderlays.dispose();
   reportPlotStyles();
   const dataUrl = canvas.toDataURL('image/png');
   const sheet = { width: page.width / 72, height: page.height / 72 };
