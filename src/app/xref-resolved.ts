@@ -71,6 +71,8 @@ interface Built {
   readonly scopedDefs: ReadonlyMap<string, BlockDef>;
   readonly defSource: ReadonlyMap<string, string>;
   readonly unsupported: ReadonlyMap<XrefNode, string>;
+  /** Block names a loaded file inserts but neither defines nor references: preserved verbatim in its defs, and refused by the wrapped lookup so no host definition can ever satisfy them (#56 P2). */
+  readonly dangling: ReadonlySet<string>;
 }
 
 function materialise(snapshot: XrefSnapshot, hostState: DrawingState): Built {
@@ -78,6 +80,7 @@ function materialise(snapshot: XrefSnapshot, hostState: DrawingState): Built {
   const rootDefs = new Map<string, BlockDef>();
   const scopedDefs = new Map<string, BlockDef>();
   const defSource = new Map<string, string>();
+  const dangling = new Set<string>();
 
   // References of each containing scope: the host's roots, and each loaded
   // file's outgoing references (its snapshot children), by block name.
@@ -107,8 +110,10 @@ function materialise(snapshot: XrefSnapshot, hostState: DrawingState): Built {
   // parent shares it); any other status -> the containing file's own
   // scoped def for that block (the placeholder def below). An insert
   // naming an ordinary block of the file is rewritten to that block's
-  // scoped def. A name the file does not define is left verbatim (it
-  // expands to nothing).
+  // scoped def. A name the file does not define is left verbatim and
+  // recorded as dangling: the wrapped lookup refuses it outright, so it
+  // expands to nothing even when the host table happens to define an
+  // unrelated block of the same name (#56 P2).
   const rewrite = (entities: readonly Entity[], fileKey: string): Entity[] => {
     const state = fileState(fileKey);
     if (!state) return [...entities];
@@ -124,6 +129,7 @@ function materialise(snapshot: XrefSnapshot, hostState: DrawingState): Built {
       if (state.blocks[entity.block] !== undefined) {
         return { ...entity, block: scopedName(fileKey, entity.block) };
       }
+      dangling.add(entity.block);
       return entity;
     });
   };
@@ -178,7 +184,7 @@ function materialise(snapshot: XrefSnapshot, hostState: DrawingState): Built {
     defSource.set(node.blockName, node.fileKey);
   }
 
-  return { rootDefs, scopedDefs, defSource, unsupported };
+  return { rootDefs, scopedDefs, defSource, unsupported, dangling };
 }
 
 const contextCache = new WeakMap<XrefSnapshot, Map<string, ResolvedXrefContext>>();
@@ -216,6 +222,11 @@ export function buildResolvedXrefContext(snapshot: XrefSnapshot, stamp: XrefSess
       const wrapped = ((name: string) => {
         const root = built.rootDefs.get(name);
         if (root) return root;
+        // A reference a loaded file left unresolved is preserved verbatim
+        // in its defs, but no host lookup may satisfy it (#56 P2): without
+        // this guard the fall-through below would hand the dangling case
+        // an unrelated host block of the same name as the child's geometry.
+        if (built.dangling.has(name)) return undefined;
         if (hostState.blocks[name] !== undefined) return base(name);
         const scoped = built.scopedDefs.get(name);
         if (scoped) return scoped;
