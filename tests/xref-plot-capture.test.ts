@@ -52,7 +52,6 @@ import type { ResolvedXrefContext } from '../src/app/xref-resolved';
 
 const fixture = (name: string): string => readFileSync(join(__dirname, 'fixtures', 'xref', name), 'utf8');
 const hash = (text: string): string => { let h = 0; for (let i = 0; i < text.length; i += 1) h = (h * 31 + text.charCodeAt(i)) | 0; return String(h >>> 0); };
-const dirOf = (path: string): string => path.slice(0, path.lastIndexOf('/'));
 
 function makeBridge(files: Map<string, string>): FileBridge {
   const broker = {
