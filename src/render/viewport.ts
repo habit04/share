@@ -136,7 +136,7 @@ export class Viewport {
   /** Called after a devicePixelRatio change (window moved to another monitor, browser zoom) resized the canvas. */
   onDprChange: ((dpr: number) => void) | null = null;
 
-  private baseScene: { state: Drawing['snapshot']; key: string; canvas: HTMLCanvasElement; metricKey?: object; onContextChange: () => void } | null = null;
+  private baseScene: { state: Drawing['snapshot']; key: string; canvas: HTMLCanvasElement; metricKey?: object; xrefContext?: import('../app/xref-resolved').ResolvedXrefContext | null; onContextChange: () => void } | null = null;
   private readonly disposeFontListener: () => void;
   private imageState: Drawing['snapshot'] | null = null;
   private sceneHasImages = false;
@@ -179,7 +179,7 @@ export class Viewport {
       canvas.addEventListener?.('contextlost', onContextChange);
       canvas.addEventListener?.('contextrestored', onContextChange);
     }
-    this.baseScene = { state: this.doc.snapshot, key, canvas, metricKey: this.doc.lookupBlock.textGeometry?.cacheKey, onContextChange };
+    this.baseScene = { state: this.doc.snapshot, key, canvas, metricKey: this.doc.lookupBlock.textGeometry?.cacheKey, xrefContext: renderSettings.xrefContext ?? null, onContextChange };
   }
 
   private discardScene(): void {
@@ -377,7 +377,10 @@ export class Viewport {
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     const gpuScene = this.experimentalSceneRenderer?.(this, ov) ?? false;
     const key = gpuScene ? null : this.sceneKey(ov);
-    const cached = key && this.baseScene?.state === this.doc.snapshot && this.baseScene.key === key && this.baseScene.metricKey === this.doc.lookupBlock.textGeometry?.cacheKey ? this.baseScene : null;
+    // The cached scene is valid only for the xref context it was drawn
+    // with: a committed xref refresh swaps the context object without
+    // touching the host state, and must not serve the old generation.
+    const cached = key && this.baseScene?.state === this.doc.snapshot && this.baseScene.key === key && this.baseScene.metricKey === this.doc.lookupBlock.textGeometry?.cacheKey && this.baseScene.xrefContext === (renderSettings.xrefContext ?? null) ? this.baseScene : null;
     if (!cached) {
       // Rounded backing dimensions can include a fraction of an extra CSS pixel.
       // Fill/clear whole physical pixels, then keep geometry on the original DPR.
@@ -421,7 +424,14 @@ export class Viewport {
     const tf = this.transform;
     const layers = this.doc.layers;
     const hidden = new Set(layers.filter((l) => !l.visible).map((l) => l.name));
-    const lookup = this.doc.lookupBlock;
+    // One render pass uses one context, from start to finish (design
+    // section 3.4): with a resolved xref context for this document the
+    // pass draws and culls through the wrapped lookup, so loaded xref
+    // content is inside the displayed extents; without one the host
+    // lookup is used exactly as before. (Selection, grips and the
+    // spatial index below keep the host lookup by design — section 3.4's
+    // non-consumers.)
+    const lookup = renderSettings.xrefContext ? renderSettings.xrefContext.lookup(this.doc.lookupBlock) : this.doc.lookupBlock;
     const viewBounds = this.visibleBounds();
 
     if (!cached) {
