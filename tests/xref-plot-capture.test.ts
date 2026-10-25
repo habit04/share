@@ -16,6 +16,14 @@
  * (sessions.ts make()), so the captured stamp and the currentContextFor
  * calls use 0, not 1. (The context's own generation is a different
  * counter: the first committed graph is generation 1.)
+ *
+ * Correction (wiring adjudication, stop P1 — BATTERY DEFECT): P1's
+ * original y===9 assertion demanded generation 2's grand line from the
+ * captured (generation-1-pinned) expansion; no y=9 line exists in
+ * generation 1 (the adjudicator's probe: gen-1 expansion is
+ * [5,14->13,14 ; 8,8->11,8]). Corrected to the gen-1 child line y===14,
+ * and the marker guard to the expanded coordinate a.x===105 (the
+ * original 100 was the gen-2 marker's file-local x).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -117,8 +125,8 @@ describe('captured plotting (P)', () => {
     // The captured lookup still expands generation 1.
     const lookup = await capturedPlotLookup(captured.state, captured.geometry);
     const expanded = explodeInsert(hostInsert(captured.state, 0), lookup);
-    expect(lines(expanded).some((l) => l.a.y === 9 && l.b.y === 9)).toBe(true); // gen-1 child line
-    expect(lines(expanded).some((l) => l.a.x === 100)).toBe(false); // gen-2 marker absent
+    expect(lines(expanded).some((l) => l.a.y === 14 && l.b.y === 14)).toBe(true); // gen-1 child line
+    expect(lines(expanded).some((l) => l.a.x === 105)).toBe(false); // gen-2 marker absent
   });
 
   it('P2: a stamp mismatch refuses the wrap — the other document state expands as placeholders, never with this context', async () => {
