@@ -51,6 +51,8 @@ const projectFiles = (): Map<string, string> => new Map<string, string>([
   ['/proj/parts/child.dxf', fixture('child.dxf')],
   ['/proj/parts/grand.dxf', fixture('grand.dxf')],
   ['/proj/shared/leaf.dxf', fixture('leaf.dxf')],
+  ['/proj/drawings/overlay-root.dxf', fixture('overlay-root.dxf')],
+  ['/proj/drawings/kid.dxf', fixture('kid.dxf')],
 ]);
 
 let Editor: typeof EditorType;

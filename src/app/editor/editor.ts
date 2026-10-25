@@ -76,7 +76,7 @@ export class Editor {
       const session = this.sessions.all.find((s) => s.docId === docId);
       return session ? { docId: session.docId, contentGeneration: session.contentGeneration, filePath: session.filePath } : null;
     },
-    getState: (docId) => this.sessions.all.find((s) => s.docId === docId)?.doc.snapshot ?? null,
+    getState: (docId) => this.sessions.all.find((s) => s.docId === docId)?.state ?? null,
     onSnapshotChanged: () => this.render(),
     log: (text) => this.log(text),
   });
