@@ -10,6 +10,12 @@
  * expansion agreement they assert is the design's section 4 invariant:
  * editor display, layout raster, model raster and vector PDF expand the
  * SAME synthesised defs through the SAME code under the SAME budget.
+ *
+ * Repair note (adjudication B4): the stamp expectations pin the PROVEN
+ * session semantics — a fresh sessions.add carries contentGeneration 0
+ * (sessions.ts make()), so the captured stamp and the currentContextFor
+ * calls use 0, not 1. (The context's own generation is a different
+ * counter: the first committed graph is generation 1.)
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -102,7 +108,7 @@ describe('captured plotting (P)', () => {
     const captured = capturePlot(ed);
     const xref = capturedXref(captured);
     expect(xref).toBeTruthy();
-    expect(xref!.stamp).toEqual({ docId, contentGeneration: 1 });
+    expect(xref!.stamp).toEqual({ docId, contentGeneration: 0 });
     expect(xref!.generation).toBe(1);
     // Commit generation 2 with different child content.
     files.set('/proj/parts/child.dxf', fixture('child-b.dxf'));
@@ -132,8 +138,8 @@ describe('captured plotting (P)', () => {
     const docId = await openLoaded(ed, registry, readDxf(fixture('host.dxf')), '/proj/drawings/host.dxf');
     const captured = capturePlot(ed);
     const rasterLookup = await capturedPlotLookup(captured.state, captured.geometry);
-    const pdfLookup = await capturedPdfLookup(captured.state, undefined, undefined, rasterLookup);
-    const live = registry.currentContextFor({ docId, contentGeneration: 1 })!;
+    const pdfLookup = (await capturedPdfLookup(captured.state, undefined, undefined, rasterLookup)).lookup;
+    const live = registry.currentContextFor({ docId, contentGeneration: 0 })!;
     const liveLookup = live.lookup((n: string) => captured.state.blocks[n]);
     const ins = hostInsert(captured.state, 0);
     const viaRaster = explodeInsert(ins, rasterLookup).map((e) => e.id);
@@ -170,7 +176,7 @@ describe('captured plotting (P)', () => {
     await openLoaded(ed, registry, readDxf(fixture('host.dxf')), '/proj/drawings/host.dxf');
     const captured = capturePlot(ed);
     const lookup = await capturedPlotLookup(captured.state, captured.geometry);
-    const pages = plotPages(captured.state, lookup, 'model', {});
+    const pages = plotPages(captured.state, lookup, 'model', { paper: 'letter', orientation: 'landscape', scale: 'fit', margin: 0.25 });
     expect(pages).toHaveLength(1);
     const drawn = pages[0]!.groups.flatMap((g) => (g as { entities?: readonly Entity[] }).entities ?? []);
     expect(drawn.some((e) => e.id.includes(':xf'))).toBe(true); // the placeholder frame is drawn
@@ -189,7 +195,7 @@ describe('captured plotting (P)', () => {
     const expandedB = explodeInsert(hostInsert(capturedB.state, 0), lookupB);
     expect(lines(expandedB).some((l) => l.layer === 'CHILDONLY')).toBe(true); // B's own child content
     // A's live context knows nothing of B's reference.
-    const liveA = registry.currentContextFor({ docId: docA, contentGeneration: 1 })!;
+    const liveA = registry.currentContextFor({ docId: docA, contentGeneration: 0 })!;
     expect(liveA.nodeFor('LX')).toBeUndefined();
   });
 });
