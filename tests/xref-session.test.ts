@@ -50,7 +50,6 @@ const hash = (text: string): string => {
   for (let i = 0; i < text.length; i += 1) h = (h * 31 + text.charCodeAt(i)) | 0;
   return String(h >>> 0);
 };
-const dirOf = (path: string): string => path.slice(0, path.lastIndexOf('/'));
 
 class FakeBroker {
   readonly calls: Array<{ method: string; path?: string }> = [];
