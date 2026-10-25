@@ -13,6 +13,7 @@ import type { PdfPageSpec, PdfDrawingContext, PdfPlotStyle } from '../io/pdf-vec
 import type { Drawing } from '../core/document';
 import type { Viewport, ViewportOverlay } from './viewport';
 import { drawEntity, lineweightDisplay, annotationDisplay, colorDisplay, renderSettings, type Transform, type ImageLoader } from './draw';
+import type { UnderlayContentSource } from './underlay-content';
 import { plotEntityAppearance, plotRgbCss } from './plot-appearance';
 import { resolveAlpha } from '../core/appearance';
 import {
@@ -206,7 +207,7 @@ export function paintLayout(ctx: CanvasRenderingContext2D, vp: Viewport, ov: Vie
  * canvas at `dpi`, through the same draw pipeline as the screen. Used by PRINT of a layout and
  * the "Raster image" PDF output; monochrome pages draw black.
  */
-export function renderPageToCanvas(canvas: HTMLCanvasElement, page: PdfPageSpec, ctxInfo: PdfDrawingContext, style: PdfPlotStyle, dpi: number, imageLoader?: ImageLoader): void {
+export function renderPageToCanvas(canvas: HTMLCanvasElement, page: PdfPageSpec, ctxInfo: PdfDrawingContext, style: PdfPlotStyle, dpi: number, imageLoader?: ImageLoader, underlaySource?: UnderlayContentSource): void {
   const lookup: BlockLookup = Object.assign((name: string) => ctxInfo.lookup(name), { textGeometry: ctxInfo.textGeometry ?? ctxInfo.lookup.textGeometry ?? textGeometryForStyles(ctxInfo.textStyles ?? EMPTY_TEXT_STYLES) });
   const s = dpi / 72;
   const W = Math.max(1, Math.round(page.width * s));
@@ -248,7 +249,7 @@ export function renderPageToCanvas(canvas: HTMLCanvasElement, page: PdfPageSpec,
         annotationDisplay.hide = !!grp.hideAnnotative;
         for (const e of grp.entities) {
           if (grp.hidden.has(e.layer)) continue;
-          drawEntity(ctx, e, tf, ctxInfo.layers, lookup, { hidden: grp.hidden, imageLoader, ...(plot ? { plot } : {}), ...(mono ? { strokeOverride: '#000000' } : {}) });
+          drawEntity(ctx, e, tf, ctxInfo.layers, lookup, { hidden: grp.hidden, imageLoader, underlaySource, underlayDefinitions: ctxInfo.underlays, ...(plot ? { plot } : {}), ...(mono ? { strokeOverride: '#000000' } : {}) });
         }
       } finally { ctx.restore(); }
       for (const f of grp.frames ?? []) {

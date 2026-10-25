@@ -35,6 +35,8 @@ import {
 } from '../core/entities';
 import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
+import { underlayDisplayList, type UnderlayDefinition } from '../core/underlay';
+import { underlayPlacementOf, type UnderlayEntity } from '../core/entities';
 import { polylineWidthGeometry, strokeOutlinePolygons } from '../core/polyline-widths';
 import { aciToCss } from '../render/palette';
 import { strokeText, strokeTextWidth, expandControlCodes, textRenderer, CAP_HEIGHT_EM } from '../render/hershey';
@@ -145,6 +147,13 @@ export interface PdfImageData {
   deflated?: boolean;
 }
 
+/** Raster prepared for one underlay definition by the capture layer (design 6.2). */
+export interface PdfUnderlayImage {
+  readonly data: PdfImageData;
+  /** Page size in the referenced file's own units (PDF points). */
+  readonly page: { readonly width: number; readonly height: number };
+}
+
 export interface PdfDrawingContext {
   readonly layers: readonly Layer[];
   readonly lookup: BlockLookup;
@@ -160,6 +169,10 @@ export interface PdfDrawingContext {
   readonly fontFallbacks?: Set<string>;
   /** Bitmap of an IMAGE entity's file (null: the frame and file name are plotted instead). */
   readonly image?: (path: string) => PdfImageData | null;
+  /** The captured state's underlay definitions sibling (frame + label joins, P28). */
+  readonly underlays?: Readonly<Record<string, UnderlayDefinition>>;
+  /** Prepared page raster for one underlay placement (null: frame parts only). */
+  readonly underlayImage?: (e: UnderlayEntity) => PdfUnderlayImage | null;
 }
 
 export const MONOCHROME: PdfPlotStyle = { mode: 'monochrome', lineweights: true, usePlotStyles: true };
@@ -615,10 +628,7 @@ class PageWriter {
         this.image(e, parent, view);
         break;
       case 'underlay':
-        // The vector plot consumes the generated frame parts — the same
-        // parts bounds and selection use (underlayParts) — never decoded
-        // page content; a placed reference plots as its frame.
-        this.parts(underlayParts(e), e, parent, view);
+        this.underlay(e, parent, view);
         break;
       case 'point': {
         const p = this.P(e.position);
@@ -825,6 +835,48 @@ class PageWriter {
       this.ops.push(`${parts.slice(i, i + 400).join(' ')} S`);
       this.pathOps += 1;
     }
+  }
+
+  private underlay(e: UnderlayEntity, parent: InsertEntity | null, view: Bounds | null): void {
+    // P28 finish (design 6.2): with a prepared raster the placement plots its
+    // page image; without one it plots exactly the frame parts it always did.
+    const defs = this.ctx.underlays;
+    const def = defs ? Object.values(defs).find((d) => (d.handle ?? '').toUpperCase() === e.definitionHandle) : undefined;
+    const hit = def ? this.ctx.underlayImage?.(e) ?? null : null;
+    if (!def || !hit) {
+      this.parts(underlayParts(e), e, parent, view);
+      return;
+    }
+    // D3: an AutoCAD-read definition carries no extent, so the display
+    // list would frame the image at the 1x1 unit fallback. Substitute
+    // the loaded page size, exactly as the screen path
+    // (underlay-render contentFor) and the plot resolver's source
+    // already do — a stored extent still wins.
+    const framedDef = def.extent ? def : { ...def, extent: hit.page };
+    const ops = underlayDisplayList(underlayPlacementOf(e), framedDef, { width: hit.page.width, height: hit.page.height });
+    const styleProps = { layer: e.layer, color: e.color, linetype: e.linetype, lineWeight: e.lineWeight };
+    const frameParts: Entity[] = [];
+    for (const op of ops) {
+      if (op.op === 'frame' || op.op === 'clip-frame') {
+        frameParts.push({ ...styleProps, id: `${e.id}:${op.op}`, type: 'polyline', points: [...op.points], closed: true } as Entity);
+      }
+    }
+    this.parts(frameParts, e, parent, view);
+    const img = ops.find((o) => o.op === 'image');
+    if (!img || img.op !== 'image') return;
+    const [ll, lr, , ul] = img.corners;
+    if (!ll || !lr || !ul) return;
+    const name = `Im${this.images.length}`;
+    this.images.push({ name, data: hit.data });
+    const A = this.pt(ll);
+    const B = this.pt(lr);
+    const D = this.pt(ul);
+    const clipOp = ops.find((o) => o.op === 'clip-frame');
+    const clip = clipOp ? `${[`${this.P(clipOp.points[0]!)} m`, ...clipOp.points.slice(1).map((p) => `${this.P(p)} l`), 'h W n'].join(' ')} ` : '';
+    // Placement fade is NOT applied: a plain image XObject carries no alpha
+    // in this writer (the IMAGE posture); an ExtGState/SMask fade is a
+    // separate project (design 6.2, recorded there).
+    this.ops.push(`q ${clip}${n(B.x - A.x)} ${n(B.y - A.y)} ${n(D.x - A.x)} ${n(D.y - A.y)} ${n(A.x)} ${n(A.y)} cm /${name} Do Q`);
   }
 
   private image(e: ImageEntity, parent: InsertEntity | null, view: Bounds | null): void {
@@ -1179,6 +1231,6 @@ export async function vectorPdfCompressed(
 }
 
 /** The drawing context of a state (layers, blocks, LTSCALE, linetypes, text styles). */
-export function drawingContext(state: DrawingState, lookup: BlockLookup, image?: PdfDrawingContext['image']): PdfDrawingContext {
-  return { layers: state.layers, lookup, ltscale: state.header?.ltscale ?? 1, linetypes: state.header?.linetypes ?? [], textStyles: textStylesOf(state), ...(image ? { image } : {}) };
+export function drawingContext(state: DrawingState, lookup: BlockLookup, image?: PdfDrawingContext['image'], underlayImage?: PdfDrawingContext['underlayImage']): PdfDrawingContext {
+  return { layers: state.layers, lookup, ltscale: state.header?.ltscale ?? 1, linetypes: state.header?.linetypes ?? [], textStyles: textStylesOf(state), underlays: state.underlays, ...(image ? { image } : {}), ...(underlayImage ? { underlayImage } : {}) };
 }

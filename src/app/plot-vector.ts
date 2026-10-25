@@ -14,8 +14,10 @@ import { PAPER_SIZES } from './plot';
 import type { DrawingState } from '../core/document';
 import type { Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
-import type { Entity } from '../core/entities';
-import { entityBounds } from '../core/entities';
+import type { Entity, UnderlayEntity } from '../core/entities';
+import { entityBounds, underlayPlacementOf } from '../core/entities';
+import { underlayMonochrome } from '../core/underlay';
+import { adjustUnderlayPixels, underlayBackgroundKey, underlayStyleKey } from './underlay-adjust';
 import { findLayout, layoutsOf, activeLayout, type Layout } from '../core/layouts';
 import { initializeLayout } from '../tools/layouts';
 import {
@@ -30,6 +32,12 @@ import {
 import { deflate, rgbaToRgb } from '../io/pdf';
 import type { ImageLoader } from '../render/draw';
 import { renderPageToCanvas } from '../render/layouts';
+import { createPdfjsEngine } from '../io/underlay-pdfjs';
+import type { UnderlayCanvasFactory, UnderlayRasterEngine } from '../io/underlay-engine';
+import { createUnderlayDisplayService, type UnderlayByteSource, type UnderlayVariantCanvasFactory } from './underlay-render';
+import { nullUnderlayBytes } from './underlay-bytes';
+import type { UnderlayContentSource } from '../render/underlay-content';
+import type { PdfUnderlayImage } from '../io/pdf-vector';
 import { capturedPlotLookup } from './plot-fonts';
 import { capturedPdfLookup } from './pdf-fonts';
 import { capturePlot, ExportAdmission, type PlotExportContext } from './export-admission';
@@ -109,6 +117,164 @@ async function collectImages(pages: readonly PdfPageSpec[], lookup: Editor['doc'
 
 const inches = (pt: number) => (pt / 72).toFixed(2);
 
+/**
+ * The captured underlay resolver (P28 finish, design 6.1): its OWN display
+ * service over the CAPTURED state — never the live editor's service — with
+ * definitions read from the captured snapshot and bytes from the byte
+ * source frozen at capture. Every PDF definition the plotted placements
+ * reference is ensured at plot resolution before any page is produced, so
+ * the synchronous consumers (vector walker, raster sheet) only ever read
+ * settled entries. Disposed by the caller when the plot finishes.
+ */
+export interface CapturedUnderlayResolver {
+  /** Synchronous source over the ensured entries (raster consumers). */
+  readonly source: UnderlayContentSource;
+  /** Prepared PDF image data for one placement (vector consumer). */
+  readonly imageData: (e: UnderlayEntity) => PdfUnderlayImage | null;
+  /** One entry per definition whose plot load did not produce a raster
+   * (gate finding D1: a plot never falls back to frame parts SILENTLY).
+   * Purely observational — recording a failure never changes what the
+   * source/imageData seams serve. Callers merge these into the plot
+   * issues, which reach the editor log. */
+  readonly issues: ReadonlySet<string>;
+  dispose(): void;
+}
+
+/** Test seams for the captured resolver: the raster engine, the
+ * pixel-access canvas factory for style variants, and the tile
+ * composite factory for over-cap plot loads. Production passes none
+ * (the pdfjs engine and DOM factories are built here). */
+export interface CapturedResolverSeams {
+  readonly engine?: UnderlayRasterEngine;
+  readonly variantCanvasFactory?: UnderlayVariantCanvasFactory;
+  readonly tileCanvasFactory?: UnderlayCanvasFactory;
+}
+
+/** The declared paper background every plot variant derives against (design A.2.1). */
+const PAPER_BACKGROUND: readonly [number, number, number] = [1, 1, 1];
+
+/** DOM pixel-access canvas factory for plot style variants (design 5.3),
+ * the same shape the composition root installs for the screen service. */
+const domVariantCanvasFactory: UnderlayVariantCanvasFactory = {
+  create(width: number, height: number) {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('a 2d canvas context is unavailable for underlay variants');
+    return {
+      canvas,
+      width,
+      height,
+      context: {
+        drawImage: (image: unknown, dx: number, dy: number) => { context.drawImage(image as CanvasImageSource, dx, dy); },
+        getImageData: (x: number, y: number, w: number, h: number) => context.getImageData(x, y, w, h),
+        putImageData: (image: { data: Uint8ClampedArray }, dx: number, dy: number) => { context.putImageData(new ImageData(new Uint8ClampedArray(image.data), width, height), dx, dy); },
+      },
+    };
+  },
+};
+
+export async function captureUnderlayResolver(
+  state: DrawingState,
+  placements: readonly Entity[],
+  bytesFor: UnderlayByteSource | undefined,
+  dpi: number,
+  seams?: CapturedResolverSeams,
+): Promise<CapturedUnderlayResolver> {
+  const defs = state.underlays ?? {};
+  const service = createUnderlayDisplayService({
+    engine: seams?.engine ?? createPdfjsEngine(),
+    bytesFor: bytesFor ?? nullUnderlayBytes,
+    definitions: () => state.underlays,
+    targetBackground: () => PAPER_BACKGROUND, // the declared paper background (design A.2.1)
+    tileCanvasFactory: seams?.tileCanvasFactory,
+  });
+  const ensured = new Map<string, { page: { width: number; height: number }; image: { bitmap: CanvasImageSource; width: number; height: number } }>();
+  const issues = new Set<string>();
+  const wanted = new Set<string>();
+  for (const e of placements) {
+    if (e.type !== 'underlay') continue;
+    const def = Object.values(defs).find((d) => (d.handle ?? '').toUpperCase() === e.definitionHandle);
+    if (def && def.kind === 'pdf') wanted.add(def.id);
+  }
+  for (const defId of wanted) {
+    const def = Object.values(defs).find((d) => d.id === defId)!;
+    const hit = await service.loadForPlot(def, dpi);
+    if (hit) ensured.set(defId, hit);
+    // D1: the miss is RECORDED, never silent — the definition is named
+    // and the caller surfaces it with the plot issues. The fallback
+    // itself is unchanged: no hit, no join, frame parts plot.
+    else issues.add(`PDF underlay ${def.sourcePath} could not be loaded for plotting; its placements plot as frames.`);
+  }
+  const join = (e: Entity): { def: (typeof defs)[string]; hit: { page: { width: number; height: number }; image: { bitmap: CanvasImageSource; width: number; height: number } } } | undefined => {
+    if (e.type !== 'underlay') return undefined;
+    const def = Object.values(defs).find((d) => (d.handle ?? '').toUpperCase() === e.definitionHandle);
+    const hit = def ? ensured.get(def.id) : undefined;
+    return def && hit ? { def, hit } : undefined;
+  };
+  // Per-placement style variants (#57 P2 (2)): the raw page raster is the
+  // canonical input; each placement's contrast/monochrome variant derives
+  // from it through the SHARED canonical post-process (underlay-adjust,
+  // design 5.3) against the paper background — the same derivation the
+  // display service's contentFor performs for the screen. Identity
+  // placements serve the raw raster object untouched; variants are cached
+  // per definition + style, so two placements of one definition with
+  // different styles each receive their own. Fade is NOT applied here
+  // (draw-time alpha at the raster consumers; the vector writer's
+  // recorded posture). No factory (headless) = raw serves, exactly the
+  // display service's posture when no variant factory is installed.
+  const variantFactory = seams?.variantCanvasFactory ?? (typeof document !== 'undefined' ? domVariantCanvasFactory : undefined);
+  const variants = new Map<string, { bitmap: CanvasImageSource; width: number; height: number }>();
+  const styledImage = (e: UnderlayEntity, joined: { def: (typeof defs)[string]; hit: { page: { width: number; height: number }; image: { bitmap: CanvasImageSource; width: number; height: number } } }): { bitmap: CanvasImageSource; width: number; height: number } => {
+    const style = { contrast: e.contrast, mono: underlayMonochrome(underlayPlacementOf(e)), background: PAPER_BACKGROUND };
+    const identity = (style.contrast === undefined || style.contrast === 100) && !style.mono;
+    if (identity || !variantFactory) return joined.hit.image;
+    const key = [joined.def.id, underlayStyleKey(style), underlayBackgroundKey(style.background)].join('|');
+    let variant = variants.get(key);
+    if (!variant) {
+      const raw = joined.hit.image;
+      const slot = variantFactory.create(raw.width, raw.height);
+      slot.context.drawImage(raw.bitmap, 0, 0);
+      const pixels = slot.context.getImageData(0, 0, raw.width, raw.height);
+      const adjusted = adjustUnderlayPixels(pixels.data, raw.width, raw.height, style);
+      slot.context.putImageData({ data: adjusted }, 0, 0);
+      variant = { bitmap: slot.canvas as CanvasImageSource, width: raw.width, height: raw.height };
+      variants.set(key, variant);
+    }
+    return variant;
+  };
+  return {
+    issues,
+    source: (e) => {
+      const joined = join(e);
+      if (!joined) return undefined;
+      const view = joined.def.extent ? joined.def : { ...joined.def, extent: joined.hit.page };
+      return { definition: view, page: joined.hit.page, image: styledImage(e, joined) };
+    },
+    imageData: (e) => {
+      const joined = join(e);
+      if (!joined || typeof document === 'undefined') return null;
+      const hit = joined.hit;
+      const styled = styledImage(e, joined);
+      try {
+        const c = document.createElement('canvas');
+        c.width = styled.width;
+        c.height = styled.height;
+        const ctx = c.getContext('2d')!;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, c.width, c.height);
+        ctx.drawImage(styled.bitmap, 0, 0);
+        const rgb = rgbaToRgb(ctx.getImageData(0, 0, c.width, c.height).data);
+        return { data: { width: c.width, height: c.height, data: rgb, kind: 'rgb' }, page: hit.page };
+      } catch {
+        return null; // an unreadable raster plots as frame parts
+      }
+    },
+    dispose: () => { service.dispose(); },
+  };
+}
+
 /** Handle a PLOT / PRINT choice when it involves a layout or vector PDF; false = the caller's raster model path. */
 export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pending?: PlotExportContext): Promise<boolean> {
   const bridge = pending?.captured.bridge ?? ed.fileBridge ?? null;
@@ -164,11 +330,14 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pe
   };
   if (vector) {
     const images = await collectImages(pages, lookup, captured.imageLoader);
-    const ctx = drawingContext(state, lookup, (p) => images.get(p) ?? null);
+    const underlayResolver = await captureUnderlayResolver(state, pages.flatMap((p) => p.groups.flatMap((grp) => grp.entities)), captured.underlayBytes, 300);
+    for (const issue of underlayResolver.issues) plotIssues.add(issue);
+    const ctx = drawingContext(state, lookup, (p) => images.get(p) ?? null, (e) => underlayResolver.imageData(e));
     const fontFallbacks = new Set<string>();
     Object.assign(ctx, { embeddedFonts: prepared?.fonts, textGeometry: prepared?.geometry, fontFallbacks, ...(prepared?.shapedText ? { shapedText: prepared.shapedText } : {}) });
     const title = target === 'model' ? base : target === 'layouts' ? `${base} - layouts` : `${base} - ${target}`;
     const bytes = await vectorPdfCompressed(pages, ctx, style, title, deflate);
+    underlayResolver.dispose();
     reportPlotStyles();
     if (fontFallbacks.size) ed.log(`PDF used substitute fonts for ${[...fontFallbacks].join(', ')}. ${prepared?.issues.join(' ') || 'Some glyphs or font formats are unsupported.'}`);
     if (!restrictedMode && prepared?.issues.some((issue) => issue.includes('preview/print embedding requires a read-only PDF'))) {
@@ -197,7 +366,10 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pe
   const canvas = document.createElement('canvas');
   const maxPx = 12000;
   const dpi = Math.min(150, (maxPx / Math.max(page.width, page.height)) * 72);
-  renderPageToCanvas(canvas, page, drawingContext(state, lookup), style, dpi, captured.imageLoader ?? (async () => null));
+  const rasterUnderlays = await captureUnderlayResolver(state, page.groups.flatMap((grp) => grp.entities), captured.underlayBytes, dpi);
+  for (const issue of rasterUnderlays.issues) plotIssues.add(issue);
+  renderPageToCanvas(canvas, page, drawingContext(state, lookup), style, dpi, captured.imageLoader ?? (async () => null), rasterUnderlays.source);
+  rasterUnderlays.dispose();
   reportPlotStyles();
   const dataUrl = canvas.toDataURL('image/png');
   const sheet = { width: page.width / 72, height: page.height / 72 };

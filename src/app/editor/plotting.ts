@@ -6,7 +6,7 @@
 import type { Point } from '../../core/geometry';
 import { layoutPage, type PlotOptions } from '../plot';
 import { fileErrorText } from '../file-error-text';
-import { plotLayoutsOrVector } from '../plot-vector';
+import { plotLayoutsOrVector, captureUnderlayResolver } from '../plot-vector';
 import type { Editor } from './editor';
 import { capturedPlotLookup } from '../plot-fonts';
 import { entityBounds } from '../../core/entities';
@@ -44,10 +44,12 @@ export async function renderPlotImage(ed: Editor, opts: PlotOptions, captured?: 
   const oy = lay.origin.y * px;
   const tf = { scale: k, toScreen: (p: Point) => ({ x: ox + (p.x - b.min.x) * k, y: oy + (b.max.y - p.y) * k }) };
   const { drawEntity } = await import('../../render/draw');
+  const sheetUnderlays = await captureUnderlayResolver(state, entities, source.underlayBytes, Math.round(px));
   for (const e of entities) {
     if (hidden.has(e.layer)) continue;
-    drawEntity(ctx, e, tf, state.layers, lookup, { strokeOverride: '#000000', lineWidthOverride: Math.max(1, Math.round(px / 100)), hidden, imageLoader: source.imageLoader ?? (async () => null), underlayDefinitions: state.underlays });
+    drawEntity(ctx, e, tf, state.layers, lookup, { strokeOverride: '#000000', lineWidthOverride: Math.max(1, Math.round(px / 100)), hidden, imageLoader: source.imageLoader ?? (async () => null), underlaySource: sheetUnderlays.source, underlayDefinitions: state.underlays });
   }
+  sheetUnderlays.dispose();
   return { dataUrl: canvas.toDataURL('image/png'), landscape: lay.landscape, sheet: lay.sheet, electron: lay.electron, reducedToFit: lay.reducedToFit };
 }
 

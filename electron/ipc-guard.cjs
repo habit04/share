@@ -192,9 +192,13 @@ function appUrlTest(indexFile, devUrl) {
 }
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|bmp|webp)$/i;
+const UNDERLAY_EXT = /\.pdf$/i;
 
 /** Policy denials are distinct from filesystem failures when resolving an image. @param {string} message */
 const imagePathError = (message) => Object.assign(new Error(message), { code: 'ERR_IMAGE_PATH' });
+
+/** Policy denials for the underlay byte channel carry their own code (P28 D-3: the sibling, never imagePath). @param {string} message */
+const underlayPathError = (message) => Object.assign(new Error(message), { code: 'ERR_UNDERLAY_PATH' });
 
 /**
  * Path rules shared by the file IPC handlers.
@@ -206,6 +210,10 @@ function createPathPolicy({ isKnownPath, isWritablePath = isKnownPath, knownPath
   const referencedImages = new Set();
   /** The same for network paths (\\server\share\...), only those on the server of the drawing naming them. */
   const referencedNetwork = new Set();
+  /** Absolute PDF paths named by the drawings the main process has read (PDFDEFINITION) — the read-underlay channel's confinement set. */
+  const referencedUnderlays = new Set();
+  /** The same for network paths, only those on the server of the drawing naming them. */
+  const referencedUnderlayNetwork = new Set();
   const norm = (/** @type {string} */ p) => {
     // Windows keeps composed/decomposed names as separate files and folders. Folding them
     // together would extend the image permission into a different directory or reference.
@@ -243,8 +251,21 @@ function createPathPolicy({ isKnownPath, isWritablePath = isKnownPath, knownPath
     return null;
   }
 
+  /** @param {unknown} p */
+  function underlayShapeProblem(p) {
+    const bad = shapeProblem(p);
+    if (bad) return bad;
+    const s = /** @type {string} */ (p);
+    if (!UNDERLAY_EXT.test(s)) return 'not a PDF file';
+    if (networkHost(s) === '') return 'device path';
+    return null;
+  }
+
   /** @param {string} p */
   const isReferencedImage = (p) => networkHost(p) === null ? referencedImages.has(norm(p)) : referencedNetwork.has(netKey(p));
+
+  /** @param {string} p */
+  const isReferencedUnderlay = (p) => networkHost(p) === null ? referencedUnderlays.has(norm(p)) : referencedUnderlayNetwork.has(netKey(p));
 
   /** Is `child` the folder `dir` or inside it? */
   const inside = (/** @type {string} */ dir, /** @type {string} */ child) => {
@@ -383,6 +404,78 @@ function createPathPolicy({ isKnownPath, isWritablePath = isKnownPath, knownPath
       }
     },
     /**
+     * UNDERLAY PDFs (P28 read-underlay channel): a PDF file in the folder (or a sub-folder)
+     * of a drawing the user opened, or one that a drawing the user opened references by its
+     * absolute path. Same network discipline as images. This is the SIBLING canonicalizer
+     * (413 D-3): imagePath can never serve a .pdf — its shape check requires an image
+     * extension — so the underlay channel has its own problem/path pair and its own
+     * ERR_UNDERLAY_PATH code, keeping the rejection log attributable per channel.
+     * @param {unknown} p
+     * @returns {string | null} why it is refused, or null
+     */
+    underlayProblem(p) {
+      const bad = underlayShapeProblem(p);
+      if (bad) return bad;
+      const s = /** @type {string} */ (p);
+      const host = networkHost(s);
+      const target = norm(s);
+      if (isReferencedUnderlay(s)) return null;
+      for (const k of knownPaths()) {
+        if (!/\.(dxf|dwg)$/i.test(k) || networkHost(k) !== host) continue;
+        if (inside(norm(path.dirname(k)), target)) return null;
+      }
+      return host === null ? 'not next to a drawing the user opened' : 'network path not next to a file the user opened on that server';
+    },
+    /** Resolve the actual underlay target before granting access; links cannot extend the scope. */
+    async underlayPath(file) {
+      const shapeBad = underlayShapeProblem(file);
+      if (shapeBad) throw underlayPathError(shapeBad);
+      const host = networkHost(file);
+      const bad = this.underlayProblem(file);
+      const dirs = [];
+      for (const k of knownPaths()) {
+        if (/\.(dxf|dwg)$/i.test(k) && networkHost(k) === host) dirs.push(path.dirname(k));
+      }
+      if (bad && dirs.length === 0) throw underlayPathError(bad);
+      const fs = require('node:fs/promises');
+      const actual = await fs.realpath(file);
+      if (networkHost(actual) !== host) throw underlayPathError('Underlay link changes the network location');
+      if (!underlayShapeProblem(actual)) {
+        if (isReferencedUnderlay(actual)) return actual;
+        const target = norm(actual);
+        for (const dir of new Set(dirs)) {
+          let realDir;
+          try {
+            realDir = await fs.realpath(dir);
+          } catch (err) {
+            if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) continue;
+            throw err;
+          }
+          if (networkHost(realDir) === host && (process.platform === 'win32' ? inside(realDir, actual) : inside(norm(realDir), target))) return actual;
+        }
+      }
+      throw underlayPathError('Underlay resolves outside the permitted drawing folders');
+    },
+    /**
+     * Remember the PDF files a drawing references (absolute, or relative to its folder). A
+     * network path is kept only when the drawing is on that server too.
+     * @param {string} drawingPath
+     * @param {Iterable<string>} names
+     */
+    rememberUnderlays(drawingPath, names) {
+      const dir = path.dirname(drawingPath);
+      const drawingHost = networkHost(drawingPath);
+      for (const n of names) {
+        if (typeof n !== 'string' || !n.trim() || n.length > MAX_PATH || n.includes('\0')) continue;
+        const name = n.trim();
+        if (!UNDERLAY_EXT.test(name)) continue;
+        const abs = path.isAbsolute(name) || /^[A-Za-z]:[\\/]/.test(name) || networkHost(name) !== null ? name : path.join(dir, name);
+        const host = networkHost(abs);
+        if (host === null) remember(referencedUnderlays, norm(abs));
+        else if (host !== '' && host === drawingHost) remember(referencedUnderlayNetwork, netKey(abs));
+      }
+    },
+    /**
      * A file inside a folder the main process owns (plugins, packs): after resolving symbolic
      * links it must still be inside that folder.
      * @param {string} root
@@ -429,6 +522,29 @@ function dxfImageNames(text) {
   return out;
 }
 
+/**
+ * Underlay definition file names in DXF text (OBJECTS section, group code 1 of each
+ * PDFDEFINITION / DWFDEFINITION / DGNDEFINITION object). Only the PDF names are
+ * remembered by the policy (the read-underlay channel is PDF-only), but all three
+ * record types carry their file name in group 1.
+ * @param {string} text
+ * @returns {string[]}
+ */
+function dxfUnderlayNames(text) {
+  const out = [];
+  if (typeof text !== 'string' || !text.includes('DEFINITION')) return out;
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i + 1 < lines.length; i += 2) {
+    if (lines[i].trim() !== '0' || !/^(PDF|DWF|DGN)DEFINITION$/.test(lines[i + 1].trim())) continue;
+    for (let j = i + 2; j + 1 < lines.length; j += 2) {
+      const code = lines[j].trim();
+      if (code === '0') break;
+      if (code === '1') out.push(lines[j + 1]);
+    }
+  }
+  return out;
+}
+
 const REPO_PATH = '/habit04/share';
 
 /**
@@ -459,4 +575,4 @@ function externalUrl(u, { cashApp = true, supportEmail = false } = {}) {
   return null;
 }
 
-module.exports = { guardIpc, appUrlTest, untrustedReason, createRejectionLog, createPathPolicy, dxfImageNames, externalUrl };
+module.exports = { guardIpc, appUrlTest, untrustedReason, createRejectionLog, createPathPolicy, dxfImageNames, dxfUnderlayNames, externalUrl };
