@@ -1,6 +1,6 @@
 {
   "name": "jcad-electrical",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "description": "2D electrical schematic drafting application (desktop)",
   "author": "JCad Electrical contributors",
   "license": "GPL-3.0-only",
@@ -179,7 +179,7 @@
     "@types/pngjs": "^6.0.5",
     "concurrently": "^9.1.0",
     "cross-env": "^7.0.3",
-    "electron": "^44.7.2",
+    "electron": "44.9.1",
     "electron-builder": "^26.15.3",
     "esbuild": "^0.25.12",
     "eslint": "^9.39.5",
