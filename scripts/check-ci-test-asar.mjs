@@ -62,7 +62,7 @@ async function main() {
   const require = createRequire(import.meta.url), read = file => JSON.parse(readFileSync(file,'utf8'));
   const version = read(join(repo,'node_modules/electron/package.json')).version;
   const lock=read(join(repo,'package-lock.json'));
-  assert.equal(version,'44.7.2');assert.equal(lock.packages['node_modules/electron'].version,version);
+  assert.equal(version,'44.9.1');assert.equal(lock.packages['node_modules/electron'].version,version);
   for(const name of ['electron-builder','app-builder-lib']){assert.equal(read(join(repo,`node_modules/${name}/package.json`)).version,'26.17.0');assert.equal(lock.packages[`node_modules/${name}`].version,'26.17.0');}
   const electronDist = join(repo,'node_modules/electron/dist');
   assert.equal(readFileSync(join(electronDist,'version'),'utf8').trim(),version);

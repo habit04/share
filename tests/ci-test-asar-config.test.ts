@@ -16,7 +16,7 @@ describe('unpublished CI test ASAR boundary',()=>{
     expect(config.extraMetadata).toEqual({jcadTestBuild:true});expect(config.publish).toBeNull();expect(config.win.target).toEqual(['dir']);
     expect(config.win.signExecutable).toBe(false);expect(config.win.forceCodeSigning).toBe(false);expect(config.win.signAndEditExecutable).toBe(true);
     expect([config.npmRebuild,config.nodeGypRebuild,config.buildDependenciesFromSource,config.downloadAlternateFFmpeg]).toEqual([false,false,false,false]);
-    expect(config.electronVersion).toBe('44.7.2');expect(config.electronDist).toBe(paths.electronDist);expect(config.asar).toBe(true);
+    expect(config.electronVersion).toBe('44.9.1');expect(config.electronDist).toBe(paths.electronDist);expect(config.asar).toBe(true);
     expect(JSON.stringify(pkg.build)).toBe(before);
     const {validateConfiguration}=require('app-builder-lib/out/util/config/config.js');
     await expect(validateConfiguration(config,{isEnabled:false})).resolves.toBeUndefined();
