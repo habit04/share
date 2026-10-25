@@ -28,6 +28,12 @@ messages). The date of each version is the date of the commit that set that vers
 - Judge hatch pattern scale in the drawing's measurement system, including
   ISO/metric scale group 41, and write the metric value at full precision.
 
+### Security
+
+- Update Electron from 44.7.2 to 44.9.1 to block compromised eMudhra certificate
+  intermediates in Chromium networking and Node.js TLS, HTTPS and fetch.
+  See [Electron's certificate advisory](https://github.com/electron/electron/security/advisories/GHSA-jr5w-w6x2-84p9).
+
 ### Known limitations
 
 - Annotative text-style XDATA, legacy TABLESTYLE `_DATA`, and hatch-gradient
