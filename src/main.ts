@@ -673,6 +673,15 @@ function boot(): void {
     });
   }
 
+  // ------------------------------------------------------------ DXF xrefs (P20 slice 1, design section 6.4)
+  // Install the xref context provider on renderSettings, following the
+  // imageLoader installation pattern above: the editor resolves the
+  // active document's resolved xref context through it per frame, keyed
+  // by that document's session stamp (the registry itself refuses a
+  // stamp mismatch). Documents without a live graph answer null and
+  // every render/plot consumer draws exactly as before.
+  renderSettings.xrefContextProvider = (stamp) => editor.xrefSessions.currentContextFor(stamp);
+
   // ------------------------------------------------------------ PDF underlays (P28 finish, design section 1)
   // Always constructed — NOT conditional on the bridge (413 D-4 corrected
   // justification): the service is what produces page content at all, and it

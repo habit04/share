@@ -159,6 +159,26 @@ export const renderSettings: {
    * label (v0.6.4 review F-E — no composition root installs a source yet).
    */
   underlayDefinitions?: Readonly<Record<string, UnderlayDefinition>>;
+  /**
+   * Xref provider seam (P20 slice 1, design sections 3.4 + 6.4): installed
+   * by the composition root (src/main.ts) from the editor's xref session
+   * registry, mirroring the imageLoader installation. Given a session
+   * stamp it returns that document's resolved xref context, or null —
+   * a stamp mismatch, an inert session and a document without a graph
+   * all answer null, and every consumer then draws exactly as before.
+   */
+  xrefContextProvider?: (stamp: import('../app/xref-resolved').XrefSessionStamp) => import('../app/xref-resolved').ResolvedXrefContext | null;
+  /**
+   * The resolved xref context for the document the current frame is
+   * drawing, resolved through xrefContextProvider by the editor for its
+   * active session stamp before the frame (null: no graph — the frame
+   * uses the host lookup unchanged). Consumers wrap their base lookup
+   * with it; layer records are NEVER merged into the host table — an
+   * entity's layer resolves against the table of the file it was
+   * materialised from, which the context identifies per def
+   * (sourceFileKeyForDef + fileLayers, design addendum A.2).
+   */
+  xrefContext?: import('../app/xref-resolved').ResolvedXrefContext | null;
   /** Called when a bitmap finished loading so the view can repaint. */
   requestRedraw?: () => void;
 } = {
