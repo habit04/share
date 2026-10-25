@@ -11,6 +11,30 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-10-25
+
+### Upgrade notes
+
+- Windows x64 patch update from v0.6.4 for native DWG draw-order preservation
+  and hatch pattern scale checks.
+
+### Fixed
+
+- Preserve SORTENTSTABLE draw-order own-tail XDATA and reactors when writing
+  DWG, verify them after reopening, and explicitly refuse tampered or unsupported
+  payloads. The LibreDWG verification accounts for the table's block owner.
+  Genuine AutoCAD draw-order fixtures now complete the end-to-end DWG export
+  path. The pinned vendored DXF reader records the retained reactor data.
+- Judge hatch pattern scale in the drawing's measurement system, including
+  ISO/metric scale group 41, and write the metric value at full precision.
+
+### Known limitations
+
+- Annotative text-style XDATA, legacy TABLESTYLE `_DATA`, and hatch-gradient
+  export-command payloads keep their existing explicit refusals.
+- Existing DWG import and partial-import source-overwrite restrictions remain
+  unchanged. This update does not claim universal AutoCAD or DWG preservation.
+
 ## [0.6.4] - 2026-10-24
 
 ### Upgrade notes
