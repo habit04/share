@@ -148,8 +148,11 @@ describe('R-5 gate (design 3.7)', () => {
 
   it('3. clear() during open: the late-opened document is closed, never rendered into the new session', async () => {
     const h = deferredEngine();
+    // An adapter whose open resolves DESPITE the abort (the race the late-
+    // arrival path exists for): it never forwards the signal to the fake.
     const svc = createUnderlayDisplayService({
-      engine: h.engine, bytesFor: async () => BYTES_A, definitions: () => ({ a: def() }),
+      engine: { kind: 'pdf', open: (bytes: Uint8Array) => h.engine.open(bytes) },
+      bytesFor: async () => BYTES_A, definitions: () => ({ a: def() }),
     });
     svc.source(placement());
     await tick();

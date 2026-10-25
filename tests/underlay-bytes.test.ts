@@ -128,12 +128,16 @@ describe('read-underlay main handler (design 2.5, items 1-9)', () => {
   it('8. malformed and unconfined paths throw Invalid path and are logged, truncated', async () => {
     const f = loadHandler();
     await expect(f.invoke('read-underlay', 'relative.pdf')).rejects.toThrow('Invalid path');
-    const outside = join(tmpdir(), 'somewhere-else', 'x.pdf');
+    // An EXISTING pdf outside every permitted folder: the canonicalizer refuses.
+    const elsewhere = mkdtempSync(join(tmpdir(), 'jcad-underlay-elsewhere-'));
+    const outside = join(elsewhere, 'x.pdf');
+    writeFileSync(outside, PDF_BYTES);
     await expect(f.invoke('read-underlay', outside)).rejects.toThrow('Invalid path');
     const logged = f.rejections.filter((r) => r.kind === 'read-underlay');
     expect(logged.length).toBeGreaterThan(0);
     for (const r of logged) expect(r.detail.length).toBeLessThanOrEqual(320);
     rmSync(f.root, { recursive: true, force: true });
+    rmSync(elsewhere, { recursive: true, force: true });
   });
 
   it('9. the handler performs no directory listing or globbing (source census)', () => {
