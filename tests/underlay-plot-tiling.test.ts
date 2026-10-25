@@ -260,10 +260,23 @@ describe('D1 (ii): the real pdfjs engine serves a real-size letter page to loadF
   it('loadForPlot(def, 300) returns the page, composited from regions at full print size', async () => {
     const WORKER_SRC = new URL('../node_modules/pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).href;
     const record: string[] = [];
+    // The stub-canvas shape proven by tests/underlay-pdfjs.test.ts: a
+    // base of concrete context methods pdfjs reads values from, with a
+    // recording Proxy fallback for the rest.
     const stubFactory = {
       create: (width: number, height: number) => {
-        const context = new Proxy({}, {
-          get: (_t, p) => (p === 'getImageData' ? (x: number, y: number, w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4), width: w, height: h }) : (...a: unknown[]) => { record.push(String(p)); void a; }),
+        const base: Record<string, unknown> = {
+          measureText: (t: string) => ({ width: t.length * 6 }),
+          createLinearGradient: () => ({ addColorStop: () => undefined }),
+          createRadialGradient: () => ({ addColorStop: () => undefined }),
+          createPattern: () => ({}),
+          getImageData: (x: number, y: number, w: number, h: number) => ({ data: new Uint8ClampedArray(Math.max(0, w * h * 4)), width: w, height: h }),
+          createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4), width: w, height: h }),
+          getTransform: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }),
+          getLineDash: () => [],
+        };
+        const context = new Proxy(base, {
+          get: (t, p) => (p in t ? t[p as string] : (...a: unknown[]) => { record.push(String(p)); void a; }),
           set: () => true,
         });
         const canvas = { width, height, getContext: () => context };
@@ -312,8 +325,12 @@ describe('D1 (ii): the real pdfjs engine serves a real-size letter page to loadF
       expect(hit?.image.height).toBe(3301); // ceil arithmetic — see the file header
       expect(calls.renderRegion.length).toBe(5);
       expect(draws).toHaveLength(5);
+      // The plan works in whole pixel rows, so the tiles' union in
+      // page units overhangs the page by less than one pixel row
+      // (the adapter intersects each tile with the page on render).
       const covered = calls.renderRegion.reduce((a, r) => a + r.width * r.height, 0);
-      expect(covered).toBeCloseTo(612 * 792, 4);
+      expect(covered).toBeGreaterThanOrEqual(612 * 792);
+      expect(covered - 612 * 792).toBeLessThan(612 / (300 / 72) + 1);
     } finally {
       svc.dispose();
       doc?.close();

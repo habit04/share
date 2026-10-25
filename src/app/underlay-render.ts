@@ -38,7 +38,7 @@
  */
 import { underlayMonochrome, type UnderlayDefinition } from '../core/underlay';
 import { underlayPlacementOf, type UnderlayEntity } from '../core/entities';
-import { planUnderlayTiles, type UnderlayCanvasFactory, type UnderlayClipRect, type UnderlayDocument, type UnderlayRasterEngine } from '../io/underlay-engine';
+import { planUnderlayTiles, UNDERLAY_BYTES_PER_PIXEL, type UnderlayCanvasFactory, type UnderlayClipRect, type UnderlayDocument, type UnderlayRasterEngine } from '../io/underlay-engine';
 import { DEFAULT_UNDERLAY_CAPS } from '../io/underlay-adapter';
 import type { UnderlayDisplayContent } from '../render/underlay-content';
 import { adjustUnderlayPixels, underlayBackgroundKey, underlayStyleKey } from './underlay-adjust';
@@ -71,7 +71,10 @@ export interface UnderlayDisplayService {
   pageSizeOf(defId: string): { width: number; height: number } | undefined;
   /** Async entry point (plot): resolves when the placement's load settles. */
   ensure(e: UnderlayEntity): Promise<UnderlayDisplayContent | undefined>;
-  /** Plot load for a definition at a print resolution (design 6.3): the render scale is dpi/72. */
+  /** Plot load for a definition at a print resolution (design 6.3): the render scale is dpi/72.
+   * A page whose untiled raster would exceed the per-page cap is composited
+   * from tiles over the full-page region (gate finding D1); a page under
+   * the cap keeps the untiled render, byte-identical to before. */
   loadForPlot(def: UnderlayDefinition, dpi: number): Promise<{ page: { width: number; height: number }; image: { bitmap: CanvasImageSource; width: number; height: number } } | undefined>;
   /** Retire everything and refuse further loads (the plot resolver disposes its service). */
   dispose(): void;
@@ -124,6 +127,11 @@ interface Entry {
   readonly target: number;
   /** Print-resolution loads: the render scale is dpi/72 instead of target-driven. */
   readonly dpi?: number;
+  /** Plot loads (D1): when the untiled full-page raster at the load's
+   * scale would exceed the per-page cap, the load tiles the full page
+   * through the same tile branch a visible-region hint engages,
+   * instead of letting the whole-page render be refused by the cap. */
+  readonly fullPage?: boolean;
   readonly epoch: number;
   readonly generation: number;
   state: 'loading' | 'ready' | 'failed';
@@ -296,7 +304,7 @@ export function createUnderlayDisplayService(deps: {
     return !!current && current.sourcePath === entry.sourcePath;
   };
 
-  const startLoad = (def: UnderlayDefinition, opts: { region?: UnderlayClipRect; regionBucket: string; target: number; scaleBucket: string; dpi?: number }): Entry => {
+  const startLoad = (def: UnderlayDefinition, opts: { region?: UnderlayClipRect; regionBucket: string; target: number; scaleBucket: string; dpi?: number; fullPage?: boolean }): Entry => {
     const pageIndex = underlayPageIndex(def);
     // Entry key: the 'v?' segment is a literal placeholder — loads
     // dedupe before bytes arrive; sourceVersion binds via the byte
@@ -309,7 +317,7 @@ export function createUnderlayDisplayService(deps: {
     const entry: Entry = {
       key, defId: def.id, sourcePath: def.sourcePath, pageIndex,
       regionBucket: opts.regionBucket, scaleBucket: opts.scaleBucket,
-      region: opts.region, target: opts.target, dpi: opts.dpi,
+      region: opts.region, target: opts.target, dpi: opts.dpi, fullPage: opts.fullPage,
       epoch, generation: generationOf(def.id),
       state: 'loading', controller: new AbortController(), serial: 0,
       lastUsed: ++clock, settled, settleResolve,
@@ -349,7 +357,7 @@ export function createUnderlayDisplayService(deps: {
         entry.page = size;
         const scale = entry.dpi ? entry.dpi / 72 : entry.target / Math.max(size.width, size.height);
         const hint = entry.region;
-        const region: UnderlayClipRect | undefined = hint
+        let region: UnderlayClipRect | undefined = hint
           ? {
               x: Math.max(0, hint.x),
               y: Math.max(0, hint.y),
@@ -357,6 +365,22 @@ export function createUnderlayDisplayService(deps: {
               height: Math.min(size.height, hint.y + hint.height) - Math.max(0, hint.y),
             }
           : undefined;
+        if (!region && entry.fullPage) {
+          // D1: a plot load carries no visible-region hint, so without
+          // this the tiling branch never engages and the untiled
+          // whole-page render is refused by the per-page cap for any
+          // normal-size page (a letter page is ~33.7 MB at 300 dpi,
+          // 8.415 MB at 150 dpi, against the 8 MiB cap). When the
+          // untiled raster would exceed the cap — charged with the
+          // adapter's own ceil sizing — the region IS the full page
+          // and the tile branch below runs unchanged. Under the cap
+          // the untiled renderPage path serves, exactly as before.
+          const pxW = Math.max(1, Math.ceil(size.width * scale));
+          const pxH = Math.max(1, Math.ceil(size.height * scale));
+          if (pxW * pxH * UNDERLAY_BYTES_PER_PIXEL > DEFAULT_UNDERLAY_CAPS.maxScanBytes) {
+            region = { x: 0, y: 0, width: size.width, height: size.height };
+          }
+        }
         if (region && region.width > 0 && region.height > 0) {
           const tiles = planUnderlayTiles(region, scale, DEFAULT_UNDERLAY_CAPS.maxScanBytes);
           if (tiles.length === 0) { fail(); return; }
@@ -508,7 +532,7 @@ export function createUnderlayDisplayService(deps: {
     },
     async loadForPlot(def: UnderlayDefinition, dpi: number): Promise<{ page: { width: number; height: number }; image: { bitmap: CanvasImageSource; width: number; height: number } } | undefined> {
       if (def.kind !== 'pdf' || disposed) return undefined;
-      const entry = startLoad(def, { regionBucket: 'full', target: 0, scaleBucket: `plot:${dpi}`, dpi });
+      const entry = startLoad(def, { regionBucket: 'full', target: 0, scaleBucket: `plot:${dpi}`, dpi, fullPage: true });
       await entry.settled;
       if (entry.state !== 'ready' || !entry.page || !entry.image) return undefined;
       return { page: entry.page, image: entry.image };
