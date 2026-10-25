@@ -7,7 +7,13 @@
  * End-to-end on the in-repo golden whose PDFUNDERLAY carries exactly
  * the 2-point form.
  *
- * D3 pins arrive with their own commit below the D2 describe.
+ * D3: the vector writer must frame the image by the LOADED page
+ * size when the stored definition carries no extent (AutoCAD-read
+ * definitions never do) — the screen path and the resolver's source
+ * already substitute it; the writer was the one consumer that did
+ * not, so AutoCAD-read files plotted their image in a 1x1-unit
+ * frame (the lead's repro: a 2-unit image against a 432-unit
+ * screen frame).
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -50,13 +56,21 @@ const placement = (over: Partial<UnderlayEntity> = {}): UnderlayEntity => ({
   id: 'u1', layer: 'U', color: 'ByLayer', type: 'underlay', kind: 'pdf', definitionHandle: '41',
   position: { x: 0, y: 0 }, scaleX: 1, scaleY: 1, rotation: 0, flags: 2, retainedGroups: [], ...over,
 });
-function handState(e: UnderlayEntity): DrawingState {
+function handStateDef(e: UnderlayEntity, def: UnderlayDefinition): DrawingState {
   return new Drawing({
     entities: [e],
     blocks: {},
     layers: [{ name: 'U', color: 7, visible: true, locked: false, lineWeight: 0.5 }],
-    underlays: { d: DEF },
+    underlays: { d: def },
   }).snapshot;
+}
+function handState(e: UnderlayEntity): DrawingState {
+  return handStateDef(e, DEF);
+}
+
+/** The image placement matrix (`... cm /Im0 Do`) from a content stream. */
+function imageMatrix(contents: string): string | undefined {
+  return contents.match(/[-\d.]+ [-\d.]+ [-\d.]+ [-\d.]+ [-\d.]+ [-\d.]+ cm \/Im0 Do/)?.[0];
 }
 
 describe('D2: the vector writer clips a 2-point rectangle clip as a rectangle', () => {
@@ -103,5 +117,29 @@ describe('D2: the vector writer clips a 2-point rectangle clip as a rectangle', 
       entities: state.entities.map((x): Entity => (x.id === e.id ? { ...e, clipBoundary: rect } : x)),
     };
     expect(writeUnderlayPdf(cloned, { width: 612, height: 792 })).toBe(contents);
+  });
+});
+
+describe('D3: the vector writer frames an extent-less definition by the loaded page size', () => {
+  const PAGE = { width: 612, height: 792 };
+  const extentLess: UnderlayDefinition = { id: 'underlaydef:41', handle: '41', kind: 'pdf', sourcePath: 'sheet.pdf', retainedGroups: [] };
+  const withExtent: UnderlayDefinition = { ...extentLess, extent: PAGE };
+
+  it('an extent-less def plots the image at the loaded page size — the same matrix as a def storing that extent', () => {
+    const fromLoaded = writeUnderlayPdf(handStateDef(placement(), extentLess), PAGE);
+    const fromStored = writeUnderlayPdf(handStateDef(placement(), withExtent), PAGE);
+    expect(fromLoaded).toContain(' Do');
+    expect(imageMatrix(fromLoaded)).toBeDefined();
+    expect(imageMatrix(fromLoaded)).toBe(imageMatrix(fromStored));
+    expect(fromLoaded).toBe(fromStored); // frame parts agree too — the whole plot is the same
+  });
+
+  it('a stored extent still wins over the loaded page size (precedence unchanged)', () => {
+    const stored = { width: 200, height: 100 };
+    const def = { ...extentLess, extent: stored };
+    const hookBig = writeUnderlayPdf(handStateDef(placement(), def), PAGE);
+    const hookSame = writeUnderlayPdf(handStateDef(placement(), def), stored);
+    expect(imageMatrix(hookBig)).toBeDefined();
+    expect(hookBig).toBe(hookSame);
   });
 });
