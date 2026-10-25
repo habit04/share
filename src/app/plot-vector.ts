@@ -372,7 +372,10 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pe
     if (!await admission.choose(name)) return true;
   }
   const capturedGeometry = vector ? captured.vectorGeometry : captured.geometry;
-  const initialLookup = await capturedPlotLookup(snapshot, capturedGeometry);
+  // The captured xref context (pinned at capture, design section 4.4) is
+  // threaded explicitly: every lookup below — plottableState, plotPages,
+  // drawingContext, renderPageToCanvas — is built from this wrapped one.
+  const initialLookup = await capturedPlotLookup(snapshot, capturedGeometry, captured.xref ?? null);
   // D4: extents are computed in two tiers. plottableState initializes
   // pristine layouts from the extents, so it runs with the session-tier
   // channel (each definition's stored extent). The captured resolver
