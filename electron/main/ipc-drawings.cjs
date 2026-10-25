@@ -567,7 +567,9 @@ const MAX_UNDERLAY_BYTES = 64 * 1024 * 1024;
     } catch (err) {
       if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) return null;
       if (err && err.code === 'ERR_UNDERLAY_PATH') {
-        rejections.reject('read-underlay', `${err.message}: ${String(file).slice(0, 300)}`);
+        // P3: the rejection log line carries the CODE as well as the
+        // message — ipc-rejections.log readers key on ERR_UNDERLAY_PATH.
+        rejections.reject('read-underlay', `${err.code}: ${err.message}: ${String(file).slice(0, 300)}`);
         throw new Error('Invalid path');
       }
       throw err;
