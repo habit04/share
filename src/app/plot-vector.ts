@@ -248,6 +248,14 @@ export async function captureUnderlayResolver(
     }
     return variant;
   };
+  // D5: a placement whose raster cannot be materialised (an oversize
+  // canvas the platform refuses) plots as a frame — but never
+  // silently: the failure is named on the same issues channel D1
+  // built, which plotLayoutsOrVector merges into plotIssues after
+  // the writer and renderer have run.
+  const notePreparationFailure = (def: (typeof defs)[string]): void => {
+    issues.add(`PDF underlay ${def.sourcePath} loaded, but its raster could not be prepared for plotting (the page is too large for a canvas); its placements plot as frames.`);
+  };
   return {
     issues,
     pageSizeOf: (defId) => ensured.get(defId)?.page,
@@ -255,14 +263,22 @@ export async function captureUnderlayResolver(
       const joined = join(e);
       if (!joined) return undefined;
       const view = joined.def.extent ? joined.def : { ...joined.def, extent: joined.hit.page };
-      return { definition: view, page: joined.hit.page, image: styledImage(e, joined) };
+      try {
+        return { definition: view, page: joined.hit.page, image: styledImage(e, joined) };
+      } catch {
+        // D5 catch #2: the styled-variant derivation materialises a
+        // canvas the platform can refuse (oversize); serve the frame
+        // and name the failure instead of letting the throw escape.
+        notePreparationFailure(joined.def);
+        return { definition: view, page: joined.hit.page };
+      }
     },
     imageData: (e) => {
       const joined = join(e);
       if (!joined || typeof document === 'undefined') return null;
       const hit = joined.hit;
-      const styled = styledImage(e, joined);
       try {
+        const styled = styledImage(e, joined);
         const c = document.createElement('canvas');
         c.width = styled.width;
         c.height = styled.height;
@@ -273,7 +289,10 @@ export async function captureUnderlayResolver(
         const rgb = rgbaToRgb(ctx.getImageData(0, 0, c.width, c.height).data);
         return { data: { width: c.width, height: c.height, data: rgb, kind: 'rgb' }, page: hit.page };
       } catch {
-        return null; // an unreadable raster plots as frame parts
+        // D5 catch #1: extraction (or the styled derivation above)
+        // failed — the raster plots as frame parts, and says so.
+        notePreparationFailure(joined.def);
+        return null;
       }
     },
     dispose: () => { service.dispose(); },
