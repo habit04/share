@@ -15,7 +15,9 @@ import type { DrawingState } from '../core/document';
 import type { Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity, UnderlayEntity } from '../core/entities';
-import { entityBounds } from '../core/entities';
+import { entityBounds, underlayPlacementOf } from '../core/entities';
+import { underlayMonochrome } from '../core/underlay';
+import { adjustUnderlayPixels, underlayBackgroundKey, underlayStyleKey } from './underlay-adjust';
 import { findLayout, layoutsOf, activeLayout, type Layout } from '../core/layouts';
 import { initializeLayout } from '../tools/layouts';
 import {
@@ -140,6 +142,31 @@ export interface CapturedResolverSeams {
   readonly variantCanvasFactory?: UnderlayVariantCanvasFactory;
 }
 
+/** The declared paper background every plot variant derives against (design A.2.1). */
+const PAPER_BACKGROUND: readonly [number, number, number] = [1, 1, 1];
+
+/** DOM pixel-access canvas factory for plot style variants (design 5.3),
+ * the same shape the composition root installs for the screen service. */
+const domVariantCanvasFactory: UnderlayVariantCanvasFactory = {
+  create(width: number, height: number) {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('a 2d canvas context is unavailable for underlay variants');
+    return {
+      canvas,
+      width,
+      height,
+      context: {
+        drawImage: (image: unknown, dx: number, dy: number) => { context.drawImage(image as CanvasImageSource, dx, dy); },
+        getImageData: (x: number, y: number, w: number, h: number) => context.getImageData(x, y, w, h),
+        putImageData: (image: { data: Uint8ClampedArray }, dx: number, dy: number) => { context.putImageData(new ImageData(new Uint8ClampedArray(image.data), width, height), dx, dy); },
+      },
+    };
+  },
+};
+
 export async function captureUnderlayResolver(
   state: DrawingState,
   placements: readonly Entity[],
@@ -152,7 +179,7 @@ export async function captureUnderlayResolver(
     engine: seams?.engine ?? createPdfjsEngine(),
     bytesFor: bytesFor ?? nullUnderlayBytes,
     definitions: () => state.underlays,
-    targetBackground: () => [1, 1, 1], // the declared paper background (design A.2.1)
+    targetBackground: () => PAPER_BACKGROUND, // the declared paper background (design A.2.1)
   });
   const ensured = new Map<string, { page: { width: number; height: number }; image: { bitmap: CanvasImageSource; width: number; height: number } }>();
   const wanted = new Set<string>();
@@ -172,25 +199,57 @@ export async function captureUnderlayResolver(
     const hit = def ? ensured.get(def.id) : undefined;
     return def && hit ? { def, hit } : undefined;
   };
+  // Per-placement style variants (#57 P2 (2)): the raw page raster is the
+  // canonical input; each placement's contrast/monochrome variant derives
+  // from it through the SHARED canonical post-process (underlay-adjust,
+  // design 5.3) against the paper background — the same derivation the
+  // display service's contentFor performs for the screen. Identity
+  // placements serve the raw raster object untouched; variants are cached
+  // per definition + style, so two placements of one definition with
+  // different styles each receive their own. Fade is NOT applied here
+  // (draw-time alpha at the raster consumers; the vector writer's
+  // recorded posture). No factory (headless) = raw serves, exactly the
+  // display service's posture when no variant factory is installed.
+  const variantFactory = seams?.variantCanvasFactory ?? (typeof document !== 'undefined' ? domVariantCanvasFactory : undefined);
+  const variants = new Map<string, { bitmap: CanvasImageSource; width: number; height: number }>();
+  const styledImage = (e: UnderlayEntity, joined: { def: (typeof defs)[string]; hit: { page: { width: number; height: number }; image: { bitmap: CanvasImageSource; width: number; height: number } } }): { bitmap: CanvasImageSource; width: number; height: number } => {
+    const style = { contrast: e.contrast, mono: underlayMonochrome(underlayPlacementOf(e)), background: PAPER_BACKGROUND };
+    const identity = (style.contrast === undefined || style.contrast === 100) && !style.mono;
+    if (identity || !variantFactory) return joined.hit.image;
+    const key = [joined.def.id, underlayStyleKey(style), underlayBackgroundKey(style.background)].join('|');
+    let variant = variants.get(key);
+    if (!variant) {
+      const raw = joined.hit.image;
+      const slot = variantFactory.create(raw.width, raw.height);
+      slot.context.drawImage(raw.bitmap, 0, 0);
+      const pixels = slot.context.getImageData(0, 0, raw.width, raw.height);
+      const adjusted = adjustUnderlayPixels(pixels.data, raw.width, raw.height, style);
+      slot.context.putImageData({ data: adjusted }, 0, 0);
+      variant = { bitmap: slot.canvas as CanvasImageSource, width: raw.width, height: raw.height };
+      variants.set(key, variant);
+    }
+    return variant;
+  };
   return {
     source: (e) => {
       const joined = join(e);
       if (!joined) return undefined;
       const view = joined.def.extent ? joined.def : { ...joined.def, extent: joined.hit.page };
-      return { definition: view, page: joined.hit.page, image: joined.hit.image };
+      return { definition: view, page: joined.hit.page, image: styledImage(e, joined) };
     },
     imageData: (e) => {
       const joined = join(e);
       if (!joined || typeof document === 'undefined') return null;
       const hit = joined.hit;
+      const styled = styledImage(e, joined);
       try {
         const c = document.createElement('canvas');
-        c.width = hit.image.width;
-        c.height = hit.image.height;
+        c.width = styled.width;
+        c.height = styled.height;
         const ctx = c.getContext('2d')!;
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, c.width, c.height);
-        ctx.drawImage(hit.image.bitmap, 0, 0);
+        ctx.drawImage(styled.bitmap, 0, 0);
         const rgb = rgbaToRgb(ctx.getImageData(0, 0, c.width, c.height).data);
         return { data: { width: c.width, height: c.height, data: rgb, kind: 'rgb' }, page: hit.page };
       } catch {
