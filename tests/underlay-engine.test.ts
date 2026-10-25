@@ -75,8 +75,13 @@ describe('underlay display service (fake engine)', () => {
     const first = svc.source(placement());
     expect(first?.definition.sourcePath).toBe('plans\\floor.pdf');
     expect(first?.image).toBeUndefined();
-    await tick();
-    const ready = svc.source(placement());
+    // Await the load's own settled signal instead of a fixed tick count:
+    // ensure() awaits the entry's `settled` promise (resolved by the load
+    // itself once state/image are set) and only then reads source(). The
+    // landing chain (bytes -> hash -> open -> pageSize -> render) takes a
+    // load-dependent number of turns, so the two-tick wait that stood here
+    // flaked under load and on CI.
+    const ready = await svc.ensure(placement());
     expect(ready?.image).toBeDefined();
     expect(ready?.page).toEqual({ width: 200, height: 100 });
     expect(ready?.definition.extent).toEqual({ width: 200, height: 100 }); // extent-filled VIEW
