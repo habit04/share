@@ -37,6 +37,7 @@ import { saveQueue } from '../savequeue';
 import { loadSettings, type UserSettings } from '../settings';
 import { SessionManager, type ParkedSpaceViews } from '../sessions';
 import { XrefSessionRegistry } from '../xref-session';
+import { renderSettings } from '../../render/draw';
 import type { ColorSpec } from '../../core/entities';
 import type { PlotOptions } from '../plot';
 import type { SpaceRef } from '../../core/layouts';
@@ -237,6 +238,20 @@ export class Editor {
 
   render(): void {
     this.overlay.selection = this.selection;
+    // Publish the active document's resolved xref context for the frame
+    // the viewport is about to draw (design section 3.4): resolved
+    // through the composition root's provider when one is installed,
+    // else through this editor's own registry — either way keyed by the
+    // active session's stamp, so a background document's graph can never
+    // be published for the active one. No graph (or any failure reading
+    // the session) publishes null and the frame draws as before.
+    try {
+      const session = this.sessions.current;
+      const stamp = { docId: session.docId, contentGeneration: session.contentGeneration };
+      renderSettings.xrefContext = renderSettings.xrefContextProvider ? renderSettings.xrefContextProvider(stamp) : this.xrefSessions.currentContextFor(stamp);
+    } catch {
+      renderSettings.xrefContext = null;
+    }
     this.viewport.requestRender(this.overlay);
   }
 

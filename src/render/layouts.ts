@@ -124,7 +124,12 @@ export function paintLayout(ctx: CanvasRenderingContext2D, vp: Viewport, ov: Vie
 
   const layers = doc.layers;
   const hidden = new Set(layers.filter((l) => !l.visible).map((l) => l.name));
-  const lookup = doc.lookupBlock;
+  // Layout sheets draw through the same wrapped lookup as the model
+  // pass when a resolved xref context is published for this document
+  // (design sections 3.4 + A.2 rule 6: per-viewport layer state stays
+  // host-document data and applies to host entities; it does not reach
+  // into a referenced file's layer context).
+  const lookup = renderSettings.xrefContext ? renderSettings.xrefContext.lookup(doc.lookupBlock) : doc.lookupBlock;
   const spaceVp = state.space?.viewport;
   const header = doc.header;
   const canno = cannoscaleValue(header.cannoscale);
