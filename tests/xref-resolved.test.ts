@@ -223,6 +223,34 @@ describe('resolved xref contract', () => {
     expect(lines(expanded)).toHaveLength(1); // only the child's real line
   });
 
+  it('C9 (host-name collision): a dangling insert inside a child is NOT satisfied by an unrelated host block of the same name (#56 P2)', async () => {
+    const files = new Map<string, string>([['/proj/child-dangling.dxf', fixture('child-dangling.dxf')]]);
+    const { snapshot, hostState } = await load('host-dangling.dxf', '/proj/host-dangling.dxf', files);
+    // The host happens to define an unrelated block with the very name the
+    // child dangles (the HOST_ONLY situation): a marker line that must
+    // never be picked up as the child's geometry.
+    const marker: BlockDef = {
+      name: 'NOSUCH', basePoint: { x: 0, y: 0 }, attributes: [],
+      entities: [{ id: 'marker', type: 'line', layer: '0', color: 'ByLayer', a: { x: 1, y: 1 }, b: { x: 2, y: 2 } } as LineEntity],
+    };
+    const hostState2: DrawingState = { ...hostState, blocks: { ...hostState.blocks, NOSUCH: marker } };
+    const ctx = buildResolvedXrefContext(snapshot, stamp, hostState2);
+    const base = new Drawing(hostState2).lookupBlock;
+    const wrapped = ctx.lookup(base);
+    expect(base('NOSUCH')).toBe(marker); // the collision is real: the host table holds the name
+    // The unresolved child reference is preserved verbatim (C9's premise)...
+    const rootDef = wrapped('DX')!;
+    const dangling = inserts(rootDef.entities)[0]!;
+    expect(dangling.block).toBe('NOSUCH');
+    // ...but no host lookup may satisfy it: it resolves to no definition,
+    // never to the host-marker object.
+    expect(wrapped('NOSUCH')).toBeUndefined();
+    const hostInsert = hostState2.entities[0] as InsertEntity;
+    const expanded = explodeInsert(hostInsert, wrapped);
+    expect(lines(expanded)).toHaveLength(1); // only the child's real line
+    expect(lines(expanded)[0]).toMatchObject({ a: { x: 0, y: 0 }, b: { x: 10, y: 0 } });
+  });
+
   it('C10: a host block literally named like a scoped name still resolves as host', async () => {
     const { snapshot, hostState } = await load('host.dxf', '/proj/drawings/host.dxf', projectFiles());
     const childKey = snapshot.nodes[0]!.fileKey!;
