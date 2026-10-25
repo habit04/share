@@ -15,7 +15,7 @@ export interface CapturedPlot {
   readonly vectorGeometry?: TextGeometryContext;
   readonly pdfFont?: FileBridge['pdfFont'];
   readonly imageLoader?: ImageLoader;
-  /** The confined underlay byte source frozen at capture (P28): the plot builds its own resolver over the captured state. */
+  /** The confined underlay byte source frozen at capture (P28), bound to the captured document's path: a relative source resolves against the captured document's folder even if the live document changes mid-export (#57 P2 (1)). The plot builds its own resolver over the captured state. */
   readonly underlayBytes?: import('./underlay-render').UnderlayByteSource;
   /**
    * The PDF security decision frozen at capture (milestone 12.4): 'none' for
@@ -30,9 +30,11 @@ export interface CapturedPlot {
 /** Capture after the plot-options choice, before its destination picker or any producer awaits. */
 export function capturePlot(ed: Editor, bridge: FileBridge | null = ed.fileBridge ?? null, security: CapturedPlot['security'] = 'none'): CapturedPlot {
   const state = ed.doc.snapshot;
+  const filePath = ed.doc.filePath;
   const resources = ed.shxResources?.for(ed.sessions.current), styles = textStylesOf(state);
   return Object.freeze({ state, bridge, base: ed.fileName().replace(/\.[^.]+$/, ''), geometry: resources?.capture(styles), vectorGeometry: resources?.capture(styles, true),
-    pdfFont: bridge?.platform === 'win32' ? bridge.pdfFont?.bind(bridge) : undefined, imageLoader: renderSettings.imageLoader, underlayBytes: renderSettings.underlayBytes, security });
+    pdfFont: bridge?.platform === 'win32' ? bridge.pdfFont?.bind(bridge) : undefined, imageLoader: renderSettings.imageLoader,
+    underlayBytes: renderSettings.underlayBytesFor ? renderSettings.underlayBytesFor(filePath) : renderSettings.underlayBytes, security });
 }
 
 export class ExportAdmission {

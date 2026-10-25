@@ -698,6 +698,11 @@ function boot(): void {
   });
   renderSettings.underlaySource = (e) => underlays.source(e);
   renderSettings.underlayBytes = underlayBytes;
+  // Captured plots bind their byte source to the captured document's path
+  // at capture time (#57 P2 (1)); screen loads keep the live getter above.
+  renderSettings.underlayBytesFor = (drawingPath: string | null) => bridge?.readUnderlay
+    ? bridgeUnderlayBytes({ readUnderlay: bridge.readUnderlay.bind(bridge), drawingPath: () => drawingPath })
+    : nullUnderlayBytes;
   editor.on('file', () => underlays.clear());
   // Reload Underlays (Q5 CLOSED, design 3.6): explicit, per-definition
   // generation retirement over the ACTIVE document's definitions — the draw

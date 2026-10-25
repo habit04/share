@@ -153,6 +153,14 @@ export const renderSettings: {
    */
   underlayBytes?: import('../app/underlay-render').UnderlayByteSource;
   /**
+   * Bind a confined byte source to ONE drawing path (design section 2):
+   * the composition root's factory for captured plots — a captured plot
+   * resolves its definitions' bytes against the CAPTURED document's
+   * folder, never the folder of whatever drawing is live at load time
+   * (app/export-admission.ts, #57 P2 (1)).
+   */
+  underlayBytesFor?: (drawingPath: string | null) => import('../app/underlay-render').UnderlayByteSource;
+  /**
    * The current drawing's underlay definitions (DrawingState.underlays),
    * set by the viewport before each frame: the no-source fallback joins a
    * placement to its definition here so the frame carries the file-name
