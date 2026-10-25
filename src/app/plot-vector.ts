@@ -309,7 +309,10 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pe
     if (!await admission.choose(name)) return true;
   }
   const capturedGeometry = vector ? captured.vectorGeometry : captured.geometry;
-  const initialLookup = await capturedPlotLookup(snapshot, capturedGeometry);
+  // The captured xref context (pinned at capture, design section 4.4) is
+  // threaded explicitly: every lookup below — plottableState, plotPages,
+  // drawingContext, renderPageToCanvas — is built from this wrapped one.
+  const initialLookup = await capturedPlotLookup(snapshot, capturedGeometry, captured.xref ?? null);
   const state = plottableState(snapshot, initialLookup);
   const target = vector || !snapshot.space ? plotTarget(state, opts) : snapshot.space.layout;
   const initialPages = vector ? plotPages(state, initialLookup, target, opts) : [];

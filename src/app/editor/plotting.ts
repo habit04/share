@@ -17,7 +17,7 @@ import { isCommittedSaveAdmissionError, UNVERIFIED_COMMITTED_SAVE_WARNING } from
 
 export async function renderPlotImage(ed: Editor, opts: PlotOptions, captured?: CapturedPlot): Promise<{ dataUrl: string; landscape: boolean; sheet: { width: number; height: number }; electron?: string; reducedToFit: boolean } | null> {
   const source = captured ?? capturePlot(ed), state = source.state, capturedGeometry = source.geometry;
-  const lookup = await capturedPlotLookup(state, capturedGeometry);
+  const lookup = await capturedPlotLookup(state, capturedGeometry, source.xref ?? null);
   const hidden = new Set(state.layers.filter((l) => !l.visible).map((l) => l.name));
   const layout = paperSpaceLayout(state), entities = layout ? paperEntities(layout) : state.entities;
   let b: geometry.Bounds | null = null;
