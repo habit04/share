@@ -127,9 +127,17 @@ describe('D5: an oversized page drops loudly, never silently', () => {
     const throwingVariantFactory = {
       create: (width: number, height: number) => {
         if (width * height > AREA_CAP) throw new Error('variant canvas allocation failed');
-        return { canvas: { width, height } as unknown as HTMLCanvasElement, context: { drawImage: () => {} }, width, height };
+        return {
+          canvas: { width, height } as unknown as HTMLCanvasElement,
+          context: {
+            drawImage: () => {},
+            getImageData: (x: number, y: number, w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }),
+            putImageData: () => {},
+          },
+          width,
+          height,
+        };
       },
-      getImageData: (canvas: HTMLCanvasElement) => ({ data: new Uint8ClampedArray(4) }) as ImageData,
     };
     const resolver = await captureUnderlayResolver(stateWith(e), [e], async () => new Uint8Array([1]), 72, {
       engine: engineFor(HUGE),
@@ -153,7 +161,7 @@ describe('D5: an oversized page drops loudly, never silently', () => {
       tileCanvasFactory: holderTileFactory,
     });
     expect(resolver.imageData(e)).not.toBeNull();
-    expect(resolver.source(e).image).toBeDefined();
+    expect(resolver.source(e)?.image).toBeDefined();
     expect([...resolver.issues]).toEqual([]);
     resolver.dispose();
   });

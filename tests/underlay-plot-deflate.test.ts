@@ -92,7 +92,7 @@ function stubDocument(): void {
     const canvas = {
       width: 0,
       height: 0,
-      px: new Uint8ClampedArray(0),
+      px: new Uint8ClampedArray(0) as Uint8ClampedArray,
       getContext: () => ctx,
     };
     const ctx = {
@@ -133,9 +133,9 @@ describe('D6: the embedded underlay raster is deflated like the IMAGE path', () 
     const state = stateWith(e);
     const resolver = await capture(e);
     const lookup: BlockLookup = () => undefined;
-    const pages = plotPages(state, lookup, 'model', { paper: 'letter', scale: 'fit' });
+    const pages = plotPages(state, lookup, 'model', { paper: 'letter', orientation: 'portrait', scale: 'fit', margin: 0.5 });
     const ctx = drawingContext(state, lookup, () => null, (ent) => resolver.imageData(ent));
-    const bytes = vectorPdf(pages, ctx, { style: undefined }, 'd6');
+    const bytes = vectorPdf(pages, ctx, { mode: 'color', lineweights: true, usePlotStyles: true }, 'd6');
     const text = new TextDecoder('latin1').decode(bytes);
     expect(text).toContain('/Subtype /Image');
     expect(text).toContain('/FlateDecode');
