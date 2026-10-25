@@ -6,6 +6,8 @@ import { textStylesOf } from '../io/encoding';
 import { renderSettings, type ImageLoader } from '../render/draw';
 import { SaveAdmission, hasSaveAdmissions, committedSaveAdmissionError } from './save-admission';
 import { normalizePath } from './paths';
+import { registerCapturedXrefContext } from './plot-fonts';
+import type { ResolvedXrefContext } from './xref-resolved';
 
 export interface CapturedPlot {
   readonly state: DrawingState;
@@ -17,6 +19,14 @@ export interface CapturedPlot {
   readonly imageLoader?: ImageLoader;
   /** The confined underlay byte source frozen at capture (P28): the plot builds its own resolver over the captured state. */
   readonly underlayBytes?: import('./underlay-render').UnderlayByteSource;
+  /**
+   * The resolved xref context frozen at capture (P20 slice 1, design
+   * sections 4.1 + 3.5): the registry's context for the plotted document's
+   * session stamp at the moment the state was frozen, or null when the
+   * document has no live graph. A later reload commits a NEW context into
+   * the registry; this capture keeps expanding the generation it pinned.
+   */
+  readonly xref?: ResolvedXrefContext | null;
   /**
    * The PDF security decision frozen at capture (milestone 12.4): 'none' for
    * ordinary exports, 'restricted-p2' when the user opted into the
@@ -30,9 +40,19 @@ export interface CapturedPlot {
 /** Capture after the plot-options choice, before its destination picker or any producer awaits. */
 export function capturePlot(ed: Editor, bridge: FileBridge | null = ed.fileBridge ?? null, security: CapturedPlot['security'] = 'none'): CapturedPlot {
   const state = ed.doc.snapshot;
-  const resources = ed.shxResources?.for(ed.sessions.current), styles = textStylesOf(state);
+  // Editor-shaped test doubles may carry no sessions/shxResources at all;
+  // the pre-wiring code short-circuited on `ed.shxResources?.` before ever
+  // evaluating `ed.sessions.current`, and that contract is preserved here.
+  const session = ed.shxResources ? ed.sessions.current : undefined;
+  const resources = session ? ed.shxResources?.for(session) : undefined, styles = textStylesOf(state);
+  // Pin the xref context for THIS session stamp at capture time. The
+  // registry refuses a stamp mismatch itself (currentContextFor returns
+  // null), so a capture can never freeze another document's graph or a
+  // generation other than the one the session is bound to right now.
+  const xref = session ? ed.xrefSessions?.currentContextFor({ docId: session.docId, contentGeneration: session.contentGeneration }) ?? null : null;
+  registerCapturedXrefContext(state, xref);
   return Object.freeze({ state, bridge, base: ed.fileName().replace(/\.[^.]+$/, ''), geometry: resources?.capture(styles), vectorGeometry: resources?.capture(styles, true),
-    pdfFont: bridge?.platform === 'win32' ? bridge.pdfFont?.bind(bridge) : undefined, imageLoader: renderSettings.imageLoader, underlayBytes: renderSettings.underlayBytes, security });
+    pdfFont: bridge?.platform === 'win32' ? bridge.pdfFont?.bind(bridge) : undefined, imageLoader: renderSettings.imageLoader, underlayBytes: renderSettings.underlayBytes, xref, security });
 }
 
 export class ExportAdmission {
