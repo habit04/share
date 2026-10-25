@@ -13,7 +13,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setPathPlatform } from '../src/app/paths';
 import { readDxf } from '../src/io/dxf';
-import type { DrawingState, BlockDef } from '../src/core/document';
+import type { DrawingState } from '../src/core/document';
+import type { BlockDef } from '../src/core/entities';
 import { collectXrefReferences } from '../src/io/xref-loading';
 import {
   XrefSessionController,

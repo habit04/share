@@ -12,8 +12,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setPathPlatform } from '../src/app/paths';
 import { readDxf } from '../src/io/dxf';
-import { Drawing, type DrawingState, type BlockDef } from '../src/core/document';
-import { explodeInsert, type InsertEntity, type LineEntity } from '../src/core/entities';
+import { Drawing, type DrawingState } from '../src/core/document';
+import { explodeInsert, type BlockDef, type InsertEntity, type LineEntity } from '../src/core/entities';
 import {
   stageXrefLoad,
   type XrefFileReader,

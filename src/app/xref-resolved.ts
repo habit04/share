@@ -20,8 +20,8 @@
  * source file is recorded so a consumer can resolve an entity's layer
  * against the table of the file it was materialised from.
  */
-import type { DrawingState, Layer } from '../core/document';
-import type { BlockDef, BlockLookup, Entity } from '../core/entities';
+import type { DrawingState } from '../core/document';
+import type { BlockDef, BlockLookup, Entity, Layer } from '../core/entities';
 import { sealImmutableData } from '../core/immutable-data';
 import type { XrefNode, XrefSnapshot } from '../io/xref-loading';
 

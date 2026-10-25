@@ -41,7 +41,8 @@ export type XrefSessionPhase = 'idle' | 'loading' | 'ready' | 'failed';
 export interface XrefNodeStatus {
   readonly blockName: string;
   readonly originalPath: string;
-  readonly resolvedPath: string;
+  /** The broker-resolved path, or null when the reference never resolved (XrefNode/XrefFailure carry string | null). */
+  readonly resolvedPath: string | null;
   readonly overlay: boolean;
   readonly depth: number;
   readonly status: string;
