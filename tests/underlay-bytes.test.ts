@@ -140,6 +140,24 @@ describe('read-underlay main handler (design 2.5, items 1-9)', () => {
     rmSync(elsewhere, { recursive: true, force: true });
   });
 
+  it('8b. the canonicalizer refusal is logged WITH its code ERR_UNDERLAY_PATH, not only the message (gate P3)', async () => {
+    const f = loadHandler();
+    // An existing PDF outside every permitted folder: underlayPath
+    // refuses with an ERR_UNDERLAY_PATH-coded error. The rejection log
+    // line must carry the CODE — ipc-rejections.log readers key on it;
+    // today the handler logs only `${err.message}: ${file}` and the
+    // code string never appears (gate finding P3).
+    const elsewhere = mkdtempSync(join(tmpdir(), 'jcad-underlay-elsewhere-'));
+    const outside = join(elsewhere, 'x.pdf');
+    writeFileSync(outside, PDF_BYTES);
+    await expect(f.invoke('read-underlay', outside)).rejects.toThrow('Invalid path');
+    const logged = f.rejections.filter((r) => r.kind === 'read-underlay');
+    expect(logged.length).toBeGreaterThan(0);
+    expect(logged.some((r) => r.detail.includes('ERR_UNDERLAY_PATH'))).toBe(true);
+    rmSync(f.root, { recursive: true, force: true });
+    rmSync(elsewhere, { recursive: true, force: true });
+  });
+
   it('9. the handler performs no directory listing or globbing (source census)', () => {
     const src = readFileSync('electron/main/ipc-drawings.cjs', 'utf8');
     const section = src.slice(src.indexOf("ipcMain.handle('read-underlay'"), src.indexOf('end of read-underlay'));
