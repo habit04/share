@@ -11,6 +11,7 @@ import { updateCrossReferences } from '../../electrical/xref';
 import { newFromTemplate, SHEET_SIZES } from '../../electrical/templates';
 import { PlcModuleTool, SignalArrowTool, TerminalStripTool, DEFAULT_PLC, DEFAULT_STRIP } from '../../tools/plc';
 import { registerElectricalCommands } from '../commands-electrical';
+import { registerXrefCommands } from '../commands-xref';
 import { registerDraftingCommands } from '../commands-drafting';
 import { registerSymbolBuilderCommands } from '../../tools/symbol-builder';
 import { registerUnitCommands } from '../../electrical/wdm';
@@ -168,6 +169,7 @@ export function registerBuiltinCommands(ed: Editor): void {
   });
   registerDraftingCommands(ed);
   registerElectricalCommands(ed);
+  registerXrefCommands(ed);
   registerSymbolBuilderCommands(ed);
   registerUnitCommands(ed);
   registerPanelCommands(ed);
