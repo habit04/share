@@ -19,6 +19,7 @@ import {
   explodeInsert,
   expandInsert,
   entityBounds,
+  inheritedColor,
   type Entity,
   type InsertEntity,
   type LineEntity,
@@ -117,10 +118,13 @@ describe('display at the expansion seam (A)', () => {
     } as DrawingState;
     const { wrapped } = await loadWith('host.dxf', '/proj/drawings/host.dxf', files, hostState);
     const expanded = explodeInsert(hostInsert(hostState), wrapped);
-    expect(expanded.length).toBeGreaterThan(0);
-    expect(expanded.every((e) => isPlaceholderPart(e) || e.type === 'line' && false)).toBe(true);
-    expect(expanded.some(isPlaceholderPart)).toBe(true);
-    expect(lines(expanded)).toHaveLength(0); // inner.dxf's content never appears
+    expect(expanded.some(isPlaceholderPart)).toBe(true); // the nested overlay placeholders
+    // The parent's OWN line (y=7) displays; inner.dxf's content never appears —
+    // exactly one line survives, and it is the parent's.
+    const ls = lines(expanded);
+    expect(ls).toHaveLength(1);
+    expect(ls[0]!.a.y).toBe(7);
+    expect(ls[0]!.b.y).toBe(7);
   });
 
   it('A3: recursive nested expansion completes, and cyclic graphs terminate at the placeholder', async () => {
@@ -151,7 +155,7 @@ describe('display at the expansion seam (A)', () => {
       ['/proj/parts/child.dxf', fixture('child.dxf')],
       ['/proj/parts/grand.dxf', fixture('grand.dxf')],
     ]);
-    const dwg = await loadWith('host-dwg.dxf', '/proj/host-dwg.dxf', dwgFiles);
+    const dwg = await loadWith('host-dwg.dxf', '/proj/drawings/host-dwg.dxf', dwgFiles);
     const dwgExpanded = explodeInsert(hostInsert(dwg.hostState, 0), dwg.wrapped);
     expect(dwgExpanded.length).toBeGreaterThan(0);
     expect(dwgExpanded.every(isPlaceholderPart)).toBe(true);
@@ -161,20 +165,29 @@ describe('display at the expansion seam (A)', () => {
   it('A5: ByBlock resolves through the insert chain, ByLayer against the entity file records (A.2)', async () => {
     const files = new Map<string, string>([['/proj/child-byblock.dxf', fixture('child-byblock.dxf')]]);
     const { hostState, wrapped, ctx, snapshot } = await loadWith('host-byblock.dxf', '/proj/host-byblock.dxf', files);
-    const expanded = lines(explodeInsert(hostInsert(hostState), wrapped));
-    expect(expanded).toHaveLength(3);
     const childKey = ctx.nodeFor('BB')!.fileKey!;
     expect(ctx.sourceFileKeyForDef('BB')).toBe(childKey);
-    // Colour decision inputs per A.2: the insert's effective colour comes from the HOST side
-    // (insert on XHOST, ByLayer -> yellow 2); ByLayer content resolves against the CHILD's layer 0 (white 7).
-    const insertColour = aciToCss(2);
+    // At the def: the child's three lines keep their own colour specs
+    // (ByBlock = 0, ByLayer, explicit 6) — nothing is re-based onto host records.
+    const defLines = lines(wrapped('BB')!.entities);
+    expect(defLines.map((l) => l.color)).toEqual([0, 'ByLayer', 6]);
+    // The ByBlock line's inheritance is computed against the INSERT (core's
+    // own helper): it takes the insert's colour spec and the insert's layer —
+    // XHOST, a HOST layer (colour 2) — never a child record.
+    const insert = hostInsert(hostState);
+    const inherited = inheritedColor(defLines[0]!, insert);
+    expect(inherited.colorLayer).toBe('XHOST');
+    expect(inherited.color).toBe(insert.color);
+    expect(hostState.layers.find((l) => l.name === 'XHOST')!.color).toBe(2);
+    // The ByLayer line resolves against the CHILD's layer 0 (white 7), the
+    // snapshot's own sealed record — not the host's layer 0.
     const childLayer0 = ctx.fileLayers(childKey).find((l) => l.name === '0')!;
     expect(childLayer0).toBe(snapshot.files[childKey]!.state.layers[0]);
-    expect(expanded[0]!.color).toBe('ByBlock'); // resolved at render against the insert chain -> insertColour
-    expect(insertColour).toBe(aciToCss(2));
-    expect(expanded[1]!.color).toBe('ByLayer'); // resolved against the child's layer 0
     expect(aciToCss(childLayer0.color)).toBe(aciToCss(7));
-    expect(expanded[2]!.color).toBe(6); // explicit colour is its own, in every file
+    // Through expansion: three lines; the explicit colour survives untouched.
+    const expanded = lines(explodeInsert(insert, wrapped));
+    expect(expanded).toHaveLength(3);
+    expect(expanded[2]!.color).toBe(6);
   });
 
   it('A6: attribute values from the child insert ride through expansion', async () => {

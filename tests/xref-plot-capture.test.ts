@@ -37,7 +37,7 @@ function makeBridge(files: Map<string, string>): FileBridge {
     async identifyXref(_token: string, path: string) {
       const text = files.get(path);
       if (text === undefined) throw new Error('ERR_XREF_MISSING: no readable file');
-      return { ticket: path, identity: { id: `id:${path}`, owningLocation: dirOf(path), version: `v:${hash(text)}` } };
+      return { ticket: path, identity: { id: `id:${path}`, owningLocation: path, version: `v:${hash(text)}` } };
     },
     async readXref(_token: string, ticket: string) {
       const text = files.get(ticket);

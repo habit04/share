@@ -75,7 +75,7 @@ class FakeBroker {
     if (this.denyIdentify.has(path)) throw new Error('ERR_XREF_DENIED: not readable by name');
     const text = this.files.get(path);
     if (text === undefined) throw new Error('ERR_XREF_MISSING: no readable file');
-    return { ticket: path, identity: { id: `id:${path}`, owningLocation: dirOf(path), version: `v:${hash(text)}` } };
+    return { ticket: path, identity: { id: `id:${path}`, owningLocation: path, version: `v:${hash(text)}` } };
   }
   async readXref(_token: string, ticket: string, _maxBytes: number): Promise<{ text: string; byteLength: number; version: string }> {
     this.calls.push({ method: 'read', path: ticket });
@@ -170,7 +170,7 @@ describe('controller lifecycle (S)', () => {
     expect(status.phase).toBe('ready');
     expect(status.generation).toBe(1);
     expect(status.nodes.map((n) => [n.blockName, n.status])).toEqual([
-      ['CHILD', 'loaded'], ['LEAFWIN', 'loaded'], ['OVLROOT', 'loaded'],
+      ['CHILD', 'loaded'], ['GRAND', 'loaded'], ['LEAFWIN', 'loaded'], ['OVLROOT', 'loaded'], ['KID', 'loaded'],
     ]);
     expect(h.changes()).toBeGreaterThan(0);
 
@@ -306,7 +306,12 @@ describe('reload semantics (R)', () => {
     expect(h.controller.status().generation).toBe(2);
     const ctxAfter = h.controller.context()!;
     expect(ctxAfter).not.toBe(ctxBefore);
-    expect(ctxAfter.lookup(new (await import('../src/core/document')).Drawing(h.host.state).lookupBlock)).toBeTruthy();
+    // The new graph carries ONLY the new content: the child file's state
+    // is the replacement text (marker line at x=100), not a v1/v2 mix.
+    const snap = h.controller.snapshot()!;
+    const childFile = snap.files[snap.nodes.find((n) => n.blockName === 'CHILD')!.fileKey!]!;
+    const firstLine = childFile.state.entities.find((e) => e.type === 'line') as { a: { x: number } } | undefined;
+    expect(firstLine!.a.x).toBe(100);
   });
 
   it('R2: a replaced file whose read version disagrees with its identify version is a typed inconsistency; last-good stays published', async () => {
@@ -426,8 +431,8 @@ describe('missing and denied stay distinct (M)', () => {
 
   it('M7: a DWG reference reports unsupported-format, its bytes are never read, and a DXF sibling still loads', async () => {
     const files = projectFiles();
-    files.set('/proj/parts/grand.dxf', fixture('grand.dxf'));
-    const h = harness({ hostName: 'host-dwg.dxf', hostPath: '/proj/host-dwg.dxf', files });
+    files.set('/proj/drawings/host-dwg.dxf', fixture('host-dwg.dxf'));
+    const h = harness({ hostName: 'host-dwg.dxf', hostPath: '/proj/drawings/host-dwg.dxf', files });
     h.controller.bind();
     await h.controller.whenIdle();
     const nodes = h.controller.status().nodes;
@@ -447,10 +452,13 @@ describe('missing and denied stay distinct (M)', () => {
     h2.broker.denyIdentify.add(HOST_PATH); // host identity cannot be established
     h2.controller.bind();
     await h2.controller.whenIdle();
-    expect(h2.controller.snapshot()).toBeNull();
-    expect(h2.controller.status().phase).toBe('failed');
-    expect(h2.controller.status().nodes.every((n) => n.status === 'unresolved-location')).toBe(true);
+    // Fail-closed is a typed graph, published under the partial rule like
+    // any other typed failure set: every root unresolved-location, and
+    // nothing was ever read.
+    expect(h2.controller.snapshot()).toBeTruthy();
     expect(h2.controller.status().nodes.length).toBeGreaterThan(0);
+    expect(h2.controller.status().nodes.every((n) => n.status === 'unresolved-location')).toBe(true);
+    expect(h2.broker.paths('read')).toEqual([]);
   });
 
   it('M4: an inconsistent version at first load is its own typed status', async () => {
@@ -472,10 +480,12 @@ describe('missing and denied stay distinct (M)', () => {
   });
 
   it('M4: a nested overlay that is not carried reports not-carried-overlay and its file is never read', async () => {
-    const h = harness({ hostName: 'overlay-parent.dxf', hostPath: '/proj/drawings/overlay-parent.dxf' });
+    const h = harness();
+    h.host.state = synthState({ OP: xrefBlock('OP', 'overlay-parent.dxf') });
     h.controller.bind();
     await h.controller.whenIdle();
     const snap = h.controller.snapshot()!;
+    expect(snap.nodes[0]).toMatchObject({ blockName: 'OP', status: 'loaded' });
     expect(snap.nodes[0]!.children[0]).toMatchObject({ blockName: 'INNER', status: 'not-carried-overlay' });
     expect(h.broker.paths('read')).not.toContain('/proj/drawings/inner.dxf');
   });
@@ -595,7 +605,10 @@ describe('limits stay typed (M)', () => {
     expect(h.broker.paths('read')).not.toContain('/proj/chain/d9.dxf');
   });
 
-  it('M4: more distinct files than the cap reports file-limit', async () => {
+  it('M4: more distinct files than the cap fails as a typed total-limit — never as missing, and nothing publishes', async () => {
+    // The per-file cap reports node-level 'file-limit' (pinned by the core
+    // floor suites); the distinct-count cap is a staging fatal whose kind
+    // is 'total-limit'. Both stay distinct in the typed vocabulary.
     const files = new Map<string, string>();
     files.set('/proj/host.dxf', fixture('leaf.dxf'));
     const blocks: Record<string, BlockDef> = {};
@@ -608,12 +621,10 @@ describe('limits stay typed (M)', () => {
     h.controller.bind();
     await h.controller.whenIdle();
     const status = h.controller.status();
-    const kinds = new Set<string>([
-      ...status.nodes.map((n) => n.status),
-      ...(status.lastAttempt?.failures.map((f) => f.kind) ?? []),
-    ]);
-    expect(kinds.has('file-limit')).toBe(true);
-    expect(status.stats!.filesLoaded).toBeLessThanOrEqual(64);
+    expect(h.controller.snapshot()).toBeNull();
+    expect(status.phase).toBe('failed');
+    expect(status.lastAttempt!.failures.some((f) => f.kind === 'total-limit')).toBe(true);
+    expect(status.lastAttempt!.failures.some((f) => f.kind === 'missing')).toBe(false);
   });
 });
 

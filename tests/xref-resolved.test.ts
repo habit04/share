@@ -83,7 +83,10 @@ describe('resolved xref contract', () => {
     expect(lines(def.entities)[0]).toBe(lines(childFile.state.entities)[0]);
     const nested = inserts(def.entities)[0]!;
     expect(nested.block).not.toBe('GRAND');
-    expect(nested.block).toContain('GRAND');
+    // The nested insert resolves to the GRAND file's own model-space def.
+    const grandKey = snapshot.nodes[0]!.children[0]!.fileKey!;
+    expect(ctx.sourceFileKeyForDef(nested.block)).toBe(grandKey);
+    expect(ctx.lookup(base)(nested.block)).toBeTruthy();
     expect(JSON.stringify(snapshot)).toBe(snapshotJson);
   });
 
@@ -242,7 +245,7 @@ describe('resolved xref contract', () => {
     const wrapped = ctx.lookup(new Drawing(hostState).lookupBlock);
     const scopedWidget = inserts(wrapped('AX')!.entities)[0]!.block;
     const widgetDef = wrapped(scopedWidget)!;
-    expect(widgetDef.attributes.map((a) => [a.tag, a.defaultValue])).toEqual([['TAG1', 'DFLT']]);
+    expect(widgetDef.attributes.map((a) => [a.tag, a.default])).toEqual([['TAG1', 'DFLT']]);
     const hostInsert = hostState.entities[0] as InsertEntity;
     const expanded = explodeInsert(hostInsert, wrapped);
     const texts = expanded.filter((e) => e.type === 'text') as Array<{ text: string }>;
