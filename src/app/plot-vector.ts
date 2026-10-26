@@ -373,24 +373,35 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pe
   }
   const capturedGeometry = vector ? captured.vectorGeometry : captured.geometry;
   const initialLookup = await capturedPlotLookup(snapshot, capturedGeometry);
-  // D4: extents are computed in two tiers. plottableState initializes
-  // pristine layouts from the extents, so it runs with the session-tier
-  // channel (each definition's stored extent). The captured resolver
-  // is then created BEFORE the pages are computed — its settled page
-  // sizes feed the page-tier channel (page-size-first) that plotPages
-  // consumes, so a 'fit' layout scales to the real page frame instead
-  // of the 1x1 placeholder the bounds used to see.
-  const state = plottableState(snapshot, withUnderlaySizeChannel(initialLookup, underlaySizeResolver(snapshot.underlays)));
-  const target = vector || !snapshot.space ? plotTarget(state, opts) : snapshot.space.layout;
-  const placements: Entity[] = [...state.entities];
+  // A (#57 review P2) + D4: the captured resolver is created FIRST,
+  // over the snapshot — it needs only the captured underlays, the
+  // placements and the frozen byte source, none of which layout
+  // initialisation changes (initializeLayout appends a viewport; it
+  // never adds or removes layouts or entities, so the target and
+  // the placement set derived from the snapshot are exactly the
+  // ones the initialised state produces). Its settled page sizes
+  // feed the page-tier channel (page-size-first) that BOTH extents
+  // consumers then use: plottableState, whose pristine-layout
+  // initialisation fits each new viewport to the extents — a
+  // viewport fitted against the 1x1 placeholder (an extent-less
+  // underlay under the old session-tier order) is stored state no
+  // later lookup can repair — and plotPages, whose 'fit' layouts
+  // scale to the real page frame. Explicitly edited (non-pristine)
+  // viewports are never re-initialised; plottableState passes them
+  // through verbatim. The SAME resolver serves the pages below:
+  // one load per definition.
+  const target = targetHint;
+  const placements: Entity[] = [...snapshot.entities];
   {
-    const layoutTargets = target === 'layouts' ? layoutsOf(state) : target === 'model' ? [] : [findLayout(state, target)].filter((l): l is Layout => !!l);
+    const layoutTargets = target === 'layouts' ? layoutsOf(snapshot) : target === 'model' ? [] : [findLayout(snapshot, target)].filter((l): l is Layout => !!l);
     for (const l of layoutTargets) placements.push(...l.entities);
   }
-  const underlayResolver = await captureUnderlayResolver(state, placements, captured.underlayBytes, vector ? 300 : 150, seams);
+  const underlayResolver = await captureUnderlayResolver(snapshot, placements, captured.underlayBytes, vector ? 300 : 150, seams);
+  const pageTierSizeOf = underlaySizeResolver(snapshot.underlays, (defId) => underlayResolver.pageSizeOf(defId));
+  const state = plottableState(snapshot, withUnderlaySizeChannel(initialLookup, pageTierSizeOf));
   const initialPages = vector ? plotPages(state, initialLookup, target, opts) : [];
   const prepared = vector ? await capturedPdfLookup(state, captured.pdfFont, initialPages.flatMap((page) => page.groups), initialLookup, { restricted: restrictedMode }) : null;
-  const lookup = withUnderlaySizeChannel(prepared?.lookup ?? initialLookup, underlaySizeResolver(state.underlays, (defId) => underlayResolver.pageSizeOf(defId)));
+  const lookup = withUnderlaySizeChannel(prepared?.lookup ?? initialLookup, pageTierSizeOf);
   const pages = plotPages(state, lookup, target, opts);
   if (pages.length === 0 || pages.every((p) => p.groups.every((grp) => grp.entities.length === 0 && !(grp.frames?.length)))) {
     underlayResolver.dispose();
