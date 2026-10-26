@@ -1,6 +1,7 @@
 // Validates the GitHub Actions workflows (.github/workflows/*.yml) before they reach GitHub:
 // every file parses as YAML (js-yaml), has `on` and `jobs`, every job has `runs-on` and steps that
-// `uses` or `run` something, every `needs` names a job of the same workflow, and the release
+// `uses` or `run` something, every `needs` names a job of the same workflow, every third-party
+// `uses` is pinned to a full commit SHA (local `./` actions exempt), and the release
 // pipeline keeps its gates (docs/RELEASE.md): installers are built only after the checks passed,
 // from the checked commit, smoke-tested as packaged applications, and published last, with the
 // tag's CHANGELOG.md section as the release notes.
@@ -19,8 +20,9 @@ const parsed = {};
 for (const f of files) {
   /** @type {any} */
   let doc;
+  const text = readFileSync(join(dir, f), 'utf8');
   try {
-    doc = yaml.load(readFileSync(join(dir, f), 'utf8'));
+    doc = yaml.load(text);
   } catch (err) {
     problems.push(`${f}: not valid YAML: ${err.message.split('\n')[0]}`);
     continue;
@@ -38,18 +40,45 @@ for (const f of files) {
     problems.push(`${f}: no jobs`);
     continue;
   }
+  // Third-party actions and reusable workflows must be pinned to a full commit SHA: a tag or
+  // branch can be re-pointed by whoever controls the upstream repository. Local `./` actions
+  // live in this repository, and Docker image digests are a different pinning mechanism.
+  const lines = text.split('\n');
+  let usesCursor = 0;
+  const lineOfUses = (uses) => {
+    for (let n = usesCursor; n < lines.length; n++) {
+      const m = lines[n].match(/^\s*-?\s*uses:\s*(.+?)\s*$/);
+      if (m && m[1].split(/\s+/)[0].replace(/^['"]|['"]$/g, '') === uses) { usesCursor = n + 1; return n + 1; }
+    }
+    return 0;
+  };
+  const pinProblem = (uses) => {
+    if (uses.startsWith('./') || uses.startsWith('docker://') || !uses.includes('@')) return null;
+    const ref = uses.slice(uses.lastIndexOf('@') + 1);
+    return /^[0-9a-f]{40}$/.test(ref) ? null : `uses ${uses}, which is not pinned to a full commit SHA (pin the resolved SHA, keeping the version as a comment)`;
+  };
   for (const [id, job] of Object.entries(jobs)) {
     if (!job || typeof job !== 'object') {
       problems.push(`${f}: job ${id} is empty`);
       continue;
     }
-    if (job.uses) continue; // reusable workflow call
+    if (job.uses) { // reusable workflow call
+      if (typeof job.uses === 'string') {
+        const problem = pinProblem(job.uses);
+        if (problem) { const line = lineOfUses(job.uses); problems.push(`${f}${line ? `:${line}` : ''}: job ${id} ${problem}`); }
+      }
+      continue;
+    }
     if (!job['runs-on']) problems.push(`${f}: job ${id} has no runs-on`);
     if (!Array.isArray(job.steps) || job.steps.length === 0) problems.push(`${f}: job ${id} has no steps`);
     else
       job.steps.forEach((s, i) => {
         if (!s || (typeof s.uses !== 'string' && typeof s.run !== 'string')) problems.push(`${f}: job ${id} step ${i + 1} has neither uses nor run`);
         if (s && typeof s.uses === 'string' && !/@[\w.-]+$/.test(s.uses) && !s.uses.startsWith('./')) problems.push(`${f}: job ${id} step ${i + 1} uses ${s.uses} without a version`);
+        if (s && typeof s.uses === 'string') {
+          const problem = pinProblem(s.uses);
+          if (problem) { const line = lineOfUses(s.uses); problems.push(`${f}${line ? `:${line}` : ''}: job ${id} step ${i + 1} ${problem}`); }
+        }
       });
     const needs = job.needs === undefined ? [] : Array.isArray(job.needs) ? job.needs : [job.needs];
     for (const n of needs) if (!(n in jobs)) problems.push(`${f}: job ${id} needs unknown job ${n}`);
