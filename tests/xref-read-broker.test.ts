@@ -510,6 +510,94 @@ describe('xref read broker — host-folder references (P1 policy ruling)', () =>
   });
 });
 
+describe('xref read broker — canonical network-host confinement (P2)', () => {
+  /**
+   * Codex re-review of the P1 stack: the folder grant checked the
+   * network host only on the ORIGINAL spellings. Identify then
+   * canonicalized both the reference and the anchor and re-checked
+   * only directory containment, so a host folder redirected onto
+   * another network location — a local folder resolving under
+   * \\other-server\share, or \\allowed-server resolving to a different
+   * server — still received a ticket: the redirected anchor folder
+   * legitimately contains the canonical target, so containment alone
+   * cannot see the host change. underlayPath (electron/ipc-guard.cjs)
+   * refuses exactly this — the canonical path's network host must
+   * equal the original's. For folder-granted identifies the broker now
+   * requires networkHost(canonical target) === networkHost(canonical
+   * anchor folder) === networkHost(original anchor). Only the host is
+   * registry-granted in these pins; canonical (redirected) spellings
+   * are never granted by name.
+   */
+  const CHILD = 'C:\\proj\\child.dxf';
+  function canonSetup(granted: string[], anchor: string) {
+    const fs = new FakeFs();
+    const grantedSet = new Set(granted);
+    let n = 0;
+    const broker = createXrefReadBroker({
+      fs,
+      isKnownPath: (p: string) => grantedSet.has(p),
+      decodeDxf: async (bytes: Buffer) => ({ text: bytes.toString('utf8'), encoding: 'utf-8' }),
+      newId: () => `can-${++n}`,
+    });
+    const token = broker.beginContext('wc:1', { docId: 'doc-1', contentGeneration: 1, hostAnchor: anchor }).token;
+    return { fs, grantedSet, broker, token };
+  }
+
+  it('denies a sibling when the local host folder resolves onto a UNC share (local-to-UNC redirect)', async () => {
+    const { fs, broker, token } = canonSetup([HOST], HOST);
+    // The whole host folder is a redirect: the host and its sibling
+    // both canonicalize under \\other-server\share\proj, so canonical
+    // containment passes — only the network-host change can refuse.
+    fs.add('\\\\other-server\\share\\proj\\host.dxf', 'host-bytes', 10n);
+    fs.add('\\\\other-server\\share\\proj\\child.dxf', LEAF_TEXT, 42n);
+    fs.links.set(HOST, '\\\\other-server\\share\\proj\\host.dxf');
+    fs.links.set(CHILD, '\\\\other-server\\share\\proj\\child.dxf');
+    await expect(broker.identify('wc:1', token, CHILD)).rejects.toMatchObject({ code: 'ERR_XREF_DENIED' });
+  });
+
+  it('a full read through a local-to-UNC redirect is refused — no ticket is issued', async () => {
+    const { fs, broker, token } = canonSetup([HOST], HOST);
+    fs.add('\\\\other-server\\share\\proj\\host.dxf', 'host-bytes', 10n);
+    fs.add('\\\\other-server\\share\\proj\\child.dxf', LEAF_TEXT, 42n);
+    fs.links.set(HOST, '\\\\other-server\\share\\proj\\host.dxf');
+    fs.links.set(CHILD, '\\\\other-server\\share\\proj\\child.dxf');
+    // At the base this same flow identifies and the read returns the
+    // synthetic bytes end to end; the refusal must land at identify,
+    // before any ticket exists to read through.
+    await expect(broker.identify('wc:1', token, CHILD)).rejects.toMatchObject({ code: 'ERR_XREF_DENIED' });
+    expect(broker.stats().tickets).toBe(0);
+  });
+
+  it('denies a sibling when the anchor\'s server name resolves to a different server (server-to-server redirect)', async () => {
+    const anchor = '\\\\allowed-server\\share\\host.dxf';
+    const child = '\\\\allowed-server\\share\\child.dxf';
+    const { fs, broker, token } = canonSetup([anchor], anchor);
+    fs.add('\\\\real-server\\share\\host.dxf', 'host-bytes', 10n);
+    fs.add('\\\\real-server\\share\\child.dxf', LEAF_TEXT, 42n);
+    fs.links.set(anchor, '\\\\real-server\\share\\host.dxf');
+    fs.links.set(child, '\\\\real-server\\share\\child.dxf');
+    await expect(broker.identify('wc:1', token, child)).rejects.toMatchObject({ code: 'ERR_XREF_DENIED' });
+  });
+
+  it('still admits a sibling whose canonical path stays on the local host (same-host control)', async () => {
+    const { fs, broker, token } = canonSetup([HOST], HOST);
+    fs.add('C:\\proj\\sub\\real.dxf', LEAF_TEXT, 44n);
+    fs.links.set('C:\\proj\\link.dxf', 'C:\\proj\\sub\\real.dxf');
+    const child = await broker.identify('wc:1', token, 'C:\\proj\\link.dxf');
+    expect(child.identity.owningLocation).toBe('C:\\proj\\sub\\real.dxf');
+    await expect(broker.read('wc:1', token, child.ticket, 1 << 20)).resolves.toMatchObject({ text: LEAF_TEXT });
+  });
+
+  it('still admits a sibling canonicalizing deeper on the same UNC server (same-server control)', async () => {
+    const anchor = '\\\\srv\\share\\host.dxf';
+    const { fs, broker, token } = canonSetup([anchor], anchor);
+    fs.add('\\\\srv\\share\\deep\\child.dxf', LEAF_TEXT, 45n);
+    fs.links.set('\\\\srv\\share\\child.dxf', '\\\\srv\\share\\deep\\child.dxf');
+    const child = await broker.identify('wc:1', token, '\\\\srv\\share\\child.dxf');
+    await expect(broker.read('wc:1', token, child.ticket, 1 << 20)).resolves.toMatchObject({ text: LEAF_TEXT });
+  });
+});
+
 describe('xref read broker — retireDoc (host tab close, Stage-1 fix A)', () => {
   function seeded() {
     const s = setup();
