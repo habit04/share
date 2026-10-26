@@ -222,7 +222,7 @@ describe('workflow validation', () => {
     expect(r.out).toMatch(/does not run "npm run bench:node"/);
   });
   it('rejects publication without source-bound artifact validation or signed provenance', () => {
-    const r = check(withRelease((t) => t.replace('run: node scripts/release-provenance.mjs verify artifacts', 'run: echo skipped').replace('uses: actions/attest@v4', 'uses: actions/download-artifact@v4')));
+    const r = check(withRelease((t) => t.replace('run: node scripts/release-provenance.mjs verify artifacts', 'run: echo skipped').replace(/uses: actions\/attest@[0-9a-f]{40}/, 'uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093')));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/verify all artifacts and sign provenance before publishing/);
   });
