@@ -393,6 +393,119 @@ describe('xref read broker — cancellation and lifecycle', () => {
   });
 });
 
+describe('xref read broker — host-folder references (P1 policy ruling)', () => {
+  /**
+   * The ruling, aligned with the accepted PDF-underlay policy
+   * (electron/ipc-guard.cjs underlayProblem): a reference NAMED BY an
+   * opened drawing may be read from that drawing's folder or its
+   * subfolders. The context's host anchor selects the drawing; the
+   * injected registry policy must confirm the anchor itself was opened,
+   * so the label alone still grants nothing. Same confinement as the
+   * underlay channel: no traversal out of the folder tree (the
+   * validated spelling is resolved before the check, and the canonical
+   * target must stay inside too — links cannot extend the scope), no
+   * device paths, a network reference only on the host's own server.
+   * In these pins ONLY the host is registry-granted; the children are
+   * not — every success below is the sibling rule, not the registry.
+   */
+  const CHILD = 'C:\\proj\\child.dxf';
+  const SUBCHILD = 'C:\\proj\\sub\\child.dxf';
+  function siblingSetup(granted: string[], anchor: string = HOST) {
+    const fs = new FakeFs();
+    const grantedSet = new Set(granted);
+    let n = 0;
+    const broker = createXrefReadBroker({
+      fs,
+      isKnownPath: (p: string) => grantedSet.has(p),
+      decodeDxf: async (bytes: Buffer) => ({ text: bytes.toString('utf8'), encoding: 'utf-8' }),
+      newId: () => `sib-${++n}`,
+    });
+    const token = broker.beginContext('wc:1', { docId: 'doc-1', contentGeneration: 1, hostAnchor: anchor }).token;
+    return { fs, grantedSet, broker, token };
+  }
+
+  it('reads a sibling of the opened host (same folder), identified and read end to end', async () => {
+    const { fs, broker, token } = siblingSetup([HOST]);
+    fs.add(CHILD, LEAF_TEXT, 42n);
+    const child = await broker.identify('wc:1', token, CHILD);
+    expect(child.identity).toMatchObject({ id: 'win:7:42', owningLocation: CHILD });
+    await expect(broker.read('wc:1', token, child.ticket, 1 << 20)).resolves.toMatchObject({ text: LEAF_TEXT });
+  });
+
+  it('reads a reference in a subfolder of the host\'s folder', async () => {
+    const { fs, broker, token } = siblingSetup([HOST]);
+    fs.add(SUBCHILD, LEAF_TEXT, 43n);
+    const child = await broker.identify('wc:1', token, SUBCHILD);
+    await expect(broker.read('wc:1', token, child.ticket, 1 << 20)).resolves.toMatchObject({ text: LEAF_TEXT });
+  });
+
+  it('denies traversal out of the host folder before any filesystem contact', async () => {
+    const { fs, broker, token } = siblingSetup([HOST]);
+    fs.add('C:\\secret\\leaf.dxf', LEAF_TEXT, 99n);
+    // The ".." spelling resolves to C:\secret\leaf.dxf before the policy
+    // check; the plain outside path is denied the same way.
+    await expect(broker.identify('wc:1', token, 'C:\\proj\\sub\\..\\..\\secret\\leaf.dxf')).rejects.toMatchObject({ code: 'ERR_XREF_DENIED' });
+    await expect(broker.identify('wc:1', token, 'C:\\secret\\leaf.dxf')).rejects.toMatchObject({ code: 'ERR_XREF_DENIED' });
+    expect(fs.totalCalls()).toBe(0);
+  });
+
+  it('denies a link inside the folder whose canonical target escapes it', async () => {
+    const { fs, broker, token } = siblingSetup([HOST]);
+    fs.add('C:\\secret\\real.dxf', LEAF_TEXT, 55n);
+    fs.links.set('C:\\proj\\link.dxf', 'C:\\secret\\real.dxf');
+    await expect(broker.identify('wc:1', token, 'C:\\proj\\link.dxf')).rejects.toMatchObject({ code: 'ERR_XREF_DENIED' });
+  });
+
+  it('refuses device paths before policy or I/O, even inside the host folder\'s shape', async () => {
+    const { fs, broker, token } = siblingSetup([HOST]);
+    await expect(broker.identify('wc:1', token, '\\\\.\\C:\\proj\\child.dxf')).rejects.toMatchObject({ code: 'ERR_XREF_PATH' });
+    await expect(broker.identify('wc:1', token, '\\\\?\\C:\\proj\\child.dxf')).rejects.toMatchObject({ code: 'ERR_XREF_PATH' });
+    expect(fs.totalCalls()).toBe(0);
+  });
+
+  it('denies a network reference on another server than a local host, before I/O', async () => {
+    const { fs, broker, token } = siblingSetup([HOST]);
+    await expect(broker.identify('wc:1', token, '\\\\evil\\share\\child.dxf')).rejects.toMatchObject({ code: 'ERR_XREF_DENIED' });
+    expect(fs.totalCalls()).toBe(0);
+  });
+
+  it('a host on a share grants its own server\'s folder tree, and no other server', async () => {
+    const uncHost = '\\\\srv\\share\\host.dxf';
+    const { fs, broker, token } = siblingSetup([uncHost], uncHost);
+    fs.add('\\\\srv\\share\\sub\\child.dxf', LEAF_TEXT, 61n);
+    const child = await broker.identify('wc:1', token, '\\\\srv\\share\\sub\\child.dxf');
+    await expect(broker.read('wc:1', token, child.ticket, 1 << 20)).resolves.toMatchObject({ text: LEAF_TEXT });
+    const before = fs.totalCalls();
+    await expect(broker.identify('wc:1', token, '\\\\other\\share\\child.dxf')).rejects.toMatchObject({ code: 'ERR_XREF_DENIED' });
+    expect(fs.totalCalls()).toBe(before);
+  });
+
+  it('an anchor the registry does not know grants nothing (the label alone is not authority)', async () => {
+    const { fs, broker, token } = siblingSetup([], 'C:\\elsewhere\\host.dxf');
+    fs.add('C:\\elsewhere\\child.dxf', LEAF_TEXT, 71n);
+    await expect(broker.identify('wc:1', token, 'C:\\elsewhere\\child.dxf')).rejects.toMatchObject({ code: 'ERR_XREF_DENIED' });
+    expect(fs.totalCalls()).toBe(0);
+  });
+
+  it('a DWG host anchors the rule for its DXF references', async () => {
+    const dwgHost = 'C:\\proj\\host.dwg';
+    const { fs, broker, token } = siblingSetup([dwgHost], dwgHost);
+    fs.add(CHILD, LEAF_TEXT, 42n);
+    const child = await broker.identify('wc:1', token, CHILD);
+    await expect(broker.read('wc:1', token, child.ticket, 1 << 20)).resolves.toMatchObject({ text: LEAF_TEXT });
+  });
+
+  it('revoking the host\'s grant between identify and read denies the read before I/O', async () => {
+    const { fs, grantedSet, broker, token } = siblingSetup([HOST]);
+    fs.add(CHILD, LEAF_TEXT, 42n);
+    const child = await broker.identify('wc:1', token, CHILD);
+    grantedSet.delete(HOST);
+    const before = fs.totalCalls();
+    await expect(broker.read('wc:1', token, child.ticket, 1 << 20)).rejects.toMatchObject({ code: 'ERR_XREF_DENIED' });
+    expect(fs.totalCalls()).toBe(before);
+  });
+});
+
 describe('xref read broker — retireDoc (host tab close, Stage-1 fix A)', () => {
   function seeded() {
     const s = setup();

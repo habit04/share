@@ -232,3 +232,17 @@ describe('xref IPC — retire-doc-contexts (host tab close, Stage-1 fix A)', () 
     expect(rejections.some(([what]) => what === 'xref-retire-doc-contexts')).toBe(true);
   });
 });
+
+describe('xref IPC — host-folder references (P1 policy ruling)', () => {
+  it('a sibling of an anchor the user never opened is denied, and the denial is logged WITH its code', async () => {
+    const { call, rejections } = setup();
+    // The harness registry knows only LEAF; this context's anchor
+    // (C:\proj\host.dxf) was never opened, so its folder grants nothing:
+    // the sibling child.dxf in the same folder is ERR_XREF_DENIED, and
+    // the ruling's logging requirement is that the rejection entry
+    // carries the denial code, not just the channel.
+    const ctx = await call('xref-begin-context', { docId: 'd', contentGeneration: 1, hostAnchor: 'C:\\proj\\host.dxf' }) as { token: string };
+    await expect(call('xref-identify', ctx.token, 'C:\\proj\\child.dxf')).rejects.toThrowError(/ERR_XREF_DENIED/);
+    expect(rejections.some(([what, why]) => what === 'xref-identify' && why.includes('ERR_XREF_DENIED'))).toBe(true);
+  });
+});
