@@ -339,7 +339,7 @@ export async function captureUnderlayResolver(
 }
 
 /** Handle a PLOT / PRINT choice when it involves a layout or vector PDF; false = the caller's raster model path. */
-export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pending?: PlotExportContext): Promise<boolean> {
+export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pending?: PlotExportContext, seams?: CapturedResolverSeams): Promise<boolean> {
   const bridge = pending?.captured.bridge ?? ed.fileBridge ?? null;
   const admission = pending?.admission ?? new ExportAdmission(bridge, choice.action === 'pdf');
   try {
@@ -387,7 +387,7 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pe
     const layoutTargets = target === 'layouts' ? layoutsOf(state) : target === 'model' ? [] : [findLayout(state, target)].filter((l): l is Layout => !!l);
     for (const l of layoutTargets) placements.push(...l.entities);
   }
-  const underlayResolver = await captureUnderlayResolver(state, placements, captured.underlayBytes, vector ? 300 : 150);
+  const underlayResolver = await captureUnderlayResolver(state, placements, captured.underlayBytes, vector ? 300 : 150, seams);
   const initialPages = vector ? plotPages(state, initialLookup, target, opts) : [];
   const prepared = vector ? await capturedPdfLookup(state, captured.pdfFont, initialPages.flatMap((page) => page.groups), initialLookup, { restricted: restrictedMode }) : null;
   const lookup = withUnderlaySizeChannel(prepared?.lookup ?? initialLookup, underlaySizeResolver(state.underlays, (defId) => underlayResolver.pageSizeOf(defId)));
@@ -446,7 +446,7 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pe
   const maxPx = 12000;
   const dpi = Math.min(150, (maxPx / Math.max(page.width, page.height)) * 72);
   underlayResolver.dispose(); // the page-tier resolver has served its sizes; the sheet gets its own at sheet dpi
-  const rasterUnderlays = await captureUnderlayResolver(state, page.groups.flatMap((grp) => grp.entities), captured.underlayBytes, dpi);
+  const rasterUnderlays = await captureUnderlayResolver(state, page.groups.flatMap((grp) => grp.entities), captured.underlayBytes, dpi, seams);
   renderPageToCanvas(canvas, page, drawingContext(state, lookup), style, dpi, captured.imageLoader ?? (async () => null), rasterUnderlays.source);
   rasterUnderlays.dispose();
   for (const issue of rasterUnderlays.issues) plotIssues.add(issue);
