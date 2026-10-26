@@ -276,6 +276,10 @@ function createXrefReadBroker(deps) {
    * out of the folder tree (the validated spelling is resolved before
    * this check, and identify additionally re-checks the canonical target
    * against the host's folder, so links cannot extend the scope); no
+   * canonical network-host change (identify requires the canonical
+   * target and the canonical anchor folder to retain the original
+   * anchor's network host, as underlayPath does, so a folder redirected
+   * onto another server cannot extend the scope either); no
    * device paths (the shared validator refused their prefixes before
    * this point); a network reference only on the host's own server.
    * The grant anchors on the OPENED host drawing only: references a
@@ -467,10 +471,29 @@ function createXrefReadBroker(deps) {
       // not contained).
       if (!isKnownPath(path)) {
         let anchorDir = win32.dirname(ctx.hostAnchor);
+        /** @type {string | undefined} */
+        let canonicalAnchorDir;
         try {
-          anchorDir = win32.dirname(await fs.realpath(ctx.hostAnchor));
+          canonicalAnchorDir = win32.dirname(await fs.realpath(ctx.hostAnchor));
+          anchorDir = canonicalAnchorDir;
         } catch {
           // The anchor does not resolve; keep its lexical folder.
+        }
+        // Canonical network-host retention (the other half of the
+        // underlayPath mirror: it refuses when a link changes the
+        // network location). The grant approved the ORIGINAL anchor's
+        // network host, so the canonical target — and the canonical
+        // anchor folder, when the anchor resolves — must retain it.
+        // Containment alone cannot see this change: a local folder
+        // redirected onto a UNC share, or a server name resolving to a
+        // different server, leaves the redirected anchor folder
+        // legitimately containing the target, so without this check
+        // the reference would be admitted under a network location
+        // nobody approved.
+        const approvedHost = networkHost(ctx.hostAnchor);
+        if (networkHost(canonicalPath) !== approvedHost ||
+            (canonicalAnchorDir !== undefined && networkHost(canonicalAnchorDir) !== approvedHost)) {
+          throw ERR.denied(`the reference or its host folder resolves to a different network location than the opened host drawing: ${path}`);
         }
         if (!insideDir(anchorDir, canonicalPath)) {
           throw ERR.denied(`the reference resolves outside the folder of the opened host drawing: ${path}`);
