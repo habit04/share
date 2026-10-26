@@ -30,6 +30,9 @@ on:
   push:
     tags: ['v*']
 
+permissions:
+  contents: read
+
 jobs:
   native-helper:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.native_helper_only == 'true'
@@ -43,7 +46,7 @@ jobs:
       TAG: ${{ github.event.inputs.tag }}
       REQUIRE_PUBLISHER_SIGNING: 'true'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -53,7 +56,7 @@ jobs:
           if ($env:TAG) { throw 'native_helper_only requires an empty tag and cannot publish a release' }
           $actual = (git rev-parse HEAD).Trim()
           if ($LASTEXITCODE -ne 0 -or $actual -ne $env:SOURCE_SHA) { throw 'Checked out source differs from the dispatched commit' }
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -91,7 +94,7 @@ jobs:
         run: node scripts/check-signed-dwg-writer.mjs
         env:
           AZURE_PUBLISHER_NAME: ${{ secrets.AZURE_PUBLISHER_NAME }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: signed-native-dwg-writer-${{ github.sha }}
           path: |
@@ -113,7 +116,7 @@ jobs:
     outputs:
       sha: ${{ steps.commit.outputs.sha }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: The commit under test
         id: commit
         shell: bash
@@ -121,7 +124,7 @@ jobs:
           sha="$(git rev-parse HEAD)"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "Release checks run on $sha (${{ github.ref }})"
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -170,7 +173,7 @@ jobs:
         env:
           JCAD_E2E_OUT: e2e-output
       - run: xvfb-run -a npm run e2e:origin
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: failure()
         with:
           name: release-checks-output-node-${{ matrix.node }}
@@ -190,10 +193,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ needs.checks.outputs.sha }}
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -218,7 +221,7 @@ jobs:
         run: npm run e2e:test-build
         env:
           JCAD_E2E_OUT: test-build-output
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: test-build-checks-${{ matrix.os }}
@@ -247,10 +250,10 @@ jobs:
       REQUIRE_PUBLISHER_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != '' || github.event.inputs.require_signing == 'true' }}
     steps:
       # Exactly the commit the checks passed on.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ needs.checks.outputs.sha }}
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -328,7 +331,7 @@ jobs:
           status=unsigned
           if [ "$PLATFORM" = Windows ] && [ "$WINDOWS_SIGNED" = true ]; then status=authenticode-verified; fi
           node scripts/release-provenance.mjs build release "$PLATFORM" "$status"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.glob }}
@@ -341,13 +344,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ needs.checks.outputs.sha }}
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version-file: .nvmrc
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
           pattern: JCad-Electrical-*
@@ -355,7 +358,7 @@ jobs:
         env:
           SOURCE_SHA: ${{ needs.checks.outputs.sha }}
         run: node scripts/release-provenance.mjs verify artifacts --policy windows-only
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: verified-release-provenance
           path: |
@@ -378,10 +381,10 @@ jobs:
     timeout-minutes: 30
     steps:
       # The test scripts and fixtures of the same commit.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ needs.checks.outputs.sha }}
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -389,7 +392,7 @@ jobs:
       - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ${{ matrix.artifact }}
           path: installers
@@ -409,7 +412,7 @@ jobs:
           JCAD_SMOKE_REQUIRE_SHIPPING: 1
           JCAD_SMOKE_NATIVE_ONLY: '1'
           JCAD_SMOKE_EXPECT_ARCH: ${{ matrix.arch }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: packaged-smoke-${{ matrix.os }}
@@ -426,11 +429,11 @@ jobs:
       attestations: write
       artifact-metadata: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ needs.checks.outputs.sha }}
           fetch-depth: 0
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version-file: .nvmrc
       # Publish only what was tested: the tag must point at the commit the checks ran on (a pushed
@@ -457,7 +460,7 @@ jobs:
           else
             echo "Tag $TAG does not exist yet; it will be created at the tested commit $TESTED."
           fi
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
           pattern: JCad-Electrical-*
@@ -475,14 +478,14 @@ jobs:
         run: node scripts/release-notes.mjs "$TAG" --strict --provenance artifacts/release-provenance.json --out release-notes.md
       - name: Sign provenance for the complete verified release
         id: provenance
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: artifacts/**/*
       - name: Include the signed attestation bundle in the release
         env:
           BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
         run: cp "$BUNDLE" artifacts/release-provenance.sigstore.json
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           target_commitish: ${{ needs.checks.outputs.sha }}
