@@ -316,12 +316,15 @@ describe('R1 — reservation accounting (identified size + EOF sentinel, 64 MiB 
     const { fs, granted, broker, begin } = setup([HOST, leaf(1)]);
     fs.add(leaf(1), 'AAAAA', 1n);
     const token = begin('wc:1');
-    await expect(broker.identify('wc:1', token, 'C:\\caps\\ungranted.dxf')).rejects.toMatchObject({ code: 'ERR_XREF_DENIED' });
+    // Outside the host's folder tree: ungranted by name AND outside the
+    // P1 host-folder rule (a sibling would now be authorized, then MISSING).
+    await expect(broker.identify('wc:1', token, 'C:\\outside\\ungranted.dxf')).rejects.toMatchObject({ code: 'ERR_XREF_DENIED' });
     expect(broker.stats()).toMatchObject({ activeOps: 0, reservedRawBytes: 0 });
     const t = await broker.identify('wc:1', token, leaf(1));
     await expect(broker.read('wc:1', token, 'forged-ticket', 1024)).rejects.toMatchObject({ code: 'ERR_XREF_TICKET' });
     await expect(broker.read('wc:1', token, t.ticket, 0)).rejects.toMatchObject({ code: 'ERR_XREF_ARGUMENT' });
     granted.delete(leaf(1)); // permission revoked after identification
+    granted.delete(HOST); // under the P1 host-folder rule the leaf stays readable while its host is granted; revoke both
     await expect(broker.read('wc:1', token, t.ticket, 1024)).rejects.toMatchObject({ code: 'ERR_XREF_DENIED' });
     expect(broker.stats()).toMatchObject({ activeOps: 0, reservedRawBytes: 0 });
   });
@@ -337,7 +340,9 @@ describe('R1/R2 — credits are released on every outcome and survive retirement
     fs.files.get(leaf(1))!.ino = 99n; // replacement after identification
     await expect(broker.read('wc:1', token, t.ticket, 1024)).rejects.toMatchObject({ code: 'ERR_XREF_CHANGED' });
     expect(broker.stats()).toMatchObject({ activeOps: 0, reservedRawBytes: 0 });
-    await expect(broker.identify('wc:1', token, 'C:\\caps\\ghost.dxf')).rejects.toMatchObject({ code: 'ERR_XREF_DENIED' });
+    // Outside the host's folder tree, so the P1 host-folder rule does
+    // not authorize it either (a sibling ghost would now be MISSING).
+    await expect(broker.identify('wc:1', token, 'C:\\outside\\ghost.dxf')).rejects.toMatchObject({ code: 'ERR_XREF_DENIED' });
     // A granted-but-absent identify (fs error path) also frees the slot:
     const s2 = setup([HOST, 'C:\\caps\\absent.dxf']);
     const tok2 = s2.begin('wc:1');

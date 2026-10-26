@@ -1,4 +1,4 @@
-import { expandInsert, type BlockLookup, type EntityBase, type InsertEntity, type Layer } from '../core/entities';
+import { expandInsert, expandInsertTraced, type BlockLookup, type EntityBase, type InsertEntity, type Layer } from '../core/entities';
 import { resolvePlotStyle, type PlotStyleObject, type PlotStyleTable } from '../core/plot-styles';
 import { aciToCss } from './palette';
 
@@ -39,4 +39,9 @@ export function plotRgbCss(rgb: readonly [number, number, number]): string {
 /** Resolve nested source ByBlock widths during uncached expansion, before any CTB override. */
 export function expandPlotInsert(insert: InsertEntity, lookup: BlockLookup, layers: readonly Layer[]) {
   return expandInsert(insert, lookup, undefined, (parent) => plotObjectProperties(parent, layers).lineweightMm).entities;
+}
+
+/** expandPlotInsert with per-entity provenance (design A.2), for plot painters resolving layer state per source file. */
+export function expandPlotInsertSourced(insert: InsertEntity, lookup: BlockLookup, layers: readonly Layer[]) {
+  return expandInsertTraced(insert, lookup, (parent) => plotObjectProperties(parent, layers).lineweightMm).entities;
 }

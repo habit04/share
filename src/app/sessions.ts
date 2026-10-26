@@ -124,7 +124,11 @@ export class SessionManager {
   private untitledCounter = 0;
   private observedDocumentRevision = 0;
   private observedDocumentLoadCount = 0;
-  /** Fired after the active document changed (tab switch, add, close). */
+  /**
+   * Fired after the active document changed (tab switch, add, close), and
+   * from sync() when it first observes a load or file change that replaced
+   * the active document's content (see the X1 note in sync()).
+   */
   onChange: (() => void) | null = null;
   /**
    * Fired when a session's content or file path changed (a load replaced
@@ -238,6 +242,17 @@ export class SessionManager {
     // C2: the record now holds the NEW content/file — clear the file-keyed
     // sheet binding and let the app re-derive it (sessionContentOrFileChanged).
     if (contentOrFileChanged) sessionContentOrFileChanged(this, s);
+    // Gate defect X1: a load that replaced the live document (an open
+    // landing in the active tab, loadInto of the active session, a save-as
+    // moving its file) reaches this sync without any tab switch, add or
+    // close firing onChange, so listeners that bind on the session record
+    // (the editor's xref controllers) kept the binding they made against
+    // the previous record and never scheduled the new drawing's loads.
+    // The record now holds the NEW content/file: notify. The observed
+    // revision/load counters were updated above, before this point, so a
+    // listener reading `all`/`current` re-enters sync, finds nothing new,
+    // and does not re-fire.
+    if (contentOrFileChanged) this.onChange?.();
   }
 
   private restoring = false;

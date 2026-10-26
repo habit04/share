@@ -36,6 +36,8 @@ import { defaultProject, type Project } from '../project';
 import { saveQueue } from '../savequeue';
 import { loadSettings, type UserSettings } from '../settings';
 import { SessionManager, type ParkedSpaceViews } from '../sessions';
+import { XrefSessionRegistry } from '../xref-session';
+import { renderSettings } from '../../render/draw';
 import type { ColorSpec } from '../../core/entities';
 import type { PlotOptions } from '../plot';
 import type { SpaceRef } from '../../core/layouts';
@@ -61,6 +63,24 @@ export class Editor {
   // ---- UI/workflow extensions (file tabs, Properties panel) — logic lives in app/sessions.ts / src/ui.
   /** Open drawings ("file tabs"); the active one is `doc`. */
   readonly sessions: SessionManager = new SessionManager(this);
+  /**
+   * P20 slice 1: per-document xref session controllers — DXF xref
+   * load/refresh plus the resolved-snapshot contexts the render/plot
+   * seams consume (installed by the P28 wiring per design 6.4). The
+   * bridge and session accessors resolve lazily on every use: the file
+   * bridge is assigned after construction, and a document's binding is
+   * read from its session at bind time, never cached here.
+   */
+  readonly xrefSessions: XrefSessionRegistry = new XrefSessionRegistry({
+    bridge: () => this.fileBridge,
+    getBinding: (docId) => {
+      const session = this.sessions.all.find((s) => s.docId === docId);
+      return session ? { docId: session.docId, contentGeneration: session.contentGeneration, filePath: session.filePath } : null;
+    },
+    getState: (docId) => this.sessions.all.find((s) => s.docId === docId)?.state ?? null,
+    onSnapshotChanged: () => this.render(),
+    log: (text) => this.log(text),
+  });
   /** Current colour for new objects (Home > Properties panel; applied by Drawing.addEntities). Linetype / lineweight live in the drawing header (CELTYPE / CELWEIGHT). */
   get currentColor(): ColorSpec {
     return this.doc.currentColor;
@@ -149,6 +169,22 @@ export class Editor {
     // missing bridge or a refused signal must never block a tab close.
     this.sessions.onDocClosed = (docId) => {
       this.fileBridge?.retireXrefDocContexts?.(docId)?.catch(() => {});
+      // P20 slice 1: dispose the document's xref controller (aborts any
+      // in-flight attempt, closes its store and reader). Fire-and-forget,
+      // like the broker retirement above: never blocks a tab close.
+      void this.xrefSessions.dispose(docId).catch(() => {});
+    };
+    // P20 slice 1: any session change (open, switch, close, load, sync)
+    // rebinds the live documents' xref controllers. bind() is idempotent
+    // on an unchanged (docId, contentGeneration, filePath) triple, so
+    // ordinary edits cost a comparison, not an attempt; loads start only
+    // for a newly live binding with references and no graph yet.
+    this.sessions.onChange = () => {
+      try {
+        for (const session of this.sessions.all) this.xrefSessions.bind(session.docId);
+      } catch {
+        // A controller defect must never break session bookkeeping.
+      }
     };
     this.viewport = new Viewport(canvas, this.doc);
     this.doc.ensureBlocks([...LIBRARY_SYMBOLS, WIRE_DOT, TITLE_BLOCK, SOURCE_ARROW, DEST_ARROW]);
@@ -202,6 +238,20 @@ export class Editor {
 
   render(): void {
     this.overlay.selection = this.selection;
+    // Publish the active document's resolved xref context for the frame
+    // the viewport is about to draw (design section 3.4): resolved
+    // through the composition root's provider when one is installed,
+    // else through this editor's own registry — either way keyed by the
+    // active session's stamp, so a background document's graph can never
+    // be published for the active one. No graph (or any failure reading
+    // the session) publishes null and the frame draws as before.
+    try {
+      const session = this.sessions.current;
+      const stamp = { docId: session.docId, contentGeneration: session.contentGeneration };
+      renderSettings.xrefContext = renderSettings.xrefContextProvider ? renderSettings.xrefContextProvider(stamp) : this.xrefSessions.currentContextFor(stamp);
+    } catch {
+      renderSettings.xrefContext = null;
+    }
     this.viewport.requestRender(this.overlay);
   }
 

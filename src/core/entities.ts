@@ -518,46 +518,76 @@ export function underlaySizeResolver(
 }
 
 /**
- * A BlockLookup that also carries the underlay page-size channel.
- *
- * EVERY other side channel the source lookup carries is preserved
- * (#63 review P2): the channels ride as own properties of the
+ * Rebuild a lookup around the SAME name resolution, preserving its
+ * side channels — the shared helper behind every lookup rebuild
+ * (#65 review P2). The channels ride as own properties of the
  * callable — textGeometry, the def-scope hook forDef, the provenance
- * channel sources, and any channel added later — so re-creating the
- * callable from just the two known ones silently dropped the
- * captured file context (forDef scoping, per-file provenance) at
- * every wrapped call site. Forwarding is by DESCRIPTOR, so a getter
+ * channel sources, the page-size channel underlaySizeOf, and any
+ * channel added later — so re-creating the callable from just the
+ * channels one call site knows about silently drops the captured
+ * file context (forDef scoping, per-file provenance) for every
+ * consumer downstream, and a later rebuild cannot recover what an
+ * earlier one dropped (#63 review P2 made the same point for the
+ * size-channel wrap). Forwarding is by DESCRIPTOR, so a getter
  * channel stays a live getter: consumers read e.g.
  * textGeometry.fontIssues after long operations complete, and a
- * value copied at wrap time would freeze the empty set they started
- * with. forDef is the one channel that cannot be forwarded raw: it
- * RETURNS a lookup, and that lookup must itself carry this size
- * channel (and its own channels), so it is forwarded as a recursive
- * wrap. The supplied sizeOf wins over any size channel the source
- * already carries (nested wraps re-assert the same supplier).
+ * value copied at rebuild time would freeze the empty set they
+ * started with.
+ *
+ * `override` names the channels the rebuild REPLACES: each entry is
+ * set as a plain value on the result (an entry whose value is
+ * undefined still replaces — it clears the channel) and the source's
+ * own descriptor for it is not forwarded. forDef is the one channel
+ * that can be neither forwarded raw nor overridden: it RETURNS a
+ * lookup, and that lookup must itself be rebuilt the same way, so it
+ * is forwarded as a recursive rebuild through `rebuildScoped`.
+ * Reading forDef on the result yields undefined exactly when the
+ * source carries none.
  */
-export function withUnderlaySizeChannel(
+export function withLookupChannels(
   lookup: BlockLookup,
-  sizeOf: (e: UnderlayEntity) => { readonly width: number; readonly height: number } | undefined,
+  rebuildScoped: (scoped: BlockLookup) => BlockLookup,
+  override?: Readonly<Record<string, unknown>>,
 ): BlockLookup {
   const wrapped = ((name: string) => lookup(name)) as BlockLookup;
+  const replaced = new Set<string | symbol>(override ? Reflect.ownKeys(override) : []);
   for (const key of Reflect.ownKeys(lookup)) {
-    // underlaySizeOf is supplied below; forDef gets the recursive
-    // wrap below; length/name/prototype are the callable's own
-    // machinery, not channels.
-    if (key === 'underlaySizeOf' || key === 'forDef' || key === 'length' || key === 'name' || key === 'prototype') continue;
+    // length/name/prototype are the callable's own machinery, not
+    // channels; forDef gets the recursive rebuild below; an
+    // overridden channel is set from the override, not forwarded.
+    if (key === 'length' || key === 'name' || key === 'prototype' || key === 'forDef' || replaced.has(key)) continue;
     const desc = Object.getOwnPropertyDescriptor(lookup, key);
     if (desc) Object.defineProperty(wrapped, key, desc);
+  }
+  if (override) {
+    const values = override as Readonly<Record<string | symbol, unknown>>;
+    for (const key of Reflect.ownKeys(override)) {
+      Object.defineProperty(wrapped, key, { value: values[key], writable: true, enumerable: true, configurable: true });
+    }
   }
   Object.defineProperty(wrapped, 'forDef', {
     get: () => {
       const inner = lookup.forDef;
       if (typeof inner !== 'function') return undefined;
-      return (name: string, def: BlockDef) => withUnderlaySizeChannel(inner(name, def), sizeOf);
+      return (name: string, def: BlockDef) => rebuildScoped(inner(name, def));
     },
   });
-  Object.defineProperty(wrapped, 'underlaySizeOf', { value: sizeOf });
   return wrapped;
+}
+
+/**
+ * A BlockLookup that also carries the underlay page-size channel:
+ * the lookup rebuilt through withLookupChannels with the supplied
+ * sizeOf asserted as underlaySizeOf (it wins over any size channel
+ * the source already carries — nested wraps re-assert the same
+ * supplier), and def-scoped lookups recursively rebuilt the same
+ * way, so the size channel reaches scoped expansion too.
+ */
+export function withUnderlaySizeChannel(
+  lookup: BlockLookup,
+  sizeOf: (e: UnderlayEntity) => { readonly width: number; readonly height: number } | undefined,
+): BlockLookup {
+  return withLookupChannels(lookup, (scoped) => withUnderlaySizeChannel(scoped, sizeOf), { underlaySizeOf: sizeOf });
 }
 
 /** Per-file provenance a wrapped lookup can expose about its defs (see BlockLookup.sources). */
@@ -1654,6 +1684,10 @@ interface ExpansionBudget {
   contextGeometry: boolean;
   /** Optional plot-only resolver of an insertion's unplotted physical lineweight. */
   readonly resolveLineweight?: (entity: EntityBase) => number;
+  /** Sourced-expansion trace (explodeInsertSourced): the window of output indices each def expansion contributed, recorded in completion order. */
+  trace?: { start: number; end: number; source: string | undefined }[];
+  /** Resolves a def name to its provenance source for the trace; absent = no provenance (all host). */
+  traceSourceOf?: (defName: string) => string | undefined;
 }
 const newBudget = (maxObjects = MAX_INSERT_EXPANSION, resolveLineweight?: (entity: EntityBase) => number): ExpansionBudget => ({ remaining: MAX_BLOCK_EXPANSION_WORK, left: maxObjects, visits: maxObjects, chain: [], deps: new Map(), truncated: false, cyclic: false, contextGeometry: false, resolveLineweight });
 
@@ -2357,6 +2391,67 @@ export function expandInsert(ins: InsertEntity, lookup: BlockLookup, maxObjects 
   return { entities, truncated: budget.truncated, cyclic: budget.cyclic };
 }
 
+/** One expanded entity with the provenance source of the def that contributed it (undefined = the host document). */
+export interface SourcedEntity {
+  readonly entity: Entity;
+  readonly source: string | undefined;
+}
+
+/**
+ * expandInsert with per-entity provenance (design A.2): the expansion
+ * budget carries a trace — each def expansion records the window of
+ * output it contributed — and every entity is tagged with the source
+ * of the INNERMOST def window containing it (the def that authored it).
+ * Provenance comes from the lookup's sources channel; without one,
+ * every source is undefined.
+ */
+export function expandInsertTraced(ins: InsertEntity, lookup: BlockLookup, resolveLineweight?: (entity: EntityBase) => number): { entities: SourcedEntity[]; truncated: boolean; cyclic: boolean } {
+  const budget = newBudget(MAX_INSERT_EXPANSION, resolveLineweight);
+  budget.trace = [];
+  budget.traceSourceOf = lookup.sources?.sourceFileKeyForDef;
+  const flat: Entity[] = [];
+  explodeInto(flat, ins, lookup, 0, budget);
+  const sources: (string | undefined)[] = new Array(flat.length).fill(undefined);
+  // Windows are properly nested (appends are sequential, recursion is
+  // contained) and recorded in completion order — children complete
+  // before their parents. Applying them smallest-first visits inner
+  // windows before the windows enclosing them (a stable sort keeps
+  // completion order among equal-length windows, so the deeper def
+  // still comes first), and the written guard makes the FIRST writer
+  // win: an enclosing window never replaces an already-assigned inner
+  // source (#63 review P2 (D)). The guard is a separate array because
+  // an inner source can itself be undefined — a host def nested inside
+  // a file def keeps host provenance.
+  const written: boolean[] = new Array(flat.length).fill(false);
+  const windows = [...budget.trace].sort((a, b) => (a.end - a.start) - (b.end - b.start));
+  for (const w of windows) {
+    for (let i = w.start; i < w.end; i += 1) {
+      if (written[i]) continue;
+      written[i] = true;
+      sources[i] = w.source;
+    }
+  }
+  return { entities: flat.map((entity, i) => ({ entity, source: sources[i] })), truncated: budget.truncated, cyclic: budget.cyclic };
+}
+
+const sourcedCache = new WeakMap<InsertEntity, WeakMap<BlockLookup, { deps: ReadonlyMap<string, BlockDef | undefined>; contextKey: object | undefined; result: SourcedEntity[] }>>();
+
+/**
+ * explodeInsert with per-entity provenance (design A.2), for painters
+ * resolving layer state per source file. Same geometry as the uncached
+ * expansion; cached per (insert, lookup) and validated exactly like
+ * the insert cache (deps currency + text-geometry context).
+ */
+export function explodeInsertSourced(ins: InsertEntity, lookup: BlockLookup): SourcedEntity[] {
+  let byLookup = sourcedCache.get(ins);
+  const hit = byLookup?.get(lookup);
+  if (hit && hit.contextKey === lookup.textGeometry?.cacheKey && depsCurrent(hit.deps, lookup)) return hit.result;
+  const result = expandInsertTraced(ins, lookup).entities;
+  if (!byLookup) { byLookup = new WeakMap(); sourcedCache.set(ins, byLookup); }
+  byLookup.set(lookup, { deps: insertDependencies(ins, lookup), contextKey: lookup.textGeometry?.cacheKey, result });
+  return result;
+}
+
 /**
  * Was the expansion of this reference cut short: more than MAX_INSERT_EXPANSION objects, or a
  * block that inserts itself? EXPLODE refuses such a reference (it would lose content).
@@ -2493,13 +2588,14 @@ function explodeSingleInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup
   }
   const tf = insertTransform(ins, block);
   if (block.xref && block.entities.length === 0) {
+    const traceStart = out.length;
     spendExpansion(budget, 2);
     for (const e of xrefPlaceholder(ins, block, tf)) {
       if (budget.left <= 0) { budget.truncated = true; break; }
       out.push(e);
       budget.left -= 1;
     }
-
+    if (budget.trace) budget.trace.push({ start: traceStart, end: out.length, source: budget.traceSourceOf?.(block.name) });
     return;
   }
   budget.chain.push(ins.block);
@@ -2508,13 +2604,19 @@ function explodeSingleInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup
   // insert transform composes them (see expansionBlock). For static inserts
   // this is `block` itself, by identity.
   const expanded = expansionBlock(block, ins);
+  // References made from inside this def resolve through the def-scoped
+  // lookup when the lookup provides one (BlockLookup.forDef): the
+  // resolved-xref lookup scopes them to the def's source file, so a name
+  // that file left dangling refuses there and only there.
+  const inner = lookup.forDef?.(ins.block, block) ?? lookup;
+  const traceStart = out.length;
   for (const e of expanded.entities) {
     if (budget.left <= 0) {
       budget.truncated = true;
       break;
     }
     spendExpansion(budget, entityGeometryWork(e));
-    transformInto(out, e, tf, ins, similar, lookup, depth + 1, budget);
+    transformInto(out, e, tf, ins, similar, inner, depth + 1, budget);
   }
   // Attribute text (placements come from the possibly evaluated definition;
   // values always come from the insert, unchanged). Stored per-instance
@@ -2536,6 +2638,7 @@ function explodeSingleInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup
     if (inheritedWeight !== undefined && (!Number.isFinite(inheritedWeight) || inheritedWeight < 0)) throw new Error('Plot lineweight resolver must return finite nonnegative millimetres.');
     out.push(inheritedWeight === undefined ? text : { ...text, lineWeight: inheritedWeight });
   }
+  if (budget.trace) budget.trace.push({ start: traceStart, end: out.length, source: budget.traceSourceOf?.(block.name) });
   budget.chain.pop();
 }
 

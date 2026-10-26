@@ -3,6 +3,7 @@ import { underlayDisplayList, type UnderlayDefinition } from '../core/underlay';
 import { underlayDefinitionContent, type UnderlayContentSource } from './underlay-content';
 import {
   explodeInsert,
+  explodeInsertSourced,
   entityBounds,
   polylineSegments,
   dimensionParts,
@@ -36,7 +37,7 @@ import { findLinetype, effectiveLinetype, dashArray, type Linetype } from '../co
 import { annotativeEntity } from '../core/layouts';
 import { resolveAlpha } from '../core/appearance';
 import { hasHatchGradient, linearHatchGradientPlan, linearHatchGradientAxis, hatchGradientColorRgb } from '../core/hatch-gradient';
-import { expandPlotInsert, plotEntityAppearance, plotObjectProperties, plotRgbCss } from './plot-appearance';
+import { expandPlotInsert, expandPlotInsertSourced, plotEntityAppearance, plotObjectProperties, plotRgbCss } from './plot-appearance';
 import { shxTextPaths } from './shx-paths';
 
 export interface Transform {
@@ -167,6 +168,26 @@ export const renderSettings: {
    * label (v0.6.4 review F-E — no composition root installs a source yet).
    */
   underlayDefinitions?: Readonly<Record<string, UnderlayDefinition>>;
+  /**
+   * Xref provider seam (P20 slice 1, design sections 3.4 + 6.4): installed
+   * by the composition root (src/main.ts) from the editor's xref session
+   * registry, mirroring the imageLoader installation. Given a session
+   * stamp it returns that document's resolved xref context, or null —
+   * a stamp mismatch, an inert session and a document without a graph
+   * all answer null, and every consumer then draws exactly as before.
+   */
+  xrefContextProvider?: (stamp: import('../app/xref-resolved').XrefSessionStamp) => import('../app/xref-resolved').ResolvedXrefContext | null;
+  /**
+   * The resolved xref context for the document the current frame is
+   * drawing, resolved through xrefContextProvider by the editor for its
+   * active session stamp before the frame (null: no graph — the frame
+   * uses the host lookup unchanged). Consumers wrap their base lookup
+   * with it; layer records are NEVER merged into the host table — an
+   * entity's layer resolves against the table of the file it was
+   * materialised from, which the context identifies per def
+   * (sourceFileKeyForDef + fileLayers, design addendum A.2).
+   */
+  xrefContext?: import('../app/xref-resolved').ResolvedXrefContext | null;
   /** Called when a bitmap finished loading so the view can repaint. */
   requestRedraw?: () => void;
 } = {
@@ -736,6 +757,32 @@ function drawGeometry(
       drawText(ctx, e, tf, lookup.textGeometry);
       break;
     case 'insert': {
+      // Resolved-xref content (design A.2, #58 review P2(2)): when the
+      // lookup carries per-file provenance, expand ONCE with per-entity
+      // source tags and resolve each entity against its own file's
+      // layer table — the host's hidden set and table govern host
+      // content exactly as below and never reach into a referenced
+      // file; a layer name absent from the file's table (layer-0
+      // content floated to the insert's host layer) falls back to the
+      // ambient table. No table is merged into the host's.
+      const sources = lookup.sources;
+      if (sources) {
+        const sourced = style.plot ? expandPlotInsertSourced(e, lookup, layers) : explodeInsertSourced(e, lookup);
+        for (const { entity: sub, source } of sourced) {
+          const fileTable = source === undefined ? layers : sources.fileLayers(source);
+          const subTable = source === undefined || fileTable.some((l) => l.name === sub.layer) ? fileTable : layers;
+          if (source === undefined || subTable === layers) { if (style.hidden?.has(sub.layer)) continue; }
+          else { const rec = subTable.find((l) => l.name === sub.layer); if (rec && !rec.visible) continue; }
+          if (style.plot) { drawPlotPart(ctx, sub, tf, subTable, lookup, style, e); continue; }
+          ctx.globalAlpha = (style.alpha ?? 1) * resolveAlpha(sub, subTable);
+          const subColor = style.strokeOverride ?? resolveColor(sub, subTable);
+          ctx.strokeStyle = subColor;
+          ctx.fillStyle = subColor;
+          if (!style.dashed) ctx.setLineDash(resolveDash(sub, subTable, tf));
+          drawGeometry(ctx, sub, tf, subTable, lookup, style);
+        }
+        break;
+      }
       for (const sub of style.plot ? expandPlotInsert(e, lookup, layers) : explodeInsert(e, lookup)) {
         if (style.hidden?.has(sub.layer)) continue;
         if (style.plot) { drawPlotPart(ctx, sub, tf, layers, lookup, style, e); continue; }

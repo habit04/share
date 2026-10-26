@@ -372,7 +372,7 @@ export async function plotLayoutsOrVector(ed: Editor, choice: PlotChoiceLike, pe
     if (!await admission.choose(name)) return true;
   }
   const capturedGeometry = vector ? captured.vectorGeometry : captured.geometry;
-  const initialLookup = await capturedPlotLookup(snapshot, capturedGeometry);
+  const initialLookup = await capturedPlotLookup(snapshot, capturedGeometry, captured.xref ?? null);
   // A (#57 review P2) + D4: the captured resolver is created FIRST,
   // over the snapshot — it needs only the captured underlays, the
   // placements and the frozen byte source, none of which layout

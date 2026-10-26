@@ -8,7 +8,7 @@ import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
 import type { Entity, BlockLookup } from '../core/entities';
 import { textGeometryForStyles, EMPTY_TEXT_STYLES } from './font-metrics';
-import { entityBounds } from '../core/entities';
+import { entityBounds, withLookupChannels } from '../core/entities';
 import type { PdfPageSpec, PdfDrawingContext, PdfPlotStyle } from '../io/pdf-vector';
 import type { Drawing } from '../core/document';
 import type { Viewport, ViewportOverlay } from './viewport';
@@ -124,7 +124,12 @@ export function paintLayout(ctx: CanvasRenderingContext2D, vp: Viewport, ov: Vie
 
   const layers = doc.layers;
   const hidden = new Set(layers.filter((l) => !l.visible).map((l) => l.name));
-  const lookup = doc.lookupBlock;
+  // Layout sheets draw through the same wrapped lookup as the model
+  // pass when a resolved xref context is published for this document
+  // (design sections 3.4 + A.2 rule 6: per-viewport layer state stays
+  // host-document data and applies to host entities; it does not reach
+  // into a referenced file's layer context).
+  const lookup = renderSettings.xrefContext ? renderSettings.xrefContext.expansionLookup(doc.lookupBlock) : doc.lookupBlock;
   const spaceVp = state.space?.viewport;
   const header = doc.header;
   const canno = cannoscaleValue(header.cannoscale);
@@ -208,7 +213,16 @@ export function paintLayout(ctx: CanvasRenderingContext2D, vp: Viewport, ov: Vie
  * the "Raster image" PDF output; monochrome pages draw black.
  */
 export function renderPageToCanvas(canvas: HTMLCanvasElement, page: PdfPageSpec, ctxInfo: PdfDrawingContext, style: PdfPlotStyle, dpi: number, imageLoader?: ImageLoader, underlaySource?: UnderlayContentSource): void {
-  const lookup: BlockLookup = Object.assign((name: string) => ctxInfo.lookup(name), { textGeometry: ctxInfo.textGeometry ?? ctxInfo.lookup.textGeometry ?? textGeometryForStyles(ctxInfo.textStyles ?? EMPTY_TEXT_STYLES) });
+  // The page lookup re-bases the drawing context's lookup on this page's
+  // text geometry through the shared channel helper (core/entities):
+  // EVERY other channel of the underlying lookup — the def-scope hook
+  // and the per-file provenance (A.2), the page-size channel, any
+  // channel added later — is forwarded, recursively for scoped
+  // lookups, so raster sheets expand and resolve layers exactly as
+  // the live pass does.
+  const pageTextGeometry = ctxInfo.textGeometry ?? ctxInfo.lookup.textGeometry ?? textGeometryForStyles(ctxInfo.textStyles ?? EMPTY_TEXT_STYLES);
+  const wrapCtxLookup = (inner: BlockLookup): BlockLookup => withLookupChannels(inner, wrapCtxLookup, { textGeometry: pageTextGeometry });
+  const lookup: BlockLookup = wrapCtxLookup(ctxInfo.lookup);
   const s = dpi / 72;
   const W = Math.max(1, Math.round(page.width * s));
   const H = Math.max(1, Math.round(page.height * s));
