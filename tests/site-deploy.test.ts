@@ -161,8 +161,8 @@ describe('Pages workflow', () => {
   const wf = readFileSync(join(root, '.github/workflows/pages.yml'), 'utf8');
   it('builds with scripts/build-site.mjs and uploads site-dist as the Pages artifact', () => {
     expect(wf).toMatch(/run: node scripts\/build-site\.mjs/);
-    expect(wf).toMatch(/uses: actions\/upload-pages-artifact@v\d+\s+with:\s+path: site-dist\b/);
-    expect(wf).toMatch(/uses: actions\/deploy-pages@v\d+/);
+    expect(wf).toMatch(/uses: actions\/upload-pages-artifact@[0-9a-f]{40} # v\d+\s+with:\s+path: site-dist\b/);
+    expect(wf).toMatch(/uses: actions\/deploy-pages@[0-9a-f]{40} # v\d+/);
   });
   it('rebuilds when the app, the landing page or the build script change', () => {
     for (const p of ["'site/**'", "'src/**'", "'index.html'", "'vite.config.ts'", "'scripts/build-site.mjs'"]) expect(wf).toContain(p);

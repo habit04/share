@@ -222,7 +222,7 @@ describe('workflow validation', () => {
     expect(r.out).toMatch(/does not run "npm run bench:node"/);
   });
   it('rejects publication without source-bound artifact validation or signed provenance', () => {
-    const r = check(withRelease((t) => t.replace('run: node scripts/release-provenance.mjs verify artifacts', 'run: echo skipped').replace('uses: actions/attest@v4', 'uses: actions/download-artifact@v4')));
+    const r = check(withRelease((t) => t.replace('run: node scripts/release-provenance.mjs verify artifacts', 'run: echo skipped').replace(/uses: actions\/attest@[0-9a-f]{40}/, 'uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093')));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/verify all artifacts and sign provenance before publishing/);
   });
@@ -477,6 +477,30 @@ describe('workflow validation', () => {
     }));
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/Windows-only build must contain exactly one unconditional Windows NSIS target/);
+  });
+});
+
+describe('third-party action pinning', () => {
+  it('rejects a step action pinned to a tag instead of a full commit SHA, naming the file and line', () => {
+    const r = check(withRelease((t) => t.replace(/uses: actions\/checkout@[0-9a-f]{40}/, 'uses: actions/checkout@v5')));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/release\.yml:\d+: job \S+ step \d+ uses actions\/checkout@v5, which is not pinned to a full commit SHA/);
+  });
+
+  it('rejects a reusable-workflow job pinned to a branch instead of a full commit SHA', () => {
+    const r = check(withCi((workflow) => {
+      workflow.jobs['reusable'] = { uses: 'habit04/share/.github/workflows/reusable.yml@main' };
+    }));
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/ci\.yml:\d+: job reusable uses habit04\/share\/.github\/workflows\/reusable\.yml@main, which is not pinned to a full commit SHA/);
+  });
+
+  it('accepts a local action, which needs no SHA pin', () => {
+    const r = check(withCi((workflow) => {
+      workflow.jobs.test.steps.push({ uses: './local-action' });
+    }));
+    expect(r.code).toBe(0);
+    expect(r.out).toMatch(/workflow\(s\) OK/);
   });
 });
 
