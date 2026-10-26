@@ -11,6 +11,69 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-10-26
+
+### Upgrade notes
+
+- Windows x64 update from v0.6.5 for PDF underlay rendering and external
+  reference (xref) support in the editor, layouts, plotting and printing.
+
+### Added
+
+- PDF underlays render their page content on screen and in vector and raster
+  PLOT and PRINT output, with page tiling for large sheets, clipping, and
+  contrast, fade and monochrome adjustments.
+- Plotting, printing and ZOOM use each loaded PDF page's real size for
+  layout extents, and plot output is written deflated. An oversized or
+  missing PDF is reported by name in the plot log instead of plotting
+  silently.
+- External references (xrefs): a drawing that references other drawings
+  loads them when it is opened, and the XREFRELOAD and XREFSTATUS commands
+  reload and report them. Referenced content draws and plots with the
+  layers and colours of the file it came from, in the editor, in layouts
+  and in plot output.
+- A reference named by an opened drawing can be read from that drawing's
+  folder or its subfolders, under the host-folder read policy described
+  under Security.
+
+### Fixed
+
+- The first PLOT of a layout whose PDF underlay has no stored extent no
+  longer clips almost the whole page: pristine layout viewports are fitted
+  to the loaded page size before plotting, and viewports you edited keep
+  their view.
+- ZOOM Extents uses a loaded PDF page's real size in place of a larger
+  stored extent, instead of only ever growing the stored box.
+- Xref content in plot output keeps its own file's layers and colours: a
+  referenced layer that shares a name with a host layer is no longer culled
+  or recoloured by the host's layer table, a dangling block name can no
+  longer borrow a same-named root xref, and preparing PDF fonts for a plot
+  no longer drops the referenced files' provenance.
+- Nested xrefs keep the innermost file's provenance, so a parent file's
+  layer state no longer hides a nested drawing's own geometry.
+- Xrefs load when their host drawing is opened; no further command is
+  needed to start the load.
+
+### Security
+
+- Xref reads are confined to files you opened or saved, files a project
+  lists, and the folder tree of an opened drawing that names the reference.
+  A folder-granted reference must stay inside that tree after its path is
+  fully resolved, and on the same network host it started on; anything
+  outside is refused, and the refusal is logged with its code
+  (ERR_XREF_DENIED).
+
+### Known limitations
+
+- The folder grant anchors on the opened host drawing: a reference named
+  by a referenced drawing that resolves outside the host's folder tree
+  still needs to be opened, saved or listed by the project before it can
+  be read.
+- PDF underlay contrast is applied with a candidate adjustment that has
+  not yet been calibrated against AutoCAD's own rendering.
+- Detection of clipped or faded xrefs as unsupported features is not
+  included in this release.
+
 ## [0.6.5] - 2026-10-25
 
 ### Upgrade notes
