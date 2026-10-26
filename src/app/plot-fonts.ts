@@ -33,7 +33,7 @@ export async function capturedPlotLookup(state: DrawingState, geometry?: TextGeo
   // An explicit context (threaded from a CapturedPlot by the plot pipeline)
   // wins; otherwise the context capturePlot froze for this state identity.
   const context = xref !== undefined ? xref : capturedXrefContextFor(state);
-  const lookup: BlockLookup = context ? context.lookup(base) : base;
+  const lookup: BlockLookup = context ? context.expansionLookup(base) : base;
   await requestTextFonts(styles);
   // Bounds resolve formatted bold runs and fonts in visible annotation/block content too.
   for (const e of state.entities) entityBounds(e, lookup);
