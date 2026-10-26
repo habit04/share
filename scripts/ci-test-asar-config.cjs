@@ -19,7 +19,7 @@ function ciTestAsarConfig({ repo, output, electronDist }) {
     extends: null,
     asar: true,
     directories: { ...base.directories, output },
-    electronVersion: '44.9.1', electronDist,
+    electronVersion: '44.9.3', electronDist,
     npmRebuild: false, nodeGypRebuild: false, buildDependenciesFromSource: false,
     downloadAlternateFFmpeg: false, forceCodeSigning: false, publish: null,
     win: { ...base.win, target: ['dir'], signExecutable: false, signAndEditExecutable: true, forceCodeSigning: false },
