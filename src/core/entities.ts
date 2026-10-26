@@ -488,8 +488,10 @@ export type BlockLookup = ((name: string) => BlockDef | undefined) & {
   /**
    * Optional source-provenance channel (P20, design A.2): present on
    * lookups whose defs carry per-file provenance (the resolved-xref
-   * expansion lookup). Painters use it to expand an insert per source
-   * segment and resolve each segment against its own file's layers.
+   * expansion lookup). Sourced expansion (explodeInsertSourced /
+   * expandPlotInsertSourced) tags every expanded entity with the
+   * source of the def that contributed it, and painters resolve each
+   * entity's layer state against that file's own table.
    */
   readonly sources?: BlockLookupSources;
 };
@@ -532,10 +534,6 @@ export interface BlockLookupSources {
   sourceFileKeyForDef(defName: string): string | undefined;
   /** A referenced file's own layer records, verbatim. Unknown key: []. */
   fileLayers(fileKey: string): readonly Layer[];
-  /** The distinct sources in an insert's expansion subtree, in encounter order (undefined = the host document). */
-  expansionSources(ins: InsertEntity): readonly (string | undefined)[];
-  /** This lookup restricted to one source (undefined = host defs only); other sources' defs resolve to undefined. */
-  forSource(source: string | undefined): BlockLookup;
 }
 
 /** Length of the infinite part of XLINE/RAY used for hit testing and bounds (world units). */
@@ -1624,6 +1622,10 @@ interface ExpansionBudget {
   contextGeometry: boolean;
   /** Optional plot-only resolver of an insertion's unplotted physical lineweight. */
   readonly resolveLineweight?: (entity: EntityBase) => number;
+  /** Sourced-expansion trace (explodeInsertSourced): the window of output indices each def expansion contributed, recorded in completion order. */
+  trace?: { start: number; end: number; source: string | undefined }[];
+  /** Resolves a def name to its provenance source for the trace; absent = no provenance (all host). */
+  traceSourceOf?: (defName: string) => string | undefined;
 }
 const newBudget = (maxObjects = MAX_INSERT_EXPANSION, resolveLineweight?: (entity: EntityBase) => number): ExpansionBudget => ({ remaining: MAX_BLOCK_EXPANSION_WORK, left: maxObjects, visits: maxObjects, chain: [], deps: new Map(), truncated: false, cyclic: false, contextGeometry: false, resolveLineweight });
 
@@ -2327,6 +2329,53 @@ export function expandInsert(ins: InsertEntity, lookup: BlockLookup, maxObjects 
   return { entities, truncated: budget.truncated, cyclic: budget.cyclic };
 }
 
+/** One expanded entity with the provenance source of the def that contributed it (undefined = the host document). */
+export interface SourcedEntity {
+  readonly entity: Entity;
+  readonly source: string | undefined;
+}
+
+/**
+ * expandInsert with per-entity provenance (design A.2): the expansion
+ * budget carries a trace — each def expansion records the window of
+ * output it contributed — and every entity is tagged with the source
+ * of the INNERMOST def window containing it (the def that authored it).
+ * Provenance comes from the lookup's sources channel; without one,
+ * every source is undefined.
+ */
+export function expandInsertTraced(ins: InsertEntity, lookup: BlockLookup, resolveLineweight?: (entity: EntityBase) => number): { entities: SourcedEntity[]; truncated: boolean; cyclic: boolean } {
+  const budget = newBudget(MAX_INSERT_EXPANSION, resolveLineweight);
+  budget.trace = [];
+  budget.traceSourceOf = lookup.sources?.sourceFileKeyForDef;
+  const flat: Entity[] = [];
+  explodeInto(flat, ins, lookup, 0, budget);
+  const sources: (string | undefined)[] = new Array(flat.length).fill(undefined);
+  // Windows are properly nested (appends are sequential, recursion is
+  // contained); applying them smallest-first leaves each index with
+  // its innermost def's source.
+  const windows = [...budget.trace].sort((a, b) => (a.end - a.start) - (b.end - b.start));
+  for (const w of windows) for (let i = w.start; i < w.end; i += 1) sources[i] = w.source;
+  return { entities: flat.map((entity, i) => ({ entity, source: sources[i] })), truncated: budget.truncated, cyclic: budget.cyclic };
+}
+
+const sourcedCache = new WeakMap<InsertEntity, WeakMap<BlockLookup, { deps: ReadonlyMap<string, BlockDef | undefined>; contextKey: object | undefined; result: SourcedEntity[] }>>();
+
+/**
+ * explodeInsert with per-entity provenance (design A.2), for painters
+ * resolving layer state per source file. Same geometry as the uncached
+ * expansion; cached per (insert, lookup) and validated exactly like
+ * the insert cache (deps currency + text-geometry context).
+ */
+export function explodeInsertSourced(ins: InsertEntity, lookup: BlockLookup): SourcedEntity[] {
+  let byLookup = sourcedCache.get(ins);
+  const hit = byLookup?.get(lookup);
+  if (hit && hit.contextKey === lookup.textGeometry?.cacheKey && depsCurrent(hit.deps, lookup)) return hit.result;
+  const result = expandInsertTraced(ins, lookup).entities;
+  if (!byLookup) { byLookup = new WeakMap(); sourcedCache.set(ins, byLookup); }
+  byLookup.set(lookup, { deps: insertDependencies(ins, lookup), contextKey: lookup.textGeometry?.cacheKey, result });
+  return result;
+}
+
 /**
  * Was the expansion of this reference cut short: more than MAX_INSERT_EXPANSION objects, or a
  * block that inserts itself? EXPLODE refuses such a reference (it would lose content).
@@ -2463,13 +2512,14 @@ function explodeSingleInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup
   }
   const tf = insertTransform(ins, block);
   if (block.xref && block.entities.length === 0) {
+    const traceStart = out.length;
     spendExpansion(budget, 2);
     for (const e of xrefPlaceholder(ins, block, tf)) {
       if (budget.left <= 0) { budget.truncated = true; break; }
       out.push(e);
       budget.left -= 1;
     }
-
+    if (budget.trace) budget.trace.push({ start: traceStart, end: out.length, source: budget.traceSourceOf?.(block.name) });
     return;
   }
   budget.chain.push(ins.block);
@@ -2483,6 +2533,7 @@ function explodeSingleInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup
   // resolved-xref lookup scopes them to the def's source file, so a name
   // that file left dangling refuses there and only there.
   const inner = lookup.forDef?.(ins.block, block) ?? lookup;
+  const traceStart = out.length;
   for (const e of expanded.entities) {
     if (budget.left <= 0) {
       budget.truncated = true;
@@ -2511,6 +2562,7 @@ function explodeSingleInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup
     if (inheritedWeight !== undefined && (!Number.isFinite(inheritedWeight) || inheritedWeight < 0)) throw new Error('Plot lineweight resolver must return finite nonnegative millimetres.');
     out.push(inheritedWeight === undefined ? text : { ...text, lineWeight: inheritedWeight });
   }
+  if (budget.trace) budget.trace.push({ start: traceStart, end: out.length, source: budget.traceSourceOf?.(block.name) });
   budget.chain.pop();
 }
 

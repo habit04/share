@@ -313,14 +313,14 @@ describe('resolved xref contract', () => {
     // satisfied by the same-named root, the leaf content (line + circle)
     // appears inside the DX expansion. It must not — through either the
     // plain contract lookup or the expansion lookup.
-    const viaPlain = explodeInsert(hostState.entities[0]!, ctx.lookup(base));
+    const viaPlain = explodeInsert(hostState.entities[0] as InsertEntity, ctx.lookup(base));
     expect(lines(viaPlain)).toHaveLength(1);
     expect(circles(viaPlain)).toHaveLength(0);
-    const viaExpansion = explodeInsert(hostState.entities[0]!, ctx.expansionLookup(base));
+    const viaExpansion = explodeInsert(hostState.entities[0] as InsertEntity, ctx.expansionLookup(base));
     expect(lines(viaExpansion)).toHaveLength(1);
     expect(circles(viaExpansion)).toHaveLength(0);
     // The host's own insert of that root expands the leaf content normally.
-    const rootExpanded = explodeInsert(hostState.entities[1]!, ctx.expansionLookup(base));
+    const rootExpanded = explodeInsert(hostState.entities[1] as InsertEntity, ctx.expansionLookup(base));
     expect(lines(rootExpanded)).toHaveLength(1);
     expect(circles(rootExpanded)).toHaveLength(1);
   });
