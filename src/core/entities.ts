@@ -7,7 +7,7 @@ import { metricTextPlacement, type TextGeometryContext } from './text-metrics';
 import { interpolateFitPoints, isValidNurbs, nurbsPoints, type NurbsCurve } from './spline';
 import { bulgeArcSteps, isHatchBulge, findPattern, loopPolygon, patternSegments, pointInLoops, worldPatternLines, type HatchLoop, type WorldPatternLine } from './hatch';
 import { tableGeometry, type TableEntity } from './table';
-import type { DxfGroup, UnderlayKind, UnderlayPlacement } from './underlay';
+import { underlayBounds, type DxfGroup, type UnderlayDefinition, type UnderlayKind, type UnderlayPlacement } from './underlay';
 import { isImmutableData } from './immutable-data';
 import { GeometryBudgetError } from './geometry-budget-error';
 import { placedText, scaledText, transformedTextAnchors, textAnchor, type TextPlacement } from './text-placement';
@@ -464,7 +464,109 @@ export function newId(): string {
   return `e${Date.now().toString(36)}${idCounter.toString(36)}`;
 }
 
-export type BlockLookup = ((name: string) => BlockDef | undefined) & { readonly textGeometry?: TextGeometryContext };
+export type BlockLookup = ((name: string) => BlockDef | undefined) & {
+  readonly textGeometry?: TextGeometryContext;
+  /**
+   * Optional page-size channel for underlay bounds (gate finding D4),
+   * the same side-channel shape as textGeometry above: entityBounds'
+   * underlay case frames the placement by the size this supplies
+   * instead of the definition-less 1x1 placeholder. Suppliers resolve
+   * page-size-first (a loaded page size wins over the definition's
+   * stored extent). Absent = today's behaviour for every caller —
+   * hit-testing, grips, segments and the spatial index deliberately
+   * keep the unit frame and never receive this channel.
+   */
+  readonly underlaySizeOf?: (e: UnderlayEntity) => { readonly width: number; readonly height: number } | undefined;
+  /**
+   * Optional def-scope hook (P20, design A.2 provenance): when expansion
+   * resolves `name` to `def`, the references made from INSIDE that def
+   * are resolved through the returned lookup instead of this one, so a
+   * lookup can scope its answers to the file the def was materialised
+   * from. Absent: the lookup applies unchanged at every depth.
+   */
+  readonly forDef?: (name: string, def: BlockDef) => BlockLookup;
+  /**
+   * Optional source-provenance channel (P20, design A.2): present on
+   * lookups whose defs carry per-file provenance (the resolved-xref
+   * expansion lookup). Sourced expansion (explodeInsertSourced /
+   * expandPlotInsertSourced) tags every expanded entity with the
+   * source of the def that contributed it, and painters resolve each
+   * entity's layer state against that file's own table.
+   */
+  readonly sources?: BlockLookupSources;
+};
+
+/**
+ * The page-size resolver behind the BlockLookup channel: join the
+ * placement to its definition by handle; the size is the loaded page
+ * size when a supplier knows one, else the definition's stored
+ * extent, else undefined (unknown — the caller falls back to the
+ * unit frame). Sizes that are not finite and positive are unknown.
+ */
+export function underlaySizeResolver(
+  defs: Readonly<Record<string, UnderlayDefinition>> | undefined,
+  loadedPageSizeOf?: (defId: string) => { readonly width: number; readonly height: number } | undefined,
+): (e: UnderlayEntity) => { readonly width: number; readonly height: number } | undefined {
+  const valid = (s: { readonly width: number; readonly height: number } | undefined) =>
+    s && Number.isFinite(s.width) && Number.isFinite(s.height) && s.width > 0 && s.height > 0 ? s : undefined;
+  return (e) => {
+    if (!defs) return undefined;
+    const def = Object.values(defs).find((d) => (d.handle ?? '').trim().toUpperCase() === (e.definitionHandle ?? '').trim().toUpperCase());
+    if (!def) return undefined;
+    return valid(loadedPageSizeOf?.(def.id)) ?? valid(def.extent);
+  };
+}
+
+/**
+ * A BlockLookup that also carries the underlay page-size channel.
+ *
+ * EVERY other side channel the source lookup carries is preserved
+ * (#63 review P2): the channels ride as own properties of the
+ * callable — textGeometry, the def-scope hook forDef, the provenance
+ * channel sources, and any channel added later — so re-creating the
+ * callable from just the two known ones silently dropped the
+ * captured file context (forDef scoping, per-file provenance) at
+ * every wrapped call site. Forwarding is by DESCRIPTOR, so a getter
+ * channel stays a live getter: consumers read e.g.
+ * textGeometry.fontIssues after long operations complete, and a
+ * value copied at wrap time would freeze the empty set they started
+ * with. forDef is the one channel that cannot be forwarded raw: it
+ * RETURNS a lookup, and that lookup must itself carry this size
+ * channel (and its own channels), so it is forwarded as a recursive
+ * wrap. The supplied sizeOf wins over any size channel the source
+ * already carries (nested wraps re-assert the same supplier).
+ */
+export function withUnderlaySizeChannel(
+  lookup: BlockLookup,
+  sizeOf: (e: UnderlayEntity) => { readonly width: number; readonly height: number } | undefined,
+): BlockLookup {
+  const wrapped = ((name: string) => lookup(name)) as BlockLookup;
+  for (const key of Reflect.ownKeys(lookup)) {
+    // underlaySizeOf is supplied below; forDef gets the recursive
+    // wrap below; length/name/prototype are the callable's own
+    // machinery, not channels.
+    if (key === 'underlaySizeOf' || key === 'forDef' || key === 'length' || key === 'name' || key === 'prototype') continue;
+    const desc = Object.getOwnPropertyDescriptor(lookup, key);
+    if (desc) Object.defineProperty(wrapped, key, desc);
+  }
+  Object.defineProperty(wrapped, 'forDef', {
+    get: () => {
+      const inner = lookup.forDef;
+      if (typeof inner !== 'function') return undefined;
+      return (name: string, def: BlockDef) => withUnderlaySizeChannel(inner(name, def), sizeOf);
+    },
+  });
+  Object.defineProperty(wrapped, 'underlaySizeOf', { value: sizeOf });
+  return wrapped;
+}
+
+/** Per-file provenance a wrapped lookup can expose about its defs (see BlockLookup.sources). */
+export interface BlockLookupSources {
+  /** The file key a def was materialised from; undefined for host defs. */
+  sourceFileKeyForDef(defName: string): string | undefined;
+  /** A referenced file's own layer records, verbatim. Unknown key: []. */
+  fileLayers(fileKey: string): readonly Layer[];
+}
 
 /** Length of the infinite part of XLINE/RAY used for hit testing and bounds (world units). */
 export const INFINITE_LENGTH = 1e4;
@@ -2782,8 +2884,29 @@ export function entityBounds(e: Entity, lookup: BlockLookup): Bounds | null {
     }
     case 'leader':
     case 'table':
-    case 'image':
+    case 'image': {
+      let b: Bounds | null = null;
+      for (const p of compoundParts(e, lookup.textGeometry)) b = g.unionBounds(b, entityBounds(p, lookup));
+      return b;
+    }
     case 'underlay': {
+      // D4: when the caller's lookup carries a page size for this
+      // placement, the bounds are the page frame (underlayBounds over
+      // the placement with that size as the extent — the same corners
+      // the display list frames). Without a channel the bounds stay
+      // the definition-less unit frame the parts describe.
+      const size = lookup.underlaySizeOf?.(e);
+      if (size) {
+        const ub = underlayBounds(underlayPlacementOf(e), {
+          id: e.id,
+          handle: e.definitionHandle,
+          kind: e.kind,
+          sourcePath: '',
+          retainedGroups: e.retainedGroups,
+          extent: size,
+        });
+        return { min: { x: ub.minX, y: ub.minY }, max: { x: ub.maxX, y: ub.maxY } };
+      }
       let b: Bounds | null = null;
       for (const p of compoundParts(e, lookup.textGeometry)) b = g.unionBounds(b, entityBounds(p, lookup));
       return b;

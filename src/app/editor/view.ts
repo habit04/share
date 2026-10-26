@@ -3,7 +3,7 @@
  * written back), the F3 / F7 .. F12 toggles, and zoom to the drawing extents.
  * The Editor's public methods delegate here (their documentation is on the Editor).
  */
-import { lineweightDisplay } from '../../render/draw';
+import { lineweightDisplay, renderSettings } from '../../render/draw';
 import { saveSettings } from '../settings';
 import type { Editor } from './editor';
 
@@ -54,7 +54,34 @@ export function toggle(ed: Editor, name: Parameters<Editor['toggle']>[0]): void 
 }
 
 export function zoomExtents(ed: Editor): void {
-  ed.viewport.zoomToBounds(ed.doc.extents());
+  // B (#57 review P2): a page size the LIVE display service has
+  // settled must REPLACE the definition's stored extent inside the
+  // bounds computation, never union onto it — the stored box can be
+  // far larger than the real page, and a union can only grow it
+  // (stored 3000x3000 + loaded 612x792 used to zoom to 3000x3000).
+  // So the settled sizes are collected per definition and passed
+  // to doc.extents as the loaded-page supplier; the bounds are
+  // computed once, with the resolver's per-def precedence (loaded
+  // page, then stored extent, then the unit frame), and every
+  // other entity contributes exactly as before. Residual: on first
+  // open, documents.ts calls zoomExtents before any load has
+  // settled, so that first fit still falls back to the stored
+  // extent — or the unit frame when the definition carries none.
+  const defs = ed.doc.snapshot.underlays;
+  let loaded: Map<string, { width: number; height: number }> | undefined;
+  if (defs && renderSettings.underlaySource) {
+    const hidden = new Set(ed.doc.snapshot.layers.filter((l) => !l.visible).map((l) => l.name));
+    for (const e of ed.doc.entities) {
+      if (e.type !== 'underlay' || hidden.has(e.layer)) continue;
+      const page = renderSettings.underlaySource(e)?.page;
+      if (!page) continue;
+      const def = Object.values(defs).find((d) => (d.handle ?? '').trim().toUpperCase() === (e.definitionHandle ?? '').trim().toUpperCase());
+      if (!def) continue;
+      (loaded ??= new Map()).set(def.id, { width: page.width, height: page.height });
+    }
+  }
+  const b = loaded ? ed.doc.extents((defId) => loaded.get(defId)) : ed.doc.extents();
+  ed.viewport.zoomToBounds(b);
   ed.render();
   ed.notify('view');
 }

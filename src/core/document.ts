@@ -1,5 +1,5 @@
 import type { Entity, BlockDef, Layer, BlockLookup, ColorSpec } from './entities';
-import { entityBounds } from './entities';
+import { entityBounds, underlaySizeResolver, withUnderlaySizeChannel } from './entities';
 import type { Bounds, Point } from './geometry';
 import { unionBounds } from './geometry';
 import type { DimStyle } from './dimension';
@@ -774,13 +774,29 @@ export class Drawing {
     this.emit();
   }
 
-  /** Extents of all visible entities. */
-  extents(): Bounds | null {
+  /**
+   * Extents of all visible entities. The optional loaded-page
+   * supplier (B, #57 review P2) lets a caller that knows settled
+   * engine page sizes — the editor's live display service — have
+   * them OVERRIDE the definitions' stored extents per definition:
+   * the size resolver's precedence is loaded page, then stored
+   * extent, then the unit frame. Callers that pass nothing get the
+   * stored-extent behaviour exactly.
+   */
+  extents(loadedPageSizeOf?: (defId: string) => { readonly width: number; readonly height: number } | undefined): Bounds | null {
     let b: Bounds | null = null;
     const hidden = new Set(this.state.layers.filter((l) => !l.visible).map((l) => l.name));
+    // D4 (session seam): the session knows each definition's stored
+    // extent, so underlays bound by it here — ZOOM extents included.
+    // Page sizes known only to a display engine reach extents through
+    // the plot resolver's channel and, for ZOOM, through the editor
+    // passing its settled sizes as the supplier above — a per-def
+    // override inside the bounds computation, never a union on top
+    // of the stored box (a union can only enlarge it).
+    const lookup = withUnderlaySizeChannel(this.lookupBlock, underlaySizeResolver(this.state.underlays, loadedPageSizeOf));
     for (const e of this.entities) {
       if (hidden.has(e.layer)) continue;
-      b = unionBounds(b, entityBounds(e, this.lookupBlock));
+      b = unionBounds(b, entityBounds(e, lookup));
     }
     // Paper space: the sheet counts as part of the extents (ZOOM Extents shows the whole sheet).
     const lay = paperSpaceLayout(this.state);

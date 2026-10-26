@@ -75,8 +75,12 @@ describe('underlay display service (fake engine)', () => {
     const first = svc.source(placement());
     expect(first?.definition.sourcePath).toBe('plans\\floor.pdf');
     expect(first?.image).toBeUndefined();
-    await tick();
-    const ready = svc.source(placement());
+    // Await the entry's settled signal, not a fixed tick: the load is
+    // a multi-hop async chain (bytes -> hash -> open -> pageSize ->
+    // render) whose hop count a wall-clock tick cannot bound — under
+    // CI load the raster had not landed when the tick returned
+    // (#57 CI test (24), both runs at 9b4fe90).
+    const ready = await svc.ensure(placement());
     expect(ready?.image).toBeDefined();
     expect(ready?.page).toEqual({ width: 200, height: 100 });
     expect(ready?.definition.extent).toEqual({ width: 200, height: 100 }); // extent-filled VIEW

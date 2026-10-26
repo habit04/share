@@ -146,6 +146,21 @@ export const renderSettings: {
    */
   underlaySource?: UnderlayContentSource;
   /**
+   * The confined byte source behind underlaySource (design section 2),
+   * published by the composition root so a CAPTURED plot can build its own
+   * resolver over the captured state (app/export-admission.ts) instead of
+   * touching the live drawing's service.
+   */
+  underlayBytes?: import('../app/underlay-render').UnderlayByteSource;
+  /**
+   * Bind a confined byte source to ONE drawing path (design section 2):
+   * the composition root's factory for captured plots — a captured plot
+   * resolves its definitions' bytes against the CAPTURED document's
+   * folder, never the folder of whatever drawing is live at load time
+   * (app/export-admission.ts, #57 P2 (1)).
+   */
+  underlayBytesFor?: (drawingPath: string | null) => import('../app/underlay-render').UnderlayByteSource;
+  /**
    * The current drawing's underlay definitions (DrawingState.underlays),
    * set by the viewport before each frame: the no-source fallback joins a
    * placement to its definition here so the frame carries the file-name
@@ -535,13 +550,29 @@ function drawUnderlay(ctx: CanvasRenderingContext2D, e: UnderlayEntity, tf: Tran
       const bmp = res.image.bitmap;
       const W = res.image.width;
       const H = res.image.height;
+      // Clip (design 5.2): the clip-frame op clips ONLY this raster, inside
+      // its own save/restore; frame / clip-frame / cross / label ops draw
+      // outside the clipped context. The display list itself is unchanged.
+      const clipOp = ops.find((o) => o.op === 'clip-frame');
       canvasSave(ctx, () => {
-        const o = tf.toScreen(ul);
-        const ax = g.sub(tf.toScreen(ur), o);
-        const ay = g.sub(tf.toScreen(ll), o);
-        ctx.transform(ax.x / W, ax.y / W, ay.x / H, ay.y / H, o.x, o.y);
-        if (e.fade) ctx.globalAlpha *= Math.max(0, 1 - e.fade / 100);
-        ctx.drawImage(bmp, 0, 0, W, H);
+        if (clipOp) {
+          ctx.beginPath();
+          clipOp.points.forEach((p, i) => {
+            const s = tf.toScreen(p);
+            if (i === 0) ctx.moveTo(s.x, s.y);
+            else ctx.lineTo(s.x, s.y);
+          });
+          ctx.closePath();
+          ctx.clip();
+        }
+        canvasSave(ctx, () => {
+          const o = tf.toScreen(ul);
+          const ax = g.sub(tf.toScreen(ur), o);
+          const ay = g.sub(tf.toScreen(ll), o);
+          ctx.transform(ax.x / W, ax.y / W, ay.x / H, ay.y / H, o.x, o.y);
+          if (e.fade) ctx.globalAlpha *= Math.max(0, 1 - e.fade / 100);
+          ctx.drawImage(bmp, 0, 0, W, H);
+        });
       });
     } else if (op.op === 'frame' || op.op === 'clip-frame') {
       drawParts(ctx, [{ ...styleProps, id: `${e.id}:${op.op}`, type: 'polyline', points: [...op.points], closed: true }], tf, layers, lookup, style, e);

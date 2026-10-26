@@ -270,7 +270,32 @@ export function underlayDisplayList(p: UnderlayPlacement, def: UnderlayDefinitio
     ops.push({ op: 'label', text: underlayLabel(def), at: corners[0]! });
   }
   if (underlayClippingOn(p) && p.clipBoundary && p.clipBoundary.length >= 2) {
-    ops.push({ op: 'clip-frame', points: p.clipBoundary.map((q) => toWorld(p, q)) });
+    // The stored 2-point form IS a rectangle (see the clipBoundary
+    // field): expand it to its four corners here, at the one producer
+    // every geometry consumer eats, so the canvas clip, the vector
+    // clip and the outline all see the rectangle — never a 2-vertex
+    // "polygon", which clips the content away and outlines as a
+    // diagonal (gate finding D2). 3+ points are a polygon and pass
+    // through verbatim. The stored boundary is never mutated, and the
+    // DXF codec keeps it exactly as read.
+    const boundary = p.clipBoundary.length === 2 ? clipRectangle(p.clipBoundary[0]!, p.clipBoundary[1]!) : p.clipBoundary;
+    ops.push({ op: 'clip-frame', points: boundary.map((q) => toWorld(p, q)) });
   }
   return ops;
+}
+
+/** The axis-aligned rectangle two diagonal corners define, in the
+ * corner order underlayCorners uses (counter-clockwise from the
+ * min corner, in underlay coordinates). */
+function clipRectangle(a: Point, b: Point): readonly Point[] {
+  const minX = Math.min(a.x, b.x);
+  const maxX = Math.max(a.x, b.x);
+  const minY = Math.min(a.y, b.y);
+  const maxY = Math.max(a.y, b.y);
+  return [
+    { x: minX, y: minY },
+    { x: maxX, y: minY },
+    { x: maxX, y: maxY },
+    { x: minX, y: maxY },
+  ];
 }
