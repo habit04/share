@@ -74,6 +74,28 @@ function rig(): { ed: EditorType; files: Map<string, string> } {
   return { ed, files };
 }
 
+/**
+ * The OPEN-path rig (gate defect X1): the same broker bridge plus the
+ * openDrawing channel the real Open command uses, serving host-layers.dxf
+ * with its child granted as a sibling in the same folder.
+ */
+function openRig(): { ed: EditorType; files: Map<string, string> } {
+  const ed = new Editor(canvas());
+  const files = new Map<string, string>([
+    ['/proj/drawings/host-layers.dxf', fixture('host-layers.dxf')],
+    ['/proj/drawings/child-layers.dxf', fixture('child-layers.dxf')],
+    ['/proj/drawings/host.dxf', fixture('host.dxf')],
+    ['/proj/parts/child.dxf', fixture('child.dxf')],
+    ['/proj/parts/grand.dxf', fixture('grand.dxf')],
+    ['/proj/shared/leaf.dxf', fixture('leaf.dxf')],
+  ]);
+  const bridge = makeBridge(files) as unknown as Record<string, unknown>;
+  bridge.openDrawing = async (file?: string) => (file && files.has(file) ? { path: file, kind: 'dxf' as const, text: files.get(file)! } : null);
+  ed.fileBridge = bridge as unknown as FileBridge;
+  ed.ui = { confirm: async () => true } as unknown as EditorType['ui'];
+  return { ed, files };
+}
+
 describe('production editor wiring (W)', () => {
   it('W1: sessions.add of a referencing host schedules a real load through the editor registry', async () => {
     const { ed } = rig();
@@ -113,5 +135,45 @@ describe('production editor wiring (W)', () => {
     expect(status.generation).toBe(2);
     expect(status.nodes.find((n) => n.blockName === 'CHILD')!.resolvedPath).toBe('/proj/parts/child.dxf');
     expect(controller.context()!.generation).toBe(2);
+  });
+});
+
+describe('production editor wiring — the OPEN path (X1)', () => {
+  /**
+   * Gate defect X1: the xref controllers bind on sessions.onChange, but
+   * an OPEN that lands in the active tab replaces the live document
+   * without that notification ever firing after the load — the bind at
+   * tab creation saw the blank (or previous) session record, so no load
+   * was scheduled until some later session event. These pins drive the
+   * real Open command path (openInTab -> openFile -> deliverOpened) and
+   * assert the load engages with NO further command or session event.
+   */
+  const expectHostLayersLoaded = async (ed: EditorType) => {
+    const session = ed.sessions.current;
+    expect(session.filePath).toBe('/proj/drawings/host-layers.dxf');
+    const controller = ed.xrefSessions.controller(session.docId);
+    expect(controller).toBeTruthy();
+    await controller!.whenIdle();
+    const status = controller!.status();
+    expect(status.live).toBe(true);
+    expect(status.phase).toBe('ready');
+    expect(status.nodes.find((n) => n.blockName === 'LX')!.status).toBe('loaded');
+    expect(controller!.snapshot()).toBeTruthy();
+    expect(ed.xrefSessions.currentContextFor({ docId: session.docId, contentGeneration: session.contentGeneration })).toBeTruthy();
+  };
+
+  it('W3: OPEN into a new tab loads the host\'s xrefs with no further command', async () => {
+    const { ed } = openRig();
+    // Occupy the first tab with a saved drawing, so OPEN takes the
+    // add-a-tab path (the bind at tab creation sees the blank record).
+    ed.sessions.add(readDxf(fixture('host.dxf')), '/proj/drawings/host.dxf');
+    await ed.sessions.openInTab('/proj/drawings/host-layers.dxf', (f) => ed.openFile(f));
+    await expectHostLayersLoaded(ed);
+  });
+
+  it('W4: OPEN reusing the pristine tab loads the host\'s xrefs with no further command', async () => {
+    const { ed } = openRig();
+    await ed.sessions.openInTab('/proj/drawings/host-layers.dxf', (f) => ed.openFile(f));
+    await expectHostLayersLoaded(ed);
   });
 });
