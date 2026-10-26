@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { setPathPlatform } from '../src/app/paths';
 import { readDxf } from '../src/io/dxf';
 import { Drawing, type DrawingState } from '../src/core/document';
-import { explodeInsert, type BlockDef, type InsertEntity, type LineEntity } from '../src/core/entities';
+import { explodeInsert, type BlockDef, type Entity, type InsertEntity, type Layer, type LineEntity } from '../src/core/entities';
 import {
   stageXrefLoad,
   type XrefFileReader,
@@ -249,6 +249,80 @@ describe('resolved xref contract', () => {
     const expanded = explodeInsert(hostInsert, wrapped);
     expect(lines(expanded)).toHaveLength(1); // only the child's real line
     expect(lines(expanded)[0]).toMatchObject({ a: { x: 0, y: 0 }, b: { x: 10, y: 0 } });
+  });
+
+  it('C12 (#58 review P2): a valid host insert of a name a child dangles still expands through the expansion lookup; the child reference still refuses', async () => {
+    const files = new Map<string, string>([['/proj/child-dangling.dxf', fixture('child-dangling.dxf')]]);
+    const { snapshot, hostState } = await load('host-dangling.dxf', '/proj/host-dangling.dxf', files);
+    // The #56 collision setup (host defines an unrelated NOSUCH), plus the
+    // host ALSO inserting NOSUCH itself — a valid host reference that the
+    // global dangling refusal used to eat (one line became zero).
+    const marker: BlockDef = {
+      name: 'NOSUCH', basePoint: { x: 0, y: 0 }, attributes: [],
+      entities: [{ id: 'marker', type: 'line', layer: '0', color: 'ByLayer', a: { x: 1, y: 1 }, b: { x: 2, y: 2 } } as LineEntity],
+    };
+    const hostInsertNosuch: InsertEntity = { id: 'host-nosuch', type: 'insert', layer: '0', color: 'ByLayer', block: 'NOSUCH', position: { x: 0, y: 0 }, rotation: 0, scale: 1, attributes: {} };
+    const hostState2: DrawingState = {
+      ...hostState,
+      blocks: { ...hostState.blocks, NOSUCH: marker },
+      entities: [...hostState.entities, hostInsertNosuch],
+    };
+    const ctx = buildResolvedXrefContext(snapshot, stamp, hostState2);
+    const base = new Drawing(hostState2).lookupBlock;
+    const expansion = ctx.expansionLookup(base);
+    // Asked by the host (the painter / plotter ask exactly this), the name
+    // is the host's own block: provenance scopes the refusal to the child.
+    expect(expansion('NOSUCH')).toBe(marker);
+    const expandedHost = explodeInsert(hostInsertNosuch, expansion);
+    expect(lines(expandedHost)).toHaveLength(1);
+    expect(lines(expandedHost)[0]).toMatchObject({ a: { x: 1, y: 1 }, b: { x: 2, y: 2 } });
+    // Asked from inside the child's def, the same name still refuses: the
+    // root expansion keeps only the child's real line.
+    const expandedRoot = explodeInsert(hostState2.entities[0] as InsertEntity, expansion);
+    expect(lines(expandedRoot)).toHaveLength(1);
+    expect(lines(expandedRoot)[0]).toMatchObject({ a: { x: 0, y: 0 }, b: { x: 10, y: 0 } });
+  });
+
+  it('C13 (#58 review P2): a dangling child reference is NOT satisfied by a same-named host ROOT xref; the root still expands when the host asks', async () => {
+    const files = new Map<string, string>([
+      ['/proj/child-dangling.dxf', fixture('child-dangling.dxf')],
+      ['/proj/leaf.dxf', fixture('leaf.dxf')],
+    ]);
+    const layer0: Layer = { name: '0', color: 7, visible: true, locked: false, lineWeight: -1 };
+    const ins = (id: string, block: string): InsertEntity => ({ id, type: 'insert', layer: '0', color: 'ByLayer', block, position: { x: 0, y: 0 }, rotation: 0, scale: 1, attributes: {} });
+    const hostState: DrawingState = {
+      entities: [ins('h-dx', 'DX'), ins('h-nosuch', 'NOSUCH')],
+      layers: [layer0],
+      blocks: {
+        DX: { name: 'DX', basePoint: { x: 0, y: 0 }, entities: [], attributes: [], xref: { path: 'child-dangling.dxf' } },
+        NOSUCH: { name: 'NOSUCH', basePoint: { x: 0, y: 0 }, entities: [], attributes: [], xref: { path: 'leaf.dxf' } },
+      },
+      currentLayer: '0',
+    };
+    const outcome = await stageXrefLoad(
+      { references: [{ blockName: 'DX', path: 'child-dangling.dxf' }, { blockName: 'NOSUCH', path: 'leaf.dxf' }], hostPath: '/proj/host-root-collision.dxf' },
+      { reader: fakeReader(files) },
+    );
+    const snapshot = outcome.snapshot!;
+    expect(snapshot.nodes.find((n) => n.blockName === 'DX')!.status).toBe('loaded');
+    expect(snapshot.nodes.find((n) => n.blockName === 'NOSUCH')!.status).toBe('loaded');
+    const ctx = buildResolvedXrefContext(snapshot, stamp, hostState);
+    const base = new Drawing(hostState).lookupBlock;
+    const circles = (entities: readonly Entity[]): Entity[] => entities.filter((e) => e.type === 'circle');
+    // The leaf's circle is the tell: if the child's dangling insert is
+    // satisfied by the same-named root, the leaf content (line + circle)
+    // appears inside the DX expansion. It must not — through either the
+    // plain contract lookup or the expansion lookup.
+    const viaPlain = explodeInsert(hostState.entities[0]!, ctx.lookup(base));
+    expect(lines(viaPlain)).toHaveLength(1);
+    expect(circles(viaPlain)).toHaveLength(0);
+    const viaExpansion = explodeInsert(hostState.entities[0]!, ctx.expansionLookup(base));
+    expect(lines(viaExpansion)).toHaveLength(1);
+    expect(circles(viaExpansion)).toHaveLength(0);
+    // The host's own insert of that root expands the leaf content normally.
+    const rootExpanded = explodeInsert(hostState.entities[1]!, ctx.expansionLookup(base));
+    expect(lines(rootExpanded)).toHaveLength(1);
+    expect(circles(rootExpanded)).toHaveLength(1);
   });
 
   it('C10: a host block literally named like a scoped name still resolves as host', async () => {
