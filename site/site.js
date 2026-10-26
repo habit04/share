@@ -6,15 +6,15 @@
   var API = 'https://api.github.com/repos/' + REPO + '/releases/latest';
   var CACHE_KEY = 'jcad.latestRelease';
   var CACHE_MS = 30 * 60 * 1000;
+  var RELEASES_LATEST = 'https://github.com/' + REPO + '/releases/latest';
+  // Mac and Linux desktop builds are paused at v0.4.5. Their buttons open the latest
+  // release page (the v0.4.5 downloads remain listed in the release history there)
+  // instead of a pinned direct download, so the links never go stale.
   var LEGACY_VERSION = '0.4.5';
-  var LEGACY_FILES = {
-    'mac-arm64': 'mac-arm64.dmg', 'mac-x64': 'mac-x64.dmg',
-    'linux-appimage': 'linux-x86_64.AppImage', 'linux-deb': 'linux-amd64.deb',
+  var PAUSED_KEYS = {
+    'mac-arm64': true, 'mac-x64': true,
+    'linux-appimage': true, 'linux-deb': true,
   };
-
-  function legacyUrl(key) {
-    return 'https://github.com/' + REPO + '/releases/download/v' + LEGACY_VERSION + '/jcad-electrical-' + LEGACY_VERSION + '-' + LEGACY_FILES[key];
-  }
 
   // Installer file names follow electron-builder's ${name}-${version}-${os}-${arch}.${ext}.
   var MATCHERS = {
@@ -123,9 +123,10 @@
     for (var i = 0; i < buttons.length; i += 1) {
       var btn = buttons[i];
       var key = btn.getAttribute('data-asset');
-      // These platform updates are paused. Never replace pinned legacy links with a
-      // Windows-only latest release or advertise that Windows version for another OS.
-      if (LEGACY_FILES[key]) { btn.href = legacyUrl(key); continue; }
+      // These platform updates are paused: send their buttons to the latest release
+      // page rather than a pinned legacy download, and never advertise that
+      // Windows-only latest version as a build for another OS.
+      if (PAUSED_KEYS[key]) { btn.href = RELEASES_LATEST; continue; }
       if (key === 'auto' && (os === 'mac' || os === 'linux')) {
         btn.href = '#download';
         btn.removeAttribute('download');
