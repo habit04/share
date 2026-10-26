@@ -4,9 +4,6 @@
  * The Editor's public methods delegate here (their documentation is on the Editor).
  */
 import { lineweightDisplay, renderSettings } from '../../render/draw';
-import { underlayBounds } from '../../core/underlay';
-import { underlayPlacementOf } from '../../core/entities';
-import * as g from '../../core/geometry';
 import { saveSettings } from '../settings';
 import type { Editor } from './editor';
 
@@ -57,15 +54,21 @@ export function toggle(ed: Editor, name: Parameters<Editor['toggle']>[0]): void 
 }
 
 export function zoomExtents(ed: Editor): void {
-  let b = ed.doc.extents();
-  // D4 (editor seam): doc.extents frames underlays by the stored
-  // extent the session knows; a page size the LIVE display service
-  // has already settled wins over it (page-size-first, the same
-  // precedence as the plot channel). Residual: on first open,
-  // documents.ts calls zoomExtents before any load has settled, so
-  // that first fit still falls back to the stored extent — or the
-  // unit frame when the definition carries none.
+  // B (#57 review P2): a page size the LIVE display service has
+  // settled must REPLACE the definition's stored extent inside the
+  // bounds computation, never union onto it — the stored box can be
+  // far larger than the real page, and a union can only grow it
+  // (stored 3000x3000 + loaded 612x792 used to zoom to 3000x3000).
+  // So the settled sizes are collected per definition and passed
+  // to doc.extents as the loaded-page supplier; the bounds are
+  // computed once, with the resolver's per-def precedence (loaded
+  // page, then stored extent, then the unit frame), and every
+  // other entity contributes exactly as before. Residual: on first
+  // open, documents.ts calls zoomExtents before any load has
+  // settled, so that first fit still falls back to the stored
+  // extent — or the unit frame when the definition carries none.
   const defs = ed.doc.snapshot.underlays;
+  let loaded: Map<string, { width: number; height: number }> | undefined;
   if (defs && renderSettings.underlaySource) {
     const hidden = new Set(ed.doc.snapshot.layers.filter((l) => !l.visible).map((l) => l.name));
     for (const e of ed.doc.entities) {
@@ -74,10 +77,10 @@ export function zoomExtents(ed: Editor): void {
       if (!page) continue;
       const def = Object.values(defs).find((d) => (d.handle ?? '').trim().toUpperCase() === (e.definitionHandle ?? '').trim().toUpperCase());
       if (!def) continue;
-      const ub = underlayBounds(underlayPlacementOf(e), { ...def, extent: page });
-      b = g.unionBounds(b, { min: { x: ub.minX, y: ub.minY }, max: { x: ub.maxX, y: ub.maxY } });
+      (loaded ??= new Map()).set(def.id, { width: page.width, height: page.height });
     }
   }
+  const b = loaded ? ed.doc.extents((defId) => loaded.get(defId)) : ed.doc.extents();
   ed.viewport.zoomToBounds(b);
   ed.render();
   ed.notify('view');
