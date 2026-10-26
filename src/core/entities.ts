@@ -2383,10 +2383,24 @@ export function expandInsertTraced(ins: InsertEntity, lookup: BlockLookup, resol
   explodeInto(flat, ins, lookup, 0, budget);
   const sources: (string | undefined)[] = new Array(flat.length).fill(undefined);
   // Windows are properly nested (appends are sequential, recursion is
-  // contained); applying them smallest-first leaves each index with
-  // its innermost def's source.
+  // contained) and recorded in completion order — children complete
+  // before their parents. Applying them smallest-first visits inner
+  // windows before the windows enclosing them (a stable sort keeps
+  // completion order among equal-length windows, so the deeper def
+  // still comes first), and the written guard makes the FIRST writer
+  // win: an enclosing window never replaces an already-assigned inner
+  // source (#63 review P2 (D)). The guard is a separate array because
+  // an inner source can itself be undefined — a host def nested inside
+  // a file def keeps host provenance.
+  const written: boolean[] = new Array(flat.length).fill(false);
   const windows = [...budget.trace].sort((a, b) => (a.end - a.start) - (b.end - b.start));
-  for (const w of windows) for (let i = w.start; i < w.end; i += 1) sources[i] = w.source;
+  for (const w of windows) {
+    for (let i = w.start; i < w.end; i += 1) {
+      if (written[i]) continue;
+      written[i] = true;
+      sources[i] = w.source;
+    }
+  }
   return { entities: flat.map((entity, i) => ({ entity, source: sources[i] })), truncated: budget.truncated, cyclic: budget.cyclic };
 }
 
