@@ -431,7 +431,7 @@ export class Viewport {
     // lookup is used exactly as before. (Selection, grips and the
     // spatial index below keep the host lookup by design — section 3.4's
     // non-consumers.)
-    const lookup = renderSettings.xrefContext ? renderSettings.xrefContext.lookup(this.doc.lookupBlock) : this.doc.lookupBlock;
+    const lookup = renderSettings.xrefContext ? renderSettings.xrefContext.expansionLookup(this.doc.lookupBlock) : this.doc.lookupBlock;
     const viewBounds = this.visibleBounds();
 
     if (!cached) {
