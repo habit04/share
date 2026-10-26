@@ -9,6 +9,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   # Lint, type checks (renderer, Electron main/preload, scripts), unit / regression tests, the
   # dense-drawing performance run and the renderer build.
@@ -20,8 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -39,7 +42,7 @@ jobs:
         run: |
           node --test scripts/native-dwg-build/tooling.test.mjs scripts/native-dwg-build/metadata-tools.test.mjs
           node scripts/native-dwg-build/validate-vendored-metadata.mjs native-metadata-output
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: matrix.node == 24
         with:
           name: native-metadata-fixtures
@@ -60,13 +63,13 @@ jobs:
           JCAD_BENCH_ASSERT: 1
           JCAD_PERF_FACTOR: 2
           JCAD_BENCH_OUT: performance-output
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: filesystem-performance-node-${{ matrix.node }}
           path: performance-output/
           if-no-files-found: error
       - run: npm run build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: renderer-dist-node-${{ matrix.node }}
           path: dist
@@ -79,8 +82,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -98,8 +101,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -129,7 +132,7 @@ jobs:
           JCAD_BENCH_OUT: screenshots/bench
           JCAD_BENCH_ASSERT: 1
           JCAD_PERF_FACTOR: 2
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: screenshots
@@ -137,7 +140,7 @@ jobs:
             screenshots/
             !screenshots/baseline/
           if-no-files-found: warn
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: failure()
         with:
           name: screenshot-diffs
@@ -153,8 +156,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -192,14 +195,14 @@ jobs:
         env:
           JCAD_TEST_ASAR_EXPECTED_SHA: ${{ github.sha }}
       - name: Unpublished test-ASAR receipts and logs (Windows)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: ci-test-asar-${{ matrix.os }}
           path: test-build-output/ci-test-asar/
           if-no-files-found: error
       - name: Development DWG writer reproduction bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: development-dwg-writer-${{ matrix.os }}
@@ -210,13 +213,13 @@ jobs:
             release/dwg-writer/integrity.json
           if-no-files-found: warn
       - name: Native export admission results (Windows)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: native-export-admission-${{ matrix.os }}
           path: windows-export-admission-results.json
           if-no-files-found: warn
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: e2e-electron-${{ matrix.os }}
@@ -235,11 +238,11 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -265,13 +268,13 @@ jobs:
         run: |
           node --test scripts/gpu-edit-candidate.test.mjs scripts/gpu-fallback-restoration.test.mjs scripts/gpu-benchmark-fallback.test.mjs scripts/gpu-benchmark-admission.test.mjs scripts/gpu-hatch-cleanup.test.mjs scripts/gpu-dimension-cleanup.test.mjs
           npm run bench:gpu
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: gpu-experimental-${{ github.sha }}
           path: e2e-output/
           if-no-files-found: warn
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: integrated-2d-${{ github.sha }}
