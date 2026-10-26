@@ -1,5 +1,5 @@
 import type { DrawingState } from '../core/document';
-import { explodeInsert, mtextParts, dimensionParts, leaderParts, tableParts, type Entity, type BlockLookup } from '../core/entities';
+import { explodeInsert, mtextParts, dimensionParts, leaderParts, tableParts, withLookupChannels, type Entity, type BlockLookup } from '../core/entities';
 import { layoutsOf, paperEntities } from '../core/layouts';
 import type { FontMetricsRequest, TextAppearance, TextGeometryContext } from '../core/text-metrics';
 import { textFontKey } from '../core/text-metrics';
@@ -168,7 +168,16 @@ export async function capturedPdfLookup(state: DrawingState, reader?: PdfFontRea
   // xref wrap, when one is pinned) and overrides only the text geometry
   // with the PDF-prepared one — the vector route expands the same
   // synthesised defs as the raster route (design sections 4.3 + 4).
-  const lookup: BlockLookup = Object.assign((name: string) => initialLookup(name), { textGeometry: geometry });
+  // The rebuild goes through the shared channel helper (#65 review
+  // P2): the captured lookup's remaining channels — the provenance
+  // channel sources, the def-scope hook forDef, a page-size channel
+  // already asserted — ride along, recursively for scoped lookups, so
+  // the writer resolves layers per file exactly as it does through
+  // the unprepared lookup. Rebuilding from textGeometry alone dropped
+  // them, and the size-channel wrap applied afterwards could not
+  // recover what this rebuild had already discarded.
+  const rebuildPrepared = (source: BlockLookup): BlockLookup => withLookupChannels(source, rebuildPrepared, { textGeometry: geometry });
+  const lookup: BlockLookup = rebuildPrepared(initialLookup);
   const shapedText = geometry ? (text: string, face: TextAppearance) => shapedPdfLine(geometry, fonts, text, face, (reason) => planIssues.add(reason)) : undefined;
   return { lookup, fonts, geometry, issues, restrictedFaces, shapedText };
 }

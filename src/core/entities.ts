@@ -518,46 +518,76 @@ export function underlaySizeResolver(
 }
 
 /**
- * A BlockLookup that also carries the underlay page-size channel.
- *
- * EVERY other side channel the source lookup carries is preserved
- * (#63 review P2): the channels ride as own properties of the
+ * Rebuild a lookup around the SAME name resolution, preserving its
+ * side channels — the shared helper behind every lookup rebuild
+ * (#65 review P2). The channels ride as own properties of the
  * callable — textGeometry, the def-scope hook forDef, the provenance
- * channel sources, and any channel added later — so re-creating the
- * callable from just the two known ones silently dropped the
- * captured file context (forDef scoping, per-file provenance) at
- * every wrapped call site. Forwarding is by DESCRIPTOR, so a getter
+ * channel sources, the page-size channel underlaySizeOf, and any
+ * channel added later — so re-creating the callable from just the
+ * channels one call site knows about silently drops the captured
+ * file context (forDef scoping, per-file provenance) for every
+ * consumer downstream, and a later rebuild cannot recover what an
+ * earlier one dropped (#63 review P2 made the same point for the
+ * size-channel wrap). Forwarding is by DESCRIPTOR, so a getter
  * channel stays a live getter: consumers read e.g.
  * textGeometry.fontIssues after long operations complete, and a
- * value copied at wrap time would freeze the empty set they started
- * with. forDef is the one channel that cannot be forwarded raw: it
- * RETURNS a lookup, and that lookup must itself carry this size
- * channel (and its own channels), so it is forwarded as a recursive
- * wrap. The supplied sizeOf wins over any size channel the source
- * already carries (nested wraps re-assert the same supplier).
+ * value copied at rebuild time would freeze the empty set they
+ * started with.
+ *
+ * `override` names the channels the rebuild REPLACES: each entry is
+ * set as a plain value on the result (an entry whose value is
+ * undefined still replaces — it clears the channel) and the source's
+ * own descriptor for it is not forwarded. forDef is the one channel
+ * that can be neither forwarded raw nor overridden: it RETURNS a
+ * lookup, and that lookup must itself be rebuilt the same way, so it
+ * is forwarded as a recursive rebuild through `rebuildScoped`.
+ * Reading forDef on the result yields undefined exactly when the
+ * source carries none.
  */
-export function withUnderlaySizeChannel(
+export function withLookupChannels(
   lookup: BlockLookup,
-  sizeOf: (e: UnderlayEntity) => { readonly width: number; readonly height: number } | undefined,
+  rebuildScoped: (scoped: BlockLookup) => BlockLookup,
+  override?: Readonly<Record<string, unknown>>,
 ): BlockLookup {
   const wrapped = ((name: string) => lookup(name)) as BlockLookup;
+  const replaced = new Set<string | symbol>(override ? Reflect.ownKeys(override) : []);
   for (const key of Reflect.ownKeys(lookup)) {
-    // underlaySizeOf is supplied below; forDef gets the recursive
-    // wrap below; length/name/prototype are the callable's own
-    // machinery, not channels.
-    if (key === 'underlaySizeOf' || key === 'forDef' || key === 'length' || key === 'name' || key === 'prototype') continue;
+    // length/name/prototype are the callable's own machinery, not
+    // channels; forDef gets the recursive rebuild below; an
+    // overridden channel is set from the override, not forwarded.
+    if (key === 'length' || key === 'name' || key === 'prototype' || key === 'forDef' || replaced.has(key)) continue;
     const desc = Object.getOwnPropertyDescriptor(lookup, key);
     if (desc) Object.defineProperty(wrapped, key, desc);
+  }
+  if (override) {
+    const values = override as Readonly<Record<string | symbol, unknown>>;
+    for (const key of Reflect.ownKeys(override)) {
+      Object.defineProperty(wrapped, key, { value: values[key], writable: true, enumerable: true, configurable: true });
+    }
   }
   Object.defineProperty(wrapped, 'forDef', {
     get: () => {
       const inner = lookup.forDef;
       if (typeof inner !== 'function') return undefined;
-      return (name: string, def: BlockDef) => withUnderlaySizeChannel(inner(name, def), sizeOf);
+      return (name: string, def: BlockDef) => rebuildScoped(inner(name, def));
     },
   });
-  Object.defineProperty(wrapped, 'underlaySizeOf', { value: sizeOf });
   return wrapped;
+}
+
+/**
+ * A BlockLookup that also carries the underlay page-size channel:
+ * the lookup rebuilt through withLookupChannels with the supplied
+ * sizeOf asserted as underlaySizeOf (it wins over any size channel
+ * the source already carries — nested wraps re-assert the same
+ * supplier), and def-scoped lookups recursively rebuilt the same
+ * way, so the size channel reaches scoped expansion too.
+ */
+export function withUnderlaySizeChannel(
+  lookup: BlockLookup,
+  sizeOf: (e: UnderlayEntity) => { readonly width: number; readonly height: number } | undefined,
+): BlockLookup {
+  return withLookupChannels(lookup, (scoped) => withUnderlaySizeChannel(scoped, sizeOf), { underlaySizeOf: sizeOf });
 }
 
 /** Per-file provenance a wrapped lookup can expose about its defs (see BlockLookup.sources). */
