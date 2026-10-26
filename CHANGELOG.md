@@ -11,6 +11,14 @@ messages). The date of each version is the date of the commit that set that vers
 
 ## [Unreleased]
 
+### Security
+
+- Electron updated from 44.9.1 to 44.9.3 for the Chromium/V8 fixes in
+  44.9.3. Note: Node CVE-2026-111497 (Brotli) is NOT fixed in any
+  Electron yet — 44.9.3 ships Node 24.22.0, and the fix is in Node
+  24.22.1. Electron will be bumped again when a release with
+  Node >= 24.22.1 lands, to close CVE-2026-111497.
+
 ## [0.6.6] - 2026-10-26
 
 ### Upgrade notes
