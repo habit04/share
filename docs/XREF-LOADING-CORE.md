@@ -348,6 +348,48 @@ parser. They are not AutoCAD compatibility evidence.
    scope.
 7. **No `orphaned` reporting** (see above).
 
+## Slice 1: application wiring (priority 20, on v0.6.5)
+
+Status: **implemented and headless-tested; display/plot consumption of
+the resolved context is wired through the editor-display/plot seams by
+the P28 lane; Windows and native validation remain lead-owned (below).**
+
+- **Per-document session controller** (`src/app/xref-session.ts`). One
+  controller per open document owns an `XrefStore` and a lazily created
+  reader handle. It is live only for a saved host (non-null absolute
+  `filePath`) with a bridge exposing the xref methods; an unsaved host
+  is never anchored lexically. Opening/activation binds the controller
+  and runs one initial load (`mode: 'partial'`); `XREFRELOAD` refreshes
+  against the live binding (`store.refresh`); attempts abort-and-restart
+  (latest wins) and collect references fresh from the current host state
+  on every attempt. Tab close disposes the controller. Commands:
+  `XREFRELOAD` and `XREFSTATUS` (`src/app/commands-xref.ts`); `XREF`
+  remains the electrical alias.
+- **Resolved-snapshot lookup contract** (`src/app/xref-resolved.ts`).
+  `buildResolvedXrefContext` materialises a sealed snapshot into scoped
+  block defs (internal names are never parsed back) plus root defs under
+  the host's block names. The wrapped `BlockLookup` is consumed by
+  render/plot ONLY: edit tools, EXPLODE (still refuses xref inserts),
+  selection, the spatial index and save/write keep the host lookup, so
+  referenced content can never enter the host document or a save.
+- **Layer rule (no merging).** *Preserved:* layer records live only in
+  their own file's table; an entity's layer resolves against the table
+  of the file it was materialised from (`fileLayers(fileKey)` returns a
+  referenced file's records verbatim). The root INSERT is a host entity:
+  freezing/off its host layer hides the whole reference. Nothing from a
+  referenced file is written into host symbol tables. AutoCAD's
+  dependent-layer prefixing and VISRETAIN are *not* approximated.
+- **Unsupported, explicitly.** *Unsupported:* DWG references report
+  `unsupported-format` and draw the named frame (their bytes are never
+  read). XCLIP application and xref fade are unsupported; their
+  detection is specified separately and held pending the detection
+  design ruling — under no outcome is unclipped or un-faded content
+  presented as if the feature were applied. BIND/detach/unload/attach,
+  file watching, and child-relative image loading are out of slice 1:
+  images inside referenced files follow the host's existing image
+  loader with the path as stored (*substituted*: a loader miss draws
+  the frame+label).
+
 ## Pending Windows / application / native validation (lead-owned)
 
 - A real permission-controlled adapter on Windows (Electron/IPC):
