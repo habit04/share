@@ -477,6 +477,23 @@ export type BlockLookup = ((name: string) => BlockDef | undefined) & {
    * keep the unit frame and never receive this channel.
    */
   readonly underlaySizeOf?: (e: UnderlayEntity) => { readonly width: number; readonly height: number } | undefined;
+  /**
+   * Optional def-scope hook (P20, design A.2 provenance): when expansion
+   * resolves `name` to `def`, the references made from INSIDE that def
+   * are resolved through the returned lookup instead of this one, so a
+   * lookup can scope its answers to the file the def was materialised
+   * from. Absent: the lookup applies unchanged at every depth.
+   */
+  readonly forDef?: (name: string, def: BlockDef) => BlockLookup;
+  /**
+   * Optional source-provenance channel (P20, design A.2): present on
+   * lookups whose defs carry per-file provenance (the resolved-xref
+   * expansion lookup). Sourced expansion (explodeInsertSourced /
+   * expandPlotInsertSourced) tags every expanded entity with the
+   * source of the def that contributed it, and painters resolve each
+   * entity's layer state against that file's own table.
+   */
+  readonly sources?: BlockLookupSources;
 };
 
 /**
@@ -500,15 +517,55 @@ export function underlaySizeResolver(
   };
 }
 
-/** A BlockLookup that also carries the underlay page-size channel. */
+/**
+ * A BlockLookup that also carries the underlay page-size channel.
+ *
+ * EVERY other side channel the source lookup carries is preserved
+ * (#63 review P2): the channels ride as own properties of the
+ * callable — textGeometry, the def-scope hook forDef, the provenance
+ * channel sources, and any channel added later — so re-creating the
+ * callable from just the two known ones silently dropped the
+ * captured file context (forDef scoping, per-file provenance) at
+ * every wrapped call site. Forwarding is by DESCRIPTOR, so a getter
+ * channel stays a live getter: consumers read e.g.
+ * textGeometry.fontIssues after long operations complete, and a
+ * value copied at wrap time would freeze the empty set they started
+ * with. forDef is the one channel that cannot be forwarded raw: it
+ * RETURNS a lookup, and that lookup must itself carry this size
+ * channel (and its own channels), so it is forwarded as a recursive
+ * wrap. The supplied sizeOf wins over any size channel the source
+ * already carries (nested wraps re-assert the same supplier).
+ */
 export function withUnderlaySizeChannel(
   lookup: BlockLookup,
   sizeOf: (e: UnderlayEntity) => { readonly width: number; readonly height: number } | undefined,
 ): BlockLookup {
   const wrapped = ((name: string) => lookup(name)) as BlockLookup;
-  Object.defineProperty(wrapped, 'textGeometry', { get: () => lookup.textGeometry });
+  for (const key of Reflect.ownKeys(lookup)) {
+    // underlaySizeOf is supplied below; forDef gets the recursive
+    // wrap below; length/name/prototype are the callable's own
+    // machinery, not channels.
+    if (key === 'underlaySizeOf' || key === 'forDef' || key === 'length' || key === 'name' || key === 'prototype') continue;
+    const desc = Object.getOwnPropertyDescriptor(lookup, key);
+    if (desc) Object.defineProperty(wrapped, key, desc);
+  }
+  Object.defineProperty(wrapped, 'forDef', {
+    get: () => {
+      const inner = lookup.forDef;
+      if (typeof inner !== 'function') return undefined;
+      return (name: string, def: BlockDef) => withUnderlaySizeChannel(inner(name, def), sizeOf);
+    },
+  });
   Object.defineProperty(wrapped, 'underlaySizeOf', { value: sizeOf });
   return wrapped;
+}
+
+/** Per-file provenance a wrapped lookup can expose about its defs (see BlockLookup.sources). */
+export interface BlockLookupSources {
+  /** The file key a def was materialised from; undefined for host defs. */
+  sourceFileKeyForDef(defName: string): string | undefined;
+  /** A referenced file's own layer records, verbatim. Unknown key: []. */
+  fileLayers(fileKey: string): readonly Layer[];
 }
 
 /** Length of the infinite part of XLINE/RAY used for hit testing and bounds (world units). */
