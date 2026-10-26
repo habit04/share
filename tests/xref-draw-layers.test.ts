@@ -149,7 +149,9 @@ describe('source-local layers in the painter (P2(2))', () => {
     const { hostState, expansion } = await loadWith('host-layers.dxf', '/proj/host-layers.dxf', files);
     const pages = plotPages(hostState, expansion, 'model', { paper: 'letter', orientation: 'landscape', scale: 'fit', margin: 0.25 });
     expect(pages).toHaveLength(1);
-    const bytes = vectorPdf(pages, drawingContext(hostState, expansion));
+    // The colour plot style (the plot dialog's colour mode): the default
+    // monochrome style would mask the colour half of this pin.
+    const bytes = vectorPdf(pages, drawingContext(hostState, expansion), { mode: 'color', lineweights: true, usePlotStyles: true });
     const content = new TextDecoder().decode(bytes);
     // The child's DUP line plots with the CHILD's colour (ACI 3 green) —
     // through the host table it was culled outright by the host's DUP-off.

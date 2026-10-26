@@ -15,6 +15,7 @@
 import type { Entity, Layer, BlockLookup, TextEntity, MTextEntity, PolylineEntity, InsertEntity, ImageEntity, HatchEntity, EllipseEntity } from '../core/entities';
 import {
   explodeInsert,
+  explodeInsertSourced,
   entityBounds,
   polylineSegments,
   dimensionParts,
@@ -66,7 +67,7 @@ import { layoutPage, type PlotOptions } from '../app/plot';
 import type { DrawingState } from '../core/document';
 import { resolveAlpha } from '../core/appearance';
 import { hasHatchGradient, linearHatchGradientPlan, hatchGradientColorRgb, hatchGradientFrameProblem } from '../core/hatch-gradient';
-import { expandPlotInsert, plotEntityAppearance, plotObjectProperties } from '../render/plot-appearance';
+import { expandPlotInsert, expandPlotInsertSourced, plotEntityAppearance, plotObjectProperties } from '../render/plot-appearance';
 import { shxTextPaths } from '../render/shx-paths';
 
 // ---------------------------------------------------------------- page model
@@ -411,6 +412,8 @@ class PageWriter {
   private dash = '';
   private tf = { k: 1, e: 0, f: 0, rotation: 0, c: 1, s: 0 };
   private group: PdfDrawGroup | null = null;
+  /** Layer table in force for the entity being styled — a referenced file's own table while its segment is written (A.2); null = the drawing context's (host) table. */
+  private activeLayers: readonly Layer[] | null = null;
   pathOps = 0;
 
   constructor(
@@ -521,16 +524,20 @@ class PageWriter {
   }
 
   // ---- entity properties (ByLayer / ByBlock resolved against the parent insert)
+  private layersNow(): readonly Layer[] {
+    return this.activeLayers ?? this.ctx.layers;
+  }
+
   private layer(name: string): Layer | undefined {
-    return this.ctx.layers.find((l) => l.name === name);
+    return this.layersNow().find((l) => l.name === name);
   }
 
   private applyStyle(e: Entity, parent: InsertEntity | null): void {
-    this.setAlpha(resolveAlpha(e, this.ctx.layers));
+    this.setAlpha(resolveAlpha(e, this.layersNow()));
     const layer = this.layer(e.layer);
     // Block content arrives resolved from explodeInsert (core/entities.ts inheritedColor): ByBlock
     // objects carry the reference's colour, or `colorLayer` (the reference's layer) when it is ByLayer.
-    const appearance = this.style.table ? this.tableAppearance(e, parent ? plotObjectProperties(parent, this.ctx.layers).lineweightMm : undefined) : undefined;
+    const appearance = this.style.table ? this.tableAppearance(e, parent ? plotObjectProperties(parent, this.layersNow()).lineweightMm : undefined) : undefined;
     const rgb: [number, number, number] = appearance ? [...appearance.rgb] : plotColor(objectRgb(e.color, e.trueColor, e.colorLayer !== undefined ? this.layer(e.colorLayer) : layer), this.style);
     this.setStroke(rgb);
     this.setFill(rgb);
@@ -547,13 +554,35 @@ class PageWriter {
   }
 
   private tableAppearance(entity: Parameters<typeof plotEntityAppearance>[0], inheritedLineweightMm?: number) {
-    const result = plotEntityAppearance(entity, this.ctx.layers, this.style.table!, this.style, inheritedLineweightMm);
+    const result = plotEntityAppearance(entity, this.layersNow(), this.style.table!, this.style, inheritedLineweightMm);
     for (const issue of result.issues) this.style.issues?.add(`${issue.path}: ${issue.message}`);
     return result;
   }
 
   private entity(e: Entity, parent: InsertEntity | null, view: Bounds | null): void {
     if (e.type === 'insert') {
+      // Resolved-xref content (design A.2, #58 review P2(2)): when the
+      // lookup carries per-file provenance, expand ONCE with per-entity
+      // source tags and style each entity against its own file's
+      // table. Host content keeps group.hidden exactly; referenced
+      // content is culled by the plot hidden-layer rule applied to its
+      // own table; a layer name the file does not define falls back to
+      // the ambient table (layer-0 content floated to the insert's host
+      // layer). No table is merged into the host's.
+      const sources = this.ctx.lookup.sources;
+      if (sources) {
+        const sourced = this.style.table ? expandPlotInsertSourced(e, this.ctx.lookup, this.ctx.layers) : explodeInsertSourced(e, this.ctx.lookup);
+        for (const { entity: sub, source } of sourced) {
+          const fileTable = source === undefined ? this.ctx.layers : sources.fileLayers(source);
+          const subTable = source === undefined || fileTable.some((l) => l.name === sub.layer) ? fileTable : this.ctx.layers;
+          if (source === undefined || subTable === this.ctx.layers) { if (this.group?.hidden.has(sub.layer)) continue; }
+          else if (hiddenLayers(subTable).has(sub.layer)) continue;
+          const prev = this.activeLayers;
+          this.activeLayers = subTable;
+          try { this.entity(sub, e, view); } finally { this.activeLayers = prev; }
+        }
+        return;
+      }
       for (const sub of this.style.table ? expandPlotInsert(e, this.ctx.lookup, this.ctx.layers) : explodeInsert(e, this.ctx.lookup)) {
         if (this.group?.hidden.has(sub.layer)) continue;
         this.entity(sub, e, view);

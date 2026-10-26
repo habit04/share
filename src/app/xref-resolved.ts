@@ -21,7 +21,7 @@
  * against the table of the file it was materialised from.
  */
 import type { DrawingState } from '../core/document';
-import type { BlockDef, BlockLookup, Entity, Layer } from '../core/entities';
+import type { BlockDef, BlockLookup, BlockLookupSources, Entity, Layer } from '../core/entities';
 import { sealImmutableData } from '../core/immutable-data';
 import type { XrefNode, XrefSnapshot } from '../io/xref-loading';
 
@@ -41,7 +41,9 @@ export interface ResolvedXrefContext {
    * a top-level reference resolves as the host's own, and references
    * made from inside a materialised def resolve in that def's file
    * scope — a name that file left dangling refuses there, and only
-   * there (#58 review P2). Memoised per base.
+   * there (#58 review P2). The returned lookup carries the
+   * BlockLookup.sources provenance channel (per-file def provenance
+   * and layer tables) for the painters. Memoised per base.
    */
   expansionLookup(base: BlockLookup): BlockLookup;
   /** The referenced file's own layer records, verbatim from the sealed snapshot. Unknown key: []. */
@@ -221,6 +223,16 @@ export function buildResolvedXrefContext(snapshot: XrefSnapshot, stamp: XrefSess
   const lookupCache = new WeakMap<BlockLookup, BlockLookup>();
   const expansionLookupCache = new WeakMap<BlockLookup, BlockLookup>();
 
+  // The provenance channel carried by the expansion flavour (A.2):
+  // sourced expansion tags each expanded entity with the file its def
+  // was materialised from, and painters resolve that entity against
+  // the file's own layer table — no table is ever merged into the
+  // host's.
+  const makeSources = (): BlockLookupSources => ({
+    sourceFileKeyForDef: (defName: string) => built.defSource.get(defName),
+    fileLayers: (fileKey: string) => snapshot.files[fileKey]?.state.layers ?? [],
+  });
+
   // One wrapped-lookup construction behind both flavours. The standing
   // resolution order — root defs, host table, scoped defs, base — is
   // shared (hostOrdered); the flavours differ only in the dangling rule,
@@ -275,6 +287,7 @@ export function buildResolvedXrefContext(snapshot: XrefSnapshot, stamp: XrefSess
     }) as BlockLookup;
     Object.defineProperty(top, 'textGeometry', { value: base.textGeometry, enumerable: true });
     Object.defineProperty(top, 'forDef', { value: (_name: string, def: BlockDef) => scopeFor(def), enumerable: true });
+    if (expansion) Object.defineProperty(top, 'sources', { value: makeSources(), enumerable: true });
     return top;
   };
   const nodesByName = new Map<string, XrefNode>();

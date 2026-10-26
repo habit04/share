@@ -3,6 +3,7 @@ import { underlayDisplayList, type UnderlayDefinition } from '../core/underlay';
 import { underlayDefinitionContent, type UnderlayContentSource } from './underlay-content';
 import {
   explodeInsert,
+  explodeInsertSourced,
   entityBounds,
   polylineSegments,
   dimensionParts,
@@ -36,7 +37,7 @@ import { findLinetype, effectiveLinetype, dashArray, type Linetype } from '../co
 import { annotativeEntity } from '../core/layouts';
 import { resolveAlpha } from '../core/appearance';
 import { hasHatchGradient, linearHatchGradientPlan, linearHatchGradientAxis, hatchGradientColorRgb } from '../core/hatch-gradient';
-import { expandPlotInsert, plotEntityAppearance, plotObjectProperties, plotRgbCss } from './plot-appearance';
+import { expandPlotInsert, expandPlotInsertSourced, plotEntityAppearance, plotObjectProperties, plotRgbCss } from './plot-appearance';
 import { shxTextPaths } from './shx-paths';
 
 export interface Transform {
@@ -756,6 +757,32 @@ function drawGeometry(
       drawText(ctx, e, tf, lookup.textGeometry);
       break;
     case 'insert': {
+      // Resolved-xref content (design A.2, #58 review P2(2)): when the
+      // lookup carries per-file provenance, expand ONCE with per-entity
+      // source tags and resolve each entity against its own file's
+      // layer table — the host's hidden set and table govern host
+      // content exactly as below and never reach into a referenced
+      // file; a layer name absent from the file's table (layer-0
+      // content floated to the insert's host layer) falls back to the
+      // ambient table. No table is merged into the host's.
+      const sources = lookup.sources;
+      if (sources) {
+        const sourced = style.plot ? expandPlotInsertSourced(e, lookup, layers) : explodeInsertSourced(e, lookup);
+        for (const { entity: sub, source } of sourced) {
+          const fileTable = source === undefined ? layers : sources.fileLayers(source);
+          const subTable = source === undefined || fileTable.some((l) => l.name === sub.layer) ? fileTable : layers;
+          if (source === undefined || subTable === layers) { if (style.hidden?.has(sub.layer)) continue; }
+          else { const rec = subTable.find((l) => l.name === sub.layer); if (rec && !rec.visible) continue; }
+          if (style.plot) { drawPlotPart(ctx, sub, tf, subTable, lookup, style, e); continue; }
+          ctx.globalAlpha = (style.alpha ?? 1) * resolveAlpha(sub, subTable);
+          const subColor = style.strokeOverride ?? resolveColor(sub, subTable);
+          ctx.strokeStyle = subColor;
+          ctx.fillStyle = subColor;
+          if (!style.dashed) ctx.setLineDash(resolveDash(sub, subTable, tf));
+          drawGeometry(ctx, sub, tf, subTable, lookup, style);
+        }
+        break;
+      }
       for (const sub of style.plot ? expandPlotInsert(e, lookup, layers) : explodeInsert(e, lookup)) {
         if (style.hidden?.has(sub.layer)) continue;
         if (style.plot) { drawPlotPart(ctx, sub, tf, layers, lookup, style, e); continue; }
