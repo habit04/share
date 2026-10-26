@@ -6,7 +6,7 @@
  */
 import type { Point, Bounds } from '../core/geometry';
 import * as g from '../core/geometry';
-import type { Entity, BlockLookup } from '../core/entities';
+import type { Entity, BlockDef, BlockLookup } from '../core/entities';
 import { textGeometryForStyles, EMPTY_TEXT_STYLES } from './font-metrics';
 import { entityBounds } from '../core/entities';
 import type { PdfPageSpec, PdfDrawingContext, PdfPlotStyle } from '../io/pdf-vector';
@@ -213,7 +213,19 @@ export function paintLayout(ctx: CanvasRenderingContext2D, vp: Viewport, ov: Vie
  * the "Raster image" PDF output; monochrome pages draw black.
  */
 export function renderPageToCanvas(canvas: HTMLCanvasElement, page: PdfPageSpec, ctxInfo: PdfDrawingContext, style: PdfPlotStyle, dpi: number, imageLoader?: ImageLoader, underlaySource?: UnderlayContentSource): void {
-  const lookup: BlockLookup = Object.assign((name: string) => ctxInfo.lookup(name), { textGeometry: ctxInfo.textGeometry ?? ctxInfo.lookup.textGeometry ?? textGeometryForStyles(ctxInfo.textStyles ?? EMPTY_TEXT_STYLES) });
+  // The page lookup re-bases the drawing context's lookup on this page's
+  // text geometry; the xref channels of the underlying lookup — the
+  // def-scope hook and the per-file provenance (A.2) — are forwarded,
+  // recursively for scoped lookups, so raster sheets expand and resolve
+  // layers exactly as the live pass does.
+  const pageTextGeometry = ctxInfo.textGeometry ?? ctxInfo.lookup.textGeometry ?? textGeometryForStyles(ctxInfo.textStyles ?? EMPTY_TEXT_STYLES);
+  const wrapCtxLookup = (inner: BlockLookup): BlockLookup => {
+    const wrapped: BlockLookup = Object.assign((name: string) => inner(name), { textGeometry: pageTextGeometry });
+    if (inner.forDef) Object.assign(wrapped, { forDef: (name: string, def: BlockDef) => wrapCtxLookup(inner.forDef!(name, def)) });
+    if (inner.sources) Object.assign(wrapped, { sources: inner.sources });
+    return wrapped;
+  };
+  const lookup: BlockLookup = wrapCtxLookup(ctxInfo.lookup);
   const s = dpi / 72;
   const W = Math.max(1, Math.round(page.width * s));
   const H = Math.max(1, Math.round(page.height * s));
