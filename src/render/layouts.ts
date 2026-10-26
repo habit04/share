@@ -129,7 +129,7 @@ export function paintLayout(ctx: CanvasRenderingContext2D, vp: Viewport, ov: Vie
   // (design sections 3.4 + A.2 rule 6: per-viewport layer state stays
   // host-document data and applies to host entities; it does not reach
   // into a referenced file's layer context).
-  const lookup = renderSettings.xrefContext ? renderSettings.xrefContext.lookup(doc.lookupBlock) : doc.lookupBlock;
+  const lookup = renderSettings.xrefContext ? renderSettings.xrefContext.expansionLookup(doc.lookupBlock) : doc.lookupBlock;
   const spaceVp = state.space?.viewport;
   const header = doc.header;
   const canno = cannoscaleValue(header.cannoscale);

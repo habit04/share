@@ -566,6 +566,10 @@ export interface BlockLookupSources {
   sourceFileKeyForDef(defName: string): string | undefined;
   /** A referenced file's own layer records, verbatim. Unknown key: []. */
   fileLayers(fileKey: string): readonly Layer[];
+  /** The distinct sources in an insert's expansion subtree, in encounter order (undefined = the host document). */
+  expansionSources(ins: InsertEntity): readonly (string | undefined)[];
+  /** This lookup restricted to one source (undefined = host defs only); other sources' defs resolve to undefined. */
+  forSource(source: string | undefined): BlockLookup;
 }
 
 /** Length of the infinite part of XLINE/RAY used for hit testing and bounds (world units). */
@@ -2508,13 +2512,18 @@ function explodeSingleInto(out: Entity[], ins: InsertEntity, lookup: BlockLookup
   // insert transform composes them (see expansionBlock). For static inserts
   // this is `block` itself, by identity.
   const expanded = expansionBlock(block, ins);
+  // References made from inside this def resolve through the def-scoped
+  // lookup when the lookup provides one (BlockLookup.forDef): the
+  // resolved-xref lookup scopes them to the def's source file, so a name
+  // that file left dangling refuses there and only there.
+  const inner = lookup.forDef?.(ins.block, block) ?? lookup;
   for (const e of expanded.entities) {
     if (budget.left <= 0) {
       budget.truncated = true;
       break;
     }
     spendExpansion(budget, entityGeometryWork(e));
-    transformInto(out, e, tf, ins, similar, lookup, depth + 1, budget);
+    transformInto(out, e, tf, ins, similar, inner, depth + 1, budget);
   }
   // Attribute text (placements come from the possibly evaluated definition;
   // values always come from the insert, unchanged). Stored per-instance
