@@ -290,11 +290,16 @@ describe('R1: the Model-tab raster plot path gets the D4/D5 treatment', () => {
     // The sheet canvas is the tabloid sheet at the 150-dpi ceiling.
     const sheet = rig.canvases.find((c) => c.width === 2550);
     expect(sheet?.height).toBe(1650);
-    // The letter raster (1275x1650 px at 150 dpi) is drawn ON the sheet:
-    // fit of the 612x792 page into the 16x10 in avail area, centred —
-    // 1159.09 x 1500 px at (695.45, 75). With the 1x1 placeholder the
-    // same draw lands at ~918000 px wide, off the sheet entirely.
-    const drawn = rig.images.filter((i) => i.width === 1275 && i.height === 1650);
+    // The letter raster is drawn ON the sheet: fit of the 612x792 page
+    // into the 16x10 in avail area, centred — 1159.09 x 1500 px at
+    // (695.45, 75). With the 1x1 placeholder the same draw lands at
+    // ~918000 px wide, off the sheet entirely. The composite is
+    // 1275x1651 px: the service ceils 792 * (150/72) =
+    // 1650.0000000000002 to 1651 — the same double arithmetic the D1
+    // pins recorded at 300 dpi (3301, not 3300). The rig also records
+    // the resolver's capture-time extraction draw of the composite
+    // (identity rect); the fitted sheet draw is the other record.
+    const drawn = rig.images.filter((i) => i.width === 1275 && i.height === 1651 && i.rect.w < 1200);
     expect(drawn).toHaveLength(1);
     expect(near(drawn[0]!.rect.x, 695.45)).toBe(true);
     expect(near(drawn[0]!.rect.y, 75)).toBe(true);
