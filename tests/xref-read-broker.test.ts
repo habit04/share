@@ -301,7 +301,11 @@ describe('xref read broker — byte accounting', () => {
     fs.add(LEAF, LEAF_TEXT, 42n);
     const token = begin();
     const leaf = await broker.identify('wc:1', token, LEAF);
+    // Under the P1 host-folder rule the leaf stays readable while its
+    // host is granted (it is the host's sibling); revoke BOTH so no
+    // authority remains for the read re-check to find.
     granted.delete(LEAF);
+    granted.delete(HOST);
     const before = fs.totalCalls();
     await expect(broker.read('wc:1', token, leaf.ticket, 1024)).rejects.toMatchObject({ code: 'ERR_XREF_DENIED' });
     expect(fs.totalCalls()).toBe(before);

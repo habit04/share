@@ -4,11 +4,15 @@
  * This module owns NO authority of its own. It reads only paths the
  * injected `isKnownPath` policy (the main process's path registry:
  * files the user chose, saved to, or that an opened project lists) already
- * makes readable by name, and it checks that policy BEFORE any filesystem
- * contact — before stat, realpath, open, or any UNC/network access. An
- * ungranted path is DENIED, never "missing", and no DXF content, lexical
- * containment, renderer callback or claimed flag can make a path readable
- * here. The broker never grants, registers, writes, or converts anything.
+ * makes readable by name, plus, under the P1 policy ruling, a reference
+ * inside the folder tree of the context's host drawing when the registry
+ * confirms that host itself was opened (see `hostFolderGrant` below — the
+ * sibling rule the PDF-underlay channel applies in electron/ipc-guard.cjs).
+ * Either way it checks the composed policy BEFORE any filesystem contact
+ * — before stat, realpath, open, or any UNC/network access. An ungranted
+ * path is DENIED, never "missing", and no DXF content, renderer callback
+ * or claimed flag can make a path readable here. The broker never grants,
+ * registers, writes, or converts anything.
  *
  * Protocol (driven by electron/main/ipc-xrefs.cjs, consumed through the
  * renderer's thin src/app/xref-reader.ts adapter):
@@ -92,8 +96,10 @@
 
 const { createHash, randomUUID } = require('node:crypto');
 const { constants } = require('node:fs');
+const { win32 } = require('node:path');
 const { readLimitedFile } = require('./resource-limits.cjs');
-const { absoluteWindowsPath } = require('./windows-path-identity.cjs');
+const { absoluteWindowsPath, asciiCaseFold } = require('./windows-path-identity.cjs');
+const { networkHost } = require('./path-registry.cjs');
 
 /** Per-file raw ceiling from the brief; the caller's allowance can only lower it. */
 const MAX_RAW_BYTES = 16 * 1024 * 1024;
@@ -243,6 +249,62 @@ function createXrefReadBroker(deps) {
   const throwIfAborted = (signal) => { if (signal?.aborted) throw ERR.cancelled(); };
 
   /**
+   * Folded win32 containment: is `target` the folder `dir` itself or a
+   * path inside it? Both inputs are already-resolved spellings (the
+   * shared validator's output, or a canonical path), so no `..` remains
+   * to escape; the comparison is ASCII-case-folded, matching how the
+   * registry folds names.
+   * @param {string} dir @param {string} target @returns {boolean}
+   */
+  const insideDir = (dir, target) => {
+    const rel = win32.relative(asciiCaseFold(dir), asciiCaseFold(target));
+    return rel === '' || (rel !== '..' && !rel.startsWith('..\\') && !win32.isAbsolute(rel));
+  };
+
+  /**
+   * Host-folder authority — the P1 policy ruling, aligned with the
+   * accepted PDF-underlay policy (electron/ipc-guard.cjs underlayProblem):
+   * a reference named by the context's host drawing may be read from the
+   * host's folder or a subfolder of it. The context anchor SELECTS the
+   * drawing; the injected registry policy must confirm the anchor itself
+   * is readable (it was opened), so the renderer-supplied label alone
+   * still grants nothing and this broker still owns no authority of its
+   * own. The confinement mirrors the underlay channel: only a drawing
+   * host anchors the rule (.dxf/.dwg — the reference itself already
+   * passed this broker's DXF-only shape check, and the loading core
+   * refuses DWG references before they reach the broker); no traversal
+   * out of the folder tree (the validated spelling is resolved before
+   * this check, and identify additionally re-checks the canonical target
+   * against the host's folder, so links cannot extend the scope); no
+   * device paths (the shared validator refused their prefixes before
+   * this point); a network reference only on the host's own server.
+   * The grant anchors on the OPENED host drawing only: references a
+   * read child names that resolve outside the host's folder tree still
+   * need registry/project authority, exactly as the underlay rule leaves
+   * non-folder files to its referenced set.
+   * @param {any} ctx @param {string} path validated reference spelling
+   * @returns {boolean}
+   */
+  function hostFolderGrant(ctx, path) {
+    const anchor = ctx.hostAnchor;
+    if (!/\.(dxf|dwg)$/i.test(anchor)) return false;
+    if (networkHost(path) !== networkHost(anchor)) return false;
+    if (!isKnownPath(anchor)) return false;
+    return insideDir(win32.dirname(anchor), path);
+  }
+
+  /**
+   * Full read authority for one reference in one context — the registry
+   * by name, or the host-folder rule. Checked before any filesystem
+   * contact at both check sites (identify and read).
+   * @param {any} ctx @param {string} path validated reference spelling
+   * @returns {boolean}
+   */
+  function isAuthorized(ctx, path) {
+    return isKnownPath(path) || hostFolderGrant(ctx, path);
+  }
+
+  /**
    * Charge one operation against the ceilings, or refuse with
    * ERR_XREF_RESOURCE_BUSY before any I/O. `reservation` is the raw
    * allocation charge (reads only; 0n for identify).
@@ -385,7 +447,7 @@ function createXrefReadBroker(deps) {
     // Authority completes before the operation is admitted to the
     // ledger: an ungranted path is DENIED (never busy, never missing)
     // and still costs zero filesystem contact.
-    if (!isKnownPath(path)) throw ERR.denied(`the path is not readable by name under the existing file policy: ${path}`);
+    if (!isAuthorized(ctx, path)) throw ERR.denied(`the path is not readable by name under the existing file policy, nor a reference inside the folder of an opened host drawing: ${path}`);
     return runOp(ctx, 0n, async (signal) => {
       throwIfAborted(signal);
       let canonicalPath;
@@ -393,6 +455,26 @@ function createXrefReadBroker(deps) {
         canonicalPath = await fs.realpath(path);
       } catch (error) {
         throw mapFsError(error, path);
+      }
+      // Host-folder confinement (mirrors underlayPath in ipc-guard.cjs):
+      // when the registry does not know the path by name, its authority
+      // came from the host-folder rule, whose scope is the folder the
+      // CANONICAL target actually sits in — a link out of the tree is
+      // denied here. The host's folder is taken canonically when the
+      // anchor resolves, lexically otherwise; either way the canonical
+      // target must lie inside it. Registry-known paths keep their
+      // existing by-name semantics (a known path's alias is reported,
+      // not contained).
+      if (!isKnownPath(path)) {
+        let anchorDir = win32.dirname(ctx.hostAnchor);
+        try {
+          anchorDir = win32.dirname(await fs.realpath(ctx.hostAnchor));
+        } catch {
+          // The anchor does not resolve; keep its lexical folder.
+        }
+        if (!insideDir(anchorDir, canonicalPath)) {
+          throw ERR.denied(`the reference resolves outside the folder of the opened host drawing: ${path}`);
+        }
       }
       throwIfAborted(signal);
       let version;
@@ -453,7 +535,7 @@ function createXrefReadBroker(deps) {
     const allowance = Math.min(/** @type {number} */ (maxBytes), maxRawBytes);
     // Authority completes before admission: the ticket names the file
     // and the policy must still make it readable by name.
-    if (!isKnownPath(ticket.path)) throw ERR.denied(`the path is no longer readable by name under the existing file policy: ${ticket.path}`);
+    if (!isAuthorized(ctx, ticket.path)) throw ERR.denied(`the path is no longer readable by name under the existing file policy, nor a reference inside the folder of an opened host drawing: ${ticket.path}`);
     // Permanent-limit precedence (correction R2, lead policy ruling):
     // an identified size that exceeds the effective allowance can
     // NEVER succeed, so it refuses with ERR_XREF_LIMIT here — after
